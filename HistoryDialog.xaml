@@ -1,0 +1,143 @@
+﻿<Window x:Class="SceneryAddonsBrowser.HistoryDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Download History"
+        Width="720"
+        Height="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent">
+
+    <!-- ================= RESOURCES ================= -->
+    <Window.Resources>
+
+        <!-- GridView HEADER DARK -->
+        <Style TargetType="GridViewColumnHeader">
+            <Setter Property="Background" Value="#FF252525"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#FF3A3A3A"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+
+        <!-- ListViewItem DARK (NO AZUL) -->
+        <Style TargetType="ListViewItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FF2A2A2A"/>
+                </Trigger>
+
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#FF333333"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Button -->
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#FF2E2E2E"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#FF444444"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FF3A3A3A"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+    </Window.Resources>
+
+    <!-- ================= ROOT ================= -->
+    <Grid>
+        <Border CornerRadius="12"
+                Background="#FF1E1E1E"
+                BorderBrush="#FF3A3A3A"
+                BorderThickness="1"
+                Padding="14">
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- HEADER (DRAG) -->
+                <Border Grid.Row="0"
+                        Background="#FF252525"
+                        Padding="12"
+                        Margin="0,0,0,10"
+                        MouseLeftButtonDown="Header_MouseLeftButtonDown">
+
+                    <TextBlock Text="Download History"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               Foreground="White"/>
+                </Border>
+
+                <!-- TABLE -->
+                <ListView Grid.Row="1"
+                          ItemsSource="{Binding}"
+                          Background="#FF1E1E1E"
+                          Foreground="White"
+                          BorderBrush="#FF3A3A3A"
+                          BorderThickness="1">
+
+                    <ListView.View>
+                        <GridView>
+
+                            <GridViewColumn Header="ICAO" Width="70"
+                                            DisplayMemberBinding="{Binding Icao}"/>
+
+                            <GridViewColumn Header="Scenario" Width="240"
+                                            DisplayMemberBinding="{Binding ScenarioName}"/>
+
+                            <GridViewColumn Header="Developer" Width="160"
+                                            DisplayMemberBinding="{Binding Developer}"/>
+
+                            <GridViewColumn Header="Method" Width="120"
+                                            DisplayMemberBinding="{Binding Method}"/>
+
+                            <GridViewColumn Header="Date" Width="140"
+                                            DisplayMemberBinding="{Binding DownloadDate}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+
+                <!-- FOOTER -->
+                <Grid Grid.Row="2"
+                      Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Text="{Binding Count, StringFormat={}{0} download(s)}"
+                               Foreground="#FFB0B0B0"
+                               VerticalAlignment="Center"/>
+
+                    <Button Grid.Column="1"
+                            Content="Close"
+                            Width="90"
+                            Height="30"
+                            Click="Close_Click"/>
+                </Grid>
+
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
