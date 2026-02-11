@@ -1,0 +1,48 @@
+name: Release (Velopack)
+
+on:
+  push:
+    tags:
+      - "v3.0.0"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Restore
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet publish SceneryAddonsBrowser.csproj -c Release -r win-x64 --self-contained true -o publish
+
+    - name: Install Velopack
+      run: dotnet tool install -g vpk
+
+    - name: Create Velopack Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        vpk pack ^
+          --packId SceneryAddonsBrowser ^
+          --packVersion ${GITHUB_REF_NAME#v} ^
+          --packDir publish ^
+          --mainExe SceneryAddonsBrowser.exe ^
+          --icon icon.ico ^
+          --framework net8.0 ^
+          --runtime win-x64 ^
+          --channel stable ^
+          --output releases
+
+    - name: Upload to GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: releases/**

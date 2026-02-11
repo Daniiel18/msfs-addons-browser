@@ -11,6 +11,10 @@
 
     <!-- ================= RESOURCES ================= -->
     <Window.Resources>
+        <SolidColorBrush x:Key="DownloadGreen" Color="#FF4CAF50"/>
+        <SolidColorBrush x:Key="DownloadYellow" Color="#FFFFC107"/>
+        <SolidColorBrush x:Key="DownloadRed" Color="#FFF44336"/>
+        <SolidColorBrush x:Key="DownloadGray" Color="#FF4FC3F7"/>
 
         <!-- BUTTON -->
         <Style TargetType="Button">
@@ -28,7 +32,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6">
+                                CornerRadius="10">
                             <ContentPresenter
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Center"/>
@@ -160,7 +164,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel>
-                            <TextBlock Text="Scenery Addons Browser v1.0"
+                            <TextBlock Text="Scenery Addons Browser v3.0"
                                        FontSize="18"
                                        FontWeight="SemiBold"
                                        Foreground="White"/>
@@ -182,6 +186,7 @@
                                      KeyDown="IcaoTextBox_KeyDown"/>
 
                             <Button Content="Search"
+                                    x:Name="SearchButton"
                                     Width="100"
                                     Height="30"
                                     Click="SearchButton_Click"/>
@@ -240,6 +245,8 @@
 
                                         <Button Grid.Column="1"
                                                 Content="Download"
+                                                IsEnabled="{Binding RelativeSource={RelativeSource AncestorType=Window},
+                                                Path=IsDownloadAllowed}"
                                                 Width="100"
                                                 Height="32"
                                                 Margin="12,0,0,0"
@@ -255,53 +262,90 @@
 
                 <!-- FOOTER -->
                 <!-- ================= STATUS + EXIT ================= -->
-                <Grid Grid.Row="2"
-      Margin="0,14,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                <Grid Grid.Row="2" Margin="0,12,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                    <StackPanel>
+                    <!-- PROGRESS AREA -->
+                    <StackPanel Grid.Row="0">
 
-                        <!-- STATUS TEXT -->
-                        <Border Padding="6"
-                Background="#FF252525"
-                BorderBrush="#FF3A3A3A"
-                BorderThickness="1"
-                CornerRadius="6" Width="513">
+                        <TextBlock x:Name="StatusTextBlock"
+                   FontSize="12"
+                   Foreground="#FFB0B0B0"
+                   Margin="0,0,0,4"/>
+                        
+                        <TextBlock x:Name="QueueStatusTextBlock"
+                            FontSize="11"
+                            Foreground="#FF9A9A9A"
+                            Margin="0,2,0,0"
+                            Visibility="Collapsed"/>
 
-                            <TextBlock x:Name="StatusTextBlock"
-                       Text="Ready"
-                       FontSize="12"
-                       Foreground="#FFB0B0B0"/>
+
+                        <Border Height="6"
+                Background="#FF1E1E1E"
+                CornerRadius="3">
+
+                            <ProgressBar x:Name="DownloadProgressBar"
+                         Minimum="0"
+                         Maximum="100"
+                         Value="0"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         Foreground="{StaticResource DownloadGreen}"
+                         Visibility="Collapsed"/>
                         </Border>
-
-                        <!-- PROGRESS BAR -->
-                        <ProgressBar x:Name="DownloadProgressBar"
-                     Height="4"
-                     Margin="2,6,2,0"
-                     Visibility="Collapsed"
-                     IsIndeterminate="True"
-                     Background="#FF1E1E1E"
-                     Foreground="#FF4FC3F7"/>
                     </StackPanel>
 
-                    <!-- BUTTONS -->
-                    <StackPanel Grid.Column="1"
-                Orientation="Horizontal"
-                Margin="0,0,6,0">
+                    <!-- CONTROLS -->
+                    <Grid Grid.Row="1" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                        <Button Content="History"
-                Width="90"
-                Margin="0,0,5,0"
-                Click="History_Click"/>
+                        <!-- DOWNLOAD CONTROLS -->
+                        <StackPanel Orientation="Horizontal">
 
-                        <Button Content="Exit"
-                Width="90"
-                Click="Exit_Click"/>
-                    </StackPanel>
+                            <Button x:Name="PauseButton"
+        Content="⏸ Pause"
+        Width="80"
+        Margin="0,0,6,0"
+        Visibility="Collapsed"
+        Click="PauseDownload_Click"/>
 
+                            <Button x:Name="ResumeButton"
+        Content="▶ Resume"
+        Width="80"
+        Margin="0,0,6,0"
+        Visibility="Collapsed"
+        Click="ResumeDownload_Click"/>
+
+                            <Button x:Name="CancelButton"
+        Content="✖ Cancel"
+        Width="80"
+        Visibility="Collapsed"
+        Click="CancelDownload_Click"/>
+
+                        </StackPanel>
+
+                        <!-- SMALL ACTIONS -->
+                        <StackPanel Grid.Column="1"
+                    Orientation="Horizontal">
+
+                            <Button Content="History"
+                    Width="70"
+                    Height="26"
+                    Margin="0,0,6,0"
+                    Click="History_Click"/>
+
+                            <Button Content="Exit"
+                    Width="60"
+                    Height="26"
+                    Click="Exit_Click"/>
+                        </StackPanel>
+                    </Grid>
                 </Grid>
             </Grid>
         </Border>

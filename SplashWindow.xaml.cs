@@ -8,17 +8,22 @@ namespace SceneryAddonsBrowser
         public SplashWindow()
         {
             InitializeComponent();
-            Loaded += SplashWindow_Loaded;
         }
 
-        private async void SplashWindow_Loaded(object sender, RoutedEventArgs e)
+        public async Task RunAsync()
         {
-            await Task.Delay(3000); // Simulate some loading time
+            await Step("Initializing...", 15, 800);
+            await Step("Loading services...", 35, 900);
+            await Step("Checking updates...", 60, 1000);
+            await Step("Preparing UI...", 85, 900);
+            await Step("Starting application...", 100, 600);
+        }
 
-            var mainWindow = new MainWindow();
-            mainWindow.Show();
-
-            Close();
+        private async Task Step(string text, int progress, int delayMs)
+        {
+            StatusText.Text = text;
+            ProgressBar.Value = progress;
+            await Task.Delay(delayMs);
         }
     }
 }

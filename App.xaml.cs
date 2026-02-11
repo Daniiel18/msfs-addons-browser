@@ -1,13 +1,24 @@
 ﻿using System.Windows;
+using Application = System.Windows.Application;
 
 namespace SceneryAddonsBrowser
 {
     public partial class App : Application
     {
-        private void Application_Startup(object sender, StartupEventArgs e)
+        protected override async void OnStartup(StartupEventArgs e)
         {
+            base.OnStartup(e);
+
             var splash = new SplashWindow();
             splash.Show();
+
+            await splash.RunAsync();
+
+            var mainWindow = new MainWindow();
+            MainWindow = mainWindow;
+            mainWindow.Show();
+
+            splash.Close();
         }
     }
 }

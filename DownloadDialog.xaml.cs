@@ -37,11 +37,12 @@ namespace SceneryAddonsBrowser
 
             if (method.Type == DownloadType.Mirror)
             {
-                var result = MessageBox.Show(
-                    "This download will open your web browser.\n\nDo you want to continue?",
-                    "Open external mirror",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
+                var result = System.Windows.MessageBox.Show(
+    "This download will open your web browser.\n\nDo you want to continue?",
+    "Open external mirror",
+    MessageBoxButton.YesNo,
+    MessageBoxImage.Question);
+
 
                 if (result != MessageBoxResult.Yes)
                     return;

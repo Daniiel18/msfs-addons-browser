@@ -36,7 +36,7 @@ namespace SceneryAddonsBrowser.Services
                 return results;
             }
 
-            var htmlDoc = new HtmlDocument();
+            var htmlDoc = new HtmlAgilityPack.HtmlDocument();
             htmlDoc.LoadHtml(html);
 
             var articles = htmlDoc.DocumentNode.SelectNodes("//article");
@@ -121,7 +121,7 @@ namespace SceneryAddonsBrowser.Services
                 return methods;
             }
 
-            var doc = new HtmlDocument();
+            var doc = new HtmlAgilityPack.HtmlDocument();
             doc.LoadHtml(html);
 
             var links = doc.DocumentNode.SelectNodes("//a[contains(@href,'get.php')]");

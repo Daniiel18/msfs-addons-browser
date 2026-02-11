@@ -10,40 +10,30 @@
         AllowsTransparency="True"
         Background="Transparent">
 
-    <!-- ================= RESOURCES ================= -->
     <Window.Resources>
 
-        <!-- GridView HEADER DARK -->
         <Style TargetType="GridViewColumnHeader">
             <Setter Property="Background" Value="#FF252525"/>
             <Setter Property="Foreground" Value="White"/>
-            <Setter Property="BorderBrush" Value="#FF3A3A3A"/>
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
             <Setter Property="Padding" Value="6,4"/>
-            <Setter Property="HorizontalContentAlignment" Value="Left"/>
         </Style>
 
-        <!-- ListViewItem DARK (NO AZUL) -->
         <Style TargetType="ListViewItem">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="Margin" Value="0"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#FF2A2A2A"/>
                 </Trigger>
-
                 <Trigger Property="IsSelected" Value="True">
                     <Setter Property="Background" Value="#FF333333"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
-        <!-- Button -->
         <Style TargetType="Button">
             <Setter Property="Background" Value="#FF2E2E2E"/>
             <Setter Property="Foreground" Value="White"/>
@@ -51,22 +41,15 @@
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="10,4"/>
             <Setter Property="Cursor" Value="Hand"/>
-
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FF3A3A3A"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
 
     </Window.Resources>
 
-    <!-- ================= ROOT ================= -->
     <Grid>
-        <Border CornerRadius="12"
-                Background="#FF1E1E1E"
+        <Border Background="#FF1E1E1E"
                 BorderBrush="#FF3A3A3A"
                 BorderThickness="1"
+                CornerRadius="12"
                 Padding="14">
 
             <Grid>
@@ -76,13 +59,12 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- HEADER (DRAG) -->
+                <!-- HEADER -->
                 <Border Grid.Row="0"
                         Background="#FF252525"
                         Padding="12"
                         Margin="0,0,0,10"
                         MouseLeftButtonDown="Header_MouseLeftButtonDown">
-
                     <TextBlock Text="Download History"
                                FontSize="18"
                                FontWeight="SemiBold"
@@ -93,7 +75,6 @@
                 <ListView Grid.Row="1"
                           ItemsSource="{Binding}"
                           Background="#FF1E1E1E"
-                          Foreground="White"
                           BorderBrush="#FF3A3A3A"
                           BorderThickness="1">
 
@@ -103,26 +84,26 @@
                             <GridViewColumn Header="ICAO" Width="70"
                                             DisplayMemberBinding="{Binding Icao}"/>
 
-                            <GridViewColumn Header="Scenario" Width="240"
+                            <GridViewColumn Header="Scenario" Width="220"
                                             DisplayMemberBinding="{Binding ScenarioName}"/>
 
-                            <GridViewColumn Header="Developer" Width="160"
+                            <GridViewColumn Header="Developer" Width="150"
                                             DisplayMemberBinding="{Binding Developer}"/>
 
-                            <GridViewColumn Header="Method" Width="120"
+                            <GridViewColumn Header="Method" Width="110"
                                             DisplayMemberBinding="{Binding Method}"/>
 
-                            <GridViewColumn Header="Date" Width="140"
+                            <GridViewColumn Header="Date" Width="130"
                                             DisplayMemberBinding="{Binding DownloadDate}"/>
                         </GridView>
                     </ListView.View>
                 </ListView>
 
                 <!-- FOOTER -->
-                <Grid Grid.Row="2"
-                      Margin="0,10,0,0">
+                <Grid Grid.Row="2" Margin="0,10,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
@@ -130,10 +111,10 @@
                                Foreground="#FFB0B0B0"
                                VerticalAlignment="Center"/>
 
-                    <Button Grid.Column="1"
+
+                    <Button Grid.Column="2"
                             Content="Close"
                             Width="90"
-                            Height="30"
                             Click="Close_Click"/>
                 </Grid>
 

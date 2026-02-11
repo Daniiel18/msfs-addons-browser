@@ -1,13 +1,27 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <UseWPF>true</UseWPF>
-    <ApplicationIcon>Assets\plane_trip_international_icon_187487.ico</ApplicationIcon>
-  </PropertyGroup>
+<PropertyGroup>
+  <OutputType>WinExe</OutputType>
+  <TargetFramework>net8.0-windows</TargetFramework>
+  <UseWPF>true</UseWPF>
+  <UseWindowsForms>true</UseWindowsForms>
+
+  <Nullable>enable</Nullable>
+  <ImplicitUsings>enable</ImplicitUsings>
+
+  <ApplicationIcon>Assets\plane_trip_international_icon_187487.ico</ApplicationIcon>
+
+  <!-- VERSIONING -->
+  <Version>3.0</Version>
+  <AssemblyVersion>2.0.0.0</AssemblyVersion>
+  <FileVersion>2.0.0.0</FileVersion>
+
+  <!-- 🔥 CLAVES -->
+  <DisableWinExeOutputInference>true</DisableWinExeOutputInference>
+  <GenerateProgramFile>false</GenerateProgramFile>
+  <StartupObject>SceneryAddonsBrowser.Program</StartupObject>
+</PropertyGroup>
+
 
   <ItemGroup>
     <None Remove="Assets\World_map_blank_without_borders.svg.png" />
@@ -20,12 +34,20 @@
   <ItemGroup>
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
+    <PackageReference Include="MonoTorrent" Version="3.0.2" />
+    <PackageReference Include="SharpCompress" Version="0.44.5" />
+    <PackageReference Include="System.IO.Compression" Version="4.3.0" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
   <ItemGroup>
     <Resource Include="Assets\World_map_blank_without_borders.svg.png">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </Resource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".github\workflows\release.yml" />
   </ItemGroup>
 
 </Project>
