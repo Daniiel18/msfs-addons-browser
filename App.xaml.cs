@@ -14,7 +14,19 @@ namespace SceneryAddonsBrowser
             var splash = new SplashWindow();
             splash.Show();
 
-            await splash.RunAsync();
+            await splash.RunAsync(); 
+
+            try
+            {
+                var updater = new UpdateService();
+                bool updating = await updater.CheckAndApplyUpdatesAsync();
+
+                if (updating)
+                    return; 
+            }
+            catch
+            {
+            }
 
             var settingsService = new SettingsService();
             var settings = settingsService.Load();
