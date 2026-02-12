@@ -1,7 +1,5 @@
-﻿using SceneryAddonsBrowser.Models;
-using SceneryAddonsBrowser.Logging;
-using System.Collections.Generic;
-using System.Threading.Tasks;
+﻿using SceneryAddonsBrowser.Logging;
+using SceneryAddonsBrowser.Models;
 
 namespace SceneryAddonsBrowser.Services
 {

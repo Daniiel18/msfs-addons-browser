@@ -1,42 +1,31 @@
-﻿using System;
-using System.IO;
+﻿using System.IO;
 
 namespace SceneryAddonsBrowser.Logging
 {
     public static class AppLogger
     {
-        private static readonly string LogDirectory =
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "SceneryAddonsBrowser",
-                "logs"
-            );
+        private static string LogDirectory =>
+            Path.Combine(UserStorage.RootPath, "logs");
 
-        private static readonly string LogFilePath =
+        private static string LogFilePath =>
             Path.Combine(LogDirectory, "app.log");
 
         public static void Log(string message)
         {
             try
             {
-                if (!Directory.Exists(LogDirectory))
-                    Directory.CreateDirectory(LogDirectory);
+                Directory.CreateDirectory(LogDirectory);
 
-                string line =
-                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}";
-
+                string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}";
                 File.AppendAllText(LogFilePath, line + Environment.NewLine);
             }
-            catch
-            {
-                // Nunca romper la app por logging
-            }
+            catch { }
         }
 
         public static void LogError(string message, Exception ex)
         {
             Log($"ERROR: {message}");
-            Log($"EXCEPTION: {ex.Message}");
+            Log($"EXCEPTION: {ex}");
         }
     }
 }

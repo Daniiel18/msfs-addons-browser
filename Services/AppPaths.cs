@@ -1,14 +1,10 @@
-﻿using System;
-using System.IO;
+﻿using System.IO;
 
 namespace SceneryAddonsBrowser.Services
 {
     public static class AppPaths
     {
-        public static string BaseDir =>
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "SceneryAddonsBrowser");
+        public static string BaseDir => UserStorage.RootPath;
 
         public static string SceneriesDir =>
             Path.Combine(BaseDir, "sceneries");
@@ -27,7 +23,6 @@ namespace SceneryAddonsBrowser.Services
             return dir;
         }
 
-        // ✅ NUEVO – raíz completa de sceneries
         public static string GetSceneriesRoot()
         {
             Directory.CreateDirectory(SceneriesDir);

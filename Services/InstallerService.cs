@@ -1,10 +1,7 @@
 ﻿using SceneryAddonsBrowser.Logging;
 using SharpCompress.Archives;
 using SharpCompress.Common;
-using SharpCompress.Archives.Rar;
-using SharpCompress.Archives.Zip;
 using System.IO;
-using System.IO.Compression;
 
 
 

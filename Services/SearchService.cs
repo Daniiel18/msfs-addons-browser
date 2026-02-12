@@ -1,7 +1,7 @@
-﻿using System.Net.Http;
-using HtmlAgilityPack;
-using SceneryAddonsBrowser.Models;
+﻿using HtmlAgilityPack;
 using SceneryAddonsBrowser.Logging;
+using SceneryAddonsBrowser.Models;
+using System.Net.Http;
 using System.Text.RegularExpressions;
 
 namespace SceneryAddonsBrowser.Services

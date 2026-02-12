@@ -47,11 +47,6 @@ namespace SceneryAddonsBrowser.Services
 
         private volatile bool _isAppClosing = false;
 
-        public void NotifyAppClosing()
-        {
-            _isAppClosing = true;
-        }
-
         private void SetState(DownloadState state)
         {
             CurrentState = state;
@@ -85,10 +80,11 @@ namespace SceneryAddonsBrowser.Services
             {
                 try
                 {
-                    if (Directory.Exists(session.DataPath))
+                    if (_currentDataDir != null && Directory.Exists(_currentDataDir))
                     {
-                        AppLogger.Log($"Deleting download directory: {session.DataPath}");
-                        Directory.Delete(session.DataPath, true);
+
+                     Directory.Delete(Path.GetDirectoryName(_currentDataDir)!, true);
+                    
                     }
                 }
                 catch (Exception ex)
@@ -129,7 +125,7 @@ namespace SceneryAddonsBrowser.Services
         }
 
         // ================= TORRENT =================
-        internal async Task DownloadTorrentInternalAsync(DownloadMethod method,Action<string, int>? progress)
+        internal async Task DownloadTorrentInternalAsync(DownloadMethod method, Action<string, int>? progress)
         {
             if (method.Scenario == null)
                 throw new InvalidOperationException("Scenario missing.");
@@ -184,6 +180,18 @@ namespace SceneryAddonsBrowser.Services
                 }
 
                 AppLogger.Log("[TORRENT] Torrent download completed.");
+
+                _historyService.AddOrUpdate(new DownloadHistoryItem
+                {
+                    Icao = method.Scenario.Icao,
+                    ScenarioName = method.Scenario.Name,
+                    Developer = method.Scenario.Developer,
+                    Method = "Torrent",
+                    DownloadDate = DateTime.Now,
+                    PackagePath = dataDir,
+                    IsInstalled = false,
+                    AutoInstallPending = true
+                });
 
                 await ContinueInstallationAsync(new DownloadSession
                 {
@@ -335,6 +343,18 @@ namespace SceneryAddonsBrowser.Services
                 AppLogger.Log("[INSTALL] Installing scenery...");
                 installer.InstallFromExtracted(extractedPath, communityPath);
 
+                _historyService.AddOrUpdate(new DownloadHistoryItem
+                {
+                    Icao = session.ScenarioId.Split('_')[0],
+                    ScenarioName = session.ScenarioId,
+                    Developer = session.ScenarioId.Split('_')[1],
+                    Method = "Torrent",
+                    DownloadDate = DateTime.Now,
+                    PackagePath = null,
+                    IsInstalled = true,
+                    AutoInstallPending = false
+                });
+
                 CleanupSceneriesRoot();
 
                 _sessionService.Clear();
@@ -345,6 +365,18 @@ namespace SceneryAddonsBrowser.Services
             catch (Exception ex)
             {
                 AppLogger.LogError("[INSTALL] Installation failed", ex);
+                _historyService.AddOrUpdate(new DownloadHistoryItem
+                {
+                    Icao = session.ScenarioId.Split('_')[0],
+                    ScenarioName = session.ScenarioId,
+                    Developer = session.ScenarioId.Split('_')[1],
+                    Method = "Torrent",
+                    DownloadDate = DateTime.Now,
+                    PackagePath = session.DataPath,
+                    IsInstalled = false,
+                    AutoInstallPending = true
+                });
+
                 SetState(DownloadState.Error);
 
                 MessageBox.Show(
@@ -357,5 +389,28 @@ namespace SceneryAddonsBrowser.Services
             }
         }
 
+        public void SaveActiveSessionToHistory()
+        {
+            var session = _sessionService.Load();
+            if (session == null)
+                return;
+
+            _historyService.AddOrUpdate(new DownloadHistoryItem
+            {
+                Icao = session.ScenarioId.Split('_')[0],
+                ScenarioName = session.ScenarioId,
+                Developer = session.ScenarioId.Split('_').Last(),
+                Method = "Torrent",
+                DownloadDate = DateTime.Now,
+                PackagePath = session.DataPath,
+                IsInstalled = false,
+                AutoInstallPending = true
+            });
+        }
+
+        public DownloadSession? GetActiveSession()
+        {
+            return _sessionService.Load();
+        }
     }
 }

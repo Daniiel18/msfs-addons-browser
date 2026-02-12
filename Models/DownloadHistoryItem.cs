@@ -10,8 +10,5 @@
     public bool AutoInstallPending { get; set; }
 
     public string? PackagePath { get; set; }
-    public string? ExpectedFileName { get; set; }
-    public string UniqueKey =>
-    $"{Icao}|{ScenarioName}|{Developer}";
 
 }

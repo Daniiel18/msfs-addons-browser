@@ -1,12 +1,10 @@
 ﻿using SceneryAddonsBrowser.Logging;
 using SceneryAddonsBrowser.Models;
 using SceneryAddonsBrowser.Services;
-using SceneryAddonsBrowser.UI;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Media;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.Button;
+using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using MessageBox = System.Windows.MessageBox;
 
@@ -18,6 +16,7 @@ namespace SceneryAddonsBrowser
         private readonly SearchService _searchService;
         private readonly DownloadService _downloadService;
         private readonly DownloadStatus _downloadStatus = new();
+        private readonly HistoryService _historyService = new();
         public event PropertyChangedEventHandler? PropertyChanged;
 
         private bool _isDownloadAllowed = true;
@@ -79,11 +78,11 @@ namespace SceneryAddonsBrowser
                     {
                         Dispatcher.Invoke(() =>
                         {
-                        DownloadProgressBar.Visibility = Visibility.Visible;
-                        DownloadProgressBar.Value = percent;
-                        StatusTextBlock.Text = text;
-                });
-            });
+                            DownloadProgressBar.Visibility = Visibility.Visible;
+                            DownloadProgressBar.Value = percent;
+                            StatusTextBlock.Text = text;
+                        });
+                    });
         }
 
         private void OnDownloadStateChanged(DownloadState state)
@@ -237,18 +236,16 @@ namespace SceneryAddonsBrowser
                     {
                         Dispatcher.Invoke(() =>
                     {
-                    DownloadProgressBar.Value = value;
-                    StatusTextBlock.Text = text;
+                        DownloadProgressBar.Value = value;
+                        StatusTextBlock.Text = text;
                     });
-                  });
+                    });
                 }
                 catch
                 {
                 }
             }
         }
-
-
 
         // ================= WINDOW MOVE =================
         private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -321,12 +318,53 @@ namespace SceneryAddonsBrowser
                         break;
 
                     case ExitChoice.ExitAndResume:
-                        _downloadService.ResumeCurrentDownloadAsync();
+                        var session = _downloadService.GetActiveSession();
+                        if (session != null)
+                        {
+                            _historyService.AddOrUpdate(new DownloadHistoryItem
+                            {
+                                Icao = session.ScenarioId.Split('_')[0],
+                                ScenarioName = session.ScenarioId,
+                                Developer = session.ScenarioId.Split('_')[1],
+                                Method = "Torrent",
+                                DownloadDate = DateTime.Now,
+                                PackagePath = null,
+                                IsInstalled = false,
+                                AutoInstallPending = true
+                            });
+                        }
                         break;
                 }
             }
 
             base.OnClosing(e);
+
+            Application.Current.Shutdown();
         }
+
+        private void SelectFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new System.Windows.Forms.FolderBrowserDialog
+            {
+                Description = "Select new storage folder"
+            };
+
+            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                var settingsService = new SettingsService();
+                var settings = settingsService.Load();
+
+                settings.DownloadRoot = dialog.SelectedPath;
+                settingsService.Save(settings);
+
+                MessageBox.Show(
+                    "Storage location updated.\nPlease restart the application.",
+                    "Restart required",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information
+                );
+            }
+        }
+
     }
 }

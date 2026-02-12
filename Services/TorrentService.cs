@@ -2,10 +2,7 @@
 using MonoTorrent.Client;
 using SceneryAddonsBrowser.Logging;
 using SceneryAddonsBrowser.Models;
-using System;
 using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace SceneryAddonsBrowser.Services
 {
@@ -125,6 +122,7 @@ namespace SceneryAddonsBrowser.Services
             AppLogger.Log("[TORRENT] Cancel requested");
             _cts?.Cancel();
         }
+
         private async Task StopInternalAsync()
         {
             if (_manager != null)

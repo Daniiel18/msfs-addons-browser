@@ -164,7 +164,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel>
-                            <TextBlock Text="Scenery Addons Browser v3.0"
+                            <TextBlock Text="Scenery Addons Browser v3.1"
                                        FontSize="18"
                                        FontWeight="SemiBold"
                                        Foreground="White"/>
@@ -333,6 +333,12 @@
                         <!-- SMALL ACTIONS -->
                         <StackPanel Grid.Column="1"
                     Orientation="Horizontal">
+                            <Button Content="Folder"
+        Width="70"
+        Height="26"
+        Margin="0,0,6,0"
+        Click="SelectFolder_Click"/>
+
 
                             <Button Content="History"
                     Width="70"

@@ -1,5 +1,4 @@
-﻿using System.Threading.Tasks;
-using System.Windows;
+﻿using System.Windows;
 
 namespace SceneryAddonsBrowser
 {
@@ -14,8 +13,8 @@ namespace SceneryAddonsBrowser
         {
             await Step("Initializing...", 15, 800);
             await Step("Loading services...", 35, 900);
-            await Step("Checking updates...", 60, 1000);
-            await Step("Preparing UI...", 85, 900);
+            await Step("Preparing UI...", 60, 900);
+            await Step("Checking updates...", 85, 1000);
             await Step("Starting application...", 100, 600);
         }
 

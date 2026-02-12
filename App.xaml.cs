@@ -1,4 +1,6 @@
-﻿using System.Windows;
+﻿using SceneryAddonsBrowser.Services;
+using System.Threading.Tasks;
+using System.Windows;
 using Application = System.Windows.Application;
 
 namespace SceneryAddonsBrowser
@@ -14,11 +16,39 @@ namespace SceneryAddonsBrowser
 
             await splash.RunAsync();
 
+            var settingsService = new SettingsService();
+            var settings = settingsService.Load();
+
+            if (string.IsNullOrWhiteSpace(settings.DownloadRoot))
+            {
+                var dialog = new System.Windows.Forms.FolderBrowserDialog
+                {
+                    Description = "Select storage folder for SceneryAddonsBrowser"
+                };
+
+                if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+                {
+                    Shutdown();
+                    return;
+                }
+
+                settings.DownloadRoot = dialog.SelectedPath;
+                settingsService.Save(settings);
+            }
+
+            UserStorage.SetRoot(settings.DownloadRoot);
+
             var mainWindow = new MainWindow();
             MainWindow = mainWindow;
             mainWindow.Show();
 
             splash.Close();
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            base.OnExit(e);
+            Environment.Exit(0);
         }
     }
 }

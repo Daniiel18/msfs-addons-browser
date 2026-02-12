@@ -1,6 +1,4 @@
-﻿using System.Collections.Generic;
-
-namespace SceneryAddonsBrowser.Models
+﻿namespace SceneryAddonsBrowser.Models
 {
     public class Scenario
     {
