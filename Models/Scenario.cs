@@ -1,24 +1,46 @@
-﻿namespace SceneryAddonsBrowser.Models
+﻿using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
+namespace SceneryAddonsBrowser.Models
 {
-    public class Scenario
+    public class Scenario : INotifyPropertyChanged
     {
-        public string Icao { get; set; }
+        public event PropertyChangedEventHandler? PropertyChanged;
 
-        public string Name { get; set; }
+        private void Notify([CallerMemberName] string? prop = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(prop));
 
-        public string Developer { get; set; }
+        public string Icao { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Developer { get; set; } = "";
+        public string Simulator { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string SourcePageUrl { get; set; } = "";
 
-        public string Simulator { get; set; }
+        public List<DownloadMethod> DownloadMethods { get; set; } = new();
 
-        public string Version { get; set; }
+        // ================= GSX =================
 
-        public string SourcePageUrl { get; set; }
-
-        public List<DownloadMethod> DownloadMethods { get; set; }
-
-        public Scenario()
+        private string _gsxText = "GSX Profile — Checking…";
+        public string GsxText
         {
-            DownloadMethods = new List<DownloadMethod>();
+            get => _gsxText;
+            set
+            {
+                _gsxText = value;
+                Notify();
+            }
+        }
+
+        private string? _gsxUrl;
+        public string? GsxUrl
+        {
+            get => _gsxUrl;
+            set
+            {
+                _gsxUrl = value;
+                Notify();
+            }
         }
     }
 }

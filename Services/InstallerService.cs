@@ -1,6 +1,7 @@
 ﻿using SceneryAddonsBrowser.Logging;
 using SharpCompress.Archives;
 using SharpCompress.Common;
+using System.Diagnostics;
 using System.IO;
 
 
@@ -65,25 +66,52 @@ namespace SceneryAddonsBrowser.Services
             AppLogger.Log($"Extracting package: {Path.GetFileName(packagePath)}");
             AppLogger.Log($"Extract target: {extractDir}");
 
-            using var archive = ArchiveFactory.Open(packagePath);
-
-            foreach (var entry in archive.Entries)
+            try
             {
-                if (!entry.IsDirectory)
+                using var archive = ArchiveFactory.Open(packagePath);
+
+                foreach (var entry in archive.Entries)
                 {
-                    entry.WriteToDirectory(
-                        extractDir,
-                        new ExtractionOptions
-                        {
-                            ExtractFullPath = true,
-                            Overwrite = true
-                        });
+                    if (!entry.IsDirectory)
+                    {
+                        entry.WriteToDirectory(
+                            extractDir,
+                            new ExtractionOptions
+                            {
+                                ExtractFullPath = true,
+                                Overwrite = true
+                            });
+                    }
                 }
+
+                AppLogger.Log("Extraction completed.");
+                return extractDir;
             }
+            catch (Exception ex) when (
+                ex is IndexOutOfRangeException ||
+                ex.Message.Contains("RAR", StringComparison.OrdinalIgnoreCase))
+            {
+                AppLogger.LogError(
+                    "[INSTALL] Automatic extraction failed. Manual extraction required.",
+                    ex);
 
-            AppLogger.Log("Extraction completed.");
+                AppLogger.Log("[INSTALL] This RAR archive is not fully compatible with SharpCompress (RAR5).");
 
-            return extractDir;
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = extractDir,
+                    UseShellExecute = true
+                });
+
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = packagePath,
+                    UseShellExecute = true
+                });
+
+                throw new InvalidOperationException(
+                    "Automatic extraction failed. Please extract the archive manually and retry installation.");
+            }
         }
 
         public List<string> FindMsfsPackages(string extractedPath)

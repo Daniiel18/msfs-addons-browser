@@ -11,4 +11,6 @@
 
     public string? PackagePath { get; set; }
 
+    public string ScenarioId => $"{Icao}_{Developer}".ToUpperInvariant();
+
 }

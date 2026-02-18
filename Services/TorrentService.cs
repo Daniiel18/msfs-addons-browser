@@ -67,7 +67,7 @@ namespace SceneryAddonsBrowser.Services
                     await Task.Delay(500, token);
 
                     var now = DateTime.UtcNow;
-                    var bytes = _manager.Monitor.DataBytesDownloaded;
+                    var bytes = _manager.Monitor.DataBytesReceived;
 
                     var deltaBytes = bytes - lastBytes;
                     var deltaSeconds = (now - lastTime).TotalSeconds;

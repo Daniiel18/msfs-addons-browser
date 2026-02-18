@@ -7,13 +7,9 @@ namespace SceneryAddonsBrowser.Models
 {
     public class DownloadStatus : INotifyPropertyChanged
     {
-        private string _text = "Ready";
         private Brush _barColor = Brushes.Gray;
-        private DownloadState _state;
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        private void OnChanged([CallerMemberName] string? name = null)
-            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }

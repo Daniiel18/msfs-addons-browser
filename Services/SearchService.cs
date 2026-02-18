@@ -54,7 +54,6 @@ namespace SceneryAddonsBrowser.Services
                     string title = HtmlEntity.DeEntitize(titleNode.InnerText.Trim());
                     string pageUrl = titleNode.GetAttributeValue("href", string.Empty);
 
-                    // ================= ICAO EXACTO =================
                     string? extractedIcao = ExtractIcaoFromTitle(title);
                     if (extractedIcao == null)
                         continue;

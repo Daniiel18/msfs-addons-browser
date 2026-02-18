@@ -2,10 +2,16 @@
 using SceneryAddonsBrowser.Models;
 using SceneryAddonsBrowser.Services;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
+using Cursors = System.Windows.Input.Cursors;
 using MessageBox = System.Windows.MessageBox;
 
 
@@ -17,7 +23,8 @@ namespace SceneryAddonsBrowser
         private readonly DownloadService _downloadService;
         private readonly DownloadStatus _downloadStatus = new();
         private readonly HistoryService _historyService = new();
-        public event PropertyChangedEventHandler? PropertyChanged;
+        private readonly GsxProfileService _gsxService;
+
 
         private bool _isDownloadAllowed = true;
         public bool IsDownloadAllowed
@@ -33,6 +40,10 @@ namespace SceneryAddonsBrowser
             }
         }
 
+        private string? _lastSearchedIcao;
+        private int _lastGsxCount;
+
+
 
         public MainWindow()
         {
@@ -40,6 +51,7 @@ namespace SceneryAddonsBrowser
 
             _searchService = new SearchService();
             _downloadService = new DownloadService();
+            _gsxService = new GsxProfileService();
 
             _downloadService.StateChanged += OnDownloadStateChanged;
 
@@ -203,8 +215,30 @@ namespace SceneryAddonsBrowser
 
             AppLogger.Log($"UI received {results.Count} scenarios.");
 
+            if (results != null && _gsxService != null)
+            {
+                foreach (var scenario in results)
+                {
+                    if (scenario == null)
+                        continue;
+
+                    _ = _gsxService.CheckGsxProfileAsync(scenario);
+                }
+            }
+
+            var gsxService = new GsxProfileService();
+
+            foreach (var scenario in results)
+            {
+                _ = _gsxService.CheckGsxProfileAsync(scenario);
+            }
+
             ResultsListView.ItemsSource = results;
-            StatusTextBlock.Text = $"{results.Count} result(s) found.";
+            StatusTextBlock.Text = $"{results.Count} scenaries found.";
+
+            AppLogger.Log($"[GSX] Triggering GSX lookup after search for ICAO: {icao}");
+            await UpdateGsxStatusAsync(icao);
+
         }
 
         // ================= DOWNLOAD =================
@@ -245,6 +279,111 @@ namespace SceneryAddonsBrowser
                 {
                 }
             }
+        }
+
+        private async Task UpdateGsxStatusAsync(string icao)
+        {
+            if (string.IsNullOrWhiteSpace(icao))
+                return;
+
+            _lastSearchedIcao = icao.ToUpperInvariant();
+            _lastGsxCount = 0;
+
+            var url = $"https://flightsim.to/others/gsx-pro/search/{icao.ToLowerInvariant()}";
+
+            AppLogger.Log($"[GSX] Starting GSX lookup for ICAO: {_lastSearchedIcao}");
+            AppLogger.Log($"[GSX] URL: {url}");
+
+            try
+            {
+                using var http = new HttpClient();
+                http.DefaultRequestHeaders.UserAgent.ParseAdd(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+
+                AppLogger.Log("[GSX] Downloading GSX search page...");
+                var html = await http.GetStringAsync(url);
+
+                AppLogger.Log($"[GSX] HTML downloaded. Length = {html.Length}");
+
+                int count = Regex.Matches(
+                    html,
+                    "tiles-box flex-item new-tile",
+                    RegexOptions.IgnoreCase
+                ).Count;
+
+                _lastGsxCount = count;
+
+                AppLogger.Log($"[GSX] Profiles found: {count}");
+
+                if (count > 0)
+                {
+                    GsxStatusTextBlock.Text =
+                    $"● GSX Profiles available ({count}) — View on flightsim.to";
+
+                    GsxStatusTextBlock.Foreground =
+                        new BrushConverter().ConvertFrom("#FF4FC3F7") as Brush;
+
+                    GsxStatusTextBlock.Cursor = Cursors.Hand;
+                    GsxStatusTextBlock.Visibility = Visibility.Visible;
+
+                }
+                else
+                {
+                    GsxStatusTextBlock.Text =
+                    "● No GSX profiles found for this airport";
+
+                    GsxStatusTextBlock.Foreground =
+                        new BrushConverter().ConvertFrom("#FF777777") as Brush;
+
+                    GsxStatusTextBlock.Cursor = Cursors.Arrow;
+                    GsxStatusTextBlock.Visibility = Visibility.Visible;
+
+                }
+
+                GsxStatusTextBlock.Visibility = Visibility.Visible;
+                AppLogger.Log("[GSX] Status text updated successfully");
+            }
+            catch (HttpRequestException ex)
+            {
+                AppLogger.LogError("[GSX] HTTP error while fetching GSX profiles", ex);
+
+                GsxStatusTextBlock.Text =
+                    $"GSX Profiles: Unable to check profiles for {_lastSearchedIcao}";
+                GsxStatusTextBlock.Visibility = Visibility.Visible;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError("[GSX] Unexpected error", ex);
+
+                GsxStatusTextBlock.Text =
+                    $"GSX Profiles: Error checking profiles for {_lastSearchedIcao}";
+                GsxStatusTextBlock.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void GsxStatus_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (_lastGsxCount <= 0)
+                return;
+
+            AppLogger.Log($"[GSX] User clicked GSX link for ICAO: {_lastSearchedIcao}");
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = $"https://flightsim.to/others/gsx-pro/search/{_lastSearchedIcao}",
+                UseShellExecute = true
+            });
+        }
+
+        private void GsxStatus_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            if (_lastGsxCount > 0)
+                GsxStatusTextBlock.TextDecorations = TextDecorations.Underline;
+        }
+
+        private void GsxStatus_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            GsxStatusTextBlock.TextDecorations = null;
         }
 
         // ================= WINDOW MOVE =================

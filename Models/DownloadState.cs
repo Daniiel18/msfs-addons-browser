@@ -3,6 +3,7 @@
     public enum DownloadState
     {
         Queued,
+        WaitingForMagnet,
         ResolvingMagnet,
         Downloading,
         Paused,

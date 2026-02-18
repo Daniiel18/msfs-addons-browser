@@ -45,8 +45,6 @@ namespace SceneryAddonsBrowser.Services
 
         }
 
-        private volatile bool _isAppClosing = false;
-
         private void SetState(DownloadState state)
         {
             CurrentState = state;
@@ -99,33 +97,8 @@ namespace SceneryAddonsBrowser.Services
             CleanupSceneriesRoot();
         }
 
-        public void SaveCurrentSessionIfNeeded()
-        {
-            if (CurrentState != DownloadState.Downloading &&
-                CurrentState != DownloadState.Paused)
-                return;
-
-            var session = _sessionService.Load();
-            if (session != null)
-                return; // ya existe, no duplicar
-
-            if (string.IsNullOrWhiteSpace(_currentDataDir))
-                return;
-
-            AppLogger.Log("[SESSION] Saving active download session");
-
-            _sessionService.Save(new DownloadSession
-            {
-                ScenarioId = Path.GetFileName(
-                    Path.GetDirectoryName(_currentDataDir)!),
-                MagnetUri = _lastMagnet!,   // ver paso 2
-                DataPath = _currentDataDir,
-                IsCompleted = false
-            });
-        }
-
         // ================= TORRENT =================
-        internal async Task DownloadTorrentInternalAsync(DownloadMethod method, Action<string, int>? progress)
+        internal async Task DownloadTorrentInternalAsync(DownloadMethod method,Action<string, int>? progress)
         {
             if (method.Scenario == null)
                 throw new InvalidOperationException("Scenario missing.");
@@ -142,11 +115,34 @@ namespace SceneryAddonsBrowser.Services
 
             try
             {
-                SetState(DownloadState.ResolvingMagnet);
-                progress?.Invoke("Resolving magnet...", 0);
+                string? magnet = null;
 
-                var magnet = await ResolveMagnetAsync(method.Url);
+                // 🔁 LOOP CONTROLADO PARA RESOLVER MAGNET
+                while (magnet == null)
+                {
+                    SetState(DownloadState.ResolvingMagnet);
+                    progress?.Invoke("Resolving magnet...", 0);
 
+                    magnet = await ResolveMagnetAsync(method.Url);
+
+                    if (magnet == null)
+                    {
+                        AppLogger.Log("[TORRENT] Magnet not ready. Waiting before retry.");
+
+                        SetState(DownloadState.WaitingForMagnet);
+                        progress?.Invoke("Preparing torrent… waiting for server", 0);
+
+                        await Task.Delay(TimeSpan.FromSeconds(15));
+
+                        if (CurrentState == DownloadState.Cancelled)
+                        {
+                            AppLogger.Log("[TORRENT] Cancelled while waiting for magnet.");
+                            return;
+                        }
+                    }
+                }
+
+                // ✅ Magnet listo
                 _lastMagnet = magnet;
                 _currentDataDir = dataDir;
 
@@ -160,13 +156,15 @@ namespace SceneryAddonsBrowser.Services
 
                 SetState(DownloadState.Downloading);
 
+                var scenarioTitle = BuildScenarioDisplayName(method);
+
                 await _torrentService.DownloadFromMagnetAsync(
                     magnet,
                     dataDir,
                     p =>
                     {
                         progress?.Invoke(
-                            $"Downloading • {p.Percent:F1}% • {p.SpeedMbps:F1} Mbps • ETA {p.Eta:mm\\:ss}",
+                            $"{scenarioTitle}\nDownloading • {p.Percent:F1}% • {p.SpeedMbps:F1} Mbps • ETA {p.Eta:mm\\:ss}",
                             (int)p.Percent
                         );
                     },
@@ -181,18 +179,6 @@ namespace SceneryAddonsBrowser.Services
 
                 AppLogger.Log("[TORRENT] Torrent download completed.");
 
-                _historyService.AddOrUpdate(new DownloadHistoryItem
-                {
-                    Icao = method.Scenario.Icao,
-                    ScenarioName = method.Scenario.Name,
-                    Developer = method.Scenario.Developer,
-                    Method = "Torrent",
-                    DownloadDate = DateTime.Now,
-                    PackagePath = dataDir,
-                    IsInstalled = false,
-                    AutoInstallPending = true
-                });
-
                 await ContinueInstallationAsync(new DownloadSession
                 {
                     ScenarioId = scenarioId,
@@ -200,6 +186,11 @@ namespace SceneryAddonsBrowser.Services
                     DataPath = dataDir,
                     IsCompleted = false
                 });
+            }
+            catch (TaskCanceledException)
+            {
+                AppLogger.Log("[TORRENT] Download cancelled by user");
+                SetState(DownloadState.Cancelled);
             }
             catch (Exception ex)
             {
@@ -227,13 +218,26 @@ namespace SceneryAddonsBrowser.Services
         }
 
         // ================= ENTRY POINT =================
-        public async Task StartDownloadAsync(DownloadMethod method, Action<string, int>? progressCallback = null)
+        public async Task StartDownloadAsync(DownloadMethod method,Action<string, int>? progressCallback = null)
         {
             AppLogger.Log("=== StartDownloadAsync ===");
 
             if (method?.Scenario == null)
                 return;
 
+            // ✅ Registrar en History UNA SOLA VEZ
+            _historyService.AddOrUpdate(new DownloadHistoryItem
+            {
+                Icao = method.Scenario.Icao,
+                ScenarioName = method.Scenario.Name,
+                Developer = method.Scenario.Developer,
+                Method = method.Type.ToString(),
+                DownloadDate = DateTime.Now,
+                IsInstalled = false,
+                AutoInstallPending = method.Type == DownloadType.Torrent
+            });
+
+            // 🚀 TORRENT
             if (method.Type == DownloadType.Torrent)
             {
                 _torrentQueue.Enqueue(new TorrentJob(method, progressCallback));
@@ -241,15 +245,14 @@ namespace SceneryAddonsBrowser.Services
                 return;
             }
 
-            progressCallback?.Invoke($"Starting {method.Name}...", 0);
+            // 🌐 MIRROR
+            var scenarioTitle = BuildScenarioDisplayName(method);
 
-            if (method.Type == DownloadType.Torrent)
-            {
-                _torrentQueue.Enqueue(new TorrentJob(method, progressCallback));
-                return;
-            }
+            progressCallback?.Invoke(
+                $"{scenarioTitle}\nOpening download page…",
+                0
+            );
 
-            // Mirror
             Process.Start(new ProcessStartInfo
             {
                 FileName = method.Url,
@@ -257,26 +260,64 @@ namespace SceneryAddonsBrowser.Services
             });
         }
 
-        // ================= MAGNET =================
-        private async Task<string> ResolveMagnetAsync(string getUrl)
+        private static string BuildScenarioDisplayName(DownloadMethod method)
         {
+            if (method?.Scenario == null)
+                return "Downloading";
+
+            return $"{method.Scenario.Icao} – {method.Scenario.Name} – {method.Scenario.Developer}";
+        }
+
+        // ================= MAGNET =================
+        private async Task<string?> ResolveMagnetAsync(string getUrl)
+        {
+            const int maxAttempts = 10;
+            const int delayMs = 2000;
+
             AppLogger.Log($"Resolving magnet from: {getUrl}");
 
-            var html = await _httpClient.GetStringAsync(getUrl);
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    AppLogger.Log($"[TORRENT] Resolve attempt {attempt}/{maxAttempts}");
 
-            int magnetIndex = html.IndexOf("magnet:?", StringComparison.OrdinalIgnoreCase);
-            if (magnetIndex < 0)
-                throw new Exception("Magnet link not found in HTML.");
+                    var html = await _httpClient.GetStringAsync(getUrl);
 
-            var magnet = html.Substring(magnetIndex);
-            int endIndex = magnet.IndexOf('"');
-            if (endIndex < 0) endIndex = magnet.IndexOf('\'');
+                    if (string.IsNullOrWhiteSpace(html) || html.Length < 200)
+                        throw new Exception("HTML response too short, magnet not ready.");
 
-            if (endIndex > 0)
-                magnet = magnet.Substring(0, endIndex);
+                    int magnetIndex = html.IndexOf("magnet:?", StringComparison.OrdinalIgnoreCase);
+                    if (magnetIndex < 0)
+                        throw new Exception("Magnet link not found in HTML.");
 
-            AppLogger.Log($"Resolved magnet: {magnet}");
-            return magnet.Trim();
+                    var magnet = html.Substring(magnetIndex);
+
+                    int endIndex = magnet.IndexOf('"');
+                    if (endIndex < 0)
+                        endIndex = magnet.IndexOf('\'');
+
+                    if (endIndex > 0)
+                        magnet = magnet.Substring(0, endIndex);
+
+                    magnet = magnet.Trim();
+
+                    AppLogger.Log($"Resolved magnet: {magnet}");
+                    return magnet;
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Log($"[TORRENT] Attempt {attempt} failed: {ex.Message}");
+
+                    if (attempt == maxAttempts)
+                        break;
+
+                    await Task.Delay(delayMs);
+                }
+            }
+
+            AppLogger.Log("[TORRENT] Magnet not available after max attempts.");
+            return null;
         }
 
         public async Task ResumeTorrentSessionAsync(Action<string, int>? progress = null)
@@ -387,25 +428,6 @@ namespace SceneryAddonsBrowser.Services
                     MessageBoxImage.Warning
                 );
             }
-        }
-
-        public void SaveActiveSessionToHistory()
-        {
-            var session = _sessionService.Load();
-            if (session == null)
-                return;
-
-            _historyService.AddOrUpdate(new DownloadHistoryItem
-            {
-                Icao = session.ScenarioId.Split('_')[0],
-                ScenarioName = session.ScenarioId,
-                Developer = session.ScenarioId.Split('_').Last(),
-                Method = "Torrent",
-                DownloadDate = DateTime.Now,
-                PackagePath = session.DataPath,
-                IsInstalled = false,
-                AutoInstallPending = true
-            });
         }
 
         public DownloadSession? GetActiveSession()
