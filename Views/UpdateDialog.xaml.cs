@@ -14,9 +14,7 @@ namespace SceneryAddonsBrowser.Views
         {
             InitializeComponent();
 
-            TitleText.Text = "Update available";
-            SubtitleText.Text = $"Current: {currentVersion} → New: {newVersion}";
-
+            VersionText.Text = $"Current: {currentVersion} → New: {newVersion}";
             ChangelogList.ItemsSource = changelog;
         }
 
