@@ -70,5 +70,4 @@ public static class UserStorage
             Directory.CreateDirectory(_rootPath);
         }
 
-        public static bool IsInitialized => !string.IsNullOrWhiteSpace(_rootPath);
     }

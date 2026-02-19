@@ -31,6 +31,7 @@ namespace SceneryAddonsBrowser
         private PendingUpdate? _pendingUpdate;
         private readonly UpdateService _updateService = new();
         private readonly SettingsService _settingsService = new();
+        private UpdateInfo? _pendingUpdates;
 
 
 
@@ -91,10 +92,12 @@ namespace SceneryAddonsBrowser
         {
             var update = PendingUpdateStore.PendingUpdate;
 
-            // DEV MODE: forzar diálogo
+            // DEV MODE
             if (DevFlags.ForceUpdateDialog && update == null)
             {
+                Hide();
                 ShowDevUpdateDialog();
+                Show();
                 return;
             }
 
@@ -102,16 +105,19 @@ namespace SceneryAddonsBrowser
                 return;
 
             var settings = _settingsService.Load();
-
             string newVersion = update.TargetFullRelease.Version.ToString();
 
             if (settings.IgnoredUpdateVersion == newVersion)
             {
+                // Usuario ya dijo "Later"
                 ShowUpdateIndicator(newVersion);
                 return;
             }
 
+            // 🔴 Update NO ignorado → bloquear UI
+            Hide();
             ShowUpdateDialog(update);
+            Show();
         }
 
         private async void ShowUpdateDialog(UpdateInfo update)
@@ -188,63 +194,6 @@ namespace SceneryAddonsBrowser
             dialog.ShowDialog();
         }
 
-        private async Task CheckForUpdatesAsync()
-        {
-            try
-            {
-                AppLogger.Log("[UPDATE] Checking for updates from MainWindow");
-
-                var settings = _settingsService.Load();
-                var update = await _updateService.CheckForUpdatesAsync();
-
-                if (update == null)
-                    return;
-
-                string newVersion = update.TargetFullRelease.Version.ToString();
-                string currentVersion =
-                    typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown";
-
-                AppLogger.Log($"[UPDATE] Update found: {newVersion}");
-
-                if (settings.IgnoredUpdateVersion == newVersion)
-                {
-                    AppLogger.Log("[UPDATE] Update already ignored by user");
-                    ShowUpdateIndicator(newVersion);
-                    return;
-                }
-
-                var dialog = new Views.UpdateDialog(
-                    currentVersion,
-                    newVersion,
-                    new[] { "See GitHub release notes for details." }
-                )
-                {
-                    Owner = this
-                };
-
-                bool? result = dialog.ShowDialog();
-
-                if (result == true && dialog.ShouldUpdate)
-                {
-                    AppLogger.Log("[UPDATE] User accepted update");
-                    IsEnabled = false;
-                    await _updateService.ApplyUpdateAsync(update);
-                    Application.Current.Shutdown();
-                }
-                else
-                {
-                    AppLogger.Log("[UPDATE] User postponed update");
-                    settings.IgnoredUpdateVersion = newVersion;
-                    _settingsService.Save(settings);
-                    ShowUpdateIndicator(newVersion);
-                }
-            }
-            catch (Exception ex)
-            {
-                AppLogger.LogError("[UPDATE] Update check failed", ex);
-            }
-        }
-
         private void ShowUpdateIndicator(string version)
         {
             UpdateIndicatorTextBlock.Text = $"Update available (v{version})";
@@ -253,62 +202,42 @@ namespace SceneryAddonsBrowser
             AppLogger.Log($"[UPDATE] Update indicator shown for version {version}");
         }
 
-        private void HideUpdateIndicator()
-        {
-            UpdateIndicatorTextBlock.Visibility = Visibility.Collapsed;
-        }
-
-        private void UpdateIndicator_Click(object sender, MouseButtonEventArgs e)
+        private async void UpdateIndicator_Click(object sender, MouseButtonEventArgs e)
         {
             if (_pendingUpdate == null)
                 return;
 
             AppLogger.Log("[UPDATE] User clicked update indicator");
 
-            var dialog = new UpdateDialog(
-                _pendingUpdate.CurrentVersion,
-                _pendingUpdate.NewVersion,
-                _pendingUpdate.Changelog)
-            {
-                Owner = this
-            };
-
-            dialog.ShowDialog();
+            this.Hide();
 
             var settings = _settingsService.Load();
 
-            if (dialog.ShouldUpdate)
-            {
-                AppLogger.Log("[UPDATE] User accepted update from indicator");
-                _ = ApplyPendingUpdateAsync();
-            }
-            else
-            {
-                AppLogger.Log("[UPDATE] User dismissed update from indicator");
-                settings.IgnoredUpdateVersion = _pendingUpdate.NewVersion;
-                _settingsService.Save(settings);
-            }
-        }
+            var changelog = new List<string>
+    {
+        _pendingUpdates.TargetFullRelease.NotesHTML ?? "No changelog provided."
+    };
 
-        private async Task ApplyPendingUpdateAsync()
-        {
-            if (_pendingUpdate == null)
+            var dialog = new Views.UpdateDialog(
+                typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown",
+                _pendingUpdates.TargetFullRelease.Version.ToString(),
+                changelog
+            );
+
+            bool? result = dialog.ShowDialog();
+
+            if (result == true && dialog.ShouldUpdate)
+            {
+                await _updateService.ApplyUpdateAsync(_pendingUpdates);
                 return;
-
-            try
-            {
-                StatusTextBlock.Text = "Applying update…";
-                IsEnabled = false;
-
-                await _updateService.ApplyUpdateAsync(_pendingUpdate.UpdateInfo);
-
-                Application.Current.Shutdown();
             }
-            catch (Exception ex)
-            {
-                AppLogger.LogError("[UPDATE] Failed to apply update", ex);
-                IsEnabled = true;
-            }
+
+            settings.IgnoredUpdateVersion =
+                _pendingUpdates.TargetFullRelease.Version.ToString();
+
+            _settingsService.Save(settings);
+
+            this.Show();
         }
 
         private void UpdateIndicator_MouseEnter(object sender, MouseEventArgs e)

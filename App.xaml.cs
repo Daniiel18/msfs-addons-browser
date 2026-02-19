@@ -12,6 +12,7 @@ namespace SceneryAddonsBrowser
 
             var splash = new SplashWindow();
             splash.Show();
+
             await splash.RunAsync();
 
             var settingsService = new SettingsService();
@@ -22,13 +23,41 @@ namespace SceneryAddonsBrowser
 
             if (update != null)
             {
-                PendingUpdateStore.PendingUpdate = update;
+                string currentVersion =
+                    typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown";
+
+                string newVersion =
+                    update.TargetFullRelease.Version.ToString();
+
+                if (settings.IgnoredUpdateVersion != newVersion)
+                {
+                    splash.Close();
+
+                    var changelog = new List<string>
+            {
+                update.TargetFullRelease.NotesHTML ?? "No changelog provided."
+            };
+
+                    var dialog = new Views.UpdateDialog(
+                        currentVersion,
+                        newVersion,
+                        changelog
+                    );
+
+                    bool? result = dialog.ShowDialog();
+
+                    if (result == true && dialog.ShouldUpdate)
+                    {
+                        await updateService.ApplyUpdateAsync(update);
+                        return;
+                    }
+
+                    settings.IgnoredUpdateVersion = newVersion;
+                    settingsService.Save(settings);
+                }
             }
 
-            if (!string.IsNullOrWhiteSpace(settings.DownloadRoot))
-            {
-                UserStorage.SetRoot(settings.DownloadRoot);
-            }
+            UserStorage.SetRoot(settings.DownloadRoot);
 
             var mainWindow = new MainWindow();
             MainWindow = mainWindow;
