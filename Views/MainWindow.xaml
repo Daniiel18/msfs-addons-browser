@@ -164,7 +164,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel>
-                            <TextBlock Text="Scenery Addons Browser v3.3"
+                            <TextBlock Text="Scenery Addons Browser v3.4"
                                        FontSize="18"
                                        FontWeight="SemiBold"
                                        Foreground="White"/>
@@ -283,6 +283,18 @@
            MouseLeftButtonUp="GsxStatus_Click"
            MouseEnter="GsxStatus_MouseEnter"
            MouseLeave="GsxStatus_MouseLeave"/>
+
+                        <TextBlock x:Name="UpdateIndicatorTextBlock"
+           Text="Update available"
+           FontSize="11"
+           Foreground="#FF4FC3F7"
+           Cursor="Hand"
+           Visibility="Collapsed"
+           VerticalAlignment="Center"
+           Margin="0,0,12,0"
+           MouseLeftButtonUp="UpdateIndicator_Click"
+           MouseEnter="UpdateIndicator_MouseEnter"
+           MouseLeave="UpdateIndicator_MouseLeave"/>
 
 
 

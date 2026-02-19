@@ -1,6 +1,7 @@
 ﻿using SceneryAddonsBrowser.Logging;
 using SceneryAddonsBrowser.Models;
 using SceneryAddonsBrowser.Services;
+using SceneryAddonsBrowser.Views;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Http;
@@ -13,6 +14,7 @@ using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Cursors = System.Windows.Input.Cursors;
 using MessageBox = System.Windows.MessageBox;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 
 
 namespace SceneryAddonsBrowser
@@ -24,6 +26,10 @@ namespace SceneryAddonsBrowser
         private readonly DownloadStatus _downloadStatus = new();
         private readonly HistoryService _historyService = new();
         private readonly GsxProfileService _gsxService;
+        private PendingUpdate? _pendingUpdate;
+        private readonly UpdateService _updateService = new();
+        private readonly SettingsService _settingsService = new();
+
 
 
         private bool _isDownloadAllowed = true;
@@ -39,12 +45,8 @@ namespace SceneryAddonsBrowser
                 });
             }
         }
-
         private string? _lastSearchedIcao;
         private int _lastGsxCount;
-
-
-
         public MainWindow()
         {
             InitializeComponent();
@@ -95,6 +97,140 @@ namespace SceneryAddonsBrowser
                             StatusTextBlock.Text = text;
                         });
                     });
+            await CheckForUpdatesAsync();
+        }
+
+        private async Task CheckForUpdatesAsync()
+        {
+            try
+            {
+                AppLogger.Log("[UPDATE] Checking for updates from MainWindow");
+
+                var settings = _settingsService.Load();
+                var update = await _updateService.CheckForUpdatesAsync();
+
+                if (update == null)
+                    return;
+
+                string newVersion = update.TargetFullRelease.Version.ToString();
+                string currentVersion =
+                    typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown";
+
+                AppLogger.Log($"[UPDATE] Update found: {newVersion}");
+
+                if (settings.IgnoredUpdateVersion == newVersion)
+                {
+                    AppLogger.Log("[UPDATE] Update already ignored by user");
+                    ShowUpdateIndicator(newVersion);
+                    return;
+                }
+
+                var dialog = new Views.UpdateDialog(
+                    currentVersion,
+                    newVersion,
+                    new[] { "See GitHub release notes for details." }
+                )
+                {
+                    Owner = this
+                };
+
+                bool? result = dialog.ShowDialog();
+
+                if (result == true && dialog.ShouldUpdate)
+                {
+                    AppLogger.Log("[UPDATE] User accepted update");
+                    IsEnabled = false;
+                    await _updateService.ApplyUpdateAsync(update);
+                    Application.Current.Shutdown();
+                }
+                else
+                {
+                    AppLogger.Log("[UPDATE] User postponed update");
+                    settings.IgnoredUpdateVersion = newVersion;
+                    _settingsService.Save(settings);
+                    ShowUpdateIndicator(newVersion);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError("[UPDATE] Update check failed", ex);
+            }
+        }
+
+        private void ShowUpdateIndicator(string version)
+        {
+            UpdateIndicatorTextBlock.Text = $"Update available (v{version})";
+            UpdateIndicatorTextBlock.Visibility = Visibility.Visible;
+
+            AppLogger.Log($"[UPDATE] Update indicator shown for version {version}");
+        }
+
+        private void HideUpdateIndicator()
+        {
+            UpdateIndicatorTextBlock.Visibility = Visibility.Collapsed;
+        }
+
+        private void UpdateIndicator_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (_pendingUpdate == null)
+                return;
+
+            AppLogger.Log("[UPDATE] User clicked update indicator");
+
+            var dialog = new UpdateDialog(
+                _pendingUpdate.CurrentVersion,
+                _pendingUpdate.NewVersion,
+                _pendingUpdate.Changelog)
+            {
+                Owner = this
+            };
+
+            dialog.ShowDialog();
+
+            var settings = _settingsService.Load();
+
+            if (dialog.ShouldUpdate)
+            {
+                AppLogger.Log("[UPDATE] User accepted update from indicator");
+                _ = ApplyPendingUpdateAsync();
+            }
+            else
+            {
+                AppLogger.Log("[UPDATE] User dismissed update from indicator");
+                settings.IgnoredUpdateVersion = _pendingUpdate.NewVersion;
+                _settingsService.Save(settings);
+            }
+        }
+
+        private async Task ApplyPendingUpdateAsync()
+        {
+            if (_pendingUpdate == null)
+                return;
+
+            try
+            {
+                StatusTextBlock.Text = "Applying update…";
+                IsEnabled = false;
+
+                await _updateService.ApplyUpdateAsync(_pendingUpdate.UpdateInfo);
+
+                Application.Current.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError("[UPDATE] Failed to apply update", ex);
+                IsEnabled = true;
+            }
+        }
+
+        private void UpdateIndicator_MouseEnter(object sender, MouseEventArgs e)
+        {
+            UpdateIndicatorTextBlock.TextDecorations = TextDecorations.Underline;
+        }
+
+        private void UpdateIndicator_MouseLeave(object sender, MouseEventArgs e)
+        {
+            UpdateIndicatorTextBlock.TextDecorations = null;
         }
 
         private void OnDownloadStateChanged(DownloadState state)

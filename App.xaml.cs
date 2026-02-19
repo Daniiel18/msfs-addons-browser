@@ -1,6 +1,9 @@
-﻿using SceneryAddonsBrowser.Services;
+﻿using SceneryAddonsBrowser.Logging;
+using SceneryAddonsBrowser.Services;
 using System.Threading.Tasks;
 using System.Windows;
+using SceneryAddonsBrowser.Views;
+using Velopack;
 using Application = System.Windows.Application;
 
 namespace SceneryAddonsBrowser
@@ -14,38 +17,56 @@ namespace SceneryAddonsBrowser
             var splash = new SplashWindow();
             splash.Show();
 
-            await splash.RunAsync(); 
-
-            try
-            {
-                var updater = new UpdateService();
-                bool updating = await updater.CheckAndApplyUpdatesAsync();
-
-                if (updating)
-                    return; 
-            }
-            catch
-            {
-            }
+            await splash.RunAsync();
 
             var settingsService = new SettingsService();
             var settings = settingsService.Load();
 
-            if (string.IsNullOrWhiteSpace(settings.DownloadRoot))
+            var updateService = new UpdateService();
+            var update = await updateService.CheckForUpdatesAsync();
+
+            if (update != null)
             {
-                var dialog = new System.Windows.Forms.FolderBrowserDialog
-                {
-                    Description = "Select storage folder for SceneryAddonsBrowser"
-                };
+                string currentVersion =
+                    typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown";
 
-                if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+                string newVersion =
+                    update.TargetFullRelease.Version.ToString();
+
+                AppLogger.Log($"[UPDATE] Update found: {newVersion}");
+
+                if (settings.IgnoredUpdateVersion != newVersion)
                 {
-                    Shutdown();
-                    return;
+                    var changelog = new List<string>
+                    {
+                        update.TargetFullRelease.NotesHTML ?? "No changelog provided."
+                    };
+
+                    var dialog = new Views.UpdateDialog(
+                        currentVersion,
+                        newVersion,
+                        changelog
+                    );
+
+
+                    bool? result = dialog.ShowDialog();
+
+                    if (result == true && dialog.ShouldUpdate)
+                    {
+                        await updateService.ApplyUpdateAsync(update);
+                        return; // Velopack reinicia
+                    }
+                    else
+                    {
+                        AppLogger.Log($"[UPDATE] User ignored update {newVersion}");
+                        settings.IgnoredUpdateVersion = newVersion;
+                        settingsService.Save(settings);
+                    }
                 }
-
-                settings.DownloadRoot = dialog.SelectedPath;
-                settingsService.Save(settings);
+                else
+                {
+                    AppLogger.Log($"[UPDATE] Update {newVersion} already ignored");
+                }
             }
 
             UserStorage.SetRoot(settings.DownloadRoot);

@@ -1,37 +1,45 @@
-﻿using Velopack;
+﻿using SceneryAddonsBrowser.Logging;
+using Velopack;
 using Velopack.Sources;
 
 namespace SceneryAddonsBrowser.Services
 {
     public class UpdateService
     {
-        public async Task<bool> CheckAndApplyUpdatesAsync()
+        private readonly UpdateManager _manager;
+
+        public UpdateService()
+        {
+            var source = new GithubSource(
+                "https://github.com/Daniiel18/SceneryAddonsBrowser",
+                accessToken: null,
+                prerelease: false
+            );
+
+            _manager = new UpdateManager(source);
+        }
+
+        public async Task<UpdateInfo?> CheckForUpdatesAsync()
         {
             try
             {
-                var source = new GithubSource(
-                    "https://github.com/Daniiel18/SceneryAddonsBrowser",
-                    accessToken: null,
-                    prerelease: false
-                );
-
-                var manager = new UpdateManager(source);
-
-                var update = await manager.CheckForUpdatesAsync();
-                if (update == null)
-                    return false; 
-
-                await manager.DownloadUpdatesAsync(update);
-
-               
-                manager.ApplyUpdatesAndRestart(update);
-
-                return true;
+                AppLogger.Log("[UPDATE] Checking for updates...");
+                return await _manager.CheckForUpdatesAsync();
             }
-            catch
+            catch (Exception ex)
             {
-                return false;
+                AppLogger.LogError("[UPDATE] Update check failed", ex);
+                return null;
             }
+        }
+
+        public async Task ApplyUpdateAsync(UpdateInfo update)
+        {
+            AppLogger.Log("[UPDATE] Downloading update...");
+            await _manager.DownloadUpdatesAsync(update);
+
+            AppLogger.Log("[UPDATE] Applying update and restarting...");
+            _manager.ApplyUpdatesAndRestart(update);
         }
     }
 }

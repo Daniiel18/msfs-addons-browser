@@ -40,11 +40,13 @@ public class SettingsService
 }
 
 public class AppSettings
-    {
-        public string? DownloadRoot { get; set; }
+{
+    public string? DownloadRoot { get; set; }
+
+    public string? IgnoredUpdateVersion  { get; set; }
 }
 
-    public static class UserStorage
+public static class UserStorage
     {
         private static string? _rootPath;
 
