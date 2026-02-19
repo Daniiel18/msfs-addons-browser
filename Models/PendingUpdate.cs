@@ -1,7 +1,22 @@
-﻿public class PendingUpdate
+﻿using System.Collections.Generic;
+using Velopack;
+
+namespace SceneryAddonsBrowser.Models
 {
-    public string CurrentVersion { get; set; } = "";
-    public string NewVersion { get; set; } = "";
-    public IEnumerable<string> Changelog { get; set; } = [];
-    public Velopack.UpdateInfo UpdateInfo { get; set; } = null!;
+    public class PendingUpdate
+    {
+        public UpdateInfo UpdateInfo { get; }
+        public string CurrentVersion { get; }
+        public IEnumerable<string> Changelog { get; }
+
+        public PendingUpdate(
+            UpdateInfo updateInfo,
+            string currentVersion,
+            IEnumerable<string> changelog)
+        {
+            UpdateInfo = updateInfo;
+            CurrentVersion = currentVersion;
+            Changelog = changelog;
+        }
+    }
 }

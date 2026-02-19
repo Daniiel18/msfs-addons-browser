@@ -31,12 +31,9 @@ namespace SceneryAddonsBrowser
 
                 if (settings.IgnoredUpdateVersion != newVersion)
                 {
-                    splash.Close();
-
-                    var changelog = new List<string>
-            {
-                update.TargetFullRelease.NotesHTML ?? "No changelog provided."
-            };
+                    var changelog = ChangelogParser.Parse(
+                    update.TargetFullRelease.NotesHTML
+                    );
 
                     var dialog = new Views.UpdateDialog(
                         currentVersion,
@@ -44,12 +41,14 @@ namespace SceneryAddonsBrowser
                         changelog
                     );
 
+                    dialog.Owner = splash;
+
                     bool? result = dialog.ShowDialog();
 
                     if (result == true && dialog.ShouldUpdate)
                     {
                         await updateService.ApplyUpdateAsync(update);
-                        return;
+                        return; // Velopack reinicia
                     }
 
                     settings.IgnoredUpdateVersion = newVersion;
@@ -57,13 +56,13 @@ namespace SceneryAddonsBrowser
                 }
             }
 
+            splash.Close(); // ⬅️ SOLO AQUÍ
+
             UserStorage.SetRoot(settings.DownloadRoot);
 
             var mainWindow = new MainWindow();
             MainWindow = mainWindow;
             mainWindow.Show();
-
-            splash.Close();
         }
 
         protected override void OnExit(ExitEventArgs e)

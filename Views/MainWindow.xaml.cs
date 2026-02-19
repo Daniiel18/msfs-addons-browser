@@ -90,10 +90,10 @@ namespace SceneryAddonsBrowser
         // ================= AUTOFOCUS =================
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            var update = PendingUpdateStore.PendingUpdate;
+            var pending = PendingUpdateStore.PendingUpdate;
 
             // DEV MODE
-            if (DevFlags.ForceUpdateDialog && update == null)
+            if (DevFlags.ForceUpdateDialog && pending == null)
             {
                 Hide();
                 ShowDevUpdateDialog();
@@ -101,42 +101,33 @@ namespace SceneryAddonsBrowser
                 return;
             }
 
-            if (update == null)
+            if (pending == null)
                 return;
 
             var settings = _settingsService.Load();
-            string newVersion = update.TargetFullRelease.Version.ToString();
+
+            string newVersion =
+                pending.UpdateInfo.TargetFullRelease.Version.ToString();
 
             if (settings.IgnoredUpdateVersion == newVersion)
             {
-                // Usuario ya dijo "Later"
                 ShowUpdateIndicator(newVersion);
                 return;
             }
 
-            // 🔴 Update NO ignorado → bloquear UI
             Hide();
-            ShowUpdateDialog(update);
+            ShowUpdateDialog(pending);
             Show();
         }
 
-        private async void ShowUpdateDialog(UpdateInfo update)
+
+        private void ShowUpdateDialog(PendingUpdate pending)
         {
-            string currentVersion =
-                Assembly.GetExecutingAssembly().GetName().Version?.ToString()
-                ?? "Unknown";
-
-            string newVersion = update.TargetFullRelease.Version.ToString();
-
-            var changelog = new List<string>
-    {
-        update.TargetFullRelease.NotesHTML ?? "No changelog provided."
-    };
-
             var dialog = new UpdateDialog(
-                currentVersion,
-                newVersion,
-                changelog)
+                pending.CurrentVersion,
+                pending.UpdateInfo.TargetFullRelease.Version.ToString(),
+                pending.Changelog
+            )
             {
                 Owner = this
             };
@@ -145,28 +136,19 @@ namespace SceneryAddonsBrowser
 
             if (result == true && dialog.ShouldUpdate)
             {
-                await ApplyUpdateAsync(update);
-            }
-            else
-            {
-                var settings = _settingsService.Load();
-                settings.IgnoredUpdateVersion = newVersion;
-                _settingsService.Save(settings);
-
-                ShowUpdateIndicator(newVersion);
+                _ = ApplyPendingUpdateAsync(pending);
             }
         }
 
-        private async Task ApplyUpdateAsync(UpdateInfo update)
+        private async Task ApplyPendingUpdateAsync(PendingUpdate pending)
         {
             try
             {
-                IsEnabled = false;
                 StatusTextBlock.Text = "Applying update…";
+                IsEnabled = false;
 
-                await _updateService.ApplyUpdateAsync(update);
+                await _updateService.ApplyUpdateAsync(pending.UpdateInfo);
 
-                // Velopack reinicia, pero por seguridad:
                 Application.Current.Shutdown();
             }
             catch (Exception ex)

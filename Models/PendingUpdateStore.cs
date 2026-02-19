@@ -1,9 +1,10 @@
-﻿using Velopack;
+﻿using SceneryAddonsBrowser.Models;
+using Velopack;
 
 namespace SceneryAddonsBrowser.Services
 {
     public static class PendingUpdateStore
     {
-        public static UpdateInfo? PendingUpdate { get; set; }
+        public static PendingUpdate? PendingUpdate { get; set; }
     }
 }
