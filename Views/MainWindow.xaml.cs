@@ -17,6 +17,7 @@ using Brush = System.Windows.Media.Brush;
 using Cursors = System.Windows.Input.Cursors;
 using MessageBox = System.Windows.MessageBox;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
+using SceneryAddonsBrowser.Update;
 
 
 namespace SceneryAddonsBrowser

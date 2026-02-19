@@ -1,7 +1,7 @@
-﻿using System.Collections.Generic;
-using System.Text.RegularExpressions;
+﻿using HtmlAgilityPack;
+using HtmlDocument = HtmlAgilityPack.HtmlDocument;
 
-namespace SceneryAddonsBrowser.Services
+namespace SceneryAddonsBrowser.Update
 {
     public static class ChangelogParser
     {
@@ -15,20 +15,16 @@ namespace SceneryAddonsBrowser.Services
                 return result;
             }
 
-            // 1️⃣ Quitar saltos raros
-            html = html.Replace("\r", "").Replace("\n", "");
+            var doc = new HtmlDocument();
+            doc.LoadHtml(html);
 
-            // 2️⃣ Extraer <li> si existen
-            var liMatches = Regex.Matches(
-                html,
-                "<li>(.*?)</li>",
-                RegexOptions.IgnoreCase);
+            var listItems = doc.DocumentNode.SelectNodes("//li");
 
-            if (liMatches.Count > 0)
+            if (listItems != null && listItems.Count > 0)
             {
-                foreach (Match match in liMatches)
+                foreach (var li in listItems)
                 {
-                    var text = StripTags(match.Groups[1].Value).Trim();
+                    var text = li.InnerText.Trim();
                     if (!string.IsNullOrWhiteSpace(text))
                         result.Add(text);
                 }
@@ -36,29 +32,13 @@ namespace SceneryAddonsBrowser.Services
                 return result;
             }
 
-            // 3️⃣ Fallback: <br> o <p>
-            html = Regex.Replace(html, "<br ?/?>", "\n", RegexOptions.IgnoreCase);
-            html = Regex.Replace(html, "</p>", "\n", RegexOptions.IgnoreCase);
+            var plainText = HtmlEntity.DeEntitize(doc.DocumentNode.InnerText)
+                .Trim();
 
-            var lines = StripTags(html)
-                .Split('\n', System.StringSplitOptions.RemoveEmptyEntries);
-
-            foreach (var line in lines)
-            {
-                var clean = line.Trim();
-                if (!string.IsNullOrWhiteSpace(clean))
-                    result.Add(clean);
-            }
-
-            if (result.Count == 0)
-                result.Add("No changelog provided.");
+            if (!string.IsNullOrWhiteSpace(plainText))
+                result.Add(plainText);
 
             return result;
-        }
-
-        private static string StripTags(string input)
-        {
-            return Regex.Replace(input, "<.*?>", string.Empty);
         }
     }
 }

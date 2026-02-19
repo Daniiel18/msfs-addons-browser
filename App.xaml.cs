@@ -1,4 +1,6 @@
-﻿using SceneryAddonsBrowser.Services;
+﻿using SceneryAddonsBrowser.Models;
+using SceneryAddonsBrowser.Services;
+using SceneryAddonsBrowser.Update;
 using System.Windows;
 using Application = System.Windows.Application;
 
@@ -32,8 +34,16 @@ namespace SceneryAddonsBrowser
                 if (settings.IgnoredUpdateVersion != newVersion)
                 {
                     var changelog = ChangelogParser.Parse(
-                    update.TargetFullRelease.NotesHTML
+                        update.TargetFullRelease.NotesHTML
                     );
+
+                    var pending = new PendingUpdate(
+                        update,
+                        currentVersion,
+                        changelog
+                    );
+
+                    PendingUpdateStore.PendingUpdate = pending;
 
                     var dialog = new Views.UpdateDialog(
                         currentVersion,
