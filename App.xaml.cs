@@ -1,9 +1,5 @@
-﻿using SceneryAddonsBrowser.Logging;
-using SceneryAddonsBrowser.Services;
-using System.Threading.Tasks;
+﻿using SceneryAddonsBrowser.Services;
 using System.Windows;
-using SceneryAddonsBrowser.Views;
-using Velopack;
 using Application = System.Windows.Application;
 
 namespace SceneryAddonsBrowser
@@ -16,7 +12,6 @@ namespace SceneryAddonsBrowser
 
             var splash = new SplashWindow();
             splash.Show();
-
             await splash.RunAsync();
 
             var settingsService = new SettingsService();
@@ -27,49 +22,13 @@ namespace SceneryAddonsBrowser
 
             if (update != null)
             {
-                string currentVersion =
-                    typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown";
-
-                string newVersion =
-                    update.TargetFullRelease.Version.ToString();
-
-                AppLogger.Log($"[UPDATE] Update found: {newVersion}");
-
-                if (settings.IgnoredUpdateVersion != newVersion)
-                {
-                    var changelog = new List<string>
-                    {
-                        update.TargetFullRelease.NotesHTML ?? "No changelog provided."
-                    };
-
-                    var dialog = new Views.UpdateDialog(
-                        currentVersion,
-                        newVersion,
-                        changelog
-                    );
-
-
-                    bool? result = dialog.ShowDialog();
-
-                    if (result == true && dialog.ShouldUpdate)
-                    {
-                        await updateService.ApplyUpdateAsync(update);
-                        return; // Velopack reinicia
-                    }
-                    else
-                    {
-                        AppLogger.Log($"[UPDATE] User ignored update {newVersion}");
-                        settings.IgnoredUpdateVersion = newVersion;
-                        settingsService.Save(settings);
-                    }
-                }
-                else
-                {
-                    AppLogger.Log($"[UPDATE] Update {newVersion} already ignored");
-                }
+                PendingUpdateStore.PendingUpdate = update;
             }
 
-            UserStorage.SetRoot(settings.DownloadRoot);
+            if (!string.IsNullOrWhiteSpace(settings.DownloadRoot))
+            {
+                UserStorage.SetRoot(settings.DownloadRoot);
+            }
 
             var mainWindow = new MainWindow();
             MainWindow = mainWindow;

@@ -10,6 +10,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Velopack;
+using System.Reflection;
 using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Cursors = System.Windows.Input.Cursors;
@@ -59,7 +61,7 @@ namespace SceneryAddonsBrowser
 
             _downloadService.QueueChanged += UpdateQueueUi;
 
-
+            Loaded += MainWindow_Loaded;
         }
 
         private void UpdateQueueUi()
@@ -87,17 +89,103 @@ namespace SceneryAddonsBrowser
         // ================= AUTOFOCUS =================
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            await _downloadService.ResumeTorrentSessionAsync(
-                (text, percent) =>
-                    {
-                        Dispatcher.Invoke(() =>
-                        {
-                            DownloadProgressBar.Visibility = Visibility.Visible;
-                            DownloadProgressBar.Value = percent;
-                            StatusTextBlock.Text = text;
-                        });
-                    });
-            await CheckForUpdatesAsync();
+            var update = PendingUpdateStore.PendingUpdate;
+
+            // DEV MODE: forzar diálogo
+            if (DevFlags.ForceUpdateDialog && update == null)
+            {
+                ShowDevUpdateDialog();
+                return;
+            }
+
+            if (update == null)
+                return;
+
+            var settings = _settingsService.Load();
+
+            string newVersion = update.TargetFullRelease.Version.ToString();
+
+            if (settings.IgnoredUpdateVersion == newVersion)
+            {
+                ShowUpdateIndicator(newVersion);
+                return;
+            }
+
+            ShowUpdateDialog(update);
+        }
+
+        private async void ShowUpdateDialog(UpdateInfo update)
+        {
+            string currentVersion =
+                Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+                ?? "Unknown";
+
+            string newVersion = update.TargetFullRelease.Version.ToString();
+
+            var changelog = new List<string>
+    {
+        update.TargetFullRelease.NotesHTML ?? "No changelog provided."
+    };
+
+            var dialog = new UpdateDialog(
+                currentVersion,
+                newVersion,
+                changelog)
+            {
+                Owner = this
+            };
+
+            bool? result = dialog.ShowDialog();
+
+            if (result == true && dialog.ShouldUpdate)
+            {
+                await ApplyUpdateAsync(update);
+            }
+            else
+            {
+                var settings = _settingsService.Load();
+                settings.IgnoredUpdateVersion = newVersion;
+                _settingsService.Save(settings);
+
+                ShowUpdateIndicator(newVersion);
+            }
+        }
+
+        private async Task ApplyUpdateAsync(UpdateInfo update)
+        {
+            try
+            {
+                IsEnabled = false;
+                StatusTextBlock.Text = "Applying update…";
+
+                await _updateService.ApplyUpdateAsync(update);
+
+                // Velopack reinicia, pero por seguridad:
+                Application.Current.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError("[UPDATE] Failed to apply update", ex);
+                IsEnabled = true;
+            }
+        }
+
+        private void ShowDevUpdateDialog()
+        {
+            var dialog = new UpdateDialog(
+                "3.4.0",
+                "3.4.X (DEV)",
+                new[]
+                {
+            "• DEV MODE active",
+            "• Update dialog test",
+            "• No update will be applied"
+                })
+            {
+                Owner = this
+            };
+
+            dialog.ShowDialog();
         }
 
         private async Task CheckForUpdatesAsync()
