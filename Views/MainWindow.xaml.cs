@@ -65,7 +65,6 @@ namespace SceneryAddonsBrowser
 
             Loaded += MainWindow_Loaded;
         }
-
         private void UpdateQueueUi()
         {
             Dispatcher.Invoke(() =>
@@ -87,7 +86,6 @@ namespace SceneryAddonsBrowser
             });
         }
 
-
         // ================= AUTOFOCUS =================
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
@@ -106,9 +104,7 @@ namespace SceneryAddonsBrowser
                 return;
 
             var settings = _settingsService.Load();
-
-            string newVersion =
-                pending.UpdateInfo.TargetFullRelease.Version.ToString();
+            string newVersion = pending.NewVersion;
 
             if (settings.IgnoredUpdateVersion == newVersion)
             {
@@ -116,11 +112,8 @@ namespace SceneryAddonsBrowser
                 return;
             }
 
-            Hide();
-            ShowUpdateDialog(pending);
-            Show();
+            ShowUpdateIndicator(newVersion);
         }
-
 
         private void ShowUpdateDialog(PendingUpdate pending)
         {
@@ -185,44 +178,38 @@ namespace SceneryAddonsBrowser
             AppLogger.Log($"[UPDATE] Update indicator shown for version {version}");
         }
 
-        private async void UpdateIndicator_Click(object sender, MouseButtonEventArgs e)
+        private void UpdateIndicator_Click(object sender, MouseButtonEventArgs e)
         {
-            if (_pendingUpdate == null)
+            var pending = PendingUpdateStore.PendingUpdate;
+            if (pending == null)
                 return;
 
             AppLogger.Log("[UPDATE] User clicked update indicator");
 
-            this.Hide();
+            Hide();
 
-            var updateService = new UpdateService();
-            var update = await updateService.CheckForUpdatesAsync();
-
-            var settings = _settingsService.Load();
-
-            var changelog = ChangelogParser.Parse(
-            update.TargetFullRelease.NotesHTML
-            );
-
-            var dialog = new Views.UpdateDialog(
-                typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown",
-                _pendingUpdates.TargetFullRelease.Version.ToString(),
-                changelog
-            );
+            var dialog = new UpdateDialog(
+                pending.CurrentVersion,
+                pending.NewVersion,
+                pending.Changelog)
+            {
+                Owner = this
+            };
 
             bool? result = dialog.ShowDialog();
 
             if (result == true && dialog.ShouldUpdate)
             {
-                await _updateService.ApplyUpdateAsync(_pendingUpdates);
+                _ = _updateService.ApplyUpdateAsync(pending.UpdateInfo);
                 return;
             }
 
-            settings.IgnoredUpdateVersion =
-                _pendingUpdates.TargetFullRelease.Version.ToString();
-
+            var settings = _settingsService.Load();
+            settings.IgnoredUpdateVersion = pending.NewVersion;
             _settingsService.Save(settings);
 
-            this.Show();
+            ShowUpdateIndicator(pending.NewVersion);
+            Show();
         }
 
         private void UpdateIndicator_MouseEnter(object sender, MouseEventArgs e)
@@ -642,6 +629,5 @@ namespace SceneryAddonsBrowser
                 );
             }
         }
-
     }
 }

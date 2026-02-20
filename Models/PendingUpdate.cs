@@ -2,7 +2,7 @@
 
 namespace SceneryAddonsBrowser.Models
 {
-    public sealed class PendingUpdate
+    public class PendingUpdate
     {
         public UpdateInfo UpdateInfo { get; }
         public string CurrentVersion { get; }

@@ -32,9 +32,14 @@ namespace SceneryAddonsBrowser
                         .GetExecutingAssembly()
                         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
                         .InformationalVersion
+                    ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
                     ?? "Unknown";
 
+                currentVersion = NormalizeVersion(currentVersion);
                 string newVersion = update.TargetFullRelease.Version.ToString();
+
+                currentVersion = NormalizeVersion(currentVersion);
+                newVersion = NormalizeVersion(newVersion);
 
                 if (settings.IgnoredUpdateVersion != newVersion)
                 {
@@ -44,11 +49,20 @@ namespace SceneryAddonsBrowser
                         update.TargetFullRelease.NotesHTML
                     );
 
+                    PendingUpdateStore.PendingUpdate = new PendingUpdate(
+                        update,
+                        currentVersion,
+                        changelog
+                    );
+
                     var dialog = new UpdateDialog(
                         currentVersion,
                         newVersion,
                         changelog
-                    );
+                    )
+                    {
+                        WindowStartupLocation = WindowStartupLocation.CenterScreen
+                    };
 
                     bool? result = dialog.ShowDialog();
 
@@ -57,9 +71,6 @@ namespace SceneryAddonsBrowser
                         await updateService.ApplyUpdateAsync(update);
                         return;
                     }
-
-                    settings.IgnoredUpdateVersion = newVersion;
-                    settingsService.Save(settings);
                 }
             }
 
@@ -88,6 +99,13 @@ namespace SceneryAddonsBrowser
             MainWindow = mainWindow;
             mainWindow.Show();
         }
+
+        private static string NormalizeVersion(string version)
+        {
+            var plusIndex = version.IndexOf('+');
+            return plusIndex > 0 ? version[..plusIndex] : version;
+        }
+
 
         protected override void OnExit(ExitEventArgs e)
         {

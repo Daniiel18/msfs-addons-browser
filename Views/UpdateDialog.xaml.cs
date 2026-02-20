@@ -9,25 +9,13 @@ namespace SceneryAddonsBrowser.Views
     {
         public bool ShouldUpdate { get; private set; }
 
-        public UpdateDialog(
-            string currentVersion,
-            string newVersion,
-            IEnumerable<string> changelog)
+        public UpdateDialog(string currentVersion, string newVersion, IEnumerable<string> changelog)
         {
             InitializeComponent();
 
-            if (changelog == null)
-                throw new InvalidOperationException("Changelog is NULL");
-
-            var list = changelog.ToList();
-
-            if (list.Count == 0)
-                list.Add("No release notes were provided for this update.");
-
-            VersionText.Text =
-                $"Current version: {currentVersion} → New version: {newVersion}";
-
-            ChangelogList.ItemsSource = list;
+            VersionText.Text = $"Current version: {currentVersion} → New version: {newVersion}";
+            ChangelogList.ItemsSource = changelog?.ToList()
+                ?? new List<string> { "No release notes were provided." };
         }
 
         private void Update_Click(object sender, RoutedEventArgs e)
