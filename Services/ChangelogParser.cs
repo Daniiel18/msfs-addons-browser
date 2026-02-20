@@ -1,5 +1,5 @@
-﻿using HtmlAgilityPack;
-using HtmlDocument = HtmlAgilityPack.HtmlDocument;
+﻿using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 namespace SceneryAddonsBrowser.Update
 {
@@ -11,32 +11,27 @@ namespace SceneryAddonsBrowser.Update
 
             if (string.IsNullOrWhiteSpace(html))
             {
-                result.Add("No changelog provided.");
+                result.Add("No release notes were provided.");
                 return result;
             }
 
-            var doc = new HtmlDocument();
-            doc.LoadHtml(html);
+            // Quitar tags HTML
+            var text = Regex.Replace(html, "<.*?>", string.Empty);
 
-            var listItems = doc.DocumentNode.SelectNodes("//li");
+            // Normalizar saltos
+            var lines = text
+                .Replace("\r", "")
+                .Split('\n');
 
-            if (listItems != null && listItems.Count > 0)
+            foreach (var line in lines)
             {
-                foreach (var li in listItems)
-                {
-                    var text = li.InnerText.Trim();
-                    if (!string.IsNullOrWhiteSpace(text))
-                        result.Add(text);
-                }
-
-                return result;
+                var trimmed = line.Trim();
+                if (trimmed.Length > 2)
+                    result.Add(trimmed);
             }
 
-            var plainText = HtmlEntity.DeEntitize(doc.DocumentNode.InnerText)
-                .Trim();
-
-            if (!string.IsNullOrWhiteSpace(plainText))
-                result.Add(plainText);
+            if (result.Count == 0)
+                result.Add("No release notes were provided.");
 
             return result;
         }

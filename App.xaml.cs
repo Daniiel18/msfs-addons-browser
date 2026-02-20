@@ -1,6 +1,8 @@
 ﻿using SceneryAddonsBrowser.Models;
 using SceneryAddonsBrowser.Services;
 using SceneryAddonsBrowser.Update;
+using SceneryAddonsBrowser.Views;
+using System.Reflection;
 using System.Windows;
 using Application = System.Windows.Application;
 
@@ -26,26 +28,26 @@ namespace SceneryAddonsBrowser
             if (update != null)
             {
                 string currentVersion =
-                    typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown";
+                    Assembly
+                        .GetExecutingAssembly()
+                        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+                        .InformationalVersion
+                    ?? "Unknown";
 
-                string newVersion =
-                    update.TargetFullRelease.Version.ToString();
+                string newVersion = update.TargetFullRelease.Version.ToString();
 
                 if (settings.IgnoredUpdateVersion != newVersion)
                 {
-                    var changelog = ChangelogParser.Parse(
-                        update.TargetFullRelease.NotesHTML
-                    );
+                    splash.Close();
 
-                    var pending = new PendingUpdate(
-                        update,
-                        currentVersion,
-                        changelog
-                    );
+                    var changelog = new List<string>
+{
+    "Test line 1",
+    "Test line 2",
+    "Test line 3"
+};
 
-                    PendingUpdateStore.PendingUpdate = pending;
-
-                    var dialog = new Views.UpdateDialog(
+                    var dialog = new UpdateDialog(
                         currentVersion,
                         newVersion,
                         changelog
@@ -58,13 +60,14 @@ namespace SceneryAddonsBrowser
                     if (result == true && dialog.ShouldUpdate)
                     {
                         await updateService.ApplyUpdateAsync(update);
-                        return; // Velopack reinicia
+                        return;
                     }
 
                     settings.IgnoredUpdateVersion = newVersion;
                     settingsService.Save(settings);
                 }
             }
+
 
             splash.Close(); // ⬅️ SOLO AQUÍ
 

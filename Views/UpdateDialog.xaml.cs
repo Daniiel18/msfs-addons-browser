@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 
 namespace SceneryAddonsBrowser.Views
@@ -7,15 +9,25 @@ namespace SceneryAddonsBrowser.Views
     {
         public bool ShouldUpdate { get; private set; }
 
-        public UpdateDialog(string currentVersion, string newVersion, IEnumerable<string> changelog)
+        public UpdateDialog(
+            string currentVersion,
+            string newVersion,
+            IEnumerable<string> changelog)
         {
             InitializeComponent();
 
             if (changelog == null)
-                throw new Exception("CHANGELOG IS NULL");
+                throw new InvalidOperationException("Changelog is NULL");
 
-            VersionText.Text = $"Current version: {currentVersion} → New version: {newVersion}";
-            ChangelogList.ItemsSource = changelog;
+            var list = changelog.ToList();
+
+            if (list.Count == 0)
+                list.Add("No release notes were provided for this update.");
+
+            VersionText.Text =
+                $"Current version: {currentVersion} → New version: {newVersion}";
+
+            ChangelogList.ItemsSource = list;
         }
 
         private void Update_Click(object sender, RoutedEventArgs e)

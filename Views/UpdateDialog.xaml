@@ -56,7 +56,7 @@
                         <ItemsControl x:Name="ChangelogList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="• {Binding}"
+                                    <TextBlock Text="{Binding}"
                                                Foreground="#FFDADADA"
                                                TextWrapping="Wrap"
                                                Margin="0,4"/>
