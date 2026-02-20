@@ -40,20 +40,15 @@ namespace SceneryAddonsBrowser
                 {
                     splash.Close();
 
-                    var changelog = new List<string>
-{
-    "Test line 1",
-    "Test line 2",
-    "Test line 3"
-};
+                    var changelog = ChangelogParser.Parse(
+                        update.TargetFullRelease.NotesHTML
+                    );
 
                     var dialog = new UpdateDialog(
                         currentVersion,
                         newVersion,
                         changelog
                     );
-
-                    dialog.Owner = splash;
 
                     bool? result = dialog.ShowDialog();
 
@@ -68,8 +63,24 @@ namespace SceneryAddonsBrowser
                 }
             }
 
+            splash.Close();
 
-            splash.Close(); // ⬅️ SOLO AQUÍ
+            if (string.IsNullOrWhiteSpace(settings.DownloadRoot))
+            {
+                var dialog = new System.Windows.Forms.FolderBrowserDialog
+                {
+                    Description = "Select storage folder for Scenery Addons Browser"
+                };
+
+                if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+                {
+                    Shutdown();
+                    return;
+                }
+
+                settings.DownloadRoot = dialog.SelectedPath;
+                settingsService.Save(settings);
+            }
 
             UserStorage.SetRoot(settings.DownloadRoot);
 
