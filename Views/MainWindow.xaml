@@ -164,7 +164,7 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel>
-                            <TextBlock Text="Scenery Addons Browser v3.4"
+                            <TextBlock Text="Scenery Addons Browser v3.5"
                                        FontSize="18"
                                        FontWeight="SemiBold"
                                        Foreground="White"/>
