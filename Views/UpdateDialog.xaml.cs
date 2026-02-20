@@ -7,12 +7,12 @@ namespace SceneryAddonsBrowser.Views
     {
         public bool ShouldUpdate { get; private set; }
 
-        public UpdateDialog(
-            string currentVersion,
-            string newVersion,
-            IEnumerable<string> changelog)
+        public UpdateDialog(string currentVersion, string newVersion, IEnumerable<string> changelog)
         {
             InitializeComponent();
+
+            if (changelog == null)
+                throw new Exception("CHANGELOG IS NULL");
 
             VersionText.Text = $"Current version: {currentVersion} → New version: {newVersion}";
             ChangelogList.ItemsSource = changelog;

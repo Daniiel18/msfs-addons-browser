@@ -194,12 +194,14 @@ namespace SceneryAddonsBrowser
 
             this.Hide();
 
+            var updateService = new UpdateService();
+            var update = await updateService.CheckForUpdatesAsync();
+
             var settings = _settingsService.Load();
 
-            var changelog = new List<string>
-    {
-        _pendingUpdates.TargetFullRelease.NotesHTML ?? "No changelog provided."
-    };
+            var changelog = ChangelogParser.Parse(
+            update.TargetFullRelease.NotesHTML
+            );
 
             var dialog = new Views.UpdateDialog(
                 typeof(App).Assembly.GetName().Version?.ToString() ?? "Unknown",

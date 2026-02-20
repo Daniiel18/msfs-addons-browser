@@ -12,9 +12,11 @@
   <ApplicationIcon>Assets\plane_trip_international_icon_187487.ico</ApplicationIcon>
 
   <!-- VERSIONING -->
-  <Version>3.4.9</Version>
+  <Version>3.5.0</Version>
+  <InformationalVersion>3.5.0</InformationalVersion>
   <AssemblyVersion>2.0.0.0</AssemblyVersion>
   <FileVersion>2.0.0.0</FileVersion>
+  
 
   <!-- 🔥 CLAVES -->
   <DisableWinExeOutputInference>true</DisableWinExeOutputInference>
