@@ -15,7 +15,7 @@ namespace SceneryAddonsBrowser.Views
 
             VersionText.Text = $"Current version: {currentVersion} → New version: {newVersion}";
             ChangelogList.ItemsSource = changelog?.ToList()
-                ?? new List<string> { "No release notes were provided." };
+                ?? new List<string> { "fix bugs and performance." };
         }
 
         private void Update_Click(object sender, RoutedEventArgs e)
