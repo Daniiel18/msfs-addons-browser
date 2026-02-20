@@ -1,6 +1,6 @@
 ﻿using Velopack;
 
-namespace SceneryAddonsBrowser.Models
+namespace SceneryAddonsBrowser.Update
 {
     public class PendingUpdate
     {

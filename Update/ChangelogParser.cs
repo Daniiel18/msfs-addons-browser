@@ -15,15 +15,14 @@ namespace SceneryAddonsBrowser.Update
                 return result;
             }
 
-            // Quitar tags HTML
+            // Convertir <li> en líneas
+            html = Regex.Replace(html, @"</li>", "\n", RegexOptions.IgnoreCase);
+            html = Regex.Replace(html, @"<li[^>]*>", "• ", RegexOptions.IgnoreCase);
+
+            // Quitar el resto de tags
             var text = Regex.Replace(html, "<.*?>", string.Empty);
 
-            // Normalizar saltos
-            var lines = text
-                .Replace("\r", "")
-                .Split('\n');
-
-            foreach (var line in lines)
+            foreach (var line in text.Split('\n'))
             {
                 var trimmed = line.Trim();
                 if (trimmed.Length > 2)

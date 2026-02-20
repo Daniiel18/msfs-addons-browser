@@ -36,19 +36,20 @@ namespace SceneryAddonsBrowser
                     ?? "Unknown";
 
                 currentVersion = NormalizeVersion(currentVersion);
-                string newVersion = update.TargetFullRelease.Version.ToString();
 
-                currentVersion = NormalizeVersion(currentVersion);
-                newVersion = NormalizeVersion(newVersion);
+                string newVersion = NormalizeVersion(
+                    update.TargetFullRelease.Version.ToString()
+                );
 
                 if (settings.IgnoredUpdateVersion != newVersion)
                 {
-                    splash.Close();
+                    splash.Close(); // ⬅️ el splash NO debe quedar detrás
 
-                    var changelog = ChangelogParser.Parse(
-                        update.TargetFullRelease.NotesHTML
-                    );
+                    // 🔹 Cargar release notes locales
+                    var notesHtml = Update.ReleaseNotesProvider.Load(newVersion);
+                    var changelog = Update.ChangelogParser.Parse(notesHtml);
 
+                    // 🔹 Guardar update pendiente (para el indicador del MainWindow)
                     PendingUpdateStore.PendingUpdate = new PendingUpdate(
                         update,
                         currentVersion,
@@ -69,13 +70,14 @@ namespace SceneryAddonsBrowser
                     if (result == true && dialog.ShouldUpdate)
                     {
                         await updateService.ApplyUpdateAsync(update);
-                        return;
+                        return; // Velopack reinicia aquí
                     }
                 }
             }
 
             splash.Close();
 
+            // 🔹 Selección de carpeta si es necesario
             if (string.IsNullOrWhiteSpace(settings.DownloadRoot))
             {
                 var dialog = new System.Windows.Forms.FolderBrowserDialog

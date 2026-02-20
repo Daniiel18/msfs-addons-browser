@@ -1,6 +1,4 @@
-﻿using SceneryAddonsBrowser.Models;
-
-namespace SceneryAddonsBrowser.Update
+﻿namespace SceneryAddonsBrowser.Update
 {
     public static class PendingUpdateStore
     {
