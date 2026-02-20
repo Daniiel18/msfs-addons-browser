@@ -5,6 +5,7 @@ using SceneryAddonsBrowser.Views;
 using System.Reflection;
 using System.Windows;
 using Application = System.Windows.Application;
+using SceneryAddonsBrowser.Logging;
 
 namespace SceneryAddonsBrowser
 {
@@ -13,6 +14,8 @@ namespace SceneryAddonsBrowser
         protected override async void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+
+            AppLogger.Log("App: Startup");
 
             var splash = new SplashWindow();
             splash.Show();
@@ -43,13 +46,13 @@ namespace SceneryAddonsBrowser
 
                 if (settings.IgnoredUpdateVersion != newVersion)
                 {
-                    splash.Close(); // ⬅️ el splash NO debe quedar detrás
+                    splash.Close(); 
 
-                    // 🔹 Cargar release notes locales
+                    AppLogger.Log($"App: Update available. Current={currentVersion}, New={newVersion}");
+
                     var notesHtml = Update.ReleaseNotesProvider.Load(newVersion);
                     var changelog = Update.ChangelogParser.Parse(notesHtml);
 
-                    // 🔹 Guardar update pendiente (para el indicador del MainWindow)
                     PendingUpdateStore.PendingUpdate = new PendingUpdate(
                         update,
                         currentVersion,
@@ -67,19 +70,22 @@ namespace SceneryAddonsBrowser
 
                     bool? result = dialog.ShowDialog();
 
+                    AppLogger.Log($"App: Update dialog closed. Result={(result == true ? "Accept" : "Decline")}");
+
                     if (result == true && dialog.ShouldUpdate)
                     {
+                        AppLogger.Log("App: User accepted update - applying");
                         await updateService.ApplyUpdateAsync(update);
-                        return; // Velopack reinicia aquí
+                        return; 
                     }
                 }
             }
 
             splash.Close();
 
-            // 🔹 Selección de carpeta si es necesario
             if (string.IsNullOrWhiteSpace(settings.DownloadRoot))
             {
+                AppLogger.Log("App: Prompting user to select download root");
                 var dialog = new System.Windows.Forms.FolderBrowserDialog
                 {
                     Description = "Select storage folder for Scenery Addons Browser"
@@ -87,12 +93,15 @@ namespace SceneryAddonsBrowser
 
                 if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
                 {
+                    AppLogger.Log("App: User declined to select storage folder - shutting down");
                     Shutdown();
                     return;
                 }
 
                 settings.DownloadRoot = dialog.SelectedPath;
                 settingsService.Save(settings);
+
+                AppLogger.Log($"App: User selected storage folder: {dialog.SelectedPath}");
             }
 
             UserStorage.SetRoot(settings.DownloadRoot);
@@ -100,6 +109,8 @@ namespace SceneryAddonsBrowser
             var mainWindow = new MainWindow();
             MainWindow = mainWindow;
             mainWindow.Show();
+
+            AppLogger.Log("App: Main window shown");
         }
 
         private static string NormalizeVersion(string version)
@@ -112,6 +123,7 @@ namespace SceneryAddonsBrowser
         protected override void OnExit(ExitEventArgs e)
         {
             base.OnExit(e);
+            AppLogger.Log("App: Exit");
             Environment.Exit(0);
         }
     }
