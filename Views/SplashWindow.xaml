@@ -26,7 +26,7 @@
             <!-- TITLE -->
             <StackPanel VerticalAlignment="Center">
 
-                <Image Source="Assets/World_map_blank_without_borders.svg.png"
+                <Image Source="/Views/World_map_blank_without_borders.svg.png"
                        Width="210"
                        Height="87"
                        Stretch="Uniform"/>

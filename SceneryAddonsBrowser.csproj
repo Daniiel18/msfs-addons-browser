@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <None Remove="Assets\World_map_blank_without_borders.svg.png" />
+    <None Remove="Views\World_map_blank_without_borders.svg.png" />
   </ItemGroup>
 
   <ItemGroup>
@@ -51,6 +52,7 @@
     <Resource Include="Assets\World_map_blank_without_borders.svg.png">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </Resource>
+    <Resource Include="Views\World_map_blank_without_borders.svg.png" />
   </ItemGroup>
 
   <ItemGroup>
