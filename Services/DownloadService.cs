@@ -142,7 +142,6 @@ namespace SceneryAddonsBrowser.Services
                     }
                 }
 
-                // ✅ Magnet listo
                 _lastMagnet = magnet;
                 _currentDataDir = dataDir;
 
@@ -225,7 +224,6 @@ namespace SceneryAddonsBrowser.Services
             if (method?.Scenario == null)
                 return;
 
-            // ✅ Registrar en History UNA SOLA VEZ
             _historyService.AddOrUpdate(new DownloadHistoryItem
             {
                 Icao = method.Scenario.Icao,
@@ -339,7 +337,6 @@ namespace SceneryAddonsBrowser.Services
                 {
                     int percent = (int)Math.Round(p.Percent);
 
-                    // 🔴 ESTO ES LO QUE FALTABA
                     progress?.Invoke(
                         $"Resuming • {p.Percent:F1}% • {p.SpeedMbps:F1} Mbps • ETA {p.Eta:mm\\:ss}",
                         percent

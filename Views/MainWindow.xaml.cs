@@ -362,8 +362,7 @@ namespace SceneryAddonsBrowser
             StatusTextBlock.Text = $"{results.Count} scenaries found.";
 
             AppLogger.Log($"[GSX] Triggering GSX lookup after search for ICAO: {icao}");
-            await UpdateGsxStatusAsync(icao);
-
+            _ = Task.Run(() => UpdateGsxStatusAsync(icao));
         }
 
         // ================= DOWNLOAD =================
@@ -414,56 +413,79 @@ namespace SceneryAddonsBrowser
             _lastSearchedIcao = icao.ToUpperInvariant();
             _lastGsxCount = 0;
 
-            var url = $"https://flightsim.to/others/gsx-pro/search/{icao.ToLowerInvariant()}";
+            var url = $"https://flightsim.to/miscellaneous/gsx-pro?q={icao.ToLowerInvariant()}";
 
             AppLogger.Log($"[GSX] Starting GSX lookup for ICAO: {_lastSearchedIcao}");
             AppLogger.Log($"[GSX] URL: {url}");
 
             try
             {
-                using var http = new HttpClient();
-                http.DefaultRequestHeaders.UserAgent.ParseAdd(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+
+                var handler = new HttpClientHandler
+                {
+                    AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                             System.Net.DecompressionMethods.Deflate
+                };
+
+                var http = new HttpClient(handler);
+
+                http.DefaultRequestHeaders.TryAddWithoutValidation(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36");
+
+                http.DefaultRequestHeaders.TryAddWithoutValidation(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+
+                http.DefaultRequestHeaders.TryAddWithoutValidation(
+                    "Accept-Language",
+                    "en-US,en;q=0.9");
+
+                http.DefaultRequestHeaders.TryAddWithoutValidation(
+                    "Cache-Control",
+                    "no-cache");
 
                 AppLogger.Log("[GSX] Downloading GSX search page...");
+
                 var html = await http.GetStringAsync(url);
 
                 AppLogger.Log($"[GSX] HTML downloaded. Length = {html.Length}");
 
-                int count = Regex.Matches(
-                    html,
-                    "tiles-box flex-item new-tile",
-                    RegexOptions.IgnoreCase
-                ).Count;
+                var gsxService = new GsxProfileService();
+
+                int count = await gsxService.GetProfileCountAsync(icao);
 
                 _lastGsxCount = count;
 
                 AppLogger.Log($"[GSX] Profiles found: {count}");
 
-                if (count > 0)
-                {
-                    GsxStatusTextBlock.Text =
-                    $"● GSX Profiles available ({count}) — View on flightsim.to";
+                Dispatcher.Invoke(() =>
+                 {
+                     if (count > 0)
+                     {
+                         GsxStatusTextBlock.Text =
+                         $"● GSX Profiles available ({count}) — View on flightsim.to";
 
-                    GsxStatusTextBlock.Foreground =
-                        new BrushConverter().ConvertFrom("#FF4FC3F7") as Brush;
+                         GsxStatusTextBlock.Foreground =
+                             new BrushConverter().ConvertFrom("#FF4FC3F7") as Brush;
 
-                    GsxStatusTextBlock.Cursor = Cursors.Hand;
-                    GsxStatusTextBlock.Visibility = Visibility.Visible;
+                         GsxStatusTextBlock.Cursor = Cursors.Hand;
+                         GsxStatusTextBlock.Visibility = Visibility.Visible;
 
-                }
-                else
-                {
-                    GsxStatusTextBlock.Text =
-                    "● No GSX profiles found for this airport";
+                     }
+                     else
+                     {
+                         GsxStatusTextBlock.Text =
+                         "● No GSX profiles found for this airport";
 
-                    GsxStatusTextBlock.Foreground =
-                        new BrushConverter().ConvertFrom("#FF777777") as Brush;
+                         GsxStatusTextBlock.Foreground =
+                             new BrushConverter().ConvertFrom("#FF777777") as Brush;
 
-                    GsxStatusTextBlock.Cursor = Cursors.Arrow;
-                    GsxStatusTextBlock.Visibility = Visibility.Visible;
+                         GsxStatusTextBlock.Cursor = Cursors.Arrow;
+                         GsxStatusTextBlock.Visibility = Visibility.Visible;
 
-                }
+                     }
+                 });
 
                 GsxStatusTextBlock.Visibility = Visibility.Visible;
                 AppLogger.Log("[GSX] Status text updated successfully");
@@ -495,7 +517,7 @@ namespace SceneryAddonsBrowser
 
             Process.Start(new ProcessStartInfo
             {
-                FileName = $"https://flightsim.to/others/gsx-pro/search/{_lastSearchedIcao}",
+                FileName = $"https://flightsim.to/miscellaneous/gsx-pro?q={_lastSearchedIcao}",
                 UseShellExecute = true
             });
         }

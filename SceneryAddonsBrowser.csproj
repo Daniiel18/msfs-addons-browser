@@ -12,8 +12,8 @@
   <ApplicationIcon>Assets\plane_trip_international_icon_187487.ico</ApplicationIcon>
 
   <!-- VERSIONING -->
-  <Version>3.5.0</Version>
-  <InformationalVersion>3.5.0</InformationalVersion>
+  <Version>3.5.1</Version>
+  <InformationalVersion>3.5.1</InformationalVersion>
   <AssemblyVersion>2.0.0.0</AssemblyVersion>
   <FileVersion>2.0.0.0</FileVersion>
   
@@ -25,7 +25,7 @@
 </PropertyGroup>
 
 <ItemGroup>
-  <Content Include="ReleaseNotes\3.5.9.html">
+  <Content Include="ReleaseNotes\3.5.1html">
     <CopyToOutputDirectory>Always</CopyToOutputDirectory>
   </Content>
 </ItemGroup>
@@ -41,6 +41,7 @@
 
   <ItemGroup>
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.58.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <PackageReference Include="MonoTorrent" Version="3.0.2" />
     <PackageReference Include="SharpCompress" Version="0.44.5" />
@@ -57,10 +58,6 @@
 
   <ItemGroup>
     <None Include=".github\workflows\release.yml" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="ReleaseNotes\" />
   </ItemGroup>
 
 </Project>

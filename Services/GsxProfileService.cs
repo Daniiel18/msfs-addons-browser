@@ -1,9 +1,7 @@
-﻿using HtmlAgilityPack;
-using SceneryAddonsBrowser.Logging;
+﻿using Microsoft.Playwright;
 using SceneryAddonsBrowser.Models;
-using System.Diagnostics;
 using System.Net.Http;
-using HtmlDocument = HtmlAgilityPack.HtmlDocument;
+using System.Text.RegularExpressions;
 
 public class GsxProfileService
 {
@@ -15,25 +13,71 @@ public class GsxProfileService
             return;
 
         var icao = scenario.Icao.ToLowerInvariant();
-        var url = $"https://flightsim.to/others/gsx-pro/search/{icao}";
+        var url = $"https://flightsim.to/miscellaneous/gsx-pro?q={icao}";
 
         try
         {
             var html = await _httpClient.GetStringAsync(url);
 
-            if (html.Contains("/file/", StringComparison.OrdinalIgnoreCase))
+            var links = Regex.Matches(
+                html,
+                @"href=""(\/addon\/[^""]+)""",
+                RegexOptions.IgnoreCase
+            )
+            .Cast<Match>()
+            .Select(m => m.Groups[1].Value)
+            .Distinct()
+            .ToList();
+
+            int count = links.Count;
+
+            if (count > 0)
             {
-                scenario.GsxText = "GSX Profiles — View available profiles";
+                scenario.GsxText =
+                    $"GSX Profiles available ({count}) — View on flightsim.to";
+
                 scenario.GsxUrl = url;
             }
             else
             {
-                scenario.GsxText = "GSX Profiles — Not found";
+                scenario.GsxText =
+                    "GSX Profiles — Not found";
             }
         }
         catch
         {
-            scenario.GsxText = "GSX Profiles — Not available";
+            scenario.GsxText =
+                "GSX Profiles — Not available";
         }
+    }
+
+    public async Task<int> GetProfileCountAsync(string icao)
+    {
+        if (string.IsNullOrWhiteSpace(icao))
+            return 0;
+
+        var url = $"https://flightsim.to/miscellaneous/gsx-pro?q={icao.ToLower()}";
+
+        using var playwright = await Playwright.CreateAsync();
+
+        await using var browser = await playwright.Chromium.LaunchAsync(
+            new BrowserTypeLaunchOptions
+            {
+                Headless = true
+            });
+
+        var page = await browser.NewPageAsync();
+
+        await page.GotoAsync(url);
+
+        // Esperar que carguen los perfiles
+        await page.WaitForSelectorAsync("a[href^='/addon/']", new()
+        {
+            Timeout = 10000
+        });
+
+        var links = await page.QuerySelectorAllAsync("a[href^='/addon/']");
+
+        return links.Count;
     }
 }

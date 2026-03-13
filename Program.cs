@@ -7,7 +7,6 @@ namespace SceneryAddonsBrowser
         [STAThread]
         public static void Main(string[] args)
         {
-            // NECESARIO PARA VELOPACK
             VelopackApp.Build().Run();
 
             var app = new App();
