@@ -1,0 +1,401 @@
+//! Escáner de la carpeta Community de MSFS.
+//!
+//! Recorre cada subcarpeta inmediata, lee su `manifest.json`, y
+//! produce un `ScannedPackage` por cada paquete válido. La salida
+//! se persiste en `community_packages` (migración 005) — esa tabla
+//! es la fuente de verdad para la vista de mapa y el detector de
+//! actualizaciones, en vez de `installed_addons` (que sólo registra
+//! lo que se descargó a través de esta app).
+//!
+//! El escaneo es **sincrónico y bloqueante** porque:
+//!   · La carpeta Community vive en SSD local — leer 200 manifests
+//!     son ~200ms.
+//!   · Lo invocamos desde un `spawn_blocking` o desde una tarea
+//!     async normal — `std::fs` no requiere ceremonia adicional.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannedPackage {
+    pub folder_name: String,
+    pub install_path: String,
+    pub title: String,
+    pub creator: Option<String>,
+    pub content_type: Option<String>,
+    pub package_version: Option<String>,
+    pub minimum_game_version: Option<String>,
+    pub icao: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub folder_modified_at: Option<String>,
+    /// Cantidad de entries en `manifest.dependencies`. Usamos esto
+    /// para detectar liveries: en MSFS las liveries se declaran como
+    /// `content_type=AIRCRAFT` con dependencia al aircraft base, así
+    /// que `AIRCRAFT + deps>0` distingue livery de aircraft completo.
+    pub dependencies_count: usize,
+}
+
+/// Estructura literal del `manifest.json` de MSFS. Sólo
+/// deserializamos los campos que conocemos; el resto se ignora
+/// vía `#[serde(default)]` y comportamiento por defecto de serde.
+///
+/// El manifest puede traer `manufacturer` y/o `creator` — mostramos
+/// `creator` cuando exista (es lo que ven los usuarios en el sim);
+/// si no, caemos a `manufacturer`.
+#[derive(Debug, Deserialize)]
+struct RawManifest {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default)]
+    creator: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    package_version: Option<String>,
+    #[serde(default)]
+    minimum_game_version: Option<String>,
+    /// Array genérico — no nos importa la forma exacta, sólo cuántos
+    /// hay. Usar `serde_json::Value` evita modelar la estructura
+    /// (que varía entre paquetes).
+    #[serde(default)]
+    dependencies: Vec<serde_json::Value>,
+}
+
+/// Resultado del escaneo: paquetes encontrados + recuento de
+/// errores no fatales (manifests rotos, carpetas sin manifest…).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanReport {
+    pub packages: Vec<ScannedPackage>,
+    pub skipped_no_manifest: usize,
+    pub skipped_invalid_manifest: usize,
+    pub community_path: String,
+}
+
+/// Escanea Community recursivamente al primer nivel. No descendemos
+/// porque los paquetes de MSFS son siempre `Community/<paquete>/...`
+/// — `<paquete>/<sub>/manifest.json` no es válido.
+pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
+    let mut packages = Vec::new();
+    let mut skipped_no_manifest = 0usize;
+    let mut skipped_invalid_manifest = 0usize;
+
+    let entries = std::fs::read_dir(community_path)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let folder_name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+
+        let manifest_path = path.join("manifest.json");
+        if !manifest_path.is_file() {
+            skipped_no_manifest += 1;
+            continue;
+        }
+
+        match parse_manifest(&manifest_path) {
+            Ok(raw) => {
+                packages.push(materialize(&path, &folder_name, raw));
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "scanner: manifest inválido en {} ({:#})",
+                    manifest_path.display(),
+                    e
+                );
+                // Fallback: aún sin manifest válido, registramos el
+                // paquete con info derivada del folder name. Eso
+                // permite que el usuario lo vea en el mapa con un
+                // título plausible y nuestra heurística de ICAO.
+                skipped_invalid_manifest += 1;
+                packages.push(materialize_fallback(&path, &folder_name));
+            }
+        }
+    }
+
+    Ok(ScanReport {
+        packages,
+        skipped_no_manifest,
+        skipped_invalid_manifest,
+        community_path: community_path.to_string_lossy().into_owned(),
+    })
+}
+
+fn parse_manifest(path: &Path) -> anyhow::Result<RawManifest> {
+    let raw = std::fs::read_to_string(path)?;
+    // Algunos manifests de la comunidad traen comentarios o trailing
+    // commas — `serde_json::from_str` los rechaza. Sobre el universo
+    // típico funciona, y los rotos caen al fallback.
+    let parsed: RawManifest = serde_json::from_str(&raw)?;
+    Ok(parsed)
+}
+
+fn materialize(path: &Path, folder_name: &str, raw: RawManifest) -> ScannedPackage {
+    let title = raw
+        .title
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| pretty_folder_name(folder_name));
+
+    let creator = raw
+        .creator
+        .or(raw.manufacturer)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let content_type = raw
+        .content_type
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // ICAO sólo tiene sentido para SCENERY. Aplicar la heurística
+    // a AIRCRAFT/INSTRUMENT/MISC produce falsos positivos como
+    // "PMDG" → matching contra el aeropuerto Palmar Sur — y
+    // dispara notificaciones de update que el usuario reporta como
+    // "no tienen sentido". Para todo lo que no sea SCENERY el
+    // ICAO se queda en None de forma estricta.
+    let icao = if matches_scenery(&content_type) {
+        extract_icao(&title).or_else(|| extract_icao(folder_name))
+    } else {
+        None
+    };
+
+    let (size_bytes, folder_modified_at) = folder_metadata(path);
+
+    ScannedPackage {
+        folder_name: folder_name.to_string(),
+        install_path: path.to_string_lossy().into_owned(),
+        title,
+        creator,
+        content_type,
+        package_version: raw.package_version.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        minimum_game_version: raw
+            .minimum_game_version
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        icao,
+        size_bytes,
+        folder_modified_at,
+        dependencies_count: raw.dependencies.len(),
+    }
+}
+
+fn materialize_fallback(path: &Path, folder_name: &str) -> ScannedPackage {
+    let (size_bytes, folder_modified_at) = folder_metadata(path);
+    let title = pretty_folder_name(folder_name);
+    // Sin manifest válido no podemos saber si es SCENERY. Conservador:
+    // no extraemos ICAO para evitar falsos positivos cuando alguien
+    // tiene un livery o sound pack con folder name que parezca ICAO.
+    ScannedPackage {
+        folder_name: folder_name.to_string(),
+        install_path: path.to_string_lossy().into_owned(),
+        title,
+        creator: None,
+        content_type: None,
+        package_version: None,
+        minimum_game_version: None,
+        icao: None,
+        size_bytes,
+        folder_modified_at,
+        dependencies_count: 0,
+    }
+}
+
+#[inline]
+fn matches_scenery(content_type: &Option<String>) -> bool {
+    content_type
+        .as_deref()
+        .map(|s| s.trim().eq_ignore_ascii_case("SCENERY"))
+        .unwrap_or(false)
+}
+
+fn folder_metadata(path: &Path) -> (Option<u64>, Option<String>) {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return (None, None),
+    };
+    let size = directory_size(path).ok();
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());
+    (size, modified)
+}
+
+/// Suma el tamaño de los archivos del folder. Se consulta on-demand
+/// (no cacheada) — a 200 paquetes y miles de ficheros, sigue siendo
+/// inferior a 1s en SSD. El cache caería en `community_packages`
+/// y se invalidaría en cada scan.
+fn directory_size(path: &Path) -> std::io::Result<u64> {
+    let mut total: u64 = 0;
+    let mut stack: Vec<PathBuf> = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for entry in std::fs::read_dir(&p)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                stack.push(entry.path());
+            } else if kind.is_file() {
+                if let Ok(m) = entry.metadata() {
+                    total = total.saturating_add(m.len());
+                }
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Convierte `bravoairspace-airport-mdsd-las-americas` →
+/// `Bravoairspace Airport Mdsd Las Americas`. Heurística para
+/// fallback cuando no hay título en el manifest.
+fn pretty_folder_name(folder: &str) -> String {
+    folder
+        .split(|c: char| c == '-' || c == '_')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let mut chars = s.chars();
+            match chars.next() {
+                Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Extrae un ICAO (4 letras ASCII consecutivas) con frontera de
+/// palabra. Devuelve la primera coincidencia en mayúsculas. La
+/// validación contra airports reales se hace en el caller.
+fn extract_icao(text: &str) -> Option<String> {
+    let upper = text.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    if bytes.len() < 4 {
+        return None;
+    }
+    for i in 0..=bytes.len() - 4 {
+        let candidate = &bytes[i..i + 4];
+        if !candidate.iter().all(|b| b.is_ascii_alphabetic()) {
+            continue;
+        }
+        let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let after_ok = i + 4 == bytes.len() || !bytes[i + 4].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return String::from_utf8(candidate.to_vec()).ok();
+        }
+    }
+    None
+}
+
+/// Sincroniza los resultados del scan con la base de datos. Borra
+/// entradas que ya no existen físicamente (paquete desinstalado
+/// fuera de la app) y hace upsert del resto.
+pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Result<usize> {
+    let mut tx = pool.begin().await?;
+
+    // Borra los que ya no están — por exclusión del set actual.
+    if report.packages.is_empty() {
+        sqlx::query("DELETE FROM community_packages")
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        // SQLite no soporta `DELETE … WHERE x NOT IN (?,?,…)` con
+        // `bind` plural genérico; armamos placeholders manualmente.
+        let mut sql = String::from("DELETE FROM community_packages WHERE folder_name NOT IN (");
+        let mut first = true;
+        for _ in &report.packages {
+            if !first {
+                sql.push(',');
+            }
+            sql.push('?');
+            first = false;
+        }
+        sql.push(')');
+        let mut q = sqlx::query(&sql);
+        for p in &report.packages {
+            q = q.bind(&p.folder_name);
+        }
+        q.execute(&mut *tx).await?;
+    }
+
+    // Upsert por folder_name. Reemplazamos todos los campos en cada
+    // scan — más simple que diff incremental y suficientemente rápido.
+    for pkg in &report.packages {
+        sqlx::query(
+            r#"
+            INSERT INTO community_packages (
+                folder_name, install_path, title, creator, content_type,
+                package_version, minimum_game_version, icao, size_bytes,
+                folder_modified_at, dependencies_count, scanned_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+            ON CONFLICT(folder_name) DO UPDATE SET
+                install_path = excluded.install_path,
+                title = excluded.title,
+                creator = excluded.creator,
+                content_type = excluded.content_type,
+                package_version = excluded.package_version,
+                minimum_game_version = excluded.minimum_game_version,
+                icao = excluded.icao,
+                size_bytes = excluded.size_bytes,
+                folder_modified_at = excluded.folder_modified_at,
+                dependencies_count = excluded.dependencies_count,
+                scanned_at = datetime('now')
+            "#,
+        )
+        .bind(&pkg.folder_name)
+        .bind(&pkg.install_path)
+        .bind(&pkg.title)
+        .bind(&pkg.creator)
+        .bind(&pkg.content_type)
+        .bind(&pkg.package_version)
+        .bind(&pkg.minimum_game_version)
+        .bind(&pkg.icao)
+        .bind(pkg.size_bytes.map(|n| n as i64))
+        .bind(&pkg.folder_modified_at)
+        .bind(pkg.dependencies_count as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(report.packages.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pretty_folder_name_handles_dashes_and_underscores() {
+        assert_eq!(
+            pretty_folder_name("bravoairspace-airport-mdsd-las-americas"),
+            "Bravoairspace Airport Mdsd Las Americas"
+        );
+        assert_eq!(
+            pretty_folder_name("foo_bar-baz"),
+            "Foo Bar Baz"
+        );
+        assert_eq!(pretty_folder_name(""), "");
+    }
+
+    #[test]
+    fn icao_extraction_word_boundary() {
+        assert_eq!(extract_icao("MDSD Las Americas"), Some("MDSD".to_string()));
+        assert_eq!(extract_icao("bravoairspace-mdsd"), Some("MDSD".to_string()));
+        // 5 letras consecutivas no machean ICAO de 4
+        assert_eq!(extract_icao("MDSDX International"), None);
+        assert_eq!(extract_icao("a320 livery"), None);
+    }
+}
