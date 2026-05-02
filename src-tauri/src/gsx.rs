@@ -40,10 +40,21 @@ const BACKEND: &str = "https://flightsim.to/backend/files";
 /// `reqwest` (`reqwest/x.y`). Cualquier UA de navegador moderno vale.
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
-/// Cuántos perfiles pedir por barrido. flightsim.to tiene del orden de
-/// ~250 perfiles GSX activos al momento de escribir esto (abril 2026);
-/// 400 da margen sin pedirle gigantes a su backend.
-const CATALOG_LIMIT: usize = 400;
+/// Tamaño de página del backend de flightsim.to. El servidor **ignora**
+/// `limit` cuando supera 50 — siempre devuelve `perPage=50` aunque
+/// pidas 400. Así que iteramos páginas explícitamente.
+const PAGE_SIZE: usize = 50;
+
+/// Cap de seguridad: no descargar más de N páginas aunque el catálogo
+/// crezca. ~80 páginas × 50 = 4 000 perfiles, suficiente para los
+/// próximos años — y evita un loop infinito si la API miente sobre
+/// `totalPages`.
+const MAX_PAGES: usize = 80;
+
+/// Concurrencia para la descarga paralela de páginas. 8 simultáneas
+/// terminan el catálogo entero (~50 páginas) en ~3 s sin disparar
+/// rate-limits en flightsim.to.
+const PAGE_CONCURRENCY: usize = 8;
 
 /// TTL de las filas en `gsx_lookups`. Después de esto re-consultamos.
 /// Es deliberadamente generoso: el catálogo apenas cambia día a día.
@@ -76,6 +87,24 @@ pub struct GsxProfile {
 struct RawListResponse {
     #[serde(default)]
     data: Vec<RawProfile>,
+    #[serde(default)]
+    meta: Option<RawMeta>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct RawMeta {
+    // Conservados para futuros logs / diagnóstico aunque ahora sólo
+    // leamos `total_pages` en el flujo de paginación.
+    #[serde(default)]
+    total: usize,
+    #[serde(default)]
+    page: usize,
+    #[serde(default)]
+    per_page: usize,
+    #[serde(default)]
+    total_pages: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,13 +193,85 @@ impl GsxClient {
         Ok(fresh)
     }
 
+    /// Trae **el catálogo entero** de GSX Pro de flightsim.to
+    /// paginando todas las páginas en paralelo.
+    ///
+    /// Por qué paginamos: el endpoint `/backend/files/filter` ignora
+    /// `limit` y siempre devuelve `perPage=50`. Sin paginar
+    /// estábamos descargando sólo los 50 más recientes de los
+    /// ~2 500 perfiles totales, así que cualquier ICAO que no
+    /// estuviera en la home actual aparecía como "0 perfiles" —
+    /// el bug que el usuario reportó.
+    ///
+    /// Estrategia:
+    ///   1. Pedir página 1 — devuelve `meta.totalPages`.
+    ///   2. Lanzar páginas 2..=N en paralelo con semáforo.
+    ///   3. Concatenar todos los resultados.
+    ///
+    /// El cache en memoria (`MEMORY_CATALOG_TTL = 1h`) absorbe el
+    /// coste — sólo la primera consulta por hora paga el ~3 s de
+    /// descarga.
     async fn fetch_catalog(&self) -> anyhow::Result<Vec<GsxProfile>> {
-        let url = format!(
-            "{}/filter?cat=miscellaneous&sub_cat=gsx-pro&limit={}",
-            BACKEND, CATALOG_LIMIT
-        );
-        tracing::info!("gsx: fetching catalog from {}", url);
+        let started = std::time::Instant::now();
 
+        // Página 1 nos da el meta.totalPages. La pedimos aparte
+        // para conocer el shape antes de spawnear las demás.
+        let first = self.fetch_page(1).await?;
+        let total_pages = first
+            .meta
+            .map(|m| m.total_pages)
+            .unwrap_or(1)
+            .clamp(1, MAX_PAGES);
+
+        let mut all: Vec<RawProfile> = first.data;
+        tracing::info!(
+            "gsx: paginando catálogo — totalPages={}, first batch={}",
+            total_pages,
+            all.len()
+        );
+
+        if total_pages > 1 {
+            // Spawn de las páginas 2..=N con concurrencia limitada.
+            let sem = Arc::new(tokio::sync::Semaphore::new(PAGE_CONCURRENCY));
+            let mut handles = Vec::with_capacity(total_pages - 1);
+            for page in 2..=total_pages {
+                let sem = sem.clone();
+                let this = self.clone_for_task();
+                handles.push(tokio::spawn(async move {
+                    let _permit = sem.acquire().await.ok()?;
+                    match this.fetch_page(page).await {
+                        Ok(r) => Some(r.data),
+                        Err(e) => {
+                            tracing::warn!("gsx: página {page} falló: {e:#}");
+                            None
+                        }
+                    }
+                }));
+            }
+            for h in handles {
+                if let Ok(Some(items)) = h.await {
+                    all.extend(items);
+                }
+            }
+        }
+
+        let profiles: Vec<GsxProfile> = all.into_iter().map(GsxProfile::from).collect();
+        tracing::info!(
+            "gsx: catálogo completo ({} perfiles, {}ms)",
+            profiles.len(),
+            started.elapsed().as_millis()
+        );
+        Ok(profiles)
+    }
+
+    /// Helper: descarga una página específica del catálogo.
+    /// Devuelve la respuesta cruda con `data` + `meta` para que el
+    /// caller pueda decidir cuántas páginas más necesita.
+    async fn fetch_page(&self, page: usize) -> anyhow::Result<RawListResponse> {
+        let url = format!(
+            "{}/filter?cat=miscellaneous&sub_cat=gsx-pro&page={}&perPage={}",
+            BACKEND, page, PAGE_SIZE
+        );
         let resp = self
             .inner
             .http
@@ -184,11 +285,16 @@ impl GsxClient {
             .send()
             .await?
             .error_for_status()?;
-
         let raw: RawListResponse = resp.json().await?;
-        let profiles: Vec<GsxProfile> = raw.data.into_iter().map(GsxProfile::from).collect();
-        tracing::info!("gsx: catalog fetched ({} profiles)", profiles.len());
-        Ok(profiles)
+        Ok(raw)
+    }
+
+    /// Clon barato (`Arc` interno) para mover el cliente entre tareas
+    /// `tokio::spawn`. Necesario porque `&self` no es `'static`.
+    fn clone_for_task(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 
     /// Filtra el catálogo por ICAO. Empareja con frontera de palabra
@@ -259,12 +365,23 @@ pub async fn lookup_with_cache(
     }
 
     // Hit de caché válido → devolver tal cual.
+    //
+    // Excepción: tratamos entradas con resultado vacío (`[]`) como
+    // miss. Es la forma más simple de invalidar las cachés viejas
+    // que se grabaron cuando el catálogo en memoria sólo traía 50
+    // perfiles (bug pre-paginación). Re-evaluar contra el catálogo
+    // ahora completo es prácticamente gratis (HashMap lookup en
+    // memoria), y si la respuesta sigue siendo `[]` actualizamos la
+    // fila — coste insignificante por ICAO.
     if let Some(row) = repo::get_gsx_lookup(pool, &key).await? {
         if let Some(age) = parse_sqlite_datetime(&row.fetched_at) {
             if age < CACHE_TTL {
                 if let Ok(parsed) = serde_json::from_str::<Vec<GsxProfile>>(&row.profiles_json) {
-                    tracing::debug!("gsx: cache hit for {} ({} profiles)", key, parsed.len());
-                    return Ok(parsed);
+                    if !parsed.is_empty() {
+                        tracing::debug!("gsx: cache hit for {} ({} profiles)", key, parsed.len());
+                        return Ok(parsed);
+                    }
+                    tracing::debug!("gsx: cache miss revalidate (vacía) for {}", key);
                 }
             }
         }
