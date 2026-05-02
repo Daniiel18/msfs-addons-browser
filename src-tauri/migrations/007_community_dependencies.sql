@@ -1,0 +1,12 @@
+-- Añade contadores derivados del manifest a `community_packages`.
+--
+-- `dependencies_count` es la longitud del array `dependencies` del
+-- manifest. La heurística para detectar liveries es:
+--
+--   contentType == AIRCRAFT  AND  dependencies_count > 0
+--
+-- porque las liveries de MSFS se declaran como AIRCRAFT con una
+-- dependencia hacia el aircraft base. Persistirlo como columna
+-- evita re-parsear todos los manifests cada vez que el usuario
+-- abre la pestaña Addons.
+ALTER TABLE community_packages ADD COLUMN dependencies_count INTEGER NOT NULL DEFAULT 0;

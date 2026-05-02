@@ -1,0 +1,674 @@
+use std::path::Path;
+
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{ConnectOptions, SqlitePool};
+
+pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
+    let db_path = app_data_dir.join("msfs-addons.db");
+    tracing::info!("opening database at {}", db_path.display());
+
+    let opts = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .log_statements(tracing::log::LevelFilter::Debug);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(opts)
+        .await?;
+
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    Ok(pool)
+}
+
+pub mod repo {
+    use sqlx::SqlitePool;
+
+    use crate::sources::Addon;
+
+    pub async fn upsert_addon(pool: &SqlitePool, addon: &Addon) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO addons (id, source, title, developer, name, version, icao, simulator, page_url)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                developer = excluded.developer,
+                name = excluded.name,
+                version = excluded.version,
+                icao = excluded.icao,
+                simulator = excluded.simulator,
+                page_url = excluded.page_url,
+                last_seen_at = datetime('now')
+            "#,
+        )
+        .bind(&addon.id)
+        .bind(&addon.source)
+        .bind(&addon.title)
+        .bind(&addon.developer)
+        .bind(&addon.name)
+        .bind(&addon.version)
+        .bind(&addon.icao)
+        .bind(&addon.simulator)
+        .bind(&addon.page_url)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Contexto necesario para registrar una instalación en DB. Los
+    /// campos opcionales se usan cuando tenemos un addon-origen
+    /// (descarga por torrent desde una fuente conocida); para una
+    /// instalación manual basta con `title` + `install_path` + `size`.
+    #[derive(Debug, Clone)]
+    pub struct InstallRecord {
+        pub id: String,
+        pub addon_id: Option<String>,
+        pub source: Option<String>,
+        pub title: String,
+        pub name: Option<String>,
+        pub developer: Option<String>,
+        pub version: Option<String>,
+        pub install_path: String,
+        pub size_bytes: Option<i64>,
+    }
+
+    /// Inserta una fila nueva en `installed_addons`. No hace upsert: cada
+    /// instalación es un evento independiente, aunque se sobrescriba una
+    /// previa del mismo addon — eso nos deja ver el historial completo.
+    pub async fn record_install(pool: &SqlitePool, rec: &InstallRecord) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO installed_addons (
+                id, addon_id, source, title, name, developer, version,
+                install_path, size_bytes
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(&rec.id)
+        .bind(&rec.addon_id)
+        .bind(&rec.source)
+        .bind(&rec.title)
+        .bind(&rec.name)
+        .bind(&rec.developer)
+        .bind(&rec.version)
+        .bind(&rec.install_path)
+        .bind(&rec.size_bytes)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Elimina una fila del historial. No toca el disco — el borrado
+    /// físico de la carpeta en Community es un paso aparte (y por
+    /// ahora opcional, confirmado por el usuario).
+    pub async fn forget_install(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM installed_addons WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Fila enriquecida que viaja al frontend. Los campos adicionales
+    /// (vs la definición antigua) son los denormalizados en la migración
+    /// 002 para que las instalaciones manuales — sin fila en `addons` —
+    /// también se puedan mostrar sin JOIN.
+    #[derive(Debug, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct InstalledAddonRow {
+        pub id: String,
+        pub addon_id: Option<String>,
+        pub source: Option<String>,
+        pub title: String,
+        pub name: Option<String>,
+        pub developer: Option<String>,
+        pub version: Option<String>,
+        pub install_path: String,
+        pub size_bytes: Option<i64>,
+        pub installed_at: String,
+    }
+
+    pub async fn list_installed(pool: &SqlitePool) -> anyhow::Result<Vec<InstalledAddonRow>> {
+        let rows = sqlx::query_as::<_, InstalledAddonRow>(
+            r#"
+            SELECT id, addon_id, source, title, name, developer, version,
+                   install_path, size_bytes, installed_at
+            FROM installed_addons
+            ORDER BY installed_at DESC
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Fila bruta de la caché de GSX. Devolvemos el JSON sin parsear
+    /// porque la deserialización vive en `gsx::cache_get` — así el
+    /// repo no depende del struct concreto del scraper.
+    #[derive(Debug, sqlx::FromRow)]
+    pub struct GsxCacheRow {
+        pub profiles_json: String,
+        pub fetched_at: String,
+    }
+
+    pub async fn get_gsx_lookup(
+        pool: &SqlitePool,
+        icao: &str,
+    ) -> anyhow::Result<Option<GsxCacheRow>> {
+        let row = sqlx::query_as::<_, GsxCacheRow>(
+            r#"SELECT profiles_json, fetched_at FROM gsx_lookups WHERE icao = ?1"#,
+        )
+        .bind(icao)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Inserta o reemplaza la entrada de caché para `icao`. El payload
+    /// debe ser un JSON serializado de `Vec<GsxProfile>` — vacío vale
+    /// como negative cache para no reintentar contra flightsim.to.
+    pub async fn set_gsx_lookup(
+        pool: &SqlitePool,
+        icao: &str,
+        profiles_json: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO gsx_lookups (icao, profiles_json, fetched_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(icao) DO UPDATE SET
+                profiles_json = excluded.profiles_json,
+                fetched_at = excluded.fetched_at
+            "#,
+        )
+        .bind(icao)
+        .bind(profiles_json)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Community packages
+    // -----------------------------------------------------------------
+
+    /// Fila enriquecida con coordenadas resueltas (cuando el ICAO
+    /// del paquete existe en `airports`). Es lo que pinta el mapa.
+    /// Usamos Option para lat/lon porque hay paquetes legítimos sin
+    /// ICAO conocido (livery packs, sound packs) — siguen apareciendo
+    /// en la lista lateral pero no en el mapa.
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CommunityPackageRow {
+        pub folder_name: String,
+        pub install_path: String,
+        pub title: String,
+        pub creator: Option<String>,
+        pub content_type: Option<String>,
+        pub package_version: Option<String>,
+        pub minimum_game_version: Option<String>,
+        pub icao: Option<String>,
+        pub size_bytes: Option<i64>,
+        pub folder_modified_at: Option<String>,
+        pub dependencies_count: i64,
+        pub scanned_at: String,
+        pub airport_name: Option<String>,
+        pub latitude: Option<f64>,
+        pub longitude: Option<f64>,
+    }
+
+    pub async fn list_community_packages(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Vec<CommunityPackageRow>> {
+        let rows = sqlx::query_as::<_, CommunityPackageRow>(
+            r#"
+            SELECT cp.folder_name,
+                   cp.install_path,
+                   cp.title,
+                   cp.creator,
+                   cp.content_type,
+                   cp.package_version,
+                   cp.minimum_game_version,
+                   cp.icao,
+                   cp.size_bytes,
+                   cp.folder_modified_at,
+                   cp.dependencies_count,
+                   cp.scanned_at,
+                   ap.name      AS airport_name,
+                   ap.latitude  AS latitude,
+                   ap.longitude AS longitude
+            FROM community_packages cp
+            LEFT JOIN airports ap ON ap.icao = UPPER(cp.icao)
+            ORDER BY cp.title COLLATE NOCASE ASC
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Devuelve los ICAO únicos detectados en Community que tienen
+    /// `package_version`. Es la lista que el detector de actualizaciones
+    /// usa para ir a interrogar las fuentes.
+    pub async fn community_icaos_with_version(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT UPPER(icao) FROM community_packages
+            WHERE icao IS NOT NULL AND icao <> ''
+              AND package_version IS NOT NULL AND package_version <> ''
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
+
+    /// Una update detectada: el paquete local + la mejor versión que
+    /// hay en el catálogo (`addons.version`) para el mismo ICAO.
+    /// La comparación de versiones la hacemos en Rust (no SQL) porque
+    /// SQLite no entiende semver.
+    #[derive(Debug, Clone, sqlx::FromRow)]
+    pub struct UpdateCandidate {
+        pub folder_name: String,
+        pub title: String,
+        pub icao: String,
+        pub installed_version: String,
+        pub catalog_version: String,
+        pub catalog_source: String,
+        pub catalog_addon_id: String,
+        pub catalog_page_url: String,
+    }
+
+    // -----------------------------------------------------------------
+    // Cache de update checks
+    // -----------------------------------------------------------------
+
+    #[derive(Debug, Clone, sqlx::FromRow)]
+    pub struct UpdateCheckCacheRow {
+        pub icao: String,
+        pub source: String,
+        pub last_known_version: Option<String>,
+        pub catalog_addon_id: Option<String>,
+        pub checked_at: String,
+    }
+
+    pub async fn get_update_check_cache(
+        pool: &SqlitePool,
+        icao: &str,
+        source: &str,
+    ) -> anyhow::Result<Option<UpdateCheckCacheRow>> {
+        let row = sqlx::query_as::<_, UpdateCheckCacheRow>(
+            r#"
+            SELECT icao, source, last_known_version, catalog_addon_id, checked_at
+            FROM update_check_cache
+            WHERE icao = ?1 AND source = ?2
+            "#,
+        )
+        .bind(icao)
+        .bind(source)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn set_update_check_cache(
+        pool: &SqlitePool,
+        icao: &str,
+        source: &str,
+        last_known_version: Option<&str>,
+        catalog_addon_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO update_check_cache (icao, source, last_known_version, catalog_addon_id, checked_at)
+            VALUES (?1, ?2, ?3, ?4, datetime('now'))
+            ON CONFLICT(icao, source) DO UPDATE SET
+                last_known_version = excluded.last_known_version,
+                catalog_addon_id   = excluded.catalog_addon_id,
+                checked_at         = excluded.checked_at
+            "#,
+        )
+        .bind(icao)
+        .bind(source)
+        .bind(last_known_version)
+        .bind(catalog_addon_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Devuelve **todos** los matches catalog ↔ community por ICAO.
+    /// Un mismo `folder_name` puede aparecer N veces (uno por cada
+    /// addon en el catálogo con ese ICAO). El caller (`updates.rs`)
+    /// agrupa por folder y se queda con el de **mayor versión** —
+    /// no con el más reciente, que es lo que daba notificaciones
+    /// equivocadas (la última fuente buscada ganaba aunque tuviera
+    /// versión inferior).
+    // -----------------------------------------------------------------
+    // Updates descartadas por el usuario ("marcar como vista")
+    // -----------------------------------------------------------------
+
+    /// Inserta o reemplaza una entrada — una update queda oculta
+    /// hasta que el usuario pulse "Recargar" o la instale.
+    pub async fn dismiss_update(pool: &SqlitePool, folder_name: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO dismissed_updates (folder_name, dismissed_at)
+            VALUES (?1, datetime('now'))
+            ON CONFLICT(folder_name) DO UPDATE SET dismissed_at = excluded.dismissed_at
+            "#,
+        )
+        .bind(folder_name)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Limpia todas las descartadas — el panel de notificaciones
+    /// llama a esto antes de cada refresh manual para que las
+    /// pendientes siempre vuelvan a aparecer.
+    pub async fn clear_dismissed_updates(pool: &SqlitePool) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM dismissed_updates")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Devuelve el set de folder_names dismissed. Lo cargamos una
+    /// vez en `compute_available` y filtramos en memoria — más
+    /// barato que JOIN cuando hay sólo decenas de filas.
+    pub async fn list_dismissed_folder_names(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT folder_name FROM dismissed_updates")
+            .fetch_all(pool)
+            .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
+
+    // -----------------------------------------------------------------
+    // Diagnóstico de updates
+    // -----------------------------------------------------------------
+
+    /// Snapshot estructurado de toda la cadena de detección de
+    /// updates para un paquete concreto. Lo expone un comando Tauri
+    /// para que la UI pueda mostrar exactamente qué eslabón está
+    /// fallando — sin pedirle al usuario que mire logs ni edite
+    /// SQL a mano.
+    #[derive(Debug, Clone, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct UpdateDiagnostic {
+        pub folder_name: String,
+        /// Filas de `community_packages` para ese folder. Si vacío,
+        /// el paquete ni siquiera está escaneado en DB.
+        pub package: Option<DiagPackage>,
+        /// Match en la tabla `airports` por el ICAO del paquete.
+        /// `None` si el ICAO no está en OurAirports (o el paquete
+        /// no tiene ICAO).
+        pub airport_match: Option<DiagAirport>,
+        /// Filas de `addons` con el mismo ICAO. Sirve para ver qué
+        /// versiones tiene el catálogo cacheadas.
+        pub catalog_entries: Vec<DiagCatalog>,
+        /// Filas en `update_check_cache` para este ICAO — útil para
+        /// ver si el refresh está saltándose la query por TTL.
+        pub cache_entries: Vec<DiagCache>,
+        /// Razón por la cual la update **no** está apareciendo, en
+        /// lenguaje humano. `None` cuando sí hay update visible.
+        pub blocker: Option<String>,
+        /// Si todo está bien y hay update, los detalles que se
+        /// emitirían en el panel de notificaciones.
+        pub would_emit: Option<DiagWouldEmit>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DiagPackage {
+        pub icao: Option<String>,
+        pub package_version: Option<String>,
+        pub content_type: Option<String>,
+        pub title: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DiagAirport {
+        pub icao: String,
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DiagCatalog {
+        pub source: String,
+        pub addon_id: String,
+        pub title: String,
+        pub version: Option<String>,
+        pub last_seen_at: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DiagCache {
+        pub source: String,
+        pub last_known_version: Option<String>,
+        pub checked_at: String,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DiagWouldEmit {
+        pub installed_version: String,
+        pub latest_version: String,
+        pub source: String,
+    }
+
+    /// Construye el diagnóstico completo para `folder_name`. Hace
+    /// varias queries — está pensado para invocación on-demand
+    /// (botón en el modal), no para correr en cada render.
+    pub async fn diagnose_for_folder(
+        pool: &SqlitePool,
+        folder_name: &str,
+    ) -> anyhow::Result<UpdateDiagnostic> {
+        // 1. Paquete en community_packages
+        let package: Option<DiagPackage> = sqlx::query_as::<_, DiagPackage>(
+            r#"
+            SELECT icao, package_version, content_type, title
+            FROM community_packages
+            WHERE folder_name = ?1
+            "#,
+        )
+        .bind(folder_name)
+        .fetch_optional(pool)
+        .await?;
+
+        let icao_upper = package
+            .as_ref()
+            .and_then(|p| p.icao.as_ref())
+            .map(|s| s.trim().to_ascii_uppercase())
+            .filter(|s| !s.is_empty());
+
+        // 2. Airport match
+        let airport_match: Option<DiagAirport> = if let Some(icao) = icao_upper.as_deref() {
+            sqlx::query_as::<_, DiagAirport>(
+                "SELECT icao, name FROM airports WHERE icao = ?1",
+            )
+            .bind(icao)
+            .fetch_optional(pool)
+            .await?
+        } else {
+            None
+        };
+
+        // 3. Catalog entries por ICAO
+        let catalog_entries: Vec<DiagCatalog> = if let Some(icao) = icao_upper.as_deref() {
+            sqlx::query_as::<_, DiagCatalog>(
+                r#"
+                SELECT source, id AS addon_id, title, version, last_seen_at
+                FROM addons
+                WHERE UPPER(icao) = ?1
+                ORDER BY last_seen_at DESC
+                "#,
+            )
+            .bind(icao)
+            .fetch_all(pool)
+            .await?
+        } else {
+            Vec::new()
+        };
+
+        // 4. Cache entries por ICAO
+        let cache_entries: Vec<DiagCache> = if let Some(icao) = icao_upper.as_deref() {
+            sqlx::query_as::<_, DiagCache>(
+                r#"
+                SELECT source, last_known_version, checked_at
+                FROM update_check_cache
+                WHERE UPPER(icao) = ?1
+                ORDER BY checked_at DESC
+                "#,
+            )
+            .bind(icao)
+            .fetch_all(pool)
+            .await?
+        } else {
+            Vec::new()
+        };
+
+        // 5. Determinar blocker
+        let mut blocker: Option<String> = None;
+        let mut would_emit: Option<DiagWouldEmit> = None;
+
+        if package.is_none() {
+            blocker = Some(format!(
+                "El paquete '{}' no está en community_packages — re-escanea Community.",
+                folder_name
+            ));
+        } else if let Some(pkg) = package.as_ref() {
+            if pkg.icao.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                blocker = Some(
+                    "El paquete no tiene ICAO extraído. Sin ICAO no se puede cruzar con el catálogo. Causas típicas: el manifest no tiene 'SCENERY' como content_type, o el título/folder no contiene un código ICAO de 4 letras."
+                        .to_string(),
+                );
+            } else if pkg
+                .content_type
+                .as_deref()
+                .map(|s| !s.eq_ignore_ascii_case("SCENERY"))
+                .unwrap_or(true)
+            {
+                blocker = Some(format!(
+                    "content_type es '{}' — la detección de updates exige 'SCENERY'. Si crees que es scenery, edita el manifest.",
+                    pkg.content_type.as_deref().unwrap_or("(vacío)")
+                ));
+            } else if pkg
+                .package_version
+                .as_ref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+            {
+                blocker = Some(
+                    "El manifest no declara 'package_version'. Sin versión instalada no se puede comparar."
+                        .to_string(),
+                );
+            } else if airport_match.is_none() {
+                blocker = Some(format!(
+                    "El ICAO '{}' no existe en la tabla 'airports' (dataset OurAirports). Sin esto se descartan falsos positivos. Si el ICAO es real, dispara 'refresh airports dataset' o verifica que se hayan descargado los datos.",
+                    icao_upper.as_deref().unwrap_or("?")
+                ));
+            } else {
+                let with_version: Vec<&DiagCatalog> = catalog_entries
+                    .iter()
+                    .filter(|e| e.version.as_ref().map(|v| !v.trim().is_empty()).unwrap_or(false))
+                    .collect();
+
+                if with_version.is_empty() {
+                    blocker = Some(format!(
+                        "El catálogo (addons) no tiene ninguna entrada con versión para ICAO '{}'. Causas: la búsqueda en SceneryAddons/Simplaza no devolvió nada con ese ICAO, o el parser no extrajo la versión del título. Pulsa 'Refresh updates' o busca el ICAO manualmente para alimentar la cache.",
+                        icao_upper.as_deref().unwrap_or("?")
+                    ));
+                } else {
+                    // Pick max version (string compare lenient — el caller
+                    // tiene la lógica real, aquí la simplificamos para
+                    // diagnostico).
+                    let installed = pkg.package_version.clone().unwrap_or_default();
+                    let best = with_version
+                        .iter()
+                        .max_by(|a, b| {
+                            a.version
+                                .as_deref()
+                                .unwrap_or("")
+                                .cmp(b.version.as_deref().unwrap_or(""))
+                        })
+                        .unwrap();
+                    let latest = best.version.clone().unwrap_or_default();
+                    if latest <= installed {
+                        blocker = Some(format!(
+                            "Versión instalada '{}' >= mejor versión catalogada '{}' — no hay update real.",
+                            installed, latest
+                        ));
+                    } else {
+                        would_emit = Some(DiagWouldEmit {
+                            installed_version: installed,
+                            latest_version: latest,
+                            source: best.source.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(UpdateDiagnostic {
+            folder_name: folder_name.to_string(),
+            package,
+            airport_match,
+            catalog_entries,
+            cache_entries,
+            blocker,
+            would_emit,
+        })
+    }
+
+    pub async fn catalog_versions_for_community(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Vec<UpdateCandidate>> {
+        // Triple JOIN — además de match por ICAO entre community_packages
+        // y addons, exigimos que el ICAO exista en la tabla `airports`
+        // (dataset OurAirports). Eso elimina por completo los falsos
+        // positivos que generaba el extractor regex cuando capturaba
+        // tokens de 4 letras que NO son aeropuertos pero coincidían
+        // por accidente con otra fila de addons (ej. "PMDG", "MSFS").
+        // Si el ICAO no existe en aeropuertos reales, no hay update
+        // que reportar — punto.
+        //
+        // Restricción adicional: sólo paquetes cuyo content_type sea
+        // SCENERY. AIRCRAFT/MISC/INSTRUMENT no tienen ICAO conceptual
+        // y cualquier match es ruido.
+        let rows = sqlx::query_as::<_, UpdateCandidate>(
+            r#"
+            SELECT cp.folder_name        AS folder_name,
+                   cp.title              AS title,
+                   UPPER(cp.icao)        AS icao,
+                   cp.package_version    AS installed_version,
+                   a.version             AS catalog_version,
+                   a.source              AS catalog_source,
+                   a.id                  AS catalog_addon_id,
+                   a.page_url            AS catalog_page_url
+            FROM community_packages cp
+            INNER JOIN addons a    ON UPPER(a.icao)  = UPPER(cp.icao)
+            INNER JOIN airports ap ON ap.icao        = UPPER(cp.icao)
+            WHERE cp.package_version IS NOT NULL
+              AND cp.package_version <> ''
+              AND a.version IS NOT NULL
+              AND a.version <> ''
+              AND UPPER(cp.content_type) = 'SCENERY'
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+}

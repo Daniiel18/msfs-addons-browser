@@ -1,0 +1,77 @@
+[package]
+name = "msfs-addons-browser"
+version = "0.1.0"
+description = "MSFS Addons Browser — search and install scenery from SceneryAddons & Simplaza"
+authors = ["n0xful"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "msfs_addons_browser_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+# Selector de archivos nativo para el instalador manual ("Instalar desde
+# archivo…"). Usado sólo desde el frontend — aquí lo registramos para
+# que exista el endpoint IPC correspondiente.
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures-util = "0.3"
+
+# TLS: use the OS-native backend (schannel on Windows, Secure Transport on
+# macOS). Avoids pulling in aws-lc-sys — which needs NASM at build time on
+# Windows — via librqbit's transitive rustls dep.
+reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "brotli", "stream", "cookies"] }
+scraper = "0.20"
+url = "2"
+urlencoding = "2"
+uuid = { version = "1", features = ["v4"] }
+
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Descompresores para los formatos que la escena MSFS usa más:
+#   · RAR — la mayoría de torrents de SceneryAddons/Simplaza llegan así.
+#     `unrar` envuelve el código C de RARLAB y maneja volúmenes
+#     múltiples (foo.part1.rar + foo.part2.rar…) automáticamente.
+#   · 7z  — ocasional pero común en paquetes grandes. `sevenz-rust2` es
+#     un fork puro-Rust, activo y sin dependencias nativas.
+unrar = "0.5"
+sevenz-rust2 = "0.13"
+tempfile = "3"
+
+# Embedded BitTorrent client. Using default TLS (via reqwest/default-tls)
+# keeps us on schannel on Windows — the `rust-tls` feature pulls in
+# rustls → aws-lc-sys, which requires NASM at build time on Windows.
+librqbit = { version = "8", default-features = false, features = ["default-tls"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+anyhow = "1"
+thiserror = "1"
+regex = "1"
+once_cell = "1"
+# Comparación de versiones para el chequeo de actualizaciones — el tag
+# de GitHub se parsea con `Version::parse` y se compara contra
+# `CARGO_PKG_VERSION`. Standard de facto en el ecosistema Rust.
+semver = "1"
+# Parser CSV streaming para bajar y digerir el dataset de OurAirports
+# (https://davidmegginson.github.io/ourairports-data/airports.csv).
+# ~80k filas, ~7MB; en streaming es trivial.
+csv = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
+tracing-appender = "0.2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
