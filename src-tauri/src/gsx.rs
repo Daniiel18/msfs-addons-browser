@@ -45,16 +45,21 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 /// pidas 400. Así que iteramos páginas explícitamente.
 const PAGE_SIZE: usize = 50;
 
-/// Cap de seguridad: no descargar más de N páginas aunque el catálogo
-/// crezca. ~80 páginas × 50 = 4 000 perfiles, suficiente para los
-/// próximos años — y evita un loop infinito si la API miente sobre
-/// `totalPages`.
-const MAX_PAGES: usize = 80;
+/// Cap de seguridad: no descargar más de N páginas aunque la API
+/// reporte más en `totalPages`. Hoy flightsim.to dice ~212 páginas
+/// (~10 600 perfiles); 300 nos da margen para crecimiento sin
+/// permitir un loop infinito si la API miente.
+///
+/// Nota histórica: empezó en 80 cuando el meta decía total=2 536.
+/// El usuario reportó "EGAC dice 1 cuando hay 4" — los 3 perfiles
+/// ausentes eran de 3 años atrás, fuera de la ventana de 4 000.
+/// Subir el cap a 300 cubre el catálogo entero hoy y mañana.
+const MAX_PAGES: usize = 300;
 
-/// Concurrencia para la descarga paralela de páginas. 8 simultáneas
-/// terminan el catálogo entero (~50 páginas) en ~3 s sin disparar
-/// rate-limits en flightsim.to.
-const PAGE_CONCURRENCY: usize = 8;
+/// Concurrencia para la descarga paralela de páginas. 16 simultáneas
+/// terminan el catálogo entero (~212 páginas) en ~7 s sin disparar
+/// rate-limits en flightsim.to. Probado contra el endpoint real.
+const PAGE_CONCURRENCY: usize = 16;
 
 /// TTL de las filas en `gsx_lookups`. Después de esto re-consultamos.
 /// Es deliberadamente generoso: el catálogo apenas cambia día a día.
