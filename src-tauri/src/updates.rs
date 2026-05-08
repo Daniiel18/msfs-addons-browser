@@ -178,18 +178,30 @@ pub async fn refresh_for_installed(
 ) -> anyhow::Result<RefreshSummary> {
     let started = std::time::Instant::now();
     let icaos = repo::community_icaos_with_version(pool).await?;
+    let keywords = repo::community_addon_keywords_with_version(pool).await?;
+    // Mezcla ICAOs (SCENERY) + keywords del título (AIRCRAFT/MISC).
+    // Eso hace que las búsquedas de Simplaza alimenten la cache
+    // del catálogo para aviones — sin lo cual `compute_available`
+    // nunca encontraba updates de PMDG, Fenix, etc.
+    let mut search_terms: Vec<String> = Vec::with_capacity(icaos.len() + keywords.len());
+    search_terms.extend(icaos);
+    search_terms.extend(keywords);
+    search_terms.sort();
+    search_terms.dedup();
+
     let mut summary = RefreshSummary {
-        icaos_checked: icaos.len(),
+        icaos_checked: search_terms.len(),
         queries_run: 0,
         queries_skipped_cached: 0,
         queries_failed: 0,
         addons_seen: 0,
         elapsed_ms: 0,
     };
-    if icaos.is_empty() || sources.is_empty() {
+    if search_terms.is_empty() || sources.is_empty() {
         summary.elapsed_ms = started.elapsed().as_millis();
         return Ok(summary);
     }
+    let icaos = search_terms;
 
     // Construir la lista de pares (icao, source) que necesitan
     // verificación. Lo hacemos secuencial pero es ligero — sólo

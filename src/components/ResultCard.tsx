@@ -50,37 +50,58 @@ function normalizeTitle(s: string): string {
     .trim();
 }
 
+/** True si dos cadenas (creator del manifest y developer del
+ *  catálogo) corresponden plausiblemente al mismo dueño.
+ *  Substring case-insensitive — tolera "Aerosoft" vs "Aerosoft GmbH". */
+function sameCreator(a: string | null | undefined, b: string | null | undefined): boolean {
+  const aa = (a ?? "").trim().toLowerCase();
+  const bb = (b ?? "").trim().toLowerCase();
+  if (!aa || !bb) return false;
+  return aa.includes(bb) || bb.includes(aa);
+}
+
 function deriveInstallState(
   addon: Addon,
   packages: CommunityPackage[],
 ): InstallState {
-  if (!addon.icao) return { kind: "not-installed" };
-  const target = addon.icao.toUpperCase();
-  // Filtramos por ICAO primero — la fuente más confiable para
-  // limitar el espacio de búsqueda. Después afinamos por nombre
-  // para distinguir variantes ("(Merged)" vs "(Converted)" del
-  // mismo aeropuerto, que el usuario reportó como falso positivo).
-  const sameIcao = packages.filter(
-    (p) => p.icao && p.icao.toUpperCase() === target,
-  );
-  if (sameIcao.length === 0) return { kind: "not-installed" };
+  // Match consistente con el detector backend:
+  //   A. SCENERY → ICAO + creator/developer.
+  //   B. AIRCRAFT/livery/etc → creator/developer + título (substring).
+  //
+  // Un match estricto por creator evita falsos "Instalado" cuando
+  // hay dos sceneries del mismo ICAO de devs distintos (Aerosoft
+  // EBBR + JustSim EBBR — solo el realmente instalado debe marcarse).
 
-  // Match exacto por título normalizado: el resultado "LFPG ...
-  // (Merged)" sólo se considera instalado si existe un paquete
-  // con ese mismo título. Sin esto, ambos resultados (Merged y
-  // Converted) aparecían como "instalado" simplemente porque
-  // compartían ICAO.
-  const addonNormalized = normalizeTitle(addon.name);
-  const exactMatch = sameIcao.find(
-    (p) => normalizeTitle(p.title) === addonNormalized,
-  );
+  let exactMatch: CommunityPackage | undefined;
 
-  if (!exactMatch) {
-    // Hay scenery del mismo ICAO instalado pero no es exactamente
-    // este resultado. Tratamos como "no instalado" para que el
-    // usuario pueda descargarlo si quiere otra variante.
-    return { kind: "not-installed" };
+  // Camino A — ICAO + creator
+  if (addon.icao) {
+    const target = addon.icao.toUpperCase();
+    const sameIcao = packages.filter(
+      (p) => p.icao && p.icao.toUpperCase() === target,
+    );
+    if (sameIcao.length > 0 && addon.developer) {
+      exactMatch = sameIcao.find((p) => sameCreator(p.creator, addon.developer));
+    }
+    if (!exactMatch) {
+      const addonNorm = normalizeTitle(addon.name);
+      exactMatch = sameIcao.find(
+        (p) => normalizeTitle(p.title) === addonNorm,
+      );
+    }
   }
+
+  // Camino B — creator + título (sin ICAO, AIRCRAFT)
+  if (!exactMatch && addon.developer) {
+    exactMatch = packages.find((p) => {
+      if (!sameCreator(p.creator, addon.developer)) return false;
+      const a = addon.name.toLowerCase();
+      const b = p.title.toLowerCase();
+      return a.includes(b) || b.includes(a);
+    });
+  }
+
+  if (!exactMatch) return { kind: "not-installed" };
 
   const pkg = exactMatch;
 

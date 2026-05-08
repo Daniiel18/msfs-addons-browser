@@ -160,11 +160,39 @@ pub async fn package_thumbnail(
     Ok(find_thumbnail(&root, 0))
 }
 
-/// BFS por el árbol del paquete buscando `thumbnail.jpg` /
-/// `thumbnail.png` (case-insensitive). Profundidad 4 cubre la
-/// estructura de aircraft (SimObjects/Airplanes/<plane>/texture.X/
-/// thumbnail.jpg) sin recorrer todo el dataset de scenery.
-fn find_thumbnail(dir: &std::path::Path, depth: usize) -> Option<String> {
+/// Dos pasadas:
+///   1. Imágenes con keyword conocida (thumbnail/preview/icon/...).
+///   2. Cualquier `.jpg`/`.png`/`.webp` >= 8 KB (skip iconos
+///      diminutos que se ven feos como banner).
+///
+/// Cubre el caso de Aerosoft, Drzewiecki, FSDreamTeam — distribuyen
+/// previews con nombres arbitrarios que el filtro estricto rechazaba.
+fn find_thumbnail(dir: &std::path::Path, _depth: usize) -> Option<String> {
+    if let Some(p) = find_image_named(dir, 0) {
+        return Some(p);
+    }
+    find_any_image(dir, 0)
+}
+
+fn is_image_ext(ext: &str) -> bool {
+    matches!(ext, "jpg" | "jpeg" | "png" | "webp")
+}
+
+fn looks_like_thumbnail(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    [
+        "thumbnail",
+        "preview",
+        "icon",
+        "marketing",
+        "screenshot",
+        "splash",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn find_image_named(dir: &std::path::Path, depth: usize) -> Option<String> {
     if depth > 4 || !dir.is_dir() {
         return None;
     }
@@ -175,12 +203,13 @@ fn find_thumbnail(dir: &std::path::Path, depth: usize) -> Option<String> {
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_file() {
             let name = entry.file_name();
-            let lower = name.to_string_lossy().to_lowercase();
-            if (lower.starts_with("thumbnail") || lower.starts_with("preview"))
-                && (lower.ends_with(".jpg")
-                    || lower.ends_with(".jpeg")
-                    || lower.ends_with(".png"))
-            {
+            let name_str = name.to_string_lossy();
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            if is_image_ext(&ext) && looks_like_thumbnail(&name_str) {
                 return Some(path.to_string_lossy().into_owned());
             }
         } else if ft.is_dir() {
@@ -188,7 +217,41 @@ fn find_thumbnail(dir: &std::path::Path, depth: usize) -> Option<String> {
         }
     }
     for sub in subdirs {
-        if let Some(found) = find_thumbnail(&sub, depth + 1) {
+        if let Some(found) = find_image_named(&sub, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_any_image(dir: &std::path::Path, depth: usize) -> Option<String> {
+    if depth > 4 || !dir.is_dir() {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_file() {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            if is_image_ext(&ext) {
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if meta.len() >= 8 * 1024 {
+                        return Some(path.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        } else if ft.is_dir() {
+            subdirs.push(path);
+        }
+    }
+    for sub in subdirs {
+        if let Some(found) = find_any_image(&sub, depth + 1) {
             return Some(found);
         }
     }

@@ -262,11 +262,45 @@ pub mod repo {
             SELECT DISTINCT UPPER(icao) FROM community_packages
             WHERE icao IS NOT NULL AND icao <> ''
               AND package_version IS NOT NULL AND package_version <> ''
+              AND UPPER(content_type) = 'SCENERY'
             "#,
         )
         .fetch_all(pool)
         .await?;
         Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
+
+    /// Términos de búsqueda extra para refrescar updates de
+    /// AIRCRAFT/INSTRUMENT/MISC. Como esos no tienen ICAO, usamos
+    /// la primera palabra distintiva del título — suficiente para
+    /// que el scraper de Simplaza/SceneryAddons devuelva el addon
+    /// correcto cuando existe.
+    pub async fn community_addon_keywords_with_version(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT title FROM community_packages
+            WHERE package_version IS NOT NULL AND package_version <> ''
+              AND UPPER(content_type) IN ('AIRCRAFT', 'INSTRUMENT', 'MISC')
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut keywords: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for (title,) in rows {
+            for word in title.split_whitespace() {
+                let trimmed = word
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string();
+                if trimmed.len() >= 4 && trimmed.chars().any(|c| c.is_alphabetic()) {
+                    keywords.insert(trimmed);
+                    break;
+                }
+            }
+        }
+        Ok(keywords.into_iter().collect())
     }
 
     /// Una update detectada: el paquete local + la mejor versión que
@@ -635,19 +669,12 @@ pub mod repo {
     pub async fn catalog_versions_for_community(
         pool: &SqlitePool,
     ) -> anyhow::Result<Vec<UpdateCandidate>> {
-        // Triple JOIN — además de match por ICAO entre community_packages
-        // y addons, exigimos que el ICAO exista en la tabla `airports`
-        // (dataset OurAirports). Eso elimina por completo los falsos
-        // positivos que generaba el extractor regex cuando capturaba
-        // tokens de 4 letras que NO son aeropuertos pero coincidían
-        // por accidente con otra fila de addons (ej. "PMDG", "MSFS").
-        // Si el ICAO no existe en aeropuertos reales, no hay update
-        // que reportar — punto.
-        //
-        // Restricción adicional: sólo paquetes cuyo content_type sea
-        // SCENERY. AIRCRAFT/MISC/INSTRUMENT no tienen ICAO conceptual
-        // y cualquier match es ruido.
-        let rows = sqlx::query_as::<_, UpdateCandidate>(
+        // **SCENERY: ICAO + creator/developer match** — el match por
+        // ICAO solo permitía falsos positivos como "Aerosoft EBBR
+        // v1.0.5 → JustSim v1.1.0". Ahora exigimos que el creator
+        // del manifest matchee por substring (case-insensitive) con
+        // el developer del catálogo.
+        let scenery = sqlx::query_as::<_, UpdateCandidate>(
             r#"
             SELECT cp.folder_name        AS folder_name,
                    cp.title              AS title,
@@ -660,15 +687,57 @@ pub mod repo {
             FROM community_packages cp
             INNER JOIN addons a    ON UPPER(a.icao)  = UPPER(cp.icao)
             INNER JOIN airports ap ON ap.icao        = UPPER(cp.icao)
-            WHERE cp.package_version IS NOT NULL
-              AND cp.package_version <> ''
-              AND a.version IS NOT NULL
-              AND a.version <> ''
+            WHERE cp.package_version IS NOT NULL AND cp.package_version <> ''
+              AND a.version IS NOT NULL AND a.version <> ''
               AND UPPER(cp.content_type) = 'SCENERY'
+              AND cp.creator IS NOT NULL AND cp.creator <> ''
+              AND a.developer IS NOT NULL AND a.developer <> ''
+              AND (
+                INSTR(LOWER(cp.creator), LOWER(a.developer)) > 0
+                OR INSTR(LOWER(a.developer), LOWER(cp.creator)) > 0
+              )
             "#,
         )
         .fetch_all(pool)
         .await?;
-        Ok(rows)
+
+        // **AIRCRAFT/INSTRUMENT/MISC: creator + título** —
+        // Simplaza distribuye sobre todo aviones; sus updates jamás
+        // aparecían cuando el detector exigía ICAO + airports.
+        // Match por: creator coincide Y nombre del catálogo es
+        // substring del título (o viceversa).
+        let aircraft = sqlx::query_as::<_, UpdateCandidate>(
+            r#"
+            SELECT cp.folder_name        AS folder_name,
+                   cp.title              AS title,
+                   COALESCE(UPPER(cp.icao), '') AS icao,
+                   cp.package_version    AS installed_version,
+                   a.version             AS catalog_version,
+                   a.source              AS catalog_source,
+                   a.id                  AS catalog_addon_id,
+                   a.page_url            AS catalog_page_url
+            FROM community_packages cp
+            INNER JOIN addons a ON
+              cp.creator IS NOT NULL AND cp.creator <> ''
+              AND a.developer IS NOT NULL AND a.developer <> ''
+              AND (
+                INSTR(LOWER(cp.creator), LOWER(a.developer)) > 0
+                OR INSTR(LOWER(a.developer), LOWER(cp.creator)) > 0
+              )
+              AND (
+                INSTR(LOWER(a.name), LOWER(cp.title)) > 0
+                OR INSTR(LOWER(cp.title), LOWER(a.name)) > 0
+              )
+            WHERE cp.package_version IS NOT NULL AND cp.package_version <> ''
+              AND a.version IS NOT NULL AND a.version <> ''
+              AND UPPER(cp.content_type) IN ('AIRCRAFT', 'INSTRUMENT', 'MISC')
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let mut all = scenery;
+        all.extend(aircraft);
+        Ok(all)
     }
 }
