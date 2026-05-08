@@ -6,4 +6,5 @@ pub mod downloads;
 pub mod gsx;
 pub mod install;
 pub mod search;
+pub mod simbrief;
 pub mod updater;

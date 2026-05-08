@@ -9,6 +9,7 @@ pub mod install;
 pub mod logger;
 pub mod package_ops;
 pub mod parser;
+pub mod simbrief;
 pub mod sources;
 pub mod updater;
 pub mod updates;
@@ -84,6 +85,11 @@ pub fn run() {
             commands::community::clear_dismissed_updates,
             commands::community::package_thumbnail,
             commands::changelog::fetch_changelog,
+            commands::simbrief::get_simbrief_pilot_id,
+            commands::simbrief::set_simbrief_pilot_id,
+            commands::simbrief::refresh_simbrief,
+            commands::simbrief::list_simbrief_flights,
+            commands::simbrief::delete_simbrief_flight,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri app");

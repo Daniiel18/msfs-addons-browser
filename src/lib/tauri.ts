@@ -20,6 +20,8 @@ import type {
   InstalledAddon,
   RefreshSummary,
   ScanReport,
+  SimBriefFlight,
+  SimBriefRefreshResult,
   SourceDescriptor,
   UpdateDiagnostic,
   UpdateInfo,
@@ -113,6 +115,13 @@ interface Api {
   /** Scrape el changelog desde la página de detalle del addon. */
   fetchChangelog: (pageUrl: string) => Promise<Changelog>;
 
+  // SimBrief
+  getSimbriefPilotId: () => Promise<string | null>;
+  setSimbriefPilotId: (pilotId: string) => Promise<void>;
+  refreshSimbrief: () => Promise<SimBriefRefreshResult>;
+  listSimbriefFlights: () => Promise<SimBriefFlight[]>;
+  deleteSimbriefFlight: (ofpId: string) => Promise<void>;
+
   // Dismiss de updates
   dismissUpdate: (folderName: string) => Promise<void>;
   dismissAllUpdates: () => Promise<void>;
@@ -196,6 +205,14 @@ const realApi: Api = {
     invoke<string | null>("package_thumbnail", { folderName }),
   fetchChangelog: (pageUrl) =>
     invoke<Changelog>("fetch_changelog", { pageUrl }),
+
+  getSimbriefPilotId: () => invoke<string | null>("get_simbrief_pilot_id"),
+  setSimbriefPilotId: (pilotId) =>
+    invoke<void>("set_simbrief_pilot_id", { pilotId }),
+  refreshSimbrief: () => invoke<SimBriefRefreshResult>("refresh_simbrief"),
+  listSimbriefFlights: () => invoke<SimBriefFlight[]>("list_simbrief_flights"),
+  deleteSimbriefFlight: (ofpId) =>
+    invoke<void>("delete_simbrief_flight", { ofpId }),
 
   dismissUpdate: (folderName) => invoke<void>("dismiss_update", { folderName }),
   dismissAllUpdates: () => invoke<void>("dismiss_all_updates"),
@@ -595,6 +612,17 @@ const demoApi: Api = {
   async packageThumbnail() {
     return null;
   },
+  async getSimbriefPilotId() {
+    return null;
+  },
+  async setSimbriefPilotId() {},
+  async refreshSimbrief() {
+    return { added: 0, alreadyKnown: true, flight: null };
+  },
+  async listSimbriefFlights() {
+    return [];
+  },
+  async deleteSimbriefFlight() {},
   async fetchChangelog(pageUrl) {
     return {
       sourceUrl: pageUrl,

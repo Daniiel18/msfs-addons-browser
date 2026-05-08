@@ -706,6 +706,15 @@ pub mod repo {
         // aparecían cuando el detector exigía ICAO + airports.
         // Match por: creator coincide Y nombre del catálogo es
         // substring del título (o viceversa).
+        //
+        // **Filtros anti-falsos-positivos**:
+        //   · `LENGTH(cp.title) >= 6` — un título de 1-2 palabras
+        //     genéricas ("Liveries", "Mods", "Pack") matchea con
+        //     casi cualquier addon del mismo creator. El usuario
+        //     reportó que su paquete `pmdg-aircraft-738-liveries`
+        //     (title="Liveries") falsamente decía "update" cuando
+        //     se cruzaba con catalog entries de PMDG aircrafts.
+        //   · Lista negra de títulos triviales (case-insensitive).
         let aircraft = sqlx::query_as::<_, UpdateCandidate>(
             r#"
             SELECT cp.folder_name        AS folder_name,
@@ -731,6 +740,12 @@ pub mod repo {
             WHERE cp.package_version IS NOT NULL AND cp.package_version <> ''
               AND a.version IS NOT NULL AND a.version <> ''
               AND UPPER(cp.content_type) IN ('AIRCRAFT', 'INSTRUMENT', 'MISC')
+              AND LENGTH(cp.title) >= 6
+              AND LOWER(cp.title) NOT IN (
+                'liveries', 'livery', 'sounds', 'sound pack', 'mods', 'mod',
+                'pack', 'addon', 'tweak', 'fix', 'pro', 'premium', 'enhanced',
+                'preset', 'presets', 'config', 'configs', 'profile', 'profiles'
+              )
             "#,
         )
         .fetch_all(pool)

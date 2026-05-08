@@ -13,7 +13,9 @@ import {
 import type { AvailableUpdate, CommunityPackage } from "../lib/types";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { PackageDetailModal } from "./PackageDetailModal";
+import { SimBriefPanel } from "./SimBriefPanel";
 
 /**
  * Vista de mapa mundial con sidebar lateral.
@@ -41,6 +43,7 @@ export function MapView() {
 
   const allPackages = useCommunityStore((s) => s.packages);
   const updates = useCommunityStore((s) => s.updates);
+  const simbriefFlights = useSimBriefStore((s) => s.flights);
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const detailsFor = useCommunityStore((s) => s.detailsFor);
@@ -85,11 +88,17 @@ export function MapView() {
     [updates, detailsFor],
   );
 
+  // Sólo las updates de paquetes que están en el mapa (SCENERY +
+  // ICAO + coords). Las de AIRCRAFT/MISC viven en la pestaña
+  // Addons y no deberían contar en el indicador del mapa.
   const updatesByFolder = useMemo(() => {
+    const folderSet = new Set(packages.map((p) => p.folderName));
     const m = new Map<string, AvailableUpdate>();
-    for (const u of updates) m.set(u.folderName, u);
+    for (const u of updates) {
+      if (folderSet.has(u.folderName)) m.set(u.folderName, u);
+    }
     return m;
-  }, [updates]);
+  }, [updates, packages]);
 
   // Inicializa MapLibre una vez.
   useEffect(() => {
@@ -155,7 +164,13 @@ export function MapView() {
         type: "geojson",
         data: geojson,
         cluster: true,
-        clusterMaxZoom: 12,
+        // Bajamos el cluster cap a 4 para que la mayoría de
+        // marcadores aparezcan individuales desde el primer
+        // zoom. Antes era 12 — el usuario tenía que acercar
+        // manualmente para ver siquiera los puntos. Ahora
+        // sólo se agrupan cuando están literalmente encima a
+        // nivel mundial.
+        clusterMaxZoom: 4,
         clusterRadius: 50,
       });
 
@@ -267,6 +282,67 @@ export function MapView() {
     map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 9), duration: 600 });
   }, [focusedPkg]);
 
+  // Capa SimBrief — una LineString por vuelo entre origin y dest.
+  // Se gestiona aparte del source `packages` para que ambos puedan
+  // refrescar independientemente sin recrear el otro.
+  const simbriefGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.LineString>>(
+    () => ({
+      type: "FeatureCollection",
+      features: simbriefFlights.map((f) => ({
+        type: "Feature",
+        properties: {
+          ofpId: f.ofpId,
+          label: `${f.originIcao} → ${f.destinationIcao}`,
+        },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [f.originLon, f.originLat],
+            [f.destinationLon, f.destinationLat],
+          ],
+        },
+      })),
+    }),
+    [simbriefFlights],
+  );
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const existing = map.getSource("simbrief") as GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(simbriefGeojson);
+        return;
+      }
+      map.addSource("simbrief", { type: "geojson", data: simbriefGeojson });
+      // Primero la línea base ancha (halo), luego la línea
+      // brillante encima — efecto "neón" visible sobre OSM.
+      map.addLayer({
+        id: "simbrief-line-glow",
+        type: "line",
+        source: "simbrief",
+        paint: {
+          "line-color": "#0ea5e9",
+          "line-width": 5,
+          "line-opacity": 0.35,
+        },
+      });
+      map.addLayer({
+        id: "simbrief-line",
+        type: "line",
+        source: "simbrief",
+        paint: {
+          "line-color": "#7dd3fc",
+          "line-width": 2,
+          "line-dasharray": [3, 2],
+        },
+      });
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [simbriefGeojson]);
+
   return (
     <div className="grid h-[calc(100vh-13rem)] min-h-[480px] grid-cols-[1fr_320px] gap-4">
       <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
@@ -276,11 +352,19 @@ export function MapView() {
           <div className="pointer-events-auto inline-flex items-center gap-2 rounded-md bg-slate-950/80 px-3 py-1.5 text-xs text-slate-200 backdrop-blur ring-1 ring-slate-800">
             <MapPin className="h-3.5 w-3.5 text-emerald-300" />
             {geolocated.length} aeropuerto{geolocated.length === 1 ? "" : "s"}
-            {updates.length > 0 && (
-              <span className="ml-2 inline-flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-300 ring-1 ring-amber-500/30">
+            {/* El contador del mapa muestra sólo updates de SCENERY
+                (los que sí están pintados como markers). Antes
+                contábamos `updates.length` total e incluía AIRCRAFT,
+                así que decía "4" cuando en el mapa solo había 1. */}
+            {updatesByFolder.size > 0 && (
+              <button
+                onClick={() => useCommunityStore.getState().startUpdateAll()}
+                title="Actualizar todos los aeropuertos con update"
+                className="ml-2 inline-flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-300 ring-1 ring-amber-500/30 hover:bg-amber-500/30 hover:text-amber-200"
+              >
                 <Sparkles className="h-3 w-3" />
-                {updates.length} update{updates.length === 1 ? "" : "s"}
-              </span>
+                {updatesByFolder.size} update{updatesByFolder.size === 1 ? "" : "s"}
+              </button>
             )}
           </div>
           {lastScanError && (
@@ -295,7 +379,7 @@ export function MapView() {
       <Sidebar
         packages={packages}
         updatesByFolder={updatesByFolder}
-        updatesCount={updates.length}
+        updatesCount={updatesByFolder.size}
         onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}
         focused={focused}
         onFocus={setFocused}
@@ -402,6 +486,8 @@ function Sidebar({
           </button>
         </div>
       )}
+
+      <SimBriefPanel />
 
       <div className="border-b border-slate-800 px-3 py-2">
         <div className="relative">

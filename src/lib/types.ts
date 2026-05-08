@@ -101,6 +101,36 @@ export interface PtpPayload {
   ptpFiles: string[];
 }
 
+/** Vuelo persistido del historial SimBrief. La app va acumulando
+ *  uno por refresh contra la API pública (que solo expone el
+ *  último OFP). El mapa pinta una LineString por cada uno. */
+export interface SimBriefFlight {
+  ofpId: string;
+  pilotId: string;
+  flightNumber: string | null;
+  callsign: string | null;
+  aircraftIcao: string | null;
+  originIcao: string;
+  originName: string | null;
+  originLat: number;
+  originLon: number;
+  destinationIcao: string;
+  destinationName: string | null;
+  destinationLat: number;
+  destinationLon: number;
+  route: string | null;
+  distanceNm: number | null;
+  estTimeEnrouteS: number | null;
+  generatedAt: string | null;
+  fetchedAt: string;
+}
+
+export interface SimBriefRefreshResult {
+  added: number;
+  alreadyKnown: boolean;
+  flight: SimBriefFlight | null;
+}
+
 /** Punto serializado por `airports::list_addons_on_map` — un addon
  *  del catálogo local cuyo ICAO existe en la tabla de aeropuertos.
  *  Lo consume la vista de mapa. */

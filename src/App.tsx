@@ -4,6 +4,7 @@ import { api, isTauri } from "./lib/tauri";
 import { useAppStore } from "./stores/useAppStore";
 import { useDownloadsStore } from "./stores/useDownloadsStore";
 import { useCommunityStore } from "./stores/useCommunityStore";
+import { useSimBriefStore } from "./stores/useSimBriefStore";
 import { SourceToggle } from "./components/SourceToggle";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
@@ -32,6 +33,7 @@ export default function App() {
   const isPanelOpen = useDownloadsStore((s) => s.isPanelOpen);
   const setPanelOpen = useDownloadsStore((s) => s.setPanelOpen);
   const bootstrapCommunity = useCommunityStore((s) => s.bootstrap);
+  const bootstrapSimBrief = useSimBriefStore((s) => s.bootstrap);
 
   // Bootstrap: load available sources + subscribe to download events
   // + scan Community + traer updates conocidas. Cada bloque es
@@ -60,6 +62,9 @@ export default function App() {
     );
     bootstrapCommunity().catch((e) =>
       console.warn("community bootstrap failed:", e),
+    );
+    bootstrapSimBrief().catch((e) =>
+      console.warn("simbrief bootstrap failed:", e),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
