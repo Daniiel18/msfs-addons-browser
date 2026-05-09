@@ -160,7 +160,7 @@ export function SplashScreen({ tasks }: { tasks: SplashTask[] }) {
         <span className="font-mono tabular-nums">
           {done} / {total}
         </span>
-        <span className="uppercase tracking-widest">v0.1.4</span>
+        <span className="uppercase tracking-widest">v0.1.5</span>
       </div>
     </div>
   );

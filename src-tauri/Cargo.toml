@@ -1,6 +1,6 @@
 [package]
 name = "msfs-addons-browser"
-version = "0.1.4"
+version = "0.1.5"
 description = "MSFS Addons Browser — search and install scenery from SceneryAddons & Simplaza"
 authors = ["n0xful"]
 edition = "2021"
@@ -85,11 +85,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 tracing-appender = "0.2"
 
 # Detector de procesos para saber si MSFS está corriendo. Lo
-# usamos como fallback de SimConnect — saber "el sim está abierto"
-# combinado con la última OFP de SimBrief nos da una respuesta
-# práctica a "¿qué estoy volando ahora mismo?" sin necesidad de
-# SimConnect.dll y sus bindings (que requieren libclang en build).
+# usamos como fallback rápido (proceso detectado) y para saber
+# cuándo arrancar el FFI a SimConnect.
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+# `libloading` carga `SimConnect.dll` en runtime sin necesidad de
+# bindgen/libclang en build — escribimos a mano las pocas signatures
+# que usamos. Cross-platform pero la implementación SimConnect sólo
+# se compila en Windows.
+libloading = "0.8"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

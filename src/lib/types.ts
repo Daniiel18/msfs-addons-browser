@@ -145,18 +145,28 @@ export interface SimBriefRefreshResult {
   flight: SimBriefFlight | null;
 }
 
-/** Estado del watcher de "vuelo en curso". Detectamos MSFS por
- *  proceso y cruzamos con la última OFP de SimBrief. Si MSFS está
- *  corriendo y hay un OFP fresco, los campos de origen/destino
- *  están poblados. */
+/** Estado del watcher de "vuelo en curso". Dos capas:
+ *  · `simRunning` — proceso MSFS detectado (sysinfo).
+ *  · `simconnectConnected` — handshake real con SimConnect.dll;
+ *    los campos `currentLat/Lon/AltFt/GroundSpeedKt/onGround`
+ *    están poblados en vivo (refresco cada segundo).
+ *  El cruce con la última OFP de SimBrief sigue rellenando los
+ *  campos de origen/destino aunque SimConnect no esté disponible. */
 export interface FlightStatus {
   simRunning: boolean;
+  simconnectConnected: boolean;
   originIcao: string | null;
   originName: string | null;
   destinationIcao: string | null;
   destinationName: string | null;
   aircraftIcao: string | null;
   distanceNm: number | null;
+  /** Posición en vivo del user aircraft (sólo con SimConnect). */
+  currentLat: number | null;
+  currentLon: number | null;
+  currentAltFt: number | null;
+  currentGroundSpeedKt: number | null;
+  onGround: boolean | null;
   lastCheckedAt: string;
 }
 

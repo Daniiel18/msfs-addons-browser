@@ -781,12 +781,18 @@ const demoApi: Api = {
   async getFlightStatus() {
     return {
       simRunning: false,
+      simconnectConnected: false,
       originIcao: null,
       originName: null,
       destinationIcao: null,
       destinationName: null,
       aircraftIcao: null,
       distanceNm: null,
+      currentLat: null,
+      currentLon: null,
+      currentAltFt: null,
+      currentGroundSpeedKt: null,
+      onGround: null,
       lastCheckedAt: new Date().toISOString(),
     };
   },

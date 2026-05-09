@@ -425,7 +425,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <div className="space-y-1 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-400">
                   <div>
                     <span className="text-slate-500">Versión:</span>{" "}
-                    <span className="font-mono text-slate-200">0.1.4</span>
+                    <span className="font-mono text-slate-200">0.1.5</span>
                   </div>
                   <div>
                     <span className="text-slate-500">GitHub:</span>{" "}

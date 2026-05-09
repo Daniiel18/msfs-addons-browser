@@ -11,6 +11,7 @@ pub mod logger;
 pub mod package_ops;
 pub mod parser;
 pub mod simbrief;
+pub mod simconnect_ffi;
 pub mod simconnect_watcher;
 pub mod sources;
 pub mod updater;
