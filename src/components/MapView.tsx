@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import maplibregl, { type GeoJSONSource, type LngLatLike } from "maplibre-gl";
+import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
   AlertCircle,
   Info,
-  Loader2,
   MapPin,
-  RefreshCw,
   Search,
   Sparkles,
 } from "lucide-react";
@@ -14,8 +12,10 @@ import type { AvailableUpdate, CommunityPackage } from "../lib/types";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
+import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useSettingsStore } from "../stores/useSettingsStore";
 import { PackageDetailModal } from "./PackageDetailModal";
-import { SimBriefPanel } from "./SimBriefPanel";
+import { greatCircleLine } from "../lib/greatCircle";
 
 /**
  * Vista de mapa mundial con sidebar lateral.
@@ -44,14 +44,15 @@ export function MapView() {
   const allPackages = useCommunityStore((s) => s.packages);
   const updates = useCommunityStore((s) => s.updates);
   const simbriefFlights = useSimBriefStore((s) => s.flights);
+  const flightLogEntries = useFlightLogStore((s) => s.entries);
+  const showSimbriefLines = useSettingsStore((s) => s.settings.showSimbriefLines);
+  const showSimconnectLines = useSettingsStore(
+    (s) => s.settings.showSimconnectLines,
+  );
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const detailsFor = useCommunityStore((s) => s.detailsFor);
   const openDetails = useCommunityStore((s) => s.openDetails);
-  const rescan = useCommunityStore((s) => s.rescan);
-  const scanning = useCommunityStore((s) => s.scanning);
-  const refreshUpdates = useCommunityStore((s) => s.refreshUpdates);
-  const refreshing = useCommunityStore((s) => s.refreshing);
   const lastScanError = useCommunityStore((s) => s.lastScanError);
 
   // Aquí sólo viven aeropuertos reales — SCENERY + ICAO resuelto
@@ -100,15 +101,20 @@ export function MapView() {
     return m;
   }, [updates, packages]);
 
-  // Inicializa MapLibre una vez.
+  // Inicializa MapLibre una vez. Auto-fit al mundo entero al
+  // mount y en cada resize del contenedor — así el usuario siempre
+  // ve el mapamundi completo sin importar que la ventana esté en
+  // pantalla completa o reducida.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: OSM_STYLE,
-      center: [0, 25],
-      zoom: 1.4,
+      center: [0, 20],
+      zoom: 1,
+      minZoom: 1,
       attributionControl: { compact: true },
+      renderWorldCopies: true,
     });
     map.addControl(
       new maplibregl.NavigationControl({ showCompass: false }),
@@ -117,7 +123,29 @@ export function MapView() {
     map.dragRotate.disable();
     map.touchZoomRotate.disableRotation();
     mapRef.current = map;
+
+    // Función para encajar el mundo dentro del viewport actual.
+    // La invocamos al cargar y cuando el contenedor cambia de
+    // tamaño (resize de ventana, fullscreen toggle, etc.).
+    const fitWorld = () => {
+      const b = new maplibregl.LngLatBounds([-170, -55], [170, 75]);
+      map.fitBounds(b, { padding: 30, duration: 0, animate: false });
+    };
+    map.on("load", fitWorld);
+
+    // ResizeObserver — cuando el contenedor cambia de tamaño,
+    // recentramos. Usar `map.resize()` y `fitWorld` mantiene el
+    // canvas y el viewport sincronizados.
+    const ro = new ResizeObserver(() => {
+      map.resize();
+      // Sólo re-fit si el usuario no ha hecho zoom in (zoom < 3
+      // implica vista mundial). Así no rompemos su navegación.
+      if (map.getZoom() < 3) fitWorld();
+    });
+    ro.observe(containerRef.current);
+
     return () => {
+      ro.disconnect();
       map.remove();
       mapRef.current = null;
     };
@@ -132,24 +160,11 @@ export function MapView() {
     const map = mapRef.current;
     if (!map) return;
 
+    // Antes hacíamos auto-fit a los datos; ahora preferimos siempre
+    // mantener la vista mundial (lo encajamos en el efecto de mount).
+    // Si el usuario quiere ir a un aeropuerto concreto usa la
+    // sidebar (que llama `easeTo` con zoom alto).
     const fitToData = () => {
-      if (didAutoFitRef.current) return;
-      const features = geojson.features;
-      if (features.length === 0) return;
-      const bounds = new maplibregl.LngLatBounds();
-      for (const f of features) {
-        const [lng, lat] = (f.geometry as GeoJSON.Point).coordinates;
-        bounds.extend([lng, lat]);
-      }
-      // Padding generoso para que ningún marker quede pegado al
-      // borde de la sidebar/controles. `maxZoom` evita que un sólo
-      // aeropuerto enfoque a nivel calle — molesto cuando hay 1-2
-      // puntos lejanos del resto.
-      map.fitBounds(bounds, {
-        padding: 60,
-        maxZoom: 6,
-        duration: 800,
-      });
       didAutoFitRef.current = true;
     };
 
@@ -160,68 +175,25 @@ export function MapView() {
         fitToData();
         return;
       }
+      // Clustering deshabilitado — el usuario quiere ver TODOS los
+      // markers desde el primer zoom sin tener que acercar. Con ~100
+      // puntos repartidos por el mundo el solapamiento es mínimo;
+      // los pocos casos donde hay 2-3 aeropuertos pegados (Madrid +
+      // Cuatro Vientos, Tokio Haneda + Narita) los dejamos como
+      // discos individuales que el usuario puede separar haciendo
+      // zoom.
       map.addSource("packages", {
         type: "geojson",
         data: geojson,
-        cluster: true,
-        // Bajamos el cluster cap a 4 para que la mayoría de
-        // marcadores aparezcan individuales desde el primer
-        // zoom. Antes era 12 — el usuario tenía que acercar
-        // manualmente para ver siquiera los puntos. Ahora
-        // sólo se agrupan cuando están literalmente encima a
-        // nivel mundial.
-        clusterMaxZoom: 4,
-        clusterRadius: 50,
       });
 
-      // Clusters
-      map.addLayer({
-        id: "clusters",
-        type: "circle",
-        source: "packages",
-        filter: ["has", "point_count"],
-        paint: {
-          "circle-color": [
-            "step",
-            ["get", "point_count"],
-            "#10b981",
-            10,
-            "#34d399",
-            50,
-            "#6ee7b7",
-          ],
-          "circle-radius": [
-            "step",
-            ["get", "point_count"],
-            16,
-            10,
-            22,
-            50,
-            28,
-          ],
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "rgba(16, 185, 129, 0.35)",
-        },
-      });
-      map.addLayer({
-        id: "cluster-count",
-        type: "symbol",
-        source: "packages",
-        filter: ["has", "point_count"],
-        layout: {
-          "text-field": "{point_count_abbreviated}",
-          "text-size": 12,
-          "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
-        },
-        paint: { "text-color": "#022c22" },
-      });
-
-      // Punto individual — color depende de "hasUpdate"
+      // Punto individual — color depende de "hasUpdate". Stroke
+      // blanco para garantizar contraste contra el azul del océano
+      // del basemap.
       map.addLayer({
         id: "package-point",
         type: "circle",
         source: "packages",
-        filter: ["!", ["has", "point_count"]],
         paint: {
           "circle-color": [
             "case",
@@ -229,27 +201,13 @@ export function MapView() {
             "#f59e0b", // ámbar — hay update
             "#10b981", // verde — al día
           ],
-          "circle-radius": 7,
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "rgba(255, 255, 255, 0.85)",
+          "circle-radius": 6,
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "rgba(255, 255, 255, 0.9)",
         },
       });
 
-      map.on("click", "clusters", async (e) => {
-        const feat = e.features?.[0];
-        if (!feat) return;
-        const clusterId = feat.properties?.cluster_id as number | undefined;
-        if (clusterId == null) return;
-        const source = map.getSource("packages") as GeoJSONSource;
-        const zoom = await source.getClusterExpansionZoom(clusterId);
-        const coords = (feat.geometry as GeoJSON.Point).coordinates as LngLatLike;
-        map.easeTo({ center: coords, zoom });
-      });
-
-      // Click en un punto: enfoca + abre modal de detalle. El user
-      // pidió que click llevara directamente al panel con
-      // Reparar/Desinstalar/Abrir carpeta — sin un paso extra
-      // ("primero focus, luego pulsar i") que era confuso.
+      // Click en un punto: enfoca + abre modal de detalle.
       map.on("click", "package-point", (e) => {
         const feat = e.features?.[0];
         if (!feat) return;
@@ -259,10 +217,12 @@ export function MapView() {
         useCommunityStore.getState().openDetails(props.folderName);
       });
 
-      for (const layer of ["clusters", "package-point"] as const) {
-        map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
-        map.on("mouseleave", layer, () => (map.getCanvas().style.cursor = ""));
-      }
+      map.on("mouseenter", "package-point", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "package-point", () => {
+        map.getCanvas().style.cursor = "";
+      });
 
       // Primera vez con layers — encuadrar a los datos.
       fitToData();
@@ -283,27 +243,34 @@ export function MapView() {
   }, [focusedPkg]);
 
   // Capa SimBrief — una LineString por vuelo entre origin y dest.
-  // Se gestiona aparte del source `packages` para que ambos puedan
-  // refrescar independientemente sin recrear el otro.
-  const simbriefGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.LineString>>(
+  // Si el usuario apaga "showSimbriefLines" en settings, vaciamos
+  // la collection — el efecto que sigue lo aplica al source y la
+  // capa queda invisible sin tener que removerla físicamente.
+  const simbriefGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.MultiLineString>>(
     () => ({
       type: "FeatureCollection",
-      features: simbriefFlights.map((f) => ({
-        type: "Feature",
-        properties: {
-          ofpId: f.ofpId,
-          label: `${f.originIcao} → ${f.destinationIcao}`,
-        },
-        geometry: {
-          type: "LineString",
-          coordinates: [
-            [f.originLon, f.originLat],
-            [f.destinationLon, f.destinationLat],
-          ],
-        },
-      })),
+      features: !showSimbriefLines
+        ? []
+        : simbriefFlights.map((f) => ({
+            type: "Feature",
+            properties: {
+              ofpId: f.ofpId,
+              label: `${f.originIcao} → ${f.destinationIcao}`,
+            },
+            geometry: {
+              type: "MultiLineString",
+              // greatCircleLine devuelve un array de polylines —
+              // múltiples si la ruta cruza el antimeridiano (Pacífico).
+              coordinates: greatCircleLine(
+                f.originLon,
+                f.originLat,
+                f.destinationLon,
+                f.destinationLat,
+              ),
+            },
+          })),
     }),
-    [simbriefFlights],
+    [simbriefFlights, showSimbriefLines],
   );
 
   useEffect(() => {
@@ -316,26 +283,32 @@ export function MapView() {
         return;
       }
       map.addSource("simbrief", { type: "geojson", data: simbriefGeojson });
-      // Primero la línea base ancha (halo), luego la línea
-      // brillante encima — efecto "neón" visible sobre OSM.
+      // Línea negra sólida con halo blanco fino. Antes usábamos
+      // dasharray para diferenciar SimBrief (plan) de SimConnect
+      // (real), pero el dasheado se rompía visualmente en arcos
+      // largos del great circle. Ahora ambas son líneas continuas
+      // negras — el botón de toggle en settings (mostrar SimBrief
+      // / mostrar SimConnect) y el panel SimBrief de la sidebar
+      // ya bastan para distinguir su origen.
       map.addLayer({
         id: "simbrief-line-glow",
         type: "line",
         source: "simbrief",
+        layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "line-color": "#0ea5e9",
-          "line-width": 5,
-          "line-opacity": 0.35,
+          "line-color": "#ffffff",
+          "line-width": 3.5,
+          "line-opacity": 0.7,
         },
       });
       map.addLayer({
         id: "simbrief-line",
         type: "line",
         source: "simbrief",
+        layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "line-color": "#7dd3fc",
-          "line-width": 2,
-          "line-dasharray": [3, 2],
+          "line-color": "#0f172a",
+          "line-width": 1.6,
         },
       });
     };
@@ -343,8 +316,88 @@ export function MapView() {
     else map.once("load", apply);
   }, [simbriefGeojson]);
 
+  // Capa Flight Log (SimConnect) — vuelos reales registrados.
+  // Sólo pintamos los completados (origen + destino). Si el usuario
+  // apaga "showSimconnectLines" en settings, la collection se
+  // vacía — mismo patrón que SimBrief.
+  const flightLogGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.MultiLineString>>(
+    () => ({
+      type: "FeatureCollection",
+      features: !showSimconnectLines
+        ? []
+        : flightLogEntries
+            .filter(
+              (e) =>
+                e.endedAt !== null &&
+                e.destinationLat !== null &&
+                e.destinationLon !== null,
+            )
+            .map((e) => ({
+              type: "Feature",
+              properties: {
+                id: e.id,
+                label: `${e.originIcao ?? "?"} → ${e.destinationIcao ?? "?"}`,
+                distanceNm: e.distanceNm,
+              },
+              geometry: {
+                type: "MultiLineString",
+                coordinates: greatCircleLine(
+                  e.originLon,
+                  e.originLat,
+                  e.destinationLon as number,
+                  e.destinationLat as number,
+                ),
+              },
+            })),
+    }),
+    [flightLogEntries, showSimconnectLines],
+  );
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const existing = map.getSource("flightlog") as GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(flightLogGeojson);
+        return;
+      }
+      map.addSource("flightlog", { type: "geojson", data: flightLogGeojson });
+      // Vuelos reales: línea negra sólida más gruesa (los reales
+      // pesan más que los planes). Halo blanco para máximo
+      // contraste sobre el basemap claro.
+      map.addLayer({
+        id: "flightlog-line-glow",
+        type: "line",
+        source: "flightlog",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": 4.5,
+          "line-opacity": 0.85,
+        },
+      });
+      map.addLayer({
+        id: "flightlog-line",
+        type: "line",
+        source: "flightlog",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#0f172a",
+          "line-width": 2.2,
+        },
+      });
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [flightLogGeojson]);
+
   return (
-    <div className="grid h-[calc(100vh-13rem)] min-h-[480px] grid-cols-[1fr_320px] gap-4">
+    // Layout responsive: en pantallas grandes la sidebar crece a 380px
+    // y el mapa ocupa el resto (era fijo 320px antes, se quedaba
+    // chico). Mantenemos h-screen-minus-chrome para que el mapa
+    // siempre llene visiblemente.
+    <div className="grid h-[calc(100vh-12rem)] min-h-[520px] grid-cols-[1fr_360px] gap-4 xl:grid-cols-[1fr_400px]">
       <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
         <div ref={containerRef} className="absolute inset-0" />
 
@@ -384,10 +437,6 @@ export function MapView() {
         focused={focused}
         onFocus={setFocused}
         onShowDetails={openDetails}
-        onRescan={rescan}
-        scanning={scanning}
-        onRefreshUpdates={refreshUpdates}
-        refreshing={refreshing}
       />
 
       {detailsPkg && (
@@ -409,10 +458,6 @@ function Sidebar({
   focused,
   onFocus,
   onShowDetails,
-  onRescan,
-  scanning,
-  onRefreshUpdates,
-  refreshing,
 }: {
   packages: CommunityPackage[];
   updatesByFolder: Map<string, AvailableUpdate>;
@@ -421,10 +466,6 @@ function Sidebar({
   focused: string | null;
   onFocus: (folder: string) => void;
   onShowDetails: (folder: string) => void;
-  onRescan: () => void;
-  scanning: boolean;
-  onRefreshUpdates: () => void;
-  refreshing: boolean;
 }) {
   const [filter, setFilter] = useState("");
 
@@ -445,33 +486,9 @@ function Sidebar({
           <h3 className="text-sm font-semibold text-slate-100">
             Instalados ({packages.length})
           </h3>
-          <p className="text-[11px] text-slate-500">Carpeta Community</p>
-        </div>
-        <div className="flex gap-1">
-          <button
-            onClick={onRefreshUpdates}
-            disabled={refreshing}
-            title="Buscar actualizaciones contra cada fuente"
-            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
-          >
-            {refreshing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Sparkles className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            onClick={onRescan}
-            disabled={scanning}
-            title="Re-escanear la carpeta Community"
-            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
-          >
-            {scanning ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-          </button>
+          <p className="text-[11px] text-slate-500">
+            Carpeta Community · re-escaneo automático
+          </p>
         </div>
       </header>
 
@@ -486,8 +503,6 @@ function Sidebar({
           </button>
         </div>
       )}
-
-      <SimBriefPanel />
 
       <div className="border-b border-slate-800 px-3 py-2">
         <div className="relative">
@@ -506,7 +521,7 @@ function Sidebar({
         {visible.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-slate-500">
             {packages.length === 0
-              ? "No se encontraron paquetes en Community todavía. Pulsa el botón de re-escaneo arriba si crees que esto es un error."
+              ? "Aún no hay paquetes detectados. La app re-escanea automáticamente cuando vuelves a abrirla — instala algo y vuelve."
               : "Ningún paquete coincide con el filtro."}
           </div>
         )}

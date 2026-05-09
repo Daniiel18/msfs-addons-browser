@@ -1,9 +1,13 @@
 use crate::db::repo;
+use crate::logger::CmdTimer;
 use crate::sources::{Addon, BrowsePage, SourceDescriptor};
-use crate::AppState;
+use crate::{cmd_log, AppState};
 
 #[tauri::command]
-pub async fn list_sources(state: tauri::State<'_, AppState>) -> Result<Vec<SourceDescriptor>, String> {
+pub async fn list_sources(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SourceDescriptor>, String> {
+    cmd_log!("list_sources");
     Ok(state.sources.iter().map(|s| s.descriptor()).collect())
 }
 
@@ -13,12 +17,26 @@ pub async fn search(
     source_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Addon>, String> {
-    tracing::info!("cmd:search query={:?} source={:?}", query, source_id);
+    cmd_log!("search", "query={:?} source={}", query, source_id);
+    let _t = CmdTimer::start("search");
     let source = state
         .source(&source_id)
         .ok_or_else(|| format!("unknown source: {}", source_id))?;
 
-    let addons = source.search(&query).await.map_err(|e| e.to_string())?;
+    let addons = source.search(&query).await.map_err(|e| {
+        tracing::error!(
+            "search('{}', source={}) error: {e}",
+            query,
+            source_id
+        );
+        e.to_string()
+    })?;
+    tracing::info!(
+        "search('{}', source={}) → {} resultados",
+        query,
+        source_id,
+        addons.len()
+    );
 
     for a in &addons {
         if let Err(e) = repo::upsert_addon(&state.db, a).await {
@@ -39,15 +57,23 @@ pub async fn browse_source(
     page: usize,
     state: tauri::State<'_, AppState>,
 ) -> Result<BrowsePage, String> {
-    tracing::info!("cmd:browse_source source={:?} page={}", source_id, page);
+    cmd_log!("browse_source", "source={} page={}", source_id, page);
+    let _t = CmdTimer::start("browse_source");
     let source = state
         .source(&source_id)
         .ok_or_else(|| format!("unknown source: {}", source_id))?;
 
-    let result = source
-        .browse(page.max(1))
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = source.browse(page.max(1)).await.map_err(|e| {
+        tracing::error!("browse_source({}, page={}) error: {e}", source_id, page);
+        e.to_string()
+    })?;
+    tracing::info!(
+        "browse_source({}, page={}) → {} addons, hasMore={}",
+        source_id,
+        page,
+        result.addons.len(),
+        result.has_more
+    );
 
     // Persistimos los addons también en cache — así, una update
     // detector que comparta ICAO con un paquete instalado puede

@@ -1,10 +1,14 @@
 pub mod addons;
 pub mod airports;
+pub mod backup;
 pub mod changelog;
 pub mod community;
 pub mod downloads;
+pub mod flight_log;
 pub mod gsx;
 pub mod install;
 pub mod search;
+pub mod settings;
 pub mod simbrief;
+pub mod stats;
 pub mod updater;

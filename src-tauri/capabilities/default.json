@@ -21,6 +21,17 @@
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [{ "path": "**" }]
     },
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
+    "core:window:allow-set-resizable",
+    "core:window:allow-set-decorations",
+    "core:window:allow-maximize",
+    "core:window:allow-center",
+    "core:window:allow-set-focus"
   ]
 }

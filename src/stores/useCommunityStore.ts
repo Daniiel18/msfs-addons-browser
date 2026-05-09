@@ -41,6 +41,14 @@ interface CommunityState {
   lastRefreshError: string | null;
 
   bootstrap: () => Promise<void>;
+  /** Sólo el escaneo del FS + sync a DB — sin tocar la red.
+   *  Lo expone aparte para que el splash pueda mostrarlo como
+   *  paso individual del bootstrap. */
+  scanFromFS: () => Promise<void>;
+  /** Sólo el refresh activo contra fuentes — depende de un scan
+   *  reciente. Lo expone aparte para que el splash lo cuente como
+   *  un paso visible. */
+  refreshUpdatesActive: () => Promise<void>;
   rescan: () => Promise<void>;
   /** Refresh manual — limpia primero todas las dismissed para que
    *  el usuario siempre vea lo que sigue pendiente. */
@@ -70,24 +78,47 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
   lastRefreshError: null,
 
   /**
-   * Idempotente — pinta lo que haya en cache (rápido) y luego
-   * dispara el refresh activo en background. La UI no espera al
-   * refresh: las nuevas updates aparecerán cuando lleguen.
+   * Bootstrap completo: escaneo FS + refresh activo contra fuentes.
+   * Awaiteado por el splash para que el usuario no vea «cargando»
+   * después de entrar a la app.
    */
   async bootstrap() {
     try {
-      const [pkgs, updates] = await Promise.all([
-        api.listCommunityPackages(),
-        api.listAvailableUpdates(),
-      ]);
-      set({ packages: pkgs, updates });
+      await get().scanFromFS();
+      await get().refreshUpdatesActive();
     } catch (e) {
       console.warn("communityStore.bootstrap failed:", e);
     }
-    // Refresh en background — sin await
-    get()
-      .refreshUpdates()
-      .catch((e) => console.warn("communityStore.refreshUpdates bg:", e));
+  },
+
+  /** Sólo el scan del FS — barato (lee disco, no toca red). */
+  async scanFromFS() {
+    set({ scanning: true, lastScanError: null });
+    try {
+      await api.scanCommunity();
+      const pkgs = await api.listCommunityPackages();
+      set({ packages: pkgs });
+    } catch (e) {
+      set({ lastScanError: String(e) });
+      throw e;
+    } finally {
+      set({ scanning: false });
+    }
+  },
+
+  /** Refresh activo contra fuentes (queries HTTP cacheadas 6h). */
+  async refreshUpdatesActive() {
+    set({ refreshing: true, lastRefreshError: null });
+    try {
+      await api.refreshUpdatesForInstalled();
+      const updates = await api.listAvailableUpdates();
+      set({ updates });
+    } catch (e) {
+      set({ lastRefreshError: String(e) });
+      throw e;
+    } finally {
+      set({ refreshing: false });
+    }
   },
 
   async rescan() {

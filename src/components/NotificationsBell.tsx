@@ -4,30 +4,30 @@ import {
   Bell,
   CheckCheck,
   Download,
-  Loader2,
+  ExternalLink,
   Map as MapIcon,
-  RefreshCw,
   Sparkles,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAppStore } from "../stores/useAppStore";
+import type { UpdateInfo } from "../lib/types";
+import { api } from "../lib/tauri";
+
+const APP_UPDATE_DISMISSED_KEY = "msfs-addons-browser:updater:dismissed-version";
 
 /**
- * Campana de notificaciones del header.
+ * Campana de **Notificaciones** del header. Antes mostraba sólo
+ * actualizaciones de paquetes Community; ahora también incluye:
+ *   · Nueva versión de la app disponible (top del listado).
+ *   · Updates de paquetes (como antes).
  *
- * Cambios respecto a la versión con localStorage:
- *   · El estado "dismissed" vive ahora en backend (tabla
- *     `dismissed_updates`). Eso sobrevive a cambios de máquina y,
- *     más importante, **se limpia al pulsar "Recargar"** para que
- *     las pendientes vuelvan siempre a aparecer.
- *   · Botón "Actualizar todo" que llena la cola del wizard global
- *     (`UpdateWizard`) y deja al usuario elegir método uno por uno.
+ * El refresh es automático — el bootstrap del splash ya ejecutó la
+ * pasada activa, y al ganar foco la ventana se refresca de nuevo.
+ * Por eso aquí no hay botón "Refrescar" — todo es auto.
  */
 export function NotificationsBell() {
   const updates = useCommunityStore((s) => s.updates);
-  const refreshUpdates = useCommunityStore((s) => s.refreshUpdates);
-  const refreshing = useCommunityStore((s) => s.refreshing);
   const lastRefreshError = useCommunityStore((s) => s.lastRefreshError);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const dismissUpdate = useCommunityStore((s) => s.dismissUpdate);
@@ -38,8 +38,9 @@ export function NotificationsBell() {
 
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [appUpdate, setAppUpdate] = useState<UpdateInfo | null>(null);
+  const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
 
-  // Cierre al click fuera
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -49,14 +50,33 @@ export function NotificationsBell() {
     return () => window.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const count = updates.length;
-
-  // Peek-on-first-launch: si esta sesión es la primera apertura
-  // y hay updates, abrimos brevemente el dropdown para que el
-  // usuario las vea. Se cierra solo a los 4 s. El flag persiste en
-  // sessionStorage para que recargas (HMR) no re-disparen el peek.
+  // Comprobamos updates de la app una vez al montar.
   useEffect(() => {
-    if (count === 0) return;
+    let cancelled = false;
+    api
+      .checkForUpdate()
+      .then((u) => {
+        if (cancelled || !u) return;
+        const dismissed = localStorage.getItem(APP_UPDATE_DISMISSED_KEY);
+        if (dismissed === u.latestVersion) {
+          setAppUpdateDismissed(true);
+        }
+        setAppUpdate(u);
+      })
+      .catch((e) => console.warn("checkForUpdate failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const showAppUpdate = appUpdate !== null && !appUpdateDismissed;
+  const packageCount = updates.length;
+  const totalCount = packageCount + (showAppUpdate ? 1 : 0);
+
+  // Peek-on-first-launch: si hay notificaciones y no hemos peekado
+  // antes, abrimos brevemente para que el usuario las vea.
+  useEffect(() => {
+    if (totalCount === 0) return;
     const PEEK_KEY = "msfs-addons:notifications-peeked";
     if (typeof window === "undefined") return;
     if (window.sessionStorage.getItem(PEEK_KEY)) return;
@@ -64,7 +84,7 @@ export function NotificationsBell() {
     setOpen(true);
     const t = window.setTimeout(() => setOpen(false), 4000);
     return () => window.clearTimeout(t);
-  }, [count]);
+  }, [totalCount]);
 
   const focusOnMap = (folderName: string) => {
     setView("map");
@@ -82,17 +102,27 @@ export function NotificationsBell() {
     setOpen(false);
   };
 
+  const dismissAppUpdate = () => {
+    if (!appUpdate) return;
+    localStorage.setItem(APP_UPDATE_DISMISSED_KEY, appUpdate.latestVersion);
+    setAppUpdateDismissed(true);
+  };
+
   return (
     <div ref={wrapRef} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
         className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/60 text-slate-300 transition-colors hover:border-brand-500/40 hover:text-slate-100"
-        title={count > 0 ? `${count} actualización(es) disponibles` : "Sin actualizaciones"}
+        title={
+          totalCount > 0
+            ? `${totalCount} notificación(es)`
+            : "Sin notificaciones"
+        }
       >
         <Bell className="h-4 w-4" />
-        {count > 0 && (
+        {totalCount > 0 && (
           <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-amber-950 ring-2 ring-slate-950">
-            {count > 99 ? "99+" : count}
+            {totalCount > 99 ? "99+" : totalCount}
           </span>
         )}
       </button>
@@ -104,50 +134,79 @@ export function NotificationsBell() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.98 }}
             transition={{ duration: 0.12 }}
-            className="absolute right-0 top-full z-30 mt-2 w-[400px] origin-top-right overflow-hidden rounded-xl border border-slate-800 bg-slate-950/95 shadow-xl ring-1 ring-slate-800 backdrop-blur"
+            className="absolute right-0 top-full z-30 mt-2 w-[420px] origin-top-right overflow-hidden rounded-xl border border-slate-800 bg-slate-950/95 shadow-xl ring-1 ring-slate-800 backdrop-blur"
           >
             <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
               <div>
                 <h3 className="text-sm font-semibold text-slate-100">
-                  Actualizaciones
+                  Notificaciones
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Comparado con el catálogo de fuentes activas
+                  Updates de la app · paquetes Community
                 </p>
               </div>
-              <div className="flex items-center gap-1">
-                {count > 0 && (
-                  <button
-                    onClick={() => dismissAll()}
-                    title="Marcar todas como vistas (volverán al recargar)"
-                    className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
-                  >
-                    <CheckCheck className="h-3.5 w-3.5" />
-                  </button>
-                )}
+              {packageCount > 0 && (
                 <button
-                  onClick={() => refreshUpdates()}
-                  disabled={refreshing}
-                  title="Buscar actualizaciones ahora (vuelve a mostrar las descartadas)"
-                  className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900 disabled:opacity-50"
+                  onClick={() => dismissAll()}
+                  title="Marcar todas las updates de paquetes como vistas"
+                  className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
                 >
-                  {refreshing ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  )}
+                  <CheckCheck className="h-3.5 w-3.5" />
                 </button>
-              </div>
+              )}
             </header>
 
-            {count > 0 && (
+            {/* App update — pinned al top, en verde para diferenciar
+                de los updates de paquetes (ámbar). */}
+            {showAppUpdate && appUpdate && (
+              <div className="border-b border-emerald-500/20 bg-emerald-500/10 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-emerald-100">
+                      Nueva versión de la app
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-emerald-200/80">
+                      {appUpdate.currentVersion} →{" "}
+                      <strong>{appUpdate.latestVersion}</strong>
+                    </div>
+                    <div className="mt-2 flex items-center gap-1.5">
+                      {appUpdate.assetUrl ? (
+                        <button
+                          onClick={() => api.openExternal(appUpdate.assetUrl!)}
+                          className="inline-flex items-center gap-1 rounded-md bg-emerald-500/30 px-2.5 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-500/40"
+                        >
+                          <Download className="h-3 w-3" /> Descargar
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => api.openExternal(appUpdate.releaseUrl)}
+                          className="inline-flex items-center gap-1 rounded-md bg-emerald-500/30 px-2.5 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-500/40"
+                        >
+                          <ExternalLink className="h-3 w-3" /> Ver release
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={dismissAppUpdate}
+                    title="No volver a avisarme sobre esta versión"
+                    className="shrink-0 rounded-md p-1 text-emerald-200/70 hover:bg-emerald-500/20 hover:text-emerald-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {packageCount > 0 && (
               <div className="border-b border-slate-800 bg-amber-500/5 px-4 py-2">
                 <button
                   onClick={handleUpdateAll}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-amber-500 px-3 py-2 text-xs font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/20 hover:bg-amber-400"
                 >
                   <Sparkles className="h-3.5 w-3.5" />
-                  Actualizar todo ({count})
+                  Actualizar todo ({packageCount})
                 </button>
                 <p className="mt-1 text-center text-[10px] text-slate-500">
                   Te preguntaremos el método de descarga para cada uno.
@@ -161,16 +220,18 @@ export function NotificationsBell() {
                   {lastRefreshError}
                 </div>
               )}
-              {count === 0 ? (
+              {totalCount === 0 ? (
                 <div className="px-4 py-8 text-center text-xs text-slate-500">
-                  {refreshing
-                    ? "Comprobando actualizaciones…"
-                    : "Todo al día. Pulsa el botón para volver a comprobar."}
+                  Todo al día. La app comprueba updates automáticamente al
+                  arrancar y al ganar foco.
                 </div>
-              ) : (
+              ) : packageCount === 0 ? null : (
                 <ul className="divide-y divide-slate-800">
                   {updates.map((u) => (
-                    <li key={u.folderName} className="group flex items-stretch hover:bg-slate-900/60">
+                    <li
+                      key={u.folderName}
+                      className="group flex items-stretch hover:bg-slate-900/60"
+                    >
                       <button
                         onClick={() => openInSearch(u.icao, u.source)}
                         className="flex flex-1 items-start gap-3 px-4 py-3 text-left"
@@ -206,7 +267,7 @@ export function NotificationsBell() {
                         </button>
                         <button
                           onClick={() => dismissUpdate(u.folderName)}
-                          title="Descartar (vuelve al recargar)"
+                          title="Descartar"
                           className="rounded-md border border-slate-800 p-1 text-slate-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
                         >
                           <X className="h-3.5 w-3.5" />

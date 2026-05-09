@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use crate::community::{self, CommunityInfo};
 use crate::community_scanner::{self, ScanReport};
 use crate::db::repo::{self, CommunityPackageRow};
+use crate::logger::CmdTimer;
 use crate::package_ops;
 use crate::updates::{self, AvailableUpdate, RefreshSummary};
-use crate::AppState;
+use crate::{cmd_log, AppState};
 
 /// Escanea Community y persiste los paquetes encontrados. Acepta
 /// un path opcional — si no viene, se intenta detección automática.
@@ -14,15 +15,34 @@ pub async fn scan_community(
     community_path: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<ScanReport, String> {
+    cmd_log!("scan_community", "path={:?}", community_path);
+    let _t = CmdTimer::start("scan_community");
     let path = resolve_path(community_path).await?;
+    tracing::info!(target: "scan", "scan_community: usando path {}", path.display());
     let path_for_task = path.clone();
     let report = tokio::task::spawn_blocking(move || community_scanner::scan(&path_for_task))
         .await
-        .map_err(|e| format!("la tarea de escaneo falló: {e}"))?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!(target: "scan", "scan_community: tarea panic: {e}");
+            format!("la tarea de escaneo falló: {e}")
+        })?
+        .map_err(|e| {
+            tracing::error!(target: "scan", "scan_community: scan error: {e:#}");
+            e.to_string()
+        })?;
+    tracing::info!(
+        target: "scan",
+        "scan_community: {} paquetes, {} skipped sin manifest, {} skipped manifest inválido",
+        report.packages.len(),
+        report.skipped_no_manifest,
+        report.skipped_invalid_manifest
+    );
     community_scanner::sync_to_db(&state.db, &report)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!(target: "scan", "scan_community: sync_to_db error: {e:#}");
+            e.to_string()
+        })?;
     Ok(report)
 }
 
@@ -58,9 +78,25 @@ pub async fn list_available_updates(
 pub async fn refresh_updates_for_installed(
     state: tauri::State<'_, AppState>,
 ) -> Result<RefreshSummary, String> {
-    updates::refresh_for_installed(&state.db, &state.sources)
+    cmd_log!("refresh_updates_for_installed");
+    let _t = CmdTimer::start("refresh_updates_for_installed");
+    let result = updates::refresh_for_installed(&state.db, &state.sources)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            tracing::error!(target: "updates", "refresh_for_installed error: {e:#}");
+            e.to_string()
+        })?;
+    tracing::info!(
+        target: "updates",
+        "refresh_for_installed: {} ICAOs/keywords, {} queries run, {} skipped (cache), {} failed, {} addons vistos en {}ms",
+        result.icaos_checked,
+        result.queries_run,
+        result.queries_skipped_cached,
+        result.queries_failed,
+        result.addons_seen,
+        result.elapsed_ms
+    );
+    Ok(result)
 }
 
 /// Desinstala un paquete por nombre de folder. Borra el directorio
@@ -71,9 +107,26 @@ pub async fn uninstall_community_package(
     folder_name: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    package_ops::uninstall_by_folder(&state.db, &folder_name)
+    cmd_log!("uninstall_community_package", "folder={}", folder_name);
+    let _t = CmdTimer::start("uninstall_community_package");
+    let result = package_ops::uninstall_by_folder(&state.db, &folder_name)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            tracing::error!(
+                target: "install",
+                "uninstall '{}' falló: {e:#}",
+                folder_name
+            );
+            e.to_string()
+        });
+    if result.is_ok() {
+        tracing::info!(
+            target: "install",
+            "uninstall '{}' OK — carpeta borrada y filas DB limpiadas",
+            folder_name
+        );
+    }
+    result
 }
 
 /// Diagnóstico exhaustivo del estado de detección de updates para
@@ -136,13 +189,29 @@ pub async fn clear_dismissed_updates(
         .map_err(|e| e.to_string())
 }
 
-/// Busca un thumbnail dentro del folder de un paquete instalado.
-/// MSFS distribuye `thumbnail.jpg` / `Thumbnail.jpg` dentro de
-/// cada `texture.*/` (liveries) o en el SimObjects raíz (aircraft
-/// principales). También escenarios de pago a veces incluyen un
-/// preview en la raíz. Devolvemos el path absoluto del primer
-/// thumbnail encontrado (BFS hasta profundidad 4) — el frontend lo
-/// convierte con `convertFileSrc()` para mostrarlo en el card.
+/// Busca un thumbnail dentro del folder de un paquete instalado y
+/// lo devuelve como **data URL en base64**.
+///
+/// Por qué base64 en vez de path: en Tauri 2 el asset protocol
+/// requiere que cada path esté dentro de un `scope` declarado en
+/// `tauri.conf.json`. La carpeta Community vive en cualquier disco
+/// del usuario, así que un scope estático no la cubre. Antes
+/// devolvíamos un path y `convertFileSrc()` lo formaba en una URL
+/// `https://asset.localhost/...` — pero la mayoría de paths quedaba
+/// fuera del scope y MSEdge silenciaba el load. Resultado: cards
+/// sin imagen aunque el archivo existía.
+///
+/// Solución definitiva: leer el archivo en Rust y devolver
+/// `data:image/<ext>;base64,...`. La imagen viaja por el canal IPC
+/// (mismo que cualquier otro comando) y el `<img>` la muestra
+/// directamente — sin scope, sin protocolo custom, sin sorpresas.
+///
+/// Coste: 33% extra por base64 vs binario crudo. Para thumbnails
+/// típicos (50-300 KB) son 70-400 KB de string — barato.
+///
+/// `find_thumbnail` hace BFS hasta profundidad 6 buscando primero
+/// nombres conocidos (thumbnail/preview/icon) y luego cualquier
+/// imagen >= 8 KB.
 #[tauri::command]
 pub async fn package_thumbnail(
     folder_name: String,
@@ -157,7 +226,48 @@ pub async fn package_thumbnail(
         .find(|p| p.folder_name == folder_name)
         .ok_or_else(|| format!("paquete desconocido: {}", folder_name))?;
     let root = PathBuf::from(&target.install_path);
-    Ok(find_thumbnail(&root, 0))
+    let folder_clone = folder_name.clone();
+    let result = tokio::task::spawn_blocking(move || -> Option<String> {
+        let path_str = find_thumbnail(&root, 0)?;
+        encode_image_as_data_url(std::path::Path::new(&path_str))
+            .inspect_err(|e| {
+                tracing::debug!("thumbnail encode falló para {folder_clone}: {e:#}");
+            })
+            .ok()
+    })
+    .await
+    .map_err(|e| format!("thumbnail task join error: {e}"))?;
+    Ok(result)
+}
+
+/// Lee un archivo de imagen y devuelve `data:image/<mime>;base64,...`.
+/// Devuelve error si el archivo no existe o no se puede leer; ese
+/// error lo deglutimos en el caller (mejor mostrar el card sin
+/// imagen que tirar el render por una imagen rota).
+fn encode_image_as_data_url(path: &std::path::Path) -> anyhow::Result<String> {
+    use base64::Engine;
+    let bytes = std::fs::read(path)?;
+    // Limit defensivo — un thumbnail de 5 MB ralentizaría el render
+    // sin aportar nada visualmente. Si supera, lo descartamos y el
+    // card cae al placeholder.
+    if bytes.len() > 5 * 1024 * 1024 {
+        anyhow::bail!("thumbnail demasiado grande ({} bytes)", bytes.len());
+    }
+    let mime = match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        // jpg / jpeg / desconocido → asumimos jpeg (los thumbnails de
+        // MSFS son casi siempre JPEG).
+        _ => "image/jpeg",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
 }
 
 /// Dos pasadas:

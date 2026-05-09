@@ -29,10 +29,14 @@ pub mod repo {
     use crate::sources::Addon;
 
     pub async fn upsert_addon(pool: &SqlitePool, addon: &Addon) -> anyhow::Result<()> {
+        // `released_at` se actualiza con `COALESCE(?, released_at)` —
+        // si el scraper no extrajo fecha esta vez, conservamos la
+        // anterior. Algunos posts viejos pierden el `<time>` cuando
+        // el theme cambia.
         sqlx::query(
             r#"
-            INSERT INTO addons (id, source, title, developer, name, version, icao, simulator, page_url)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            INSERT INTO addons (id, source, title, developer, name, version, icao, simulator, page_url, released_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 developer = excluded.developer,
@@ -41,6 +45,7 @@ pub mod repo {
                 icao = excluded.icao,
                 simulator = excluded.simulator,
                 page_url = excluded.page_url,
+                released_at = COALESCE(excluded.released_at, addons.released_at),
                 last_seen_at = datetime('now')
             "#,
         )
@@ -53,6 +58,7 @@ pub mod repo {
         .bind(&addon.icao)
         .bind(&addon.simulator)
         .bind(&addon.page_url)
+        .bind(&addon.released_at)
         .execute(pool)
         .await?;
         Ok(())

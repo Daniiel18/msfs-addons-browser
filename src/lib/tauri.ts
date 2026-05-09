@@ -8,12 +8,19 @@ import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type {
   Addon,
   AddonOnMap,
+  AppSettings,
   AvailableUpdate,
+  BackupResult,
   BrowsePage,
   Changelog,
   CommunityInfo,
   CommunityPackage,
+  DashboardStats,
   DownloadJob,
+  ExportFormat,
+  ExportResult,
+  FlightLogEntry,
+  FlightStatus,
   DownloadMethod,
   GsxProfile,
   InstallResult,
@@ -107,9 +114,10 @@ interface Api {
    *  bloqueador). Lo invoca el botón "Diagnosticar" del modal. */
   diagnoseUpdateForPackage: (folderName: string) => Promise<UpdateDiagnostic>;
 
-  /** Ruta absoluta al thumbnail dentro del paquete (jpg/png) o
-   *  `null` si no encontró ninguno. Frontend usa `convertFileSrc()`
-   *  para mostrarla. */
+  /** Data URL `data:image/<mime>;base64,...` con el thumbnail del
+   *  paquete, o `null` si no encontró ninguno. El backend lee y
+   *  encodea el archivo — evita el problema de scope del asset
+   *  protocol con paths arbitrarios fuera de la carpeta de la app. */
   packageThumbnail: (folderName: string) => Promise<string | null>;
 
   /** Scrape el changelog desde la página de detalle del addon. */
@@ -126,6 +134,42 @@ interface Api {
   dismissUpdate: (folderName: string) => Promise<void>;
   dismissAllUpdates: () => Promise<void>;
   clearDismissedUpdates: () => Promise<void>;
+
+  // Dashboard
+  getDashboardStats: () => Promise<DashboardStats>;
+
+  // Settings
+  getAppSettings: () => Promise<AppSettings>;
+  setAppSetting: (key: string, value: string) => Promise<void>;
+  setAutostart: (enabled: boolean) => Promise<boolean>;
+  clearCaches: () => Promise<number>;
+  resetSettings: () => Promise<number>;
+  /** Comprime la carpeta Community en un .zip. `destPath` puede ser
+   *  un directorio (la app pone el nombre con timestamp) o un .zip
+   *  concreto. */
+  backupCommunity: (destPath: string) => Promise<BackupResult>;
+  /** Exporta el inventario a CSV / TXT / JSON. */
+  exportAddons: (destPath: string, format: ExportFormat) => Promise<ExportResult>;
+  /** Diálogo nativo «save as» — devuelve la ruta elegida o null si
+   *  el usuario canceló. */
+  pickSavePath: (defaultName: string, filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
+  /** Diálogo nativo «select folder». */
+  pickFolderPath: () => Promise<string | null>;
+
+  // Flight log (SimConnect)
+  listFlightLog: () => Promise<FlightLogEntry[]>;
+  deleteFlightLogEntry: (id: number) => Promise<void>;
+  /** Inserta un vuelo de prueba EBBR→LEMD para validar la UI sin
+   *  necesidad de tener MSFS corriendo. No usar en producción. */
+  debugSeedFlightLog: () => Promise<number>;
+  /** Suscribe un callback a cambios en el flight_log (emit del
+   *  watcher cuando empieza o termina un vuelo). */
+  onFlightLogChange: (cb: () => void) => Promise<UnlistenFn>;
+  /** Estado actual del watcher de vuelo (MSFS proceso + OFP). */
+  getFlightStatus: () => Promise<FlightStatus>;
+  /** Suscribe un callback a cambios en el estado de vuelo —
+   *  el watcher emite `flight://current` cuando cambia. */
+  onFlightStatus: (cb: (status: FlightStatus) => void) => Promise<UnlistenFn>;
 }
 
 const realApi: Api = {
@@ -217,6 +261,38 @@ const realApi: Api = {
   dismissUpdate: (folderName) => invoke<void>("dismiss_update", { folderName }),
   dismissAllUpdates: () => invoke<void>("dismiss_all_updates"),
   clearDismissedUpdates: () => invoke<void>("clear_dismissed_updates"),
+
+  getDashboardStats: () => invoke<DashboardStats>("get_dashboard_stats"),
+
+  listFlightLog: () => invoke<FlightLogEntry[]>("list_flight_log"),
+  deleteFlightLogEntry: (id) => invoke<void>("delete_flight_log_entry", { id }),
+  debugSeedFlightLog: () => invoke<number>("debug_seed_flight_log"),
+  onFlightLogChange: (cb) => listen<unknown>("flightlog://changed", () => cb()),
+  getFlightStatus: () => invoke<FlightStatus>("get_flight_status"),
+  onFlightStatus: (cb) =>
+    listen<FlightStatus>("flight://current", (event) => cb(event.payload)),
+
+  getAppSettings: () => invoke<AppSettings>("get_app_settings"),
+  setAppSetting: (key, value) => invoke<void>("set_app_setting", { key, value }),
+  setAutostart: (enabled) => invoke<boolean>("set_autostart", { enabled }),
+  clearCaches: () => invoke<number>("clear_caches"),
+  resetSettings: () => invoke<number>("reset_settings"),
+
+  backupCommunity: (destPath) =>
+    invoke<BackupResult>("backup_community", { destPath }),
+  exportAddons: (destPath, format) =>
+    invoke<ExportResult>("export_addons", { destPath, format }),
+  async pickSavePath(defaultName, filters) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({ defaultPath: defaultName, filters });
+    return typeof path === "string" ? path : null;
+  },
+  async pickFolderPath() {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({ multiple: false, directory: true });
+    if (result === null) return null;
+    return typeof result === "string" ? result : null;
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -242,6 +318,7 @@ const demoAddons: Addon[] = [
       { kind: "mirror",  name: "Mirror #1",        url: "#" },
     ],
     imageUrl: null,
+    releasedAt: null,
   },
   {
     id: "demo-rksi",
@@ -259,6 +336,7 @@ const demoAddons: Addon[] = [
       { kind: "mirror",  name: "Mirror #2",        url: "#" },
     ],
     imageUrl: null,
+    releasedAt: null,
   },
   {
     id: "demo-vtsy",
@@ -274,6 +352,7 @@ const demoAddons: Addon[] = [
       { kind: "torrent", name: "Torrent Download", url: "#" },
     ],
     imageUrl: null,
+    releasedAt: null,
   },
   {
     id: "demo-kjfk",
@@ -290,6 +369,7 @@ const demoAddons: Addon[] = [
       { kind: "mirror",  name: "Mirror #1",        url: "#" },
     ],
     imageUrl: null,
+    releasedAt: null,
   },
   {
     id: "demo-simplaza-leib",
@@ -305,6 +385,7 @@ const demoAddons: Addon[] = [
       { kind: "direct", name: "Direct Download", url: "#" },
     ],
     imageUrl: null,
+    releasedAt: null,
   },
 ];
 
@@ -640,6 +721,148 @@ const demoApi: Api = {
   },
   async clearDismissedUpdates() {
     /* no-op demo */
+  },
+  async getAppSettings() {
+    return {
+      showSimbriefLines: true,
+      showSimconnectLines: true,
+      checkUpdatesOnStart: true,
+      minimizeToTray: false,
+      onboardingCompleted: true, // demo: skip tour
+      defaultView: "dashboard",
+      autostartEnabled: false,
+      simbriefPilotId: null,
+      communityPath: "C:/Demo/Community",
+      logsPath: null,
+      appDataPath: null,
+    };
+  },
+  async setAppSetting() {
+    /* no-op demo */
+  },
+  async setAutostart(enabled) {
+    return enabled;
+  },
+  async clearCaches() {
+    return 0;
+  },
+  async resetSettings() {
+    return 0;
+  },
+  async backupCommunity() {
+    return {
+      outputPath: "C:/Demo/community-backup-demo.zip",
+      packageCount: 5,
+      totalBytes: 0,
+      elapsedMs: 0,
+    };
+  },
+  async exportAddons() {
+    return { outputPath: "C:/Demo/export.csv", rowCount: 5 };
+  },
+  async pickSavePath() {
+    return null;
+  },
+  async pickFolderPath() {
+    return null;
+  },
+  async listFlightLog() {
+    return [];
+  },
+  async deleteFlightLogEntry() {
+    /* no-op demo */
+  },
+  async debugSeedFlightLog() {
+    return 0;
+  },
+  async onFlightLogChange() {
+    return async () => {};
+  },
+  async getFlightStatus() {
+    return {
+      simRunning: false,
+      originIcao: null,
+      originName: null,
+      destinationIcao: null,
+      destinationName: null,
+      aircraftIcao: null,
+      distanceNm: null,
+      lastCheckedAt: new Date().toISOString(),
+    };
+  },
+  async onFlightStatus() {
+    return async () => {};
+  },
+  async getDashboardStats() {
+    await sleep(120);
+    const totalSize = demoCommunity.reduce((acc, p) => acc + (p.sizeBytes ?? 0), 0);
+    const byType: { label: string; count: number; sizeBytes: number }[] = [];
+    const bumpType = (label: string, bytes: number) => {
+      const found = byType.find((b) => b.label === label);
+      if (found) {
+        found.count++;
+        found.sizeBytes += bytes;
+      } else {
+        byType.push({ label, count: 1, sizeBytes: bytes });
+      }
+    };
+    let airports = 0;
+    let liveries = 0;
+    let aircraft = 0;
+    for (const p of demoCommunity) {
+      const ct = (p.contentType ?? "").toUpperCase();
+      const bytes = p.sizeBytes ?? 0;
+      if (ct === "SCENERY") {
+        if (p.icao) airports++;
+        bumpType("Aeropuertos", bytes);
+      } else if (ct === "AIRCRAFT") {
+        if (p.dependenciesCount > 0) {
+          liveries++;
+          bumpType("Liveries", bytes);
+        } else {
+          aircraft++;
+          bumpType("Aviones", bytes);
+        }
+      } else if (ct === "MISC") {
+        bumpType("Sonido / Misc", bytes);
+      } else {
+        bumpType("Otros", bytes);
+      }
+    }
+    const creatorCounts = new Map<string, { count: number; bytes: number }>();
+    for (const p of demoCommunity) {
+      if (!p.creator) continue;
+      const acc = creatorCounts.get(p.creator) ?? { count: 0, bytes: 0 };
+      acc.count++;
+      acc.bytes += p.sizeBytes ?? 0;
+      creatorCounts.set(p.creator, acc);
+    }
+    const topCreators = [...creatorCounts.entries()]
+      .map(([creator, v]) => ({ creator, count: v.count, sizeBytes: v.bytes }))
+      .sort((a, b) => b.count - a.count || b.sizeBytes - a.sizeBytes);
+    const largest = [...demoCommunity]
+      .filter((p) => p.sizeBytes != null)
+      .sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))
+      .slice(0, 10)
+      .map((p) => ({
+        folderName: p.folderName,
+        title: p.title,
+        creator: p.creator,
+        sizeBytes: p.sizeBytes,
+        contentType: p.contentType,
+      }));
+    return {
+      totalPackages: demoCommunity.length,
+      totalSizeBytes: totalSize,
+      updatesAvailable: 1,
+      byType,
+      topCreators,
+      largestPackages: largest,
+      recentlyAdded: largest.slice(0, 5),
+      airportsCount: airports,
+      liveriesCount: liveries,
+      aircraftCount: aircraft,
+    };
   },
   async diagnoseUpdateForPackage(folderName) {
     await sleep(80);

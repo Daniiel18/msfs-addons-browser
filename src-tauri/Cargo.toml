@@ -14,13 +14,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 # Selector de archivos nativo para el instalador manual ("Instalar desde
 # archivo…"). Usado sólo desde el frontend — aquí lo registramos para
 # que exista el endpoint IPC correspondiente.
 tauri-plugin-dialog = "2"
+# Autostart con el SO — usado por la sección «Settings» para que el
+# usuario active "arrancar con Windows". El plugin maneja la entrada
+# en `HKEY_CURRENT_USER\…\Run` automáticamente.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -38,6 +42,9 @@ urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Walker recursivo para zip de la carpeta Community en backup —
+# evita el ruido de glob/find a mano y respeta enlaces simbólicos.
+walkdir = "2"
 # Descompresores para los formatos que la escena MSFS usa más:
 #   · RAR — la mayoría de torrents de SceneryAddons/Simplaza llegan así.
 #     `unrar` envuelve el código C de RARLAB y maneja volúmenes
@@ -61,6 +68,10 @@ anyhow = "1"
 thiserror = "1"
 regex = "1"
 once_cell = "1"
+# Encoding de thumbnails en data URLs (`data:image/jpeg;base64,...`).
+# Evita los problemas de scope del asset protocol con paths
+# arbitrarios en la carpeta Community.
+base64 = "0.22"
 # Comparación de versiones para el chequeo de actualizaciones — el tag
 # de GitHub se parsea con `Version::parse` y se compara contra
 # `CARGO_PKG_VERSION`. Standard de facto en el ecosistema Rust.
@@ -73,5 +84,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 tracing-appender = "0.2"
 
+# Detector de procesos para saber si MSFS está corriendo. Lo
+# usamos como fallback de SimConnect — saber "el sim está abierto"
+# combinado con la última OFP de SimBrief nos da una respuesta
+# práctica a "¿qué estoy volando ahora mismo?" sin necesidad de
+# SimConnect.dll y sus bindings (que requieren libclang en build).
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# SimConnect — sólo Windows. El crate `simconnect-sdk` carga la
+# `SimConnect.dll` que viene con MSFS en runtime; no añade nada al
+# binario en otras plataformas (sólo se compila si target_os=windows).
+# Si la dll no está al ejecutar, `SimConnect::new()` falla y el
+# watcher queda en `Disconnected` reintentando — la app no se rompe.

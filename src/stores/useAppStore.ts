@@ -4,9 +4,10 @@ import { api } from "../lib/tauri";
 
 type Status = "idle" | "loading" | "success" | "error";
 
-/** Vista activa en `App`. Buscar / Mapa (sólo escenarios) /
- *  Addons (resto: aircraft, livery, sound, etc). */
-export type View = "search" | "map" | "addons";
+/** Vista activa en `App`. Dashboard (default home, totales) /
+ *  Buscar / Mapa (sólo escenarios) / Addons (resto: aircraft,
+ *  livery, sound, etc). */
+export type View = "dashboard" | "search" | "map" | "addons";
 
 interface AppState {
   sources: SourceDescriptor[];
@@ -26,6 +27,12 @@ interface AppState {
    *  para decidir si pintar paginador o mensaje "Sin resultados". */
   browseMode: "search" | "browse";
 
+  /** Cache de la página 1 del catálogo de cada fuente — la
+   *  precargamos en el splash para que cambiar de
+   *  SceneryAddons↔Simplaza sea instantáneo y no dispare otra
+   *  request HTTP. Clave = sourceId. */
+  catalogCache: Record<string, { addons: Addon[]; hasMore: boolean }>;
+
   setSources: (s: SourceDescriptor[]) => void;
   setActiveSource: (id: string) => void;
   setQuery: (q: string) => void;
@@ -33,6 +40,9 @@ interface AppState {
   setStatus: (s: Status) => void;
   setError: (e: string | null) => void;
   setView: (v: View) => void;
+  /** Pre-carga la página 1 del catálogo de una fuente. Idempotente:
+   *  si ya está cacheado, no toca la red. */
+  preloadCatalog: (sourceId: string) => Promise<void>;
 
   /** Cambia a la vista de búsqueda, fija el query, y dispara la
    *  búsqueda. Usada desde el panel de notificaciones cuando el
@@ -50,25 +60,47 @@ export const useAppStore = create<AppState>((set, get) => ({
   results: [],
   status: "idle",
   error: null,
-  view: "search",
+  view: "dashboard",
   browsePage: 1,
   browseHasMore: false,
   browseMode: "browse",
+  catalogCache: {},
 
   setSources: (sources) => set({ sources }),
   setActiveSource: (activeSourceId) => {
+    const cached = get().catalogCache[activeSourceId];
     set({
       activeSourceId,
       query: "",
-      results: [],
-      status: "idle",
+      // Si tenemos pre-cargado el catálogo de esta fuente, lo
+      // mostramos al instante sin HTTP. Si no, queda vacío y
+      // disparamos browse abajo.
+      results: cached ? cached.addons : [],
+      status: cached ? "success" : "idle",
       error: null,
       browsePage: 1,
-      browseHasMore: false,
+      browseHasMore: cached ? cached.hasMore : false,
       browseMode: "browse",
     });
-    // Cargar el catálogo de la nueva fuente automáticamente.
-    void get().loadBrowsePage(1);
+    // Sólo si no había cache disparamos browse — evita el doble
+    // request al alternar entre fuentes.
+    if (!cached) {
+      void get().loadBrowsePage(1);
+    }
+  },
+  async preloadCatalog(sourceId) {
+    if (get().catalogCache[sourceId]) return;
+    try {
+      const res = await api.browseSource(sourceId, 1);
+      set((s) => ({
+        catalogCache: {
+          ...s.catalogCache,
+          [sourceId]: { addons: res.addons, hasMore: res.hasMore },
+        },
+      }));
+    } catch (e) {
+      console.warn("preloadCatalog failed:", sourceId, e);
+    }
   },
   setQuery: (query) => set({ query }),
   setResults: (results) => set({ results, browseMode: "search" }),
@@ -97,6 +129,23 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async loadBrowsePage(page) {
     const targetSource = get().activeSourceId;
+    // Si pedimos la página 1 y la tenemos pre-cargada, sirvela del
+    // cache — no hagamos HTTP. Esto evita el "se quedó cargando"
+    // al cambiar de SA→Simplaza→SA.
+    if (page === 1) {
+      const cached = get().catalogCache[targetSource];
+      if (cached) {
+        set({
+          results: cached.addons,
+          status: "success",
+          browseHasMore: cached.hasMore,
+          browseMode: "browse",
+          browsePage: 1,
+          error: null,
+        });
+        return;
+      }
+    }
     set({
       status: "loading",
       error: null,
@@ -111,6 +160,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         browseHasMore: res.hasMore,
         browseMode: "browse",
       });
+      // Actualizamos cache en página 1 — los resultados pueden haber
+      // cambiado entre el preload y ahora.
+      if (page === 1) {
+        set((s) => ({
+          catalogCache: {
+            ...s.catalogCache,
+            [targetSource]: { addons: res.addons, hasMore: res.hasMore },
+          },
+        }));
+      }
     } catch (e) {
       set({ error: String(e), status: "error" });
     }

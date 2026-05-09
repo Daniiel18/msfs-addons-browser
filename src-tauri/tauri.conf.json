@@ -12,14 +12,19 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "MSFS Addons Browser",
-        "width": 1280,
-        "height": 820,
-        "minWidth": 960,
-        "minHeight": 640,
-        "resizable": true,
+        "width": 460,
+        "height": 540,
+        "minWidth": 440,
+        "minHeight": 520,
+        "resizable": false,
         "fullscreen": false,
-        "decorations": true,
+        "decorations": false,
+        "transparent": false,
+        "center": true,
+        "skipTaskbar": false,
+        "shadow": true,
         "theme": "Dark"
       }
     ],
@@ -32,6 +37,9 @@
     "targets": "all",
     "icon": [
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "resources/airports.csv": "resources/airports.csv"
+    }
   }
 }
