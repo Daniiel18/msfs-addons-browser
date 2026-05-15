@@ -35,6 +35,21 @@ pub struct FlightLogEntry {
     pub distance_nm: Option<f64>,
     pub flight_time_s: Option<i64>,
     pub max_altitude_ft: Option<i64>,
+    /// Vertical speed (FPM) capturado en el momento del touchdown.
+    /// Negativo = descenso (lo normal); positivo = subida (raro).
+    /// Una "buen aterrizaje" suele estar entre -100 y -500 FPM;
+    /// arriba de -600 ya es duro, arriba de -1000 abusivo.
+    pub landing_fpm: Option<i64>,
+    /// Velocidad máxima sobre tierra durante el vuelo (knots).
+    pub max_ground_speed_kt: Option<i64>,
+    /// Velocidad máxima true airspeed (knots) — útil para distinguir
+    /// performance real del avión vs. lo que el viento añade/quita.
+    pub max_true_airspeed_kt: Option<i64>,
+    /// Parking spot / gate de salida — formato "GATE A12", "RAMP 3"
+    /// o `Position: lat,lon` cuando no detectamos parking conocido.
+    pub departure_gate: Option<String>,
+    /// Parking spot / gate de llegada.
+    pub arrival_gate: Option<String>,
     pub source: String,
 }
 
@@ -50,6 +65,10 @@ const NEAREST_THRESHOLD_NM: f64 = 3.0;
 /// Crea una fila nueva con `ended_at = NULL`. Devuelve el id
 /// para que el watcher lo guarde en su state — al aterrizar se
 /// hará UPDATE sobre esa fila.
+///
+/// El `departure_gate` queda como `Position: lat,lon` cuando no
+/// tenemos otra cosa — futuras versiones pueden poblar gate real
+/// si añadimos parsing de los simvars `PARKING TYPE/NUMBER/SUFFIX`.
 pub async fn start_flight(
     pool: &SqlitePool,
     lat: f64,
@@ -61,14 +80,15 @@ pub async fn start_flight(
     let started_at = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+    let dep_gate = format_position_fallback(lat, lon);
 
     let result = sqlx::query(
         r#"
         INSERT INTO flight_log (
             started_at, origin_lat, origin_lon, origin_icao, origin_name,
-            aircraft_title, aircraft_atc_type, source
+            aircraft_title, aircraft_atc_type, departure_gate, source
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'simconnect')
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'simconnect')
         "#,
     )
     .bind(&started_at)
@@ -78,20 +98,40 @@ pub async fn start_flight(
     .bind(nearest.as_ref().map(|n| n.name.as_str()))
     .bind(aircraft_title)
     .bind(aircraft_atc)
+    .bind(&dep_gate)
     .execute(pool)
     .await?;
 
     Ok(result.last_insert_rowid())
 }
 
-/// Cierra un vuelo abierto: rellena destino, distancia, duración
-/// y altitud máxima.
+/// Formato de "gate" cuando no tenemos data real — útil para
+/// localizar en el mapa de MSFS dónde estaba parqueado el avión.
+fn format_position_fallback(lat: f64, lon: f64) -> String {
+    format!("Position: {:.4}, {:.4}", lat, lon)
+}
+
+/// Métricas extra capturadas al cerrar el vuelo. Las pasamos en un
+/// struct para evitar arguments-explosion en la signatura.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlightFinishMetrics {
+    pub max_altitude_ft: Option<i64>,
+    /// FPM en el touchdown — negativo = descenso (lo normal).
+    pub landing_fpm: Option<i64>,
+    /// Ground speed máxima durante el vuelo.
+    pub max_ground_speed_kt: Option<i64>,
+    /// True airspeed máxima durante el vuelo.
+    pub max_true_airspeed_kt: Option<i64>,
+}
+
+/// Cierra un vuelo abierto: rellena destino, distancia, duración,
+/// altitud máxima y las nuevas métricas (landing FPM + max speeds).
 pub async fn finish_flight(
     pool: &SqlitePool,
     id: i64,
     lat: f64,
     lon: f64,
-    max_altitude_ft: Option<i64>,
+    metrics: FlightFinishMetrics,
 ) -> anyhow::Result<()> {
     let nearest = nearest_airport(pool, lat, lon).await?;
 
@@ -110,6 +150,7 @@ pub async fn finish_flight(
     let distance_nm = haversine_nm(origin_lat, origin_lon, lat, lon);
     let now = chrono::Utc::now();
     let ended_at = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let arr_gate = format_position_fallback(lat, lon);
 
     // Duración = ahora - started_at. Si el parse falla por algún
     // motivo dejamos NULL en flight_time_s; no es crítico.
@@ -120,15 +161,19 @@ pub async fn finish_flight(
     sqlx::query(
         r#"
         UPDATE flight_log
-        SET ended_at         = ?1,
-            destination_lat  = ?2,
-            destination_lon  = ?3,
-            destination_icao = ?4,
-            destination_name = ?5,
-            distance_nm      = ?6,
-            flight_time_s    = ?7,
-            max_altitude_ft  = COALESCE(?8, max_altitude_ft)
-        WHERE id = ?9
+        SET ended_at             = ?1,
+            destination_lat      = ?2,
+            destination_lon      = ?3,
+            destination_icao     = ?4,
+            destination_name     = ?5,
+            distance_nm          = ?6,
+            flight_time_s        = ?7,
+            max_altitude_ft      = COALESCE(?8, max_altitude_ft),
+            landing_fpm          = ?9,
+            max_ground_speed_kt  = ?10,
+            max_true_airspeed_kt = ?11,
+            arrival_gate         = ?12
+        WHERE id = ?13
         "#,
     )
     .bind(&ended_at)
@@ -138,7 +183,11 @@ pub async fn finish_flight(
     .bind(nearest.as_ref().map(|n| n.name.as_str()))
     .bind(distance_nm)
     .bind(flight_time_s)
-    .bind(max_altitude_ft)
+    .bind(metrics.max_altitude_ft)
+    .bind(metrics.landing_fpm)
+    .bind(metrics.max_ground_speed_kt)
+    .bind(metrics.max_true_airspeed_kt)
+    .bind(&arr_gate)
     .bind(id)
     .execute(pool)
     .await?;
@@ -176,7 +225,10 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                origin_lat, origin_lon, origin_icao, origin_name,
                destination_lat, destination_lon, destination_icao, destination_name,
                aircraft_title, aircraft_atc_type, distance_nm, flight_time_s,
-               max_altitude_ft, source
+               max_altitude_ft,
+               landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
+               departure_gate, arrival_gate,
+               source
         FROM flight_log
         ORDER BY started_at DESC
         "#,

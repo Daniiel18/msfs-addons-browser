@@ -149,33 +149,125 @@ pub struct SimConnectLib {
 
 #[cfg(target_os = "windows")]
 impl SimConnectLib {
-    /// Carga `SimConnect.dll` desde el PATH del sistema. MSFS añade
-    /// la SDK al PATH al instalarse, así que `LoadLibrary` resuelve
-    /// la dll si MSFS está instalado en cualquiera de sus variantes.
-    /// Si no, devolvemos error y el caller cae al fallback.
+    /// Carga `SimConnect.dll` probando una larga lista de paths.
+    ///
+    /// Estrategia (en orden de preferencia):
+    ///
+    ///   1. **Junto al ejecutable** — la app **bundle** una copia de
+    ///      `SimConnect.dll` como Tauri resource. En producción
+    ///      vive en `<install-dir>/SimConnect.dll`; en dev en
+    ///      `target/debug/SimConnect.dll`. Es el primer candidato
+    ///      para que la app funcione "out of the box" aunque el
+    ///      usuario no tenga la SDK ni una install de MSFS detectable.
+    ///   2. **PATH** del sistema — captura SDKs instaladas que
+    ///      añaden el dir al PATH (raro fuera de devs).
+    ///   3. **SDKs típicas** — C:\MSFS SDK\, C:\MSFS 2024 SDK\.
+    ///   4. **Instalaciones de MSFS** — MS Store (Program Files), Steam
+    ///      (Program Files (x86)\Steam\steamapps), MSFS 2024 ídem.
+    ///   5. **`%LOCALAPPDATA%\Packages\Microsoft.FlightSimulator*`** —
+    ///      donde MSFS guarda recursos compartidos en MS Store.
+    ///
+    /// Si todo falla devolvemos error con el último mensaje — el
+    /// caller (watcher) lo loguea como info (no error, no es fatal)
+    /// y cae al fallback proceso+SimBrief.
     pub unsafe fn load() -> anyhow::Result<Self> {
-        // Lista de candidatos en orden de probabilidad. Empezamos
-        // por el nombre desnudo (PATH) y caemos a paths típicos
-        // donde MSFS deja la dll si el PATH no la expone.
-        let candidates: &[&str] = &[
-            "SimConnect.dll",
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+        // 1) Junto al ejecutable (bundled resource).
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("SimConnect.dll"));
+                // Algunos bundles ponen el dll en un subdir resources/.
+                candidates.push(dir.join("resources").join("SimConnect.dll"));
+            }
+        }
+
+        // 2) Por nombre desnudo — Windows lo busca en PATH + exe dir.
+        candidates.push(std::path::PathBuf::from("SimConnect.dll"));
+
+        // 3) SDKs.
+        for p in &[
             r"C:\MSFS SDK\SimConnect SDK\lib\SimConnect.dll",
             r"C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll",
-            r"C:\Program Files\Microsoft Flight Simulator\SimConnect SDK\lib\SimConnect.dll",
-        ];
+        ] {
+            candidates.push(std::path::PathBuf::from(p));
+        }
 
-        let lib = candidates
-            .iter()
-            .find_map(|p| {
-                tracing::debug!(target: "simconnect", "intentando cargar {}", p);
-                unsafe { libloading::Library::new(p).ok() }
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "SimConnect.dll no se encontró en PATH ni en rutas típicas de MSFS SDK"
-                )
-            })?;
+        // 4) Instalaciones de MSFS. Probamos ambos Program Files.
+        for env_var in &["ProgramFiles", "ProgramFiles(x86)"] {
+            let Some(base) = std::env::var_os(env_var) else { continue };
+            for sub in &[
+                r"Microsoft Flight Simulator\SimConnect.dll",
+                r"Microsoft Flight Simulator\SimConnect SDK\lib\SimConnect.dll",
+                r"Microsoft Flight Simulator 2024\SimConnect.dll",
+                r"Microsoft Flight Simulator 2024\SimConnect SDK\lib\SimConnect.dll",
+                r"Steam\steamapps\common\Microsoft Flight Simulator\SimConnect.dll",
+                r"Steam\steamapps\common\Microsoft Flight Simulator 2024\SimConnect.dll",
+            ] {
+                candidates.push(std::path::Path::new(&base).join(sub));
+            }
+        }
 
+        // 5) MS Store local cache. La ruta exacta varía según versión
+        // del paquete UWP, pero el padre `Microsoft.FlightSimulator_*`
+        // es estable.
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local_path = std::path::PathBuf::from(local);
+            for pkg in &[
+                "Microsoft.FlightSimulator_8wekyb3d8bbwe",
+                "Microsoft.Limitless_8wekyb3d8bbwe", // MSFS 2024 MS Store
+            ] {
+                candidates.push(
+                    local_path
+                        .join("Packages")
+                        .join(pkg)
+                        .join("LocalCache")
+                        .join("SimConnect.dll"),
+                );
+            }
+        }
+
+        // Probar cada candidato. Loguamos solo los que existen para
+        // no inundar el log con paths que nunca van a existir.
+        let mut tried: Vec<String> = Vec::new();
+        for path in &candidates {
+            let path_str = path.to_string_lossy().into_owned();
+            let exists = path.is_file()
+                // Por nombre desnudo NO podemos saber si existe sin
+                // intentar load — lo intentamos siempre.
+                || path.components().count() == 1;
+            if !exists {
+                continue;
+            }
+            tracing::debug!(target: "simconnect", "intentando SimConnect.dll: {}", path_str);
+            match unsafe { libloading::Library::new(path) } {
+                Ok(lib) => {
+                    tracing::info!(
+                        target: "simconnect",
+                        "SimConnect.dll cargada desde: {}",
+                        path_str
+                    );
+                    return Self::from_library(lib);
+                }
+                Err(e) => {
+                    tried.push(format!("{}: {}", path_str, e));
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "SimConnect.dll no se pudo cargar. Paths probados:\n{}",
+            if tried.is_empty() {
+                "(ningún candidato existía en disco)".to_string()
+            } else {
+                tried.join("\n")
+            }
+        ))
+    }
+
+    /// Resuelve los símbolos contra una `Library` ya cargada. Separar
+    /// esto del `load()` mantiene la búsqueda multi-path manejable.
+    unsafe fn from_library(lib: libloading::Library) -> anyhow::Result<Self> {
         let open: libloading::Symbol<FnOpen> = lib.get(b"SimConnect_Open\0")?;
         let close: libloading::Symbol<FnClose> = lib.get(b"SimConnect_Close\0")?;
         let add_def: libloading::Symbol<FnAddToDataDefinition> =
@@ -185,10 +277,6 @@ impl SimConnectLib {
         let get_next: libloading::Symbol<FnGetNextDispatch> =
             lib.get(b"SimConnect_GetNextDispatch\0")?;
 
-        // Capturamos los punteros y luego dropeamos los `Symbol`s
-        // (sus lifetimes están atadas a `lib`). Storeamos `lib` para
-        // que la dll permanezca cargada todo el tiempo de vida del
-        // wrapper.
         let open_fn = *open;
         let close_fn = *close;
         let add_def_fn = *add_def;

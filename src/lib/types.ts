@@ -88,9 +88,12 @@ export interface InstallResult {
    *  paquete MSFS. Cuando viene poblado, `packages` está vacío y
    *  el frontend debe ofrecer al usuario abrir el instalador. */
   installerPayload: InstallerPayload | null;
-  /** Si el archivo contenía liveries PMDG (.ptp). Las copiamos al
-   *  inbox y la UI muestra un toast con instrucciones para que el
-   *  usuario las importe desde PMDG Operations Center. */
+  /** Si el archivo contenía liveries PMDG (.ptp). La app intenta
+   *  instalarlas directamente en el paquete PMDG dentro de Community
+   *  (copiando texturas + mergeando aircraft.cfg + actualizando
+   *  layout.json) — replicando lo que hace PMDG Operations Center
+   *  pero sin requerir abrirlo. Las que no se pudieron instalar
+   *  quedan en `inboxDir` como fallback manual. */
   ptpPayload: PtpPayload | null;
 }
 
@@ -104,14 +107,15 @@ export interface PtpPayload {
   inboxDir: string;
   ptpFiles: string[];
   /** Para cada `ptpFiles[i]`, el aircraft detectado heurísticamente
-   *  (nombre + contenido del ZIP), ej. "PMDG 737-800". `null` cuando
-   *  no se pudo determinar. */
+   *  (nombre propio + nombre del archivo padre + contenido del ZIP),
+   *  ej. "PMDG 737-800". `null` cuando no se pudo determinar. */
   detectedAircraft: (string | null)[];
-  /** Path donde se copió la livery dentro de PMDG Operations
-   *  Center automáticamente, en mismo orden que `ptpFiles`. Cuando
-   *  está populado, el usuario sólo abre OC y la livery aparece
-   *  importada — no necesita apuntar al inbox. `null` si OC no
-   *  está instalado para el aircraft o si no se detectó aircraft. */
+  /** Path al directorio del avión PMDG donde quedó instalada la
+   *  livery (`<community>/pmdg-aircraft-XXX/SimObjects/Airplanes/PMDG
+   *  XXX/`). Cuando está populado, la livery aparece automáticamente
+   *  al elegir la aeronave en MSFS — el usuario no tiene que abrir
+   *  PMDG Operations Center. `null` si no se detectó aircraft o si
+   *  el paquete PMDG no está instalado en Community. */
   autoInstalledAt: (string | null)[];
 }
 
@@ -221,8 +225,21 @@ export interface FlightLogEntry {
   aircraftTitle: string | null;
   aircraftAtcType: string | null;
   distanceNm: number | null;
+  /** Duración total entre `startedAt` y `endedAt` en segundos. */
   flightTimeS: number | null;
   maxAltitudeFt: number | null;
+  /** Vertical speed (FPM) en el momento del touchdown — negativo
+   *  = descenso. -100 a -500 es un "buen aterrizaje"; -600 a
+   *  -1000 áspero; bajo -1000 abusivo. `null` si no se capturó. */
+  landingFpm: number | null;
+  /** Ground speed máxima durante el vuelo (knots). */
+  maxGroundSpeedKt: number | null;
+  /** True airspeed máxima durante el vuelo (knots). */
+  maxTrueAirspeedKt: number | null;
+  /** Parking spot / gate de salida — typically "Position: lat,lon"
+   *  cuando no detectamos parking específico. */
+  departureGate: string | null;
+  arrivalGate: string | null;
   source: string;
 }
 

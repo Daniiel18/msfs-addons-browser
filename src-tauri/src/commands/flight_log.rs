@@ -5,7 +5,7 @@
 //! validar la UI mientras la integración real con SimConnect no
 //! está cableada.
 
-use crate::flight_log::{self, FlightLogEntry};
+use crate::flight_log::{self, FlightFinishMetrics, FlightLogEntry};
 use crate::simconnect_watcher::FlightStatus;
 use crate::AppState;
 use tauri::Manager;
@@ -59,8 +59,20 @@ pub async fn debug_seed_flight_log(
     )
     .await
     .map_err(|e| e.to_string())?;
-    flight_log::finish_flight(&state.db, id, 40.471, -3.564, Some(36000))
-        .await
-        .map_err(|e| e.to_string())?;
+    flight_log::finish_flight(
+        &state.db,
+        id,
+        40.471,
+        -3.564,
+        FlightFinishMetrics {
+            max_altitude_ft: Some(36_000),
+            // Métricas tipo: un buen aterrizaje, crucero a M.78 (~450kt GS).
+            landing_fpm: Some(-180),
+            max_ground_speed_kt: Some(454),
+            max_true_airspeed_kt: Some(462),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(id)
 }

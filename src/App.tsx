@@ -25,6 +25,7 @@ import { NotificationsBell } from "./components/NotificationsBell";
 import { MapView } from "./components/MapView";
 import { AddonsView } from "./components/AddonsView";
 import { DashboardView } from "./components/DashboardView";
+import { FlightBookView } from "./components/FlightBookView";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
 import { Toaster } from "./components/Toaster";
@@ -357,6 +358,13 @@ export default function App() {
             label="Addons"
             tourId="nav-addons"
           />
+          <ViewTab
+            active={view === "flightbook"}
+            onClick={() => setView("flightbook")}
+            icon={<Plane className="h-4 w-4" />}
+            label="FlightBook"
+            tourId="nav-flightbook"
+          />
         </nav>
 
         {view === "dashboard" && <DashboardView />}
@@ -413,6 +421,7 @@ export default function App() {
         )}
         {view === "map" && <MapView />}
         {view === "addons" && <AddonsView />}
+        {view === "flightbook" && <FlightBookView />}
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

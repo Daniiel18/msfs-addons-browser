@@ -248,6 +248,8 @@ mod windows_simconnect {
         altitude_ft: f64,
         ground_velocity_kt: f64,
         on_ground: f64, // bool en SimConnect viene como float64 0.0/1.0
+        vertical_speed_fpm: f64,
+        true_airspeed_kt: f64,
     }
 
     const DEFINE_ID_AIRCRAFT: u32 = 1;
@@ -363,6 +365,7 @@ mod windows_simconnect {
         let units_feet = sc::cstr("feet");
         let units_knots = sc::cstr("knots");
         let units_bool = sc::cstr("bool");
+        let units_fpm = sc::cstr("feet per minute");
 
         let names: &[(&str, &std::ffi::CStr)] = &[
             ("PLANE LATITUDE", units_deg.as_c_str()),
@@ -370,6 +373,12 @@ mod windows_simconnect {
             ("PLANE ALTITUDE", units_feet.as_c_str()),
             ("GROUND VELOCITY", units_knots.as_c_str()),
             ("SIM ON GROUND", units_bool.as_c_str()),
+            // VERTICAL SPEED en feet/minute — lo necesitamos para
+            // capturar el FPM del touchdown.
+            ("VERTICAL SPEED", units_fpm.as_c_str()),
+            // True airspeed — para tracking de velocidad máxima
+            // independiente del viento.
+            ("AIRSPEED TRUE", units_knots.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -389,7 +398,11 @@ mod windows_simconnect {
                 anyhow::bail!("AddToDataDefinition '{}' falló (0x{:08x})", name, hr);
             }
         }
-        tracing::info!(target: "simconnect", "data definitions registradas (5 simvars)");
+        tracing::info!(
+            target: "simconnect",
+            "data definitions registradas ({} simvars)",
+            names.len()
+        );
 
         // Subscribe — período SECOND para no inundar la app con
         // updates sub-segundo (no las usamos para nada visual y
@@ -427,6 +440,15 @@ mod windows_simconnect {
         let current_flight_id: std::sync::Arc<std::sync::Mutex<Option<i64>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let mut max_alt_ft: i64 = 0;
+        let mut max_gs_kt: i64 = 0;
+        let mut max_tas_kt: i64 = 0;
+        // Ventana corta de los últimos VS leídos — al detectar
+        // touchdown elegimos el MÁS negativo de los últimos ~3s
+        // como "landing FPM". SimConnect a veces emite un 0
+        // espurio justo en el cambio de fase, así que tomar el
+        // mínimo de la ventana evita ese artefacto.
+        let mut recent_vs: std::collections::VecDeque<f64> =
+            std::collections::VecDeque::with_capacity(4);
 
         loop {
             let mut p_data: *mut sc::SIMCONNECT_RECV = ptr::null_mut();
@@ -486,6 +508,9 @@ mod windows_simconnect {
                         &mut phase,
                         &current_flight_id,
                         &mut max_alt_ft,
+                        &mut max_gs_kt,
+                        &mut max_tas_kt,
+                        &mut recent_vs,
                     );
                 }
                 _ => {
@@ -504,12 +529,17 @@ mod windows_simconnect {
         phase: &mut FlightPhase,
         current_flight_id: &std::sync::Arc<std::sync::Mutex<Option<i64>>>,
         max_alt_ft: &mut i64,
+        max_gs_kt: &mut i64,
+        max_tas_kt: &mut i64,
+        recent_vs: &mut std::collections::VecDeque<f64>,
     ) {
         let lat = data.latitude_deg;
         let lon = data.longitude_deg;
         let alt = data.altitude_ft;
         let gs = data.ground_velocity_kt;
         let on_ground = data.on_ground >= 0.5;
+        let vs = data.vertical_speed_fpm;
+        let tas = data.true_airspeed_kt;
 
         // Validación básica — ocasionalmente SimConnect emite NaN
         // durante carga del flight.
@@ -530,6 +560,26 @@ mod windows_simconnect {
                 });
             }
         }
+
+        // Track max GS / TAS sólo mientras hay un vuelo abierto
+        // (evitamos contar el taxi previo al despegue como "max").
+        if matches!(*phase, FlightPhase::Airborne) {
+            let gs_int = gs as i64;
+            if gs_int > *max_gs_kt {
+                *max_gs_kt = gs_int;
+            }
+            let tas_int = tas as i64;
+            if tas_int > *max_tas_kt {
+                *max_tas_kt = tas_int;
+            }
+        }
+
+        // Ventana corta de VS — usamos los últimos 4 ticks (~4s)
+        // para capturar el VS del touchdown.
+        if recent_vs.len() >= 4 {
+            recent_vs.pop_front();
+        }
+        recent_vs.push_back(vs);
 
         // State machine: detect takeoff / landing.
         let new_phase = match (*phase, on_ground, gs) {
@@ -585,32 +635,62 @@ mod windows_simconnect {
                 (FlightPhase::Airborne, FlightPhase::OnGround) => {
                     // Aterrizaje. Tomamos el id (.take() lo deja
                     // None para no re-cerrar) y lanzamos la tarea
-                    // que actualiza la fila con destino + tiempo.
+                    // que actualiza la fila con destino + tiempo
+                    // + métricas (landing FPM, max GS/TAS).
                     let id_opt = current_flight_id
                         .lock()
                         .ok()
                         .and_then(|mut g| g.take());
                     if let Some(id) = id_opt {
+                        // El landing FPM real es el más negativo de
+                        // la ventana de los últimos ~3s — protección
+                        // contra el spurious 0 que SimConnect emite
+                        // justo en el cambio de fase.
+                        let landing_vs = recent_vs
+                            .iter()
+                            .copied()
+                            .fold(f64::INFINITY, f64::min);
+                        let landing_fpm = if landing_vs.is_finite() {
+                            Some(landing_vs as i64)
+                        } else {
+                            None
+                        };
+                        let metrics = crate::flight_log::FlightFinishMetrics {
+                            max_altitude_ft: Some(*max_alt_ft),
+                            landing_fpm,
+                            max_ground_speed_kt: if *max_gs_kt > 0 {
+                                Some(*max_gs_kt)
+                            } else {
+                                None
+                            },
+                            max_true_airspeed_kt: if *max_tas_kt > 0 {
+                                Some(*max_tas_kt)
+                            } else {
+                                None
+                            },
+                        };
                         let pool_c = pool.clone();
                         let lat_c = lat;
                         let lon_c = lon;
-                        let max_alt_c = *max_alt_ft;
                         let app_c = app.clone();
+                        let metrics_c = metrics;
                         tokio::spawn(async move {
                             match crate::flight_log::finish_flight(
-                                &pool_c,
-                                id,
-                                lat_c,
-                                lon_c,
-                                Some(max_alt_c),
+                                &pool_c, id, lat_c, lon_c, metrics_c,
                             )
                             .await
                             {
                                 Ok(()) => {
                                     tracing::info!(
                                         target: "simconnect",
-                                        "ATERRIZAJE — flight_log id={} cerrado en ({:.4}, {:.4}) max_alt={}ft",
-                                        id, lat_c, lon_c, max_alt_c
+                                        "ATERRIZAJE — flight_log id={} cerrado en ({:.4}, {:.4}) max_alt={:?}ft landing_fpm={:?} max_gs={:?}kt max_tas={:?}kt",
+                                        id,
+                                        lat_c,
+                                        lon_c,
+                                        metrics_c.max_altitude_ft,
+                                        metrics_c.landing_fpm,
+                                        metrics_c.max_ground_speed_kt,
+                                        metrics_c.max_true_airspeed_kt
                                     );
                                     let _ = app_c.emit("flightlog://changed", ());
                                 }
@@ -623,6 +703,9 @@ mod windows_simconnect {
                             }
                         });
                         *max_alt_ft = 0;
+                        *max_gs_kt = 0;
+                        *max_tas_kt = 0;
+                        recent_vs.clear();
                     }
                 }
                 _ => {}

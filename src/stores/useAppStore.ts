@@ -6,8 +6,9 @@ type Status = "idle" | "loading" | "success" | "error";
 
 /** Vista activa en `App`. Dashboard (default home, totales) /
  *  Buscar / Mapa (sólo escenarios) / Addons (resto: aircraft,
- *  livery, sound, etc). */
-export type View = "dashboard" | "search" | "map" | "addons";
+ *  livery, sound, etc) / FlightBook (historial de vuelos reales
+ *  con métricas de SimConnect). */
+export type View = "dashboard" | "search" | "map" | "addons" | "flightbook";
 
 interface AppState {
   sources: SourceDescriptor[];
