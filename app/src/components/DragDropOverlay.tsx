@@ -230,19 +230,60 @@ function DropResultItem({ result }: { result: DropResult }) {
 
 function PtpNote({ payload }: { payload: PtpPayload }) {
   const count = payload.ptpFiles.length;
+  const autoInstalled = payload.autoInstalledAt.filter((p) => !!p).length;
+  const allAuto = autoInstalled === count && count > 0;
+  const someAuto = autoInstalled > 0 && !allAuto;
+
+  // Cuenta agrupada de aircrafts detectados — no listar
+  // "PMDG 737-800 · PMDG 737-800" cuando son 3 del mismo avión.
+  const detectedSummary = (() => {
+    const counts = new Map<string, number>();
+    for (const ac of payload.detectedAircraft) {
+      if (!ac) continue;
+      counts.set(ac, (counts.get(ac) ?? 0) + 1);
+    }
+    const parts = Array.from(counts.entries()).map(([k, v]) =>
+      v > 1 ? `${k} (×${v})` : k,
+    );
+    return parts.join(" · ");
+  })();
+  const undetected = payload.detectedAircraft.filter((a) => !a).length;
+
   return (
-    <div className="mt-1">
-      <p className="text-[11px] text-sky-300">
-        {count === 1
-          ? "Livery PMDG (.ptp) guardada en el Inbox"
-          : `${count} liveries PMDG (.ptp) guardadas en el Inbox`}
-        . Abre <span className="font-medium">PMDG Operations Center</span> →{" "}
-        <span className="font-medium">Install Livery</span> y apunta a esta
-        carpeta para importarla en el avión correspondiente.
-      </p>
+    <div className="mt-1 space-y-1">
+      {allAuto ? (
+        <p className="text-[11px] text-emerald-300">
+          ✓{" "}
+          {count === 1
+            ? "Livery instalada en el avión PMDG"
+            : `${count} liveries instaladas en el avión PMDG`}
+          . Aparecerá directamente al elegir la aeronave en MSFS.
+        </p>
+      ) : someAuto ? (
+        <p className="text-[11px] text-emerald-300">
+          ✓ {autoInstalled} de {count} instaladas en el avión PMDG. El resto
+          quedó en el inbox manual (no se detectó el modelo del avión, o el
+          paquete PMDG no está en Community).
+        </p>
+      ) : (
+        <p className="text-[11px] text-sky-300">
+          {count === 1
+            ? "Livery PMDG (.ptp) guardada en el Inbox"
+            : `${count} liveries PMDG (.ptp) guardadas en el Inbox`}
+          . No se detectó el avión PMDG en Community — instala primero el
+          modelo base y vuelve a arrastrar la livery.
+        </p>
+      )}
+      {detectedSummary && (
+        <p className="text-[11px] text-emerald-300">
+          ✦ Detectado: <span className="font-medium">{detectedSummary}</span>
+          {undetected > 0 &&
+            ` · ${undetected} sin identificar (revisar nombre)`}
+        </p>
+      )}
       <button
         onClick={() => api.openLocalPath(payload.inboxDir)}
-        className="mt-1 text-[11px] text-sky-200 underline hover:text-sky-100"
+        className="text-[11px] text-sky-200 underline hover:text-sky-100"
       >
         Abrir Inbox
       </button>

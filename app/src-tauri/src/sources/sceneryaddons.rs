@@ -3,8 +3,8 @@ use futures_util::{stream, StreamExt};
 use scraper::{Html, Selector};
 
 use super::{
-    extract_article_image, stable_id, Addon, BrowsePage, DownloadKind, DownloadMethod, Source,
-    SourceError,
+    extract_article_date, extract_article_image, stable_id, Addon, BrowsePage, DownloadKind,
+    DownloadMethod, Source, SourceError,
 };
 
 const BASE: &str = "https://sceneryaddons.org";
@@ -108,31 +108,34 @@ impl Source for SceneryAddonsSource {
         // First pass: pure filtering, no IO — cheap enough to run sync.
         let relevant: Vec<_> = entries
             .into_iter()
-            .filter_map(|SearchEntry { title, page_url, simulator, image_url }| {
-                let parsed = crate::parser::parse(&title);
+            .filter_map(
+                |SearchEntry {
+                     title,
+                     page_url,
+                     simulator,
+                     image_url,
+                     released_at,
+                 }| {
+                    let parsed = crate::parser::parse(&title);
 
-                // Two-stage relevance filter against WordPress's fuzzy body match:
-                //   - ICAO query → require the parsed ICAO to equal the query.
-                //   - otherwise → require the query as a substring in the title
-                //                 or developer (matches user expectation that
-                //                 "orbx" returns Orbx products and nothing else).
-                if let Some(wanted) = &icao_filter {
-                    if parsed.icao.as_deref() != Some(wanted.as_str()) {
-                        return None;
+                    if let Some(wanted) = &icao_filter {
+                        if parsed.icao.as_deref() != Some(wanted.as_str()) {
+                            return None;
+                        }
+                    } else {
+                        let in_title = title.to_lowercase().contains(&q_lower);
+                        let in_dev = parsed
+                            .developer
+                            .as_deref()
+                            .map_or(false, |d| d.to_lowercase().contains(&q_lower));
+                        if !in_title && !in_dev {
+                            return None;
+                        }
                     }
-                } else {
-                    let in_title = title.to_lowercase().contains(&q_lower);
-                    let in_dev = parsed
-                        .developer
-                        .as_deref()
-                        .map_or(false, |d| d.to_lowercase().contains(&q_lower));
-                    if !in_title && !in_dev {
-                        return None;
-                    }
-                }
 
-                Some((title, page_url, simulator, image_url, parsed))
-            })
+                    Some((title, page_url, simulator, image_url, released_at, parsed))
+                },
+            )
             .take(MAX_DETAIL_FETCHES)
             .collect();
 
@@ -140,7 +143,7 @@ impl Source for SceneryAddonsSource {
         // while preserving input order so ranking by the site is kept.
         let total = relevant.len();
         let addons: Vec<Addon> = stream::iter(relevant.into_iter().map(
-            |(title, page_url, simulator, image_url, parsed)| async move {
+            |(title, page_url, simulator, image_url, released_at, parsed)| async move {
                 let download_methods = self.download_methods(&page_url).await;
                 Addon {
                     id: stable_id("sceneryaddons", &page_url),
@@ -154,6 +157,7 @@ impl Source for SceneryAddonsSource {
                     page_url,
                     download_methods,
                     image_url,
+                    released_at,
                 }
             },
         ))
@@ -197,12 +201,19 @@ impl Source for SceneryAddonsSource {
             .take(MAX_DETAIL_FETCHES)
             .map(|e| {
                 let parsed = crate::parser::parse(&e.title);
-                (e.title, e.page_url, e.simulator, e.image_url, parsed)
+                (
+                    e.title,
+                    e.page_url,
+                    e.simulator,
+                    e.image_url,
+                    e.released_at,
+                    parsed,
+                )
             })
             .collect();
 
         let addons: Vec<Addon> = stream::iter(entries.into_iter().map(
-            |(title, page_url, simulator, image_url, parsed)| async move {
+            |(title, page_url, simulator, image_url, released_at, parsed)| async move {
                 let download_methods = self.download_methods(&page_url).await;
                 Addon {
                     id: stable_id("sceneryaddons", &page_url),
@@ -216,6 +227,7 @@ impl Source for SceneryAddonsSource {
                     page_url,
                     download_methods,
                     image_url,
+                    released_at,
                 }
             },
         ))
@@ -249,6 +261,7 @@ struct SearchEntry {
     page_url: String,
     simulator: String,
     image_url: Option<String>,
+    released_at: Option<String>,
 }
 
 /// Pure, synchronous parser — isolates non-`Send` scraper types from the async
@@ -281,8 +294,15 @@ fn parse_search_page(html: &str) -> Vec<SearchEntry> {
             // Grab the featured image straight from the list page so we don't
             // need a second HTTP request per card.
             let image_url = extract_article_image(&article);
+            let released_at = extract_article_date(&article);
 
-            Some(SearchEntry { title, page_url, simulator, image_url })
+            Some(SearchEntry {
+                title,
+                page_url,
+                simulator,
+                image_url,
+                released_at,
+            })
         })
         .collect()
 }

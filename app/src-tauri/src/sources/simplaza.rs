@@ -3,8 +3,8 @@ use futures_util::{stream, StreamExt};
 use scraper::{Html, Selector};
 
 use super::{
-    extract_article_image, stable_id, Addon, BrowsePage, DownloadKind, DownloadMethod, Source,
-    SourceError,
+    extract_article_date, extract_article_image, stable_id, Addon, BrowsePage, DownloadKind,
+    DownloadMethod, Source, SourceError,
 };
 
 const BASE: &str = "https://simplaza.org";
@@ -131,6 +131,7 @@ struct SearchEntry {
     title: String,
     page_url: String,
     image_url: Option<String>,
+    released_at: Option<String>,
 }
 
 /// Pure sync parser — keeps non-`Send` scraper types out of the async fn.
@@ -169,7 +170,13 @@ fn parse_search_page(html: &str) -> Vec<SearchEntry> {
             continue;
         }
         let image_url = extract_article_image(&article);
-        out.push(SearchEntry { title, page_url, image_url });
+        let released_at = extract_article_date(&article);
+        out.push(SearchEntry {
+            title,
+            page_url,
+            image_url,
+            released_at,
+        });
     }
 
     if out.is_empty() {
@@ -189,7 +196,12 @@ fn parse_search_page(html: &str) -> Vec<SearchEntry> {
                 if title.is_empty() || page_url.is_empty() || is_non_result(&page_url) {
                     continue;
                 }
-                out.push(SearchEntry { title, page_url, image_url: None });
+                out.push(SearchEntry {
+                    title,
+                    page_url,
+                    image_url: None,
+                    released_at: None,
+                });
             }
             if !out.is_empty() {
                 break;
@@ -236,18 +248,25 @@ impl Source for SimplazaSource {
         // First pass: filter by relevance (title or developer must contain query).
         let relevant: Vec<_> = entries
             .into_iter()
-            .filter_map(|SearchEntry { title, page_url, image_url }| {
-                let parsed = crate::parser::parse(&title);
-                let in_title = title.to_lowercase().contains(&q_lower);
-                let in_dev = parsed
-                    .developer
-                    .as_deref()
-                    .map_or(false, |d| d.to_lowercase().contains(&q_lower));
-                if !in_title && !in_dev {
-                    return None;
-                }
-                Some((title, page_url, image_url, parsed))
-            })
+            .filter_map(
+                |SearchEntry {
+                     title,
+                     page_url,
+                     image_url,
+                     released_at,
+                 }| {
+                    let parsed = crate::parser::parse(&title);
+                    let in_title = title.to_lowercase().contains(&q_lower);
+                    let in_dev = parsed
+                        .developer
+                        .as_deref()
+                        .map_or(false, |d| d.to_lowercase().contains(&q_lower));
+                    if !in_title && !in_dev {
+                        return None;
+                    }
+                    Some((title, page_url, image_url, released_at, parsed))
+                },
+            )
             .take(MAX_DETAIL_FETCHES)
             .collect();
 
@@ -258,11 +277,9 @@ impl Source for SimplazaSource {
         // "777" when done sequentially.
         let total = relevant.len();
         let addons: Vec<Addon> = stream::iter(relevant.into_iter().map(
-            |(title, page_url, image_url, parsed)| async move {
+            |(title, page_url, image_url, released_at, parsed)| async move {
                 let mut methods = self.download_methods(&page_url).await;
                 if methods.is_empty() {
-                    // Fallback so the user at least has a way to reach the
-                    // product page when the detail scraper can't find links.
                     methods.push(DownloadMethod {
                         kind: DownloadKind::Direct,
                         name: "Abrir en Simplaza".to_string(),
@@ -281,6 +298,7 @@ impl Source for SimplazaSource {
                     download_methods: methods,
                     page_url,
                     image_url,
+                    released_at,
                 }
             },
         ))
@@ -317,12 +335,12 @@ impl Source for SimplazaSource {
             .take(MAX_DETAIL_FETCHES)
             .map(|e| {
                 let parsed = crate::parser::parse(&e.title);
-                (e.title, e.page_url, e.image_url, parsed)
+                (e.title, e.page_url, e.image_url, e.released_at, parsed)
             })
             .collect();
 
         let addons: Vec<Addon> = stream::iter(prepped.into_iter().map(
-            |(title, page_url, image_url, parsed)| async move {
+            |(title, page_url, image_url, released_at, parsed)| async move {
                 let mut methods = self.download_methods(&page_url).await;
                 if methods.is_empty() {
                     methods.push(DownloadMethod {
@@ -343,6 +361,7 @@ impl Source for SimplazaSource {
                     download_methods: methods,
                     page_url,
                     image_url,
+                    released_at,
                 }
             },
         ))

@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, Filter, Loader2, Package, RefreshCw, Search } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+  Boxes,
+  Cog,
+  Music,
+  Package,
+  Plane,
+  Palette,
+  Search,
+  HelpCircle,
+} from "lucide-react";
 import type { CommunityPackage } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { PackageDetailModal } from "./PackageDetailModal";
@@ -8,22 +16,21 @@ import { derivedType, isAddon, type DerivedType } from "../lib/packageType";
 import { api } from "../lib/tauri";
 
 /**
- * Vista paralela al mapa para todo lo que **no** es escenario:
- * AIRCRAFT, LIVERY (derivado), INSTRUMENT, MISC y UNKNOWN.
+ * Vista de addons no-escenario: aviones, liveries, instrumentos,
+ * misc, unknown.
  *
- * Misma fuente de verdad (`useCommunityStore`), mismo modal de
- * detalle (`PackageDetailModal`). Sin mapa porque los addons no
- * geolocalizan.
- *
- * El filtro por tipo usa `derivedType()` — un único helper
- * compartido con MapView que distingue liveries de aircraft
- * mirando el campo `dependencies` del manifest. Esto evita que la
- * lista mezcle liveries dentro de la categoría AIRCRAFT.
+ * Layout actualizado:
+ *   · Header con search global + filtros como **chips** (no
+ *     dropdown). Cada chip muestra el icono + label + contador.
+ *   · Cuerpo: cuando no hay filtro de tipo, agrupamos por
+ *     categoría con cabeceras stickies. Cuando hay filtro de tipo
+ *     activo, lista plana sin cabeceras.
+ *   · Cards en grid 1/2/3/4 columnas según ancho de pantalla.
+ *     Cards más limpios — thumbnail rectangular arriba (no cuadrada
+ *     a la izquierda) con el contenido debajo.
  */
 export function AddonsView() {
   const allPackages = useCommunityStore((s) => s.packages);
-  const rescan = useCommunityStore((s) => s.rescan);
-  const scanning = useCommunityStore((s) => s.scanning);
   const detailsFor = useCommunityStore((s) => s.detailsFor);
   const openDetails = useCommunityStore((s) => s.openDetails);
   const updates = useCommunityStore((s) => s.updates);
@@ -38,10 +45,14 @@ export function AddonsView() {
     [allPackages],
   );
 
-  const knownTypes = useMemo(() => {
-    const set = new Set<DerivedType>();
-    for (const { t } of addons) set.add(t);
-    // Orden lógico: aircraft, livery, instrument, misc, unknown.
+  const counts = useMemo(() => {
+    const m = new Map<DerivedType, number>();
+    for (const { t } of addons) m.set(t, (m.get(t) ?? 0) + 1);
+    return m;
+  }, [addons]);
+
+  // Tipos presentes en el orden canónico.
+  const presentTypes = useMemo<DerivedType[]>(() => {
     const order: DerivedType[] = [
       "AIRCRAFT",
       "LIVERY",
@@ -49,8 +60,8 @@ export function AddonsView() {
       "MISC",
       "UNKNOWN",
     ];
-    return order.filter((t) => set.has(t));
-  }, [addons]);
+    return order.filter((t) => (counts.get(t) ?? 0) > 0);
+  }, [counts]);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -62,6 +73,21 @@ export function AddonsView() {
         .some((s) => s!.toLowerCase().includes(q));
     });
   }, [addons, filter, typeFilter]);
+
+  // Agrupar por tipo cuando no hay filtro de tipo activo. En cada
+  // grupo respetamos el orden alfabético del título.
+  const grouped = useMemo(() => {
+    const m = new Map<DerivedType, { p: CommunityPackage; t: DerivedType }[]>();
+    for (const item of visible) {
+      const arr = m.get(item.t) ?? [];
+      arr.push(item);
+      m.set(item.t, arr);
+    }
+    for (const [, arr] of m) {
+      arr.sort((a, b) => a.p.title.localeCompare(b.p.title));
+    }
+    return m;
+  }, [visible]);
 
   const detailsPkg = useMemo(
     () => allPackages.find((p) => p.folderName === detailsFor) ?? null,
@@ -75,85 +101,90 @@ export function AddonsView() {
     [updates, detailsFor],
   );
 
-  // Conteos por tipo para mostrar "AIRCRAFT (3)" en el dropdown.
-  const counts = useMemo(() => {
-    const m = new Map<DerivedType, number>();
-    for (const { t } of addons) m.set(t, (m.get(t) ?? 0) + 1);
-    return m;
-  }, [addons]);
-
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/40">
-      <header className="flex flex-wrap items-center gap-3 border-b border-slate-800 px-5 py-3">
+    <div className="space-y-3">
+      {/* Header — título + search + chips de filtro de tipo. */}
+      <header className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
         <div className="flex items-center gap-2">
           <Boxes className="h-4 w-4 text-brand-300" />
           <h2 className="text-sm font-semibold text-slate-100">
-            Addons ({addons.length})
+            Mis addons
           </h2>
+          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+            {addons.length}
+          </span>
         </div>
 
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+        <div className="ml-auto flex flex-1 flex-wrap items-center gap-2 md:flex-none">
+          <div className="relative flex-1 md:flex-none">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filtrar…"
-              className="w-48 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-7 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+              placeholder="Buscar por título, autor, carpeta…"
+              className="w-full rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 md:w-72"
             />
           </div>
-          <div className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-950/50 px-2 py-1.5 text-xs text-slate-300">
-            <Filter className="h-3.5 w-3.5 text-slate-500" />
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as DerivedType | "ALL")}
-              className="bg-transparent text-xs focus:outline-none"
-            >
-              <option value="ALL">Todos los tipos</option>
-              {knownTypes.map((t) => (
-                <option key={t} value={t}>
-                  {t} ({counts.get(t) ?? 0})
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            onClick={rescan}
-            disabled={scanning}
-            title="Re-escanear Community"
-            className="inline-flex items-center gap-1 rounded-md border border-slate-800 px-2 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-50"
-          >
-            {scanning ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
-            )}
-          </button>
         </div>
       </header>
 
-      <div className="max-h-[calc(100vh-19rem)] min-h-[320px] overflow-y-auto">
-        {visible.length === 0 ? (
-          <div className="px-6 py-12 text-center text-sm text-slate-500">
-            {addons.length === 0
-              ? "No hay addons no-escenario detectados todavía. Pulsa el botón de re-escaneo o instala algo."
-              : "Ningún addon coincide con el filtro."}
-          </div>
-        ) : (
-          <ul className="grid grid-cols-1 gap-2 p-3 md:grid-cols-2">
-            {visible.map(({ p, t }) => (
-              <PackageCard
-                key={p.folderName}
-                pkg={p}
-                derived={t}
-                hasUpdate={updates.some((u) => u.folderName === p.folderName)}
-                onClick={() => openDetails(p.folderName)}
-              />
-            ))}
-          </ul>
-        )}
+      {/* Chips de tipo — fila con conteos visibles. */}
+      <div className="flex flex-wrap gap-1.5">
+        <TypeChip
+          active={typeFilter === "ALL"}
+          onClick={() => setTypeFilter("ALL")}
+          icon={<Package className="h-3.5 w-3.5" />}
+          label="Todos"
+          count={addons.length}
+        />
+        {presentTypes.map((t) => (
+          <TypeChip
+            key={t}
+            active={typeFilter === t}
+            onClick={() => setTypeFilter(t)}
+            icon={typeIcon(t)}
+            label={typeLabel(t)}
+            count={counts.get(t) ?? 0}
+          />
+        ))}
       </div>
+
+      {/* Cuerpo */}
+      {visible.length === 0 ? (
+        <EmptyState hasAny={addons.length > 0} hasFilter={!!filter || typeFilter !== "ALL"} />
+      ) : typeFilter !== "ALL" || filter.trim() !== "" ? (
+        // Lista plana — el usuario ya filtró, no agrupamos.
+        <CardsGrid
+          items={visible}
+          updates={updates}
+          onOpen={openDetails}
+        />
+      ) : (
+        // Agrupado por tipo con cabeceras.
+        <div className="space-y-5">
+          {presentTypes.map((t) => {
+            const items = grouped.get(t) ?? [];
+            if (items.length === 0) return null;
+            return (
+              <section key={t}>
+                <h3 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  {typeIcon(t)}
+                  {typeLabel(t)}
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                    {items.length}
+                  </span>
+                </h3>
+                <CardsGrid
+                  items={items}
+                  updates={updates}
+                  onOpen={openDetails}
+                />
+              </section>
+            );
+          })}
+        </div>
+      )}
 
       {detailsPkg && (
         <PackageDetailModal
@@ -166,21 +197,124 @@ export function AddonsView() {
   );
 }
 
-/** Carga lazy del thumbnail del paquete. Devuelve `null` si no hay
- *  thumbnail; `convertFileSrc()` traduce el path absoluto del backend
- *  a un URL compatible con `<img src="...">` en el webview de Tauri. */
+// ----------------------------------------------------------------------------
+// Subcomponentes
+// ----------------------------------------------------------------------------
+
+function CardsGrid({
+  items,
+  updates,
+  onOpen,
+}: {
+  items: { p: CommunityPackage; t: DerivedType }[];
+  updates: { folderName: string }[];
+  onOpen: (folder: string) => void;
+}) {
+  return (
+    <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {items.map(({ p, t }) => (
+        <PackageCard
+          key={p.folderName}
+          pkg={p}
+          derived={t}
+          hasUpdate={updates.some((u) => u.folderName === p.folderName)}
+          onClick={() => onOpen(p.folderName)}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function TypeChip({
+  active,
+  onClick,
+  icon,
+  label,
+  count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
+        active
+          ? "border-brand-500 bg-brand-500/15 text-brand-100"
+          : "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60"
+      }`}
+    >
+      {icon}
+      {label}
+      <span
+        className={`ml-0.5 rounded-full px-1.5 text-[10px] font-medium ${
+          active ? "bg-brand-500/30 text-brand-100" : "bg-slate-800 text-slate-400"
+        }`}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+function EmptyState({
+  hasAny,
+  hasFilter,
+}: {
+  hasAny: boolean;
+  hasFilter: boolean;
+}) {
+  if (!hasAny) {
+    return (
+      <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center">
+        <Package className="mx-auto mb-3 h-8 w-8 text-slate-700" />
+        <p className="text-sm text-slate-400">No hay addons no-escenario instalados.</p>
+        <p className="mt-1 text-xs text-slate-600">
+          Arrastra un .zip / .rar / .7z / .ptp para instalar uno, o usa
+          la pestaña Buscar para descargar desde un catálogo.
+        </p>
+      </div>
+    );
+  }
+  if (hasFilter) {
+    return (
+      <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center text-xs text-slate-500">
+        Ningún addon coincide con tu filtro.
+      </div>
+    );
+  }
+  return null;
+}
+
+// ----------------------------------------------------------------------------
+// Card individual
+// ----------------------------------------------------------------------------
+
+const thumbnailCache = new Map<string, string | null>();
+
 function useThumbnail(folderName: string): string | null {
-  const [src, setSrc] = useState<string | null>(null);
+  const cached = thumbnailCache.get(folderName);
+  const [src, setSrc] = useState<string | null>(cached ?? null);
   useEffect(() => {
+    if (thumbnailCache.has(folderName)) {
+      setSrc(thumbnailCache.get(folderName) ?? null);
+      return;
+    }
     let cancelled = false;
     api
       .packageThumbnail(folderName)
-      .then((path) => {
+      .then((dataUrl) => {
         if (cancelled) return;
-        setSrc(path ? convertFileSrc(path) : null);
+        thumbnailCache.set(folderName, dataUrl);
+        setSrc(dataUrl);
       })
       .catch(() => {
-        if (!cancelled) setSrc(null);
+        if (cancelled) return;
+        thumbnailCache.set(folderName, null);
+        setSrc(null);
       });
     return () => {
       cancelled = true;
@@ -201,18 +335,19 @@ function PackageCard({
   onClick: () => void;
 }) {
   const thumb = useThumbnail(pkg.folderName);
+  const sizeMb =
+    pkg.sizeBytes != null ? (pkg.sizeBytes / 1_000_000).toFixed(0) : null;
 
   return (
     <li>
       <button
         onClick={onClick}
-        className="group flex w-full items-stretch gap-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-brand-500/40 hover:bg-slate-900"
+        className="group flex h-full w-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-brand-500/40 hover:bg-slate-900"
       >
-        {/* Imagen lateral — cuando el paquete trae un thumbnail
-            (jpg/png) lo mostramos. Si no, fallback al icono de
-            Package en un fondo gradiente para que la card no se vea
-            hueca. Ratio fijo 1:1 mantiene la cuadrícula alineada. */}
-        <div className="relative aspect-square w-24 shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 via-slate-850 to-slate-900">
+        {/* Thumbnail rectangular arriba (16:9). Más espacio que el
+            cuadrado lateral del diseño anterior, mejor para fotos
+            de aviones que son apaisadas. */}
+        <div className="relative aspect-[16/9] w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
           {thumb ? (
             <img
               src={thumb}
@@ -221,31 +356,48 @@ function PackageCard({
               decoding="async"
               className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
               onError={(e) => {
-                // Si la imagen falla, ocultarla y mostrar el icon.
                 (e.currentTarget as HTMLImageElement).style.display = "none";
               }}
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-slate-700">
-              <Package className="h-7 w-7" strokeWidth={1.5} />
+              {typeIcon(derived, "h-8 w-8")}
             </div>
           )}
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col justify-center p-3">
-          <div className="flex items-center gap-1.5">
-            <span className={typeBadgeClass(derived)}>{derived}</span>
+          {/* Badges superpuestos sobre la imagen — tipo y update. */}
+          <div className="pointer-events-none absolute left-2 top-2 flex flex-wrap gap-1">
+            <span className={typeBadgeClass(derived)}>
+              {typeLabel(derived)}
+            </span>
             {hasUpdate && (
-              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30">
+              <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/30">
                 Update
               </span>
             )}
           </div>
-          <div className="mt-1 truncate text-sm font-medium text-slate-100">
+        </div>
+
+        <div className="flex flex-1 flex-col p-3">
+          <div className="line-clamp-2 text-sm font-medium leading-snug text-slate-100">
             {pkg.title}
           </div>
-          <div className="mt-0.5 truncate text-[11px] text-slate-500">
+          <div className="mt-1 truncate text-[11px] text-slate-500">
             {pkg.creator ?? "Autor desconocido"}
-            {pkg.packageVersion && ` · v${pkg.packageVersion}`}
+          </div>
+          {/* Footer con metadata: versión + tamaño */}
+          <div className="mt-auto flex items-center justify-between gap-2 pt-2 text-[10px] text-slate-500">
+            {pkg.packageVersion ? (
+              <span className="truncate font-mono text-slate-400">
+                v{pkg.packageVersion}
+              </span>
+            ) : (
+              <span />
+            )}
+            {sizeMb && (
+              <span className="shrink-0 tabular-nums text-slate-500">
+                {sizeMb} MB
+              </span>
+            )}
           </div>
         </div>
       </button>
@@ -253,18 +405,53 @@ function PackageCard({
   );
 }
 
-function typeBadgeClass(t: DerivedType): string {
-  const base = "rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold";
+// ----------------------------------------------------------------------------
+// Helpers de tipo (icono, label, badge color)
+// ----------------------------------------------------------------------------
+
+function typeIcon(t: DerivedType, className = "h-3.5 w-3.5"): React.ReactNode {
   switch (t) {
     case "AIRCRAFT":
-      return `${base} bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30`;
+      return <Plane className={className} />;
     case "LIVERY":
-      return `${base} bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30`;
+      return <Palette className={className} />;
     case "INSTRUMENT":
-      return `${base} bg-fuchsia-500/15 text-fuchsia-300 ring-1 ring-fuchsia-500/30`;
+      return <Cog className={className} />;
     case "MISC":
-      return `${base} bg-slate-700/60 text-slate-300 ring-1 ring-slate-600`;
+      return <Music className={className} />;
     default:
-      return `${base} bg-slate-800 text-slate-400 ring-1 ring-slate-700`;
+      return <HelpCircle className={className} />;
+  }
+}
+
+function typeLabel(t: DerivedType): string {
+  switch (t) {
+    case "AIRCRAFT":
+      return "Aviones";
+    case "LIVERY":
+      return "Liveries";
+    case "INSTRUMENT":
+      return "Instrumentos";
+    case "MISC":
+      return "Sonido / Misc";
+    default:
+      return "Sin clasificar";
+  }
+}
+
+function typeBadgeClass(t: DerivedType): string {
+  const base =
+    "rounded-md px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold backdrop-blur shadow-md";
+  switch (t) {
+    case "AIRCRAFT":
+      return `${base} bg-sky-500/80 text-sky-50`;
+    case "LIVERY":
+      return `${base} bg-violet-500/80 text-violet-50`;
+    case "INSTRUMENT":
+      return `${base} bg-fuchsia-500/80 text-fuchsia-50`;
+    case "MISC":
+      return `${base} bg-amber-500/80 text-amber-950`;
+    default:
+      return `${base} bg-slate-700/80 text-slate-200`;
   }
 }

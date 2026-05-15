@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use crate::community::{self, CommunityInfo};
 use crate::db::repo;
 use crate::install::{self, InstallResult};
-use crate::AppState;
+use crate::logger::CmdTimer;
+use crate::{cmd_log, AppState};
 
 #[tauri::command]
 pub async fn community_folder() -> Result<Option<CommunityInfo>, String> {
@@ -29,18 +30,30 @@ pub async fn install_archive(
     community_path: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<InstallResult, String> {
+    cmd_log!(
+        "install_archive",
+        "archive={} community_path={:?}",
+        archive_path,
+        community_path
+    );
+    let _t = CmdTimer::start("install_archive");
     let community = match community_path {
         Some(p) => PathBuf::from(p),
         None => PathBuf::from(
             community::detect_community_folder()
-                .map_err(|e| e.to_string())?
+                .map_err(|e| {
+                    tracing::error!(target: "install", "detect_community_folder error: {e:#}");
+                    e.to_string()
+                })?
                 .ok_or_else(|| {
+                    tracing::error!(target: "install", "Community folder no detectada");
                     "No se detectó la carpeta Community automáticamente — configúrala desde Ajustes."
                         .to_string()
                 })?
                 .path,
         ),
     };
+    tracing::info!(target: "install", "destino Community: {}", community.display());
 
     let archive = PathBuf::from(&archive_path);
     let archive_for_task = archive.clone();
@@ -50,8 +63,22 @@ pub async fn install_archive(
         install::install_archive(&archive_for_task, &community_for_task)
     })
     .await
-    .map_err(|e| format!("la tarea de instalación falló: {}", e))?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        tracing::error!(target: "install", "tarea de instalación panic: {e}");
+        format!("la tarea de instalación falló: {}", e)
+    })?
+    .map_err(|e| {
+        tracing::error!(target: "install", "install_archive error: {e:#}");
+        e.to_string()
+    })?;
+    tracing::info!(
+        target: "install",
+        "install_archive: {} paquetes, {} bytes, ptp={}, installer={}",
+        result.packages.len(),
+        result.total_bytes,
+        result.ptp_payload.is_some(),
+        result.installer_payload.is_some()
+    );
 
     // Título "humano" derivado del nombre del archivo cuando es una
     // instalación manual: el usuario va a ver esto en la lista de

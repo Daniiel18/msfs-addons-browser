@@ -19,6 +19,10 @@ export interface Addon {
   downloadMethods: DownloadMethod[];
   /** Featured thumbnail scraped from the source's search page, if present. */
   imageUrl: string | null;
+  /** Fecha de publicación scrapeada del listado. ISO-8601 cuando
+   *  el `<time datetime>` estaba presente; texto crudo si sólo
+   *  había contenido visible; `null` cuando el parser no halló nada. */
+  releasedAt: string | null;
 }
 
 export interface SourceDescriptor {
@@ -84,9 +88,12 @@ export interface InstallResult {
    *  paquete MSFS. Cuando viene poblado, `packages` está vacío y
    *  el frontend debe ofrecer al usuario abrir el instalador. */
   installerPayload: InstallerPayload | null;
-  /** Si el archivo contenía liveries PMDG (.ptp). Las copiamos al
-   *  inbox y la UI muestra un toast con instrucciones para que el
-   *  usuario las importe desde PMDG Operations Center. */
+  /** Si el archivo contenía liveries PMDG (.ptp). La app intenta
+   *  instalarlas directamente en el paquete PMDG dentro de Community
+   *  (copiando texturas + mergeando aircraft.cfg + actualizando
+   *  layout.json) — replicando lo que hace PMDG Operations Center
+   *  pero sin requerir abrirlo. Las que no se pudieron instalar
+   *  quedan en `inboxDir` como fallback manual. */
   ptpPayload: PtpPayload | null;
 }
 
@@ -99,6 +106,164 @@ export interface InstallerPayload {
 export interface PtpPayload {
   inboxDir: string;
   ptpFiles: string[];
+  /** Para cada `ptpFiles[i]`, el aircraft detectado heurísticamente
+   *  (nombre propio + nombre del archivo padre + contenido del ZIP),
+   *  ej. "PMDG 737-800". `null` cuando no se pudo determinar. */
+  detectedAircraft: (string | null)[];
+  /** Path al directorio del avión PMDG donde quedó instalada la
+   *  livery (`<community>/pmdg-aircraft-XXX/SimObjects/Airplanes/PMDG
+   *  XXX/`). Cuando está populado, la livery aparece automáticamente
+   *  al elegir la aeronave en MSFS — el usuario no tiene que abrir
+   *  PMDG Operations Center. `null` si no se detectó aircraft o si
+   *  el paquete PMDG no está instalado en Community. */
+  autoInstalledAt: (string | null)[];
+}
+
+/** Vuelo persistido del historial SimBrief. La app va acumulando
+ *  uno por refresh contra la API pública (que solo expone el
+ *  último OFP). El mapa pinta una LineString por cada uno. */
+export interface SimBriefFlight {
+  ofpId: string;
+  pilotId: string;
+  flightNumber: string | null;
+  callsign: string | null;
+  aircraftIcao: string | null;
+  originIcao: string;
+  originName: string | null;
+  originLat: number;
+  originLon: number;
+  destinationIcao: string;
+  destinationName: string | null;
+  destinationLat: number;
+  destinationLon: number;
+  route: string | null;
+  distanceNm: number | null;
+  estTimeEnrouteS: number | null;
+  generatedAt: string | null;
+  fetchedAt: string;
+}
+
+export interface SimBriefRefreshResult {
+  added: number;
+  alreadyKnown: boolean;
+  flight: SimBriefFlight | null;
+}
+
+/** Estado del watcher de "vuelo en curso". Dos capas:
+ *  · `simRunning` — proceso MSFS detectado (sysinfo).
+ *  · `simconnectConnected` — handshake real con SimConnect.dll;
+ *    los campos `currentLat/Lon/AltFt/GroundSpeedKt/onGround`
+ *    están poblados en vivo (refresco cada segundo).
+ *  El cruce con la última OFP de SimBrief sigue rellenando los
+ *  campos de origen/destino aunque SimConnect no esté disponible. */
+export interface FlightStatus {
+  simRunning: boolean;
+  simconnectConnected: boolean;
+  originIcao: string | null;
+  originName: string | null;
+  destinationIcao: string | null;
+  destinationName: string | null;
+  aircraftIcao: string | null;
+  distanceNm: number | null;
+  /** Posición en vivo del user aircraft (sólo con SimConnect). */
+  currentLat: number | null;
+  currentLon: number | null;
+  currentAltFt: number | null;
+  currentGroundSpeedKt: number | null;
+  onGround: boolean | null;
+  lastCheckedAt: string;
+}
+
+/** Resultado de un backup de la carpeta Community. */
+export interface BackupResult {
+  outputPath: string;
+  packageCount: number;
+  totalBytes: number;
+  elapsedMs: number;
+}
+
+/** Resultado de un export del inventario. */
+export interface ExportResult {
+  outputPath: string;
+  rowCount: number;
+}
+
+export type ExportFormat = "csv" | "txt" | "json";
+
+/** Snapshot de las preferencias de la app. Lo devuelve
+ *  `getAppSettings`; el frontend lo guarda en `useSettingsStore`. */
+export interface AppSettings {
+  showSimbriefLines: boolean;
+  showSimconnectLines: boolean;
+  checkUpdatesOnStart: boolean;
+  minimizeToTray: boolean;
+  onboardingCompleted: boolean;
+  defaultView: string;
+  autostartEnabled: boolean;
+  simbriefPilotId: string | null;
+  communityPath: string | null;
+  logsPath: string | null;
+  appDataPath: string | null;
+}
+
+/** Vuelo registrado por el watcher de SimConnect. A diferencia de
+ *  `SimBriefFlight` (que captura *planes*), esto captura el vuelo
+ *  efectivamente volado. `endedAt = null` indica un vuelo en curso
+ *  o interrumpido (la app cerró antes del aterrizaje). */
+export interface FlightLogEntry {
+  id: number;
+  startedAt: string;
+  endedAt: string | null;
+  originLat: number;
+  originLon: number;
+  originIcao: string | null;
+  originName: string | null;
+  destinationLat: number | null;
+  destinationLon: number | null;
+  destinationIcao: string | null;
+  destinationName: string | null;
+  aircraftTitle: string | null;
+  aircraftAtcType: string | null;
+  distanceNm: number | null;
+  flightTimeS: number | null;
+  maxAltitudeFt: number | null;
+  source: string;
+}
+
+/** Estadísticas agregadas que pinta la vista «Dashboard». Sale de
+ *  `community_packages` + `compute_available`; el backend hace todo
+ *  el group-by en SQL para que la UI sólo renderice. */
+export interface DashboardStats {
+  totalPackages: number;
+  totalSizeBytes: number;
+  updatesAvailable: number;
+  byType: TypeStat[];
+  topCreators: CreatorStat[];
+  largestPackages: PackageRef[];
+  recentlyAdded: PackageRef[];
+  airportsCount: number;
+  liveriesCount: number;
+  aircraftCount: number;
+}
+
+export interface TypeStat {
+  label: string;
+  count: number;
+  sizeBytes: number;
+}
+
+export interface CreatorStat {
+  creator: string;
+  count: number;
+  sizeBytes: number;
+}
+
+export interface PackageRef {
+  folderName: string;
+  title: string;
+  creator: string | null;
+  sizeBytes: number | null;
+  contentType: string | null;
 }
 
 /** Punto serializado por `airports::list_addons_on_map` — un addon

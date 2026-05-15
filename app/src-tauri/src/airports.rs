@@ -73,11 +73,50 @@ struct RawAirport {
 /// Esta función sólo se debe invocar desde una tarea async normal —
 /// **no** quemamos el thread principal con la descarga.
 pub async fn ensure_dataset(pool: &SqlitePool, http: &reqwest::Client) -> anyhow::Result<()> {
+    ensure_dataset_with_app(pool, http, None).await
+}
+
+/// Misma lógica que `ensure_dataset` pero acepta el `AppHandle`
+/// para resolver el recurso bundleado `resources/airports.csv`.
+/// Cuando `app` viene `None` o el recurso no existe, cae a la
+/// descarga HTTP — sirve para builds de desarrollo donde el CSV
+/// no está incluido.
+///
+/// Estrategia para que la app funcione "out of the box" en una
+/// instalación nueva sin internet:
+///   1. Si la tabla no necesita refresh, salir.
+///   2. Si app+resource → parse CSV bundleado → persistir.
+///   3. Si fallo → reintentar download HTTP.
+///
+/// Esto cumple el requisito del usuario: distribuir el setup.exe
+/// con la base de datos integrada.
+pub async fn ensure_dataset_with_app(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+    app: Option<&tauri::AppHandle>,
+) -> anyhow::Result<()> {
     if !needs_refresh(pool).await? {
         return Ok(());
     }
-    tracing::info!("airports: refreshing dataset from {}", SOURCE_URL);
 
+    // Intento 1: recurso bundleado (`resources/airports.csv`).
+    if let Some(handle) = app {
+        match try_load_bundled(pool, handle).await {
+            Ok(true) => {
+                tracing::info!(target: "airports", "dataset cargado desde recurso bundleado (offline-first OK)");
+                return Ok(());
+            }
+            Ok(false) => {
+                tracing::info!(target: "airports", "recurso bundleado no encontrado — fallback a download");
+            }
+            Err(e) => {
+                tracing::warn!(target: "airports", "recurso bundleado falló: {e:#} — fallback a download");
+            }
+        }
+    }
+
+    // Intento 2: download HTTP.
+    tracing::info!(target: "airports", "downloading dataset from {}", SOURCE_URL);
     let body = http
         .get(SOURCE_URL)
         .timeout(Duration::from_secs(60))
@@ -88,11 +127,56 @@ pub async fn ensure_dataset(pool: &SqlitePool, http: &reqwest::Client) -> anyhow
         .await?;
 
     let parsed = parse_csv(body.as_ref())?;
-    tracing::info!("airports: parsed {} usable rows", parsed.len());
+    tracing::info!(target: "airports", "parsed {} usable rows from download", parsed.len());
 
     persist(pool, &parsed).await?;
     set_fetched_at_now(pool).await?;
     Ok(())
+}
+
+async fn try_load_bundled(
+    pool: &SqlitePool,
+    app: &tauri::AppHandle,
+) -> anyhow::Result<bool> {
+    use tauri::path::BaseDirectory;
+    use tauri::Manager;
+
+    let resource = match app
+        .path()
+        .resolve("resources/airports.csv", BaseDirectory::Resource)
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!(target: "airports", "no se pudo resolver resource path: {e}");
+            return Ok(false);
+        }
+    };
+    if !resource.exists() {
+        tracing::debug!(target: "airports", "resource airports.csv no existe en {}", resource.display());
+        return Ok(false);
+    }
+    tracing::info!(target: "airports", "leyendo airports.csv bundleado: {}", resource.display());
+    let bytes = tokio::task::spawn_blocking({
+        let p = resource.clone();
+        move || std::fs::read(p)
+    })
+    .await??;
+    let parsed = parse_csv(&bytes)?;
+    if parsed.is_empty() {
+        // Placeholder de dev (sólo headers) — devolvemos `false` para
+        // que el caller intente download HTTP. Sin esto, marcaríamos
+        // como "ya cargado" un dataset vacío y la app quedaría sin
+        // aeropuertos hasta el próximo TTL (30d).
+        tracing::info!(
+            target: "airports",
+            "bundle vacío (placeholder dev) — fallback a download"
+        );
+        return Ok(false);
+    }
+    tracing::info!(target: "airports", "bundle parseado: {} filas usables", parsed.len());
+    persist(pool, &parsed).await?;
+    set_fetched_at_now(pool).await?;
+    Ok(true)
 }
 
 async fn needs_refresh(pool: &SqlitePool) -> anyhow::Result<bool> {

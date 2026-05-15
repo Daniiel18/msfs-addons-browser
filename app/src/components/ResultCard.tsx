@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  Calendar,
   CheckCircle2,
   Download,
   ExternalLink,
@@ -50,37 +51,141 @@ function normalizeTitle(s: string): string {
     .trim();
 }
 
+/** True si dos cadenas (creator del manifest y developer del
+ *  catálogo) corresponden plausiblemente al mismo dueño.
+ *  Substring case-insensitive — tolera "Aerosoft" vs "Aerosoft GmbH". */
+function sameCreator(a: string | null | undefined, b: string | null | undefined): boolean {
+  const aa = (a ?? "").trim().toLowerCase();
+  const bb = (b ?? "").trim().toLowerCase();
+  if (!aa || !bb) return false;
+  return aa.includes(bb) || bb.includes(aa);
+}
+
+/** Extrae identificadores de modelo de aeronave del texto.
+ *  Cubre Airbus (A320/A330/A350/A380…), Boeing (737/747/757/767/777/787),
+ *  variantes con sufijos (-200, -300ER, -800), y modelos GA/regionales
+ *  comunes (CRJ, ATR, MD-11, DC-6, TBM930, C172).
+ *
+ *  El usuario reportó: "tengo un A350 instalado, busco A350 en
+ *  Simplaza, no me marca instalado". Causa: el catálogo de
+ *  Simplaza decía "Airbus A350" pero el manifest del paquete
+ *  decía "iniBuilds A350-900" — el substring de título no
+ *  coincidía. Extrayendo el modelo común (A350) ambos hacen match.
+ */
+function aircraftModels(text: string): string[] {
+  const out: string[] = [];
+  const re =
+    /\b(A\d{3}(?:-?\d{3})?|B\d{3}(?:-?\d{3}[A-Z]{0,3})?|73[6-9](?:-?\d{3})?|74[478](?:-?\d{1,3})?|76\d|77\d(?:-?\d{3}[A-Z]{0,3})?|78\d|CRJ\d?\d?|ATR-?\d{2}\d?|MD-?\d{2}|DC-?\d|TBM\d{3}|C\d{3,4}|CJ\d|Q\d{3})\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    // Normalizamos: "A350-900" → "A350900"; "737-800" → "737800";
+    // sin guiones para que el match sea robusto (la fuente y el
+    // manifest pueden o no incluir el guión).
+    out.push(m[1].toUpperCase().replace(/-/g, ""));
+  }
+  return out;
+}
+
+/** True si ambos textos comparten al menos un identificador de
+ *  modelo de aeronave (A350, B777, etc.). Tolerante a sufijos:
+ *  "A350" matchea con "A350-900" porque tras normalización ambos
+ *  contienen "A350" como prefijo. */
+function shareAircraftModel(a: string, b: string): boolean {
+  const am = aircraftModels(a);
+  if (am.length === 0) return false;
+  const bm = aircraftModels(b);
+  if (bm.length === 0) return false;
+  for (const x of am) {
+    for (const y of bm) {
+      // Match exacto o por prefijo (A350 ⊂ A350900).
+      if (x === y || x.startsWith(y) || y.startsWith(x)) return true;
+    }
+  }
+  return false;
+}
+
+/** Convierte una fecha del scraping (ISO-8601 o texto crudo del
+ *  `<time>` de WordPress) en algo legible al usuario. Si parsea como
+ *  ISO la formateamos en `dd MMM yyyy`; si no, devolvemos el texto
+ *  tal cual. */
+function formatReleaseDate(value: string): string {
+  // Heurística rápida: si tiene una `T` o `Z`, parece ISO.
+  const looksIso = /[Tz]|[+-]\d{2}:?\d{2}$/i.test(value);
+  if (looksIso) {
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString("es-ES", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+    }
+  }
+  return value;
+}
+
 function deriveInstallState(
   addon: Addon,
   packages: CommunityPackage[],
 ): InstallState {
-  if (!addon.icao) return { kind: "not-installed" };
-  const target = addon.icao.toUpperCase();
-  // Filtramos por ICAO primero — la fuente más confiable para
-  // limitar el espacio de búsqueda. Después afinamos por nombre
-  // para distinguir variantes ("(Merged)" vs "(Converted)" del
-  // mismo aeropuerto, que el usuario reportó como falso positivo).
-  const sameIcao = packages.filter(
-    (p) => p.icao && p.icao.toUpperCase() === target,
-  );
-  if (sameIcao.length === 0) return { kind: "not-installed" };
+  // Match consistente con el detector backend:
+  //   A. SCENERY → ICAO + creator/developer.
+  //   B. AIRCRAFT/livery/etc → creator/developer + título (substring).
+  //
+  // Un match estricto por creator evita falsos "Instalado" cuando
+  // hay dos sceneries del mismo ICAO de devs distintos (Aerosoft
+  // EBBR + JustSim EBBR — solo el realmente instalado debe marcarse).
 
-  // Match exacto por título normalizado: el resultado "LFPG ...
-  // (Merged)" sólo se considera instalado si existe un paquete
-  // con ese mismo título. Sin esto, ambos resultados (Merged y
-  // Converted) aparecían como "instalado" simplemente porque
-  // compartían ICAO.
-  const addonNormalized = normalizeTitle(addon.name);
-  const exactMatch = sameIcao.find(
-    (p) => normalizeTitle(p.title) === addonNormalized,
-  );
+  let exactMatch: CommunityPackage | undefined;
 
-  if (!exactMatch) {
-    // Hay scenery del mismo ICAO instalado pero no es exactamente
-    // este resultado. Tratamos como "no instalado" para que el
-    // usuario pueda descargarlo si quiere otra variante.
-    return { kind: "not-installed" };
+  // Camino A — ICAO + creator
+  if (addon.icao) {
+    const target = addon.icao.toUpperCase();
+    const sameIcao = packages.filter(
+      (p) => p.icao && p.icao.toUpperCase() === target,
+    );
+    if (sameIcao.length > 0 && addon.developer) {
+      exactMatch = sameIcao.find((p) => sameCreator(p.creator, addon.developer));
+    }
+    if (!exactMatch) {
+      const addonNorm = normalizeTitle(addon.name);
+      exactMatch = sameIcao.find(
+        (p) => normalizeTitle(p.title) === addonNorm,
+      );
+    }
   }
+
+  // Camino B — creator + (título substring O modelo de aeronave
+  // compartido). El match por modelo cubre el caso "iniBuilds –
+  // Airbus A350" del catálogo vs "iniBuilds A350-900" del manifest:
+  // el creator matchea por substring (iniBuilds ⊂ iniBuilds Limited)
+  // y ambos contienen el modelo A350.
+  if (!exactMatch && addon.developer) {
+    exactMatch = packages.find((p) => {
+      if (!sameCreator(p.creator, addon.developer)) return false;
+      const a = addon.name.toLowerCase();
+      const b = p.title.toLowerCase();
+      return (
+        a.includes(b) ||
+        b.includes(a) ||
+        shareAircraftModel(addon.name, p.title)
+      );
+    });
+  }
+
+  // **No hay Camino C.** Antes intentábamos detectar por modelo
+  // de aeronave sólo (sin creator) para Simplaza — pero eso daba
+  // falsos positivos masivos: buscar "737" marcaba como instalados
+  // todos los addons de 737 (FS2Crew SOP, MSFS Wear, repaints…)
+  // porque el usuario tenía PMDG 737-800 base. La heurística por
+  // modelo sin creator es inherentemente ambigua: dos productos
+  // distintos pueden ser para el mismo avión.
+  //
+  // Si el catálogo no expone developer parseable, mostramos "no
+  // instalado" — preferible al falso positivo. El usuario puede
+  // verificar visualmente si tiene el addon en la pestaña Addons.
+
+  if (!exactMatch) return { kind: "not-installed" };
 
   const pkg = exactMatch;
 
@@ -172,6 +277,15 @@ export function ResultCard({ addon }: Props) {
                 <span className="inline-flex items-center gap-1">
                   <Tag className="h-3.5 w-3.5" />
                   v{addon.version}
+                </span>
+              )}
+              {addon.releasedAt && (
+                <span
+                  className="inline-flex items-center gap-1"
+                  title={`Subido a la fuente: ${addon.releasedAt}`}
+                >
+                  <Calendar className="h-3.5 w-3.5" />
+                  {formatReleaseDate(addon.releasedAt)}
                 </span>
               )}
             </div>

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// poder cambiar — y porque es leído antes de que exista la UI.
 ///
 /// Si el repo se mueve, esta constante se actualiza y se compila.
-const OWNER_REPO: &str = "n0xful/SceneryAddonsBrowser";
+const OWNER_REPO: &str = "Daniiel18/msfs-addons-browser";
 
 const UA: &str = "MSFSAddonsBrowser/0.1 (+https://github.com/n0xful)";
 

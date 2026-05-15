@@ -55,20 +55,53 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
   const rescan = useCommunityStore((s) => s.rescan);
   const startDownload = useDownloadsStore((s) => s.start);
 
-  // Search lazy: solo se dispara cuando el usuario pulsa "Reparar"
-  // (vía `loadCatalogIfNeeded`). El modal principal ya no muestra
-  // el catálogo — sólo el sub-popup de selección de método. Esto
-  // evita 2 llamadas HTTP por cada apertura del modal aunque el
-  // usuario sólo quisiera ver detalles.
+  // Buscamos por ICAO si lo tenemos (SCENERY) y, además, por
+  // nombre/keyword en Simplaza siempre — ese catálogo busca por
+  // texto libre y casi todos los addons no-aeropuerto (aviones,
+  // liveries, mods) viven allí. Sin esto, "Reinstalar" salía
+  // deshabilitado para todo lo que no fuera escenario.
+  const searchKeyword = useMemo(() => {
+    // Primer término significativo del título — quita prefijos
+    // genéricos tipo "Airbus", "Boeing", etc, y se queda con la
+    // primera palabra >= 3 letras que aparezca.
+    const words = pkg.title
+      .split(/[\s\-_]+/)
+      .map((w) => w.replace(/[^A-Za-z0-9]/g, ""))
+      .filter((w) => w.length >= 3);
+    return words.slice(0, 3).join(" ").trim();
+  }, [pkg.title]);
+
   const loadCatalogIfNeeded = async () => {
-    if (!pkg.icao || matches.length > 0 || searching) return;
+    if (matches.length > 0 || searching) return;
     setSearching(true);
     try {
-      const [sa, sp] = await Promise.all([
-        api.search(pkg.icao, "sceneryaddons").catch(() => [] as Addon[]),
-        api.search(pkg.icao, "simplaza").catch(() => [] as Addon[]),
-      ]);
-      setMatches([...sa, ...sp]);
+      const queries: Promise<Addon[]>[] = [];
+      // SceneryAddons sólo funciona con ICAO.
+      if (pkg.icao) {
+        queries.push(api.search(pkg.icao, "sceneryaddons").catch(() => [] as Addon[]));
+      }
+      // Simplaza acepta queries libres — buscamos por ICAO si hay,
+      // y SIEMPRE también por keyword del título. Eso dobla las
+      // chances de encontrar el paquete (aviones, liveries, mods).
+      if (pkg.icao) {
+        queries.push(api.search(pkg.icao, "simplaza").catch(() => [] as Addon[]));
+      }
+      if (searchKeyword) {
+        queries.push(api.search(searchKeyword, "simplaza").catch(() => [] as Addon[]));
+      }
+      const results = await Promise.all(queries);
+      // Dedup por id — la búsqueda por ICAO y por keyword pueden
+      // devolver el mismo addon si el título lo incluye.
+      const seen = new Set<string>();
+      const merged: Addon[] = [];
+      for (const list of results) {
+        for (const a of list) {
+          if (seen.has(a.id)) continue;
+          seen.add(a.id);
+          merged.push(a);
+        }
+      }
+      setMatches(merged);
     } finally {
       setSearching(false);
     }
@@ -140,7 +173,11 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
     void loadCatalogIfNeeded();
   };
 
-  const canRepair = !!pkg.icao;
+  // Reinstalación habilitada si hay CUALQUIER término por el que
+  // buscar — ICAO (SCENERY) o keyword del título (todo lo demás).
+  // Antes exigíamos `!!pkg.icao` y por eso liveries/aviones quedaban
+  // bloqueados. Ahora caen en el camino Simplaza-by-name.
+  const canRepair = !!pkg.icao || !!searchKeyword;
 
   return (
     <AnimatePresence>
@@ -290,8 +327,10 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                 canRepair
                   ? update
                     ? `Actualizar a v${update.latestVersion}`
-                    : "Elegir método y reinstalar limpio"
-                  : "Sin ICAO conocido para buscar en el catálogo"
+                    : pkg.icao
+                      ? "Elegir método y reinstalar limpio"
+                      : "Buscaremos coincidencias en Simplaza por el nombre"
+                  : "El paquete no tiene ICAO ni nombre indexable — no podemos reinstalar automáticamente"
               }
               className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 update

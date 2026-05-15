@@ -34,12 +34,54 @@ export type DerivedType =
  * de la comunidad llega con `content_type` vacío o malformado.
  */
 function looksLikeLivery(p: CommunityPackage): boolean {
+  // Manifest dice que depende de algo — la pista canónica de
+  // livery (depende del aircraft base).
   if (p.dependenciesCount > 0) return true;
-  if (/\blivery\b/i.test(p.title)) return true;
-  if (/\blivery\b/i.test(p.folderName)) return true;
+
+  // Palabras explícitas (singular + plural + sinónimos).
+  // `\b` cuando hay límite de palabra; el folder lleva guiones y
+  // el regex `\b` también los considera bordes.
+  const liveryWords = /\b(liver(?:y|ies)|repaint|skin|texture|paintkit|paint\s*kit)\b/i;
+  if (liveryWords.test(p.title)) return true;
+  if (liveryWords.test(p.folderName)) return true;
+
+  // Matrícula de aeronave: `LETRA(s)-LETRAS/DÍGITOS`. Captura
+  // EC-NTO, D-AIxx, B-XXXX, N12345, JA8089... La N-reg US la
+  // detecta el fallback de tres-cinco dígitos sin guión.
   if (/\b[A-Z]{1,3}-[A-Z0-9]{2,6}\b/.test(p.title)) return true;
-  if (/\b(Airlines?|Airways|Aviation|Air\s+Lines|Cargo|Express)\b/i.test(p.title))
+  // N-registry americana: `N` seguida de 1–5 dígitos opcionales y
+  // hasta 2 letras. Patrón explícito.
+  if (/\bN\d{1,5}[A-Z]{0,2}\b/.test(p.title)) return true;
+
+  // Aerolínea/operador en el título — keywords amplias.
+  if (
+    /\b(Airlines?|Airways|Aviation|Air\s+Lines|Cargo|Express|Charter|Connection|Air\s+Way|Holidays|Worldwide|Linhas|Lineas?|Aerol[ií]neas?)\b/i.test(
+      p.title,
+    )
+  )
     return true;
+
+  // Aerolíneas comunes — lista corta de nombres frecuentes en
+  // packs comunitarios. No exhaustiva pero cubre lo típico que
+  // el usuario reportó como UNKNOWN. Case-insensitive.
+  if (
+    /\b(Lufthansa|Iberia|Vueling|Ryanair|EasyJet|British\s+Airways|KLM|Delta|United|American|Southwest|Alaska|JetBlue|Spirit|Frontier|Norwegian|Wizz|TUI|TAP|Aeromexico|LATAM|Avianca|Qatar|Emirates|Etihad|Singapore|Cathay|ANA|JAL|China\s+Eastern|Air\s+France|Aeroflot|Turkish|Aer\s+Lingus|Finnair|SAS|Swiss|Austrian|Brussels|Eurowings|Condor|TAROM|S7|Saudia|Qantas|Virgin|Air\s+Canada|WestJet|Hawaiian|FedEx|UPS|DHL)\b/i.test(
+      p.title,
+    )
+  )
+    return true;
+
+  // Patrón folder: `<aircraft>-<airline>` y similares. Los packs
+  // de FlyByWire siguen `flybywire-aircraft-<a32nx|a380x>-<airline>`,
+  // PMDG usa `pmdg-737-<airline>`, etc. Si el folder contiene un
+  // identificador de aircraft + sufijo de aerolínea conocida.
+  if (
+    /(?:a32(?:0|9)nx|a380x|a330|a350|737|738|747|757|767|777|787|tbm930|cj4|crj|dh8|q400|atr|c172|c182|c208|md11|md80|md90)[-_](?:livery|airlines?|cargo|express|airways|paint|skin|repaint)/i.test(
+      p.folderName,
+    )
+  )
+    return true;
+
   return false;
 }
 

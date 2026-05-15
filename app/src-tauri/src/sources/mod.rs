@@ -22,6 +22,10 @@ pub struct Addon {
     /// when the theme doesn't expose a thumbnail for this post (or the
     /// selector missed it); the UI falls back to a placeholder icon.
     pub image_url: Option<String>,
+    /// Fecha de publicación scrapeada del `<time>` del listado de
+    /// la fuente. ISO-8601 cuando se pudo parsear; `None` cuando el
+    /// elemento no estaba o la atribut`datetime` faltaba.
+    pub released_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +106,30 @@ pub(crate) fn stable_id(source: &str, page_url: &str) -> String {
     source.hash(&mut h);
     page_url.hash(&mut h);
     format!("{}-{:016x}", source, h.finish())
+}
+
+/// Extrae la fecha de publicación de un `<article>` WordPress —
+/// ambos sources usan el tema Neve que renderiza la fecha como
+/// `<time datetime="2024-09-15T10:23:00+02:00" class="entry-date">`.
+/// Devolvemos el `datetime` en bruto (ISO-8601) — el frontend
+/// formatea según locale.
+pub(crate) fn extract_article_date(article: &ElementRef<'_>) -> Option<String> {
+    let sel = Selector::parse("time.entry-date, time[datetime], time.published").ok()?;
+    let time_el = article.select(&sel).next()?;
+    if let Some(dt) = time_el.value().attr("datetime") {
+        let trimmed = dt.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    // Fallback: el contenido textual del `<time>` (ej. "Sep 15, 2024").
+    // No es ISO pero al menos es legible para el usuario.
+    let txt = time_el.text().collect::<String>().trim().to_string();
+    if txt.is_empty() {
+        None
+    } else {
+        Some(txt)
+    }
 }
 
 /// Pull the featured-image URL out of an `<article>` on a WordPress search

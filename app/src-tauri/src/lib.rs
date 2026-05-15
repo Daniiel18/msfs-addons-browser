@@ -4,15 +4,20 @@ pub mod community;
 pub mod community_scanner;
 pub mod db;
 pub mod download;
+pub mod flight_log;
 pub mod gsx;
 pub mod install;
 pub mod logger;
 pub mod package_ops;
 pub mod parser;
+pub mod simbrief;
+pub mod simconnect_ffi;
+pub mod simconnect_watcher;
 pub mod sources;
 pub mod updater;
 pub mod updates;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use download::manager::DownloadManager;
@@ -31,6 +36,10 @@ pub struct AppState {
     /// hablar con la API de GitHub. Se instancia una sola vez al
     /// arrancar para reutilizar el connection pool.
     pub http: reqwest::Client,
+    /// Flag compartido entre el setter de `pref_minimize_to_tray` y
+    /// el handler de cierre de ventana. Cuando es `true`, cerrar la
+    /// ventana la oculta en lugar de salir.
+    pub minimize_to_tray: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -49,11 +58,41 @@ pub fn run() {
         // antes que `setup` porque la inicialización del state no lo
         // necesita, pero los comandos sí (resolved at runtime).
         .plugin(tauri_plugin_dialog::init())
+        // Autostart con Windows. Pasamos `vec![]` como args extra —
+        // el ejecutable arrancará con sus defaults. El plugin registra
+        // / borra `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
+        // según `manager.enable()` / `manager.disable()`.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
-            let handle = app.handle().clone();
-            let state = tauri::async_runtime::block_on(async move { init_state(&handle).await })?;
+            let handle_for_init = app.handle().clone();
+            let handle_for_tray = app.handle().clone();
+            let state = tauri::async_runtime::block_on(async move {
+                init_state(&handle_for_init).await
+            })?;
+            // Tray icon — menú con "Mostrar" y "Salir". El flag
+            // `minimize_to_tray` decide si el cierre de la ventana
+            // oculta o cierra; el icono de bandeja sigue funcionando
+            // como interruptor para mostrar/ocultar.
+            init_tray(&handle_for_tray)?;
             app.manage(state);
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Si está activado «minimizar a la bandeja», ocultamos
+            // la ventana en lugar de cerrar la app. El usuario la
+            // recupera desde el tray. Sin el flag activado, el cierre
+            // funciona normal (sale del proceso).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    if state.minimize_to_tray.load(Ordering::Relaxed) {
+                        let _ = window.hide();
+                        api.prevent_close();
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::search::search,
@@ -84,6 +123,23 @@ pub fn run() {
             commands::community::clear_dismissed_updates,
             commands::community::package_thumbnail,
             commands::changelog::fetch_changelog,
+            commands::simbrief::get_simbrief_pilot_id,
+            commands::simbrief::set_simbrief_pilot_id,
+            commands::simbrief::refresh_simbrief,
+            commands::simbrief::list_simbrief_flights,
+            commands::simbrief::delete_simbrief_flight,
+            commands::stats::get_dashboard_stats,
+            commands::flight_log::list_flight_log,
+            commands::flight_log::delete_flight_log_entry,
+            commands::flight_log::debug_seed_flight_log,
+            commands::flight_log::get_flight_status,
+            commands::settings::get_app_settings,
+            commands::settings::set_app_setting,
+            commands::settings::set_autostart,
+            commands::settings::clear_caches,
+            commands::settings::reset_settings,
+            commands::backup::backup_community,
+            commands::backup::export_addons,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri app");
@@ -134,63 +190,58 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     let gsx = GsxClient::new(http.clone());
 
     // Disparamos la sincronización del dataset de aeropuertos en
-    // background — son ~7MB que no queremos bloquear el splash. Si
-    // está cacheado y dentro del TTL, esto sale en milisegundos.
+    // background. Estrategia "offline-first":
+    //   1. Intenta cargar el CSV bundleado en `resources/` (incluido
+    //      en el setup.exe — la app funciona sin internet).
+    //   2. Si no hay recurso o la lectura falla, descarga del
+    //      mirror público de OurAirports.
+    // De todas formas no bloqueamos el splash — son varios segundos
+    // de parsing/insert que el usuario no necesita ver.
     {
         let bg_pool = db.clone();
         let bg_http = http.clone();
+        let bg_app = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = airports::ensure_dataset(&bg_pool, &bg_http).await {
+            if let Err(e) =
+                airports::ensure_dataset_with_app(&bg_pool, &bg_http, Some(&bg_app)).await
+            {
                 tracing::warn!("airports: background sync failed: {e:#}");
             }
         });
     }
 
-    // Scan de Community en background. Pipeline en cadena:
-    //   1. Scan + persist en `community_packages`.
-    //   2. Refresh activo de updates contra cada fuente — pone en
-    //      cache las versiones del catálogo para los ICAOs instalados.
-    // Resultado: al abrir la app por primera vez en una sesión, las
-    // notificaciones aparecen pobladas sin acción del usuario.
+    // El scan de Community + refresh de updates se mueve al
+    // bootstrap del frontend para que la splash screen los muestre
+    // como pasos visibles. Antes hacíamos un spawn aquí que duplicaba
+    // trabajo con `useCommunityStore.bootstrap` y dejaba al usuario
+    // esperando sin feedback.
+
+    // Watcher de "vuelo en curso" — detecta el proceso MSFS y lo
+    // cruza con la última OFP fresca de SimBrief para responder a
+    // "¿qué estoy volando ahora?". Emite `flight://current` al
+    // frontend cuando cambia el estado. Lo añadimos al state de
+    // Tauri para que el comando `get_flight_status` pueda leerlo.
+    let watcher_state = simconnect_watcher::spawn(db.clone(), app.clone());
+    app.manage(watcher_state);
+
+    // Lee el setting de minimize-to-tray para inicializar el flag
+    // atómico que el handler de cierre de ventana consulta.
+    let minimize_to_tray = Arc::new(AtomicBool::new(false));
     {
-        let bg_pool = db.clone();
-        let bg_sources = sources.clone();
+        let pool = db.clone();
+        let flag = minimize_to_tray.clone();
+        // No bloqueamos init_state esperando esto — si la lectura
+        // falla, queda en false (default) hasta que el usuario lo
+        // active desde el panel de settings.
         tokio::spawn(async move {
-            let community_path = match community::detect_community_folder() {
-                Ok(Some(info)) if info.exists => Some(std::path::PathBuf::from(info.path)),
-                _ => None,
-            };
-            let Some(path) = community_path else {
-                tracing::info!("community: scan saltado (no detectado)");
-                return;
-            };
-            let scan_result =
-                tokio::task::spawn_blocking(move || community_scanner::scan(&path)).await;
-            let report = match scan_result {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => {
-                    tracing::warn!("community: scan falló: {e:#}");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!("community: scan task join error: {e}");
-                    return;
-                }
-            };
-            tracing::info!(
-                "community: {} paquetes vistos en {}",
-                report.packages.len(),
-                report.community_path
-            );
-            if let Err(e) = community_scanner::sync_to_db(&bg_pool, &report).await {
-                tracing::warn!("community: persist falló: {e:#}");
-                return;
-            }
-            // Una vez tenemos el inventario, vamos a buscar updates
-            // contra las fuentes. Esto puede tardar (250ms por
-            // query × N ICAOs × M fuentes), por eso es background.
-            if let Err(e) = updates::refresh_for_installed(&bg_pool, &bg_sources).await {
-                tracing::warn!("community: refresh de updates falló: {e:#}");
+            if let Ok(Some((value,))) = sqlx::query_as::<_, (String,)>(
+                "SELECT value FROM settings WHERE key = 'pref_minimize_to_tray'",
+            )
+            .fetch_optional(&pool)
+            .await
+            {
+                let on = matches!(value.as_str(), "1" | "true" | "yes");
+                flag.store(on, Ordering::Relaxed);
             }
         });
     }
@@ -201,5 +252,62 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         downloads,
         gsx,
         http,
+        minimize_to_tray,
     })
+}
+
+/// Construye el icono de bandeja con menú "Mostrar / Salir". En el
+/// click izquierdo, alterna la visibilidad de la ventana principal —
+/// patrón estándar de apps Windows que usan tray.
+fn init_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+
+    let show_item = MenuItem::with_id(app, "tray_show", "Mostrar / Ocultar", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "tray_quit", "Salir", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let toggle_window = |handle: &tauri::AppHandle| {
+        if let Some(window) = handle.get_webview_window("main") {
+            match window.is_visible() {
+                Ok(true) => {
+                    let _ = window.hide();
+                }
+                _ => {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = window.unminimize();
+                }
+            }
+        }
+    };
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
+
+    let _tray = TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .tooltip("MSFS Addons Browser")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(move |app, event| match event.id.as_ref() {
+            "tray_show" => toggle_window(app),
+            "tray_quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(move |tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
 }
