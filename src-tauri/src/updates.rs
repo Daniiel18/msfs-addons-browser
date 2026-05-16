@@ -378,20 +378,49 @@ async fn persist_addons(pool: &SqlitePool, addons: &[Addon]) {
 }
 
 /// Elige el "mejor" addon para representar la versión actual del
-/// ICAO en el catálogo. Heurística:
-///   1. Filtra los que tengan ICAO igual (case-insensitive) y
-///      versión no nula.
-///   2. De esos, devuelve el de mayor versión (semver lenient).
-fn pick_best_for_icao<'a>(addons: &'a [Addon], icao: &str) -> Option<&'a Addon> {
-    let target = icao.to_ascii_uppercase();
+/// query en el catálogo. Heurística en dos fases:
+///
+///   1. Si el query parece ser un ICAO (4 letras, todas alfa), exigimos
+///      `a.icao == query`. Eso vale para SCENERY.
+///   2. Si NO parece ICAO (ej. "A350", "Fenix", "iniBuilds"), buscamos
+///      el addon cuyo nombre/título contenga el keyword. Esto cubre
+///      AIRCRAFT donde el catálogo no tiene ICAO populado.
+///
+/// En ambos casos exigimos version no vacía. El v0.1.13 sólo hacía la
+/// fase 1 → para AIRCRAFT queries (keyword) siempre devolvía None →
+/// updates de Simplaza nunca aparecían (bug del log app.log.2026-05-16).
+fn pick_best_for_icao<'a>(addons: &'a [Addon], query: &str) -> Option<&'a Addon> {
+    let q_lower = query.to_lowercase();
+    let q_upper = query.to_ascii_uppercase();
+    let looks_like_icao = query.len() == 4
+        && query.chars().all(|c| c.is_ascii_alphabetic());
+
     addons
         .iter()
         .filter(|a| {
-            a.icao
+            // Versión no vacía es requisito en ambas fases.
+            let has_version = a
+                .version
                 .as_deref()
-                .map(|s| s.to_ascii_uppercase() == target)
-                .unwrap_or(false)
-                && a.version.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !has_version {
+                return false;
+            }
+            if looks_like_icao {
+                // Fase 1: ICAO match estricto.
+                return a
+                    .icao
+                    .as_deref()
+                    .map(|s| s.to_ascii_uppercase() == q_upper)
+                    .unwrap_or(false);
+            }
+            // Fase 2: keyword aircraft — el nombre o título debe
+            // contener el query (case-insensitive). Esto es lo
+            // que matchea "A350" con "iniBuilds A350-900 …".
+            let in_name = a.name.to_lowercase().contains(&q_lower);
+            let in_title = a.title.to_lowercase().contains(&q_lower);
+            in_name || in_title
         })
         .max_by(|a, b| {
             let av = a.version.as_deref().and_then(parse_lenient);

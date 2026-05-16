@@ -243,6 +243,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               )}
 
               <Section title="General" icon={<Power className="h-3.5 w-3.5" />}>
+                <ThemeRow
+                  current={settings.theme}
+                  onChange={(t) => void api.setAppSetting("pref_theme", t).then(() => useSettingsStore.getState().bootstrap())}
+                />
                 <Toggle
                   label="Arrancar con Windows"
                   hint="La app se abre automáticamente al iniciar sesión."
@@ -484,6 +488,52 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 /** Sección de Settings para configurar dónde está PMDG OC. Vive
  *  acá porque tiene su propio estado local (diagnóstico) y no
  *  encajaba en el patrón compartido `Toggle/PathRow`. */
+/** Selector compacto de tema dark/light. La app está optimizada
+ *  para dark, así que el modo light se marca como "Experimental"
+ *  (algunos componentes hardcoded a colores dark seguirán igual).
+ *  El mapa de FlightBook sí cambia de basemap según el tema. */
+function ThemeRow({
+  current,
+  onChange,
+}: {
+  current: string;
+  onChange: (t: string) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-slate-200">Tema visual</div>
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          Dark optimizado. Light es experimental — afecta mapa + algunos
+          fondos.
+        </p>
+      </div>
+      <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
+        <button
+          onClick={() => onChange("dark")}
+          className={`rounded px-2.5 py-1 text-[11px] ${
+            current === "dark"
+              ? "bg-slate-700/80 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Oscuro
+        </button>
+        <button
+          onClick={() => onChange("light")}
+          className={`rounded px-2.5 py-1 text-[11px] ${
+            current === "light"
+              ? "bg-slate-700/80 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Claro
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Section({
   title,
   icon,

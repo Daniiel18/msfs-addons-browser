@@ -60,6 +60,21 @@ export default function App() {
   const bootstrapSimBrief = useSimBriefStore((s) => s.bootstrap);
   const bootstrapFlightLog = useFlightLogStore((s) => s.bootstrap);
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
+  const theme = useSettingsStore((s) => s.settings.theme);
+
+  // Aplicar el tema al `<html>` cada vez que el setting cambie.
+  // Tailwind tiene `darkMode: "class"`, así que añadir/quitar la
+  // clase `dark` activa/desactiva todos los `dark:` modifiers.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "light") {
+      root.classList.remove("dark");
+      root.classList.add("light");
+    } else {
+      root.classList.remove("light");
+      root.classList.add("dark");
+    }
+  }, [theme]);
 
   const [ready, setReady] = useState(false);
   // Tareas que el splash AWAITEA antes de dar paso a la app.
@@ -279,11 +294,17 @@ export default function App() {
             // un titlebar custom (`<TitleBar />`) con el mismo theme
             // dark que la app. Mantenemos `decorations: false` y
             // sólo agrandamos + centramos la ventana.
+            //
+            // NO llamamos `maximize()` al arrancar — el usuario
+            // reportó que la ventana arrancaba maximizada y no se
+            // podía mover de monitor (Windows bloquea drag en
+            // maximize). Le dejamos un tamaño cómodo + centrada y
+            // el usuario decide si maximizar via el botón del
+            // titlebar.
             await win.setResizable(true);
             await win.setMinSize(new LogicalSize(960, 640));
             await win.setSize(new LogicalSize(1280, 820));
             await win.center();
-            await win.maximize();
           } catch (e) {
             console.warn("window resize failed:", e);
           }

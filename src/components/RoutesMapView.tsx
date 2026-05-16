@@ -49,15 +49,59 @@ export function RoutesMapView({
     (s) => s.settings.showSimconnectLines,
   );
 
-  // Inicialización del mapa — globo terráqueo 3D (lo que el usuario
-  // llamó "360"). MapLibre 5.x soporta globe de forma nativa via la
-  // opción `projection` del constructor. v4 no lo hacía bien — el
-  // upgrade a v5.24 era prerequisito.
+  // Inicialización del mapa — globo terráqueo SATELITAL.
+  // Usamos un style raster mínimo con tiles de ESRI World Imagery
+  // (free, attribution requerida). Combinado con `setProjection(
+  // 'globe')` queda un globo 3D con texturas reales — bastante más
+  // bonito que el vector dark vacío.
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return;
+
+    const satelliteStyle: maplibregl.StyleSpecification = {
+      version: 8,
+      sources: {
+        "esri-imagery": {
+          type: "raster",
+          tiles: [
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+          ],
+          tileSize: 256,
+          attribution:
+            "Tiles © Esri — World Imagery (Esri, Maxar, Earthstar Geographics)",
+          maxzoom: 19,
+        },
+        // Labels semi-transparentes encima para legibilidad —
+        // tomados del basemap de CARTO sin background, solo
+        // etiquetas blancas.
+        "carto-labels": {
+          type: "raster",
+          tiles: [
+            "https://cartodb-basemaps-a.global.ssl.fastly.net/dark_only_labels/{z}/{x}/{y}.png",
+            "https://cartodb-basemaps-b.global.ssl.fastly.net/dark_only_labels/{z}/{x}/{y}.png",
+            "https://cartodb-basemaps-c.global.ssl.fastly.net/dark_only_labels/{z}/{x}/{y}.png",
+          ],
+          tileSize: 256,
+          attribution: "Labels © CARTO · © OpenStreetMap contributors",
+        },
+      },
+      layers: [
+        {
+          id: "esri-imagery-layer",
+          type: "raster",
+          source: "esri-imagery",
+        },
+        {
+          id: "carto-labels-layer",
+          type: "raster",
+          source: "carto-labels",
+          paint: { "raster-opacity": 0.8 },
+        },
+      ],
+    };
+
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+      style: satelliteStyle,
       center: [0, 25],
       zoom: 1.2,
       attributionControl: false,

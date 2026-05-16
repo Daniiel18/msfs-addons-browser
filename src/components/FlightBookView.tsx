@@ -121,115 +121,107 @@ export function FlightBookView() {
         </div>
       )}
 
-      {/* Mapa de rutas — vive aquí, no en la pestaña Mapas. Muestra
-          líneas SimBrief (cyan dasheado) y SimConnect (verde sólido)
-          sin clusters de aeropuertos, sobre basemap oscuro. */}
-      <RoutesMapView height={340} />
-
-      {/* Summary cards */}
-      {stats && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard
-            icon={<Plane className="h-4 w-4 text-emerald-300" />}
-            label="Vuelos"
-            value={stats.count.toString()}
-            hint={`${stats.greasers} aterrizajes finos`}
-          />
-          <StatCard
-            icon={<Clock className="h-4 w-4 text-sky-300" />}
-            label="Tiempo total"
-            value={formatHM(stats.totalSec)}
-            hint="Suma horas+minutos"
-          />
-          <StatCard
-            icon={<Ruler className="h-4 w-4 text-violet-300" />}
-            label="Distancia"
-            value={`${Math.round(stats.totalDistance).toLocaleString("es-ES")} nm`}
-            hint={`${Math.round(stats.totalDistance * 1.852).toLocaleString(
-              "es-ES",
-            )} km`}
-          />
-          <StatCard
-            icon={<TrendingDown className="h-4 w-4 text-amber-300" />}
-            label="FPM medio"
-            value={
-              stats.avgLandingFpm !== null
-                ? `${stats.avgLandingFpm} fpm`
-                : "—"
-            }
-            hint="al touchdown"
-          />
+      {/* Layout split: mapa a la izq, stats+lista a la der. En
+          pantallas chicas (lg-) apila vertical. El mapa queda
+          sticky para que se vea mientras scrolleas la tabla. */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_440px]">
+        <div className="lg:sticky lg:top-4 lg:self-start">
+          <RoutesMapView height={520} />
         </div>
-      )}
+
+        <div className="space-y-4">
+          {/* Summary cards en grid de 2 columnas en la columna derecha */}
+          {stats && (
+            <div className="grid grid-cols-2 gap-2.5">
+              <StatCard
+                icon={<Plane className="h-4 w-4 text-emerald-300" />}
+                label="Vuelos"
+                value={stats.count.toString()}
+                hint={`${stats.greasers} aterrizajes finos`}
+              />
+              <StatCard
+                icon={<Clock className="h-4 w-4 text-sky-300" />}
+                label="Tiempo total"
+                value={formatHM(stats.totalSec)}
+                hint="Suma horas+minutos"
+              />
+              <StatCard
+                icon={<Ruler className="h-4 w-4 text-violet-300" />}
+                label="Distancia"
+                value={`${Math.round(stats.totalDistance).toLocaleString("es-ES")} nm`}
+                hint={`${Math.round(stats.totalDistance * 1.852).toLocaleString(
+                  "es-ES",
+                )} km`}
+              />
+              <StatCard
+                icon={<TrendingDown className="h-4 w-4 text-amber-300" />}
+                label="FPM medio"
+                value={
+                  stats.avgLandingFpm !== null
+                    ? `${stats.avgLandingFpm} fpm`
+                    : "—"
+                }
+                hint="al touchdown"
+              />
+            </div>
+          )}
 
       {/* Active flight */}
-      {inFlight && (
-        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
-          <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-            </span>
-            En vuelo ahora
-          </div>
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-sm text-emerald-100">
-            <span>
-              <PlaneTakeoff className="mr-1 inline h-3.5 w-3.5" />
-              {inFlight.originIcao ?? "?"}
-            </span>
-            <span className="text-emerald-300">→</span>
-            <span>
-              <PlaneLanding className="mr-1 inline h-3.5 w-3.5" />
-              en ruta…
-            </span>
-            <span className="text-xs text-emerald-300">
-              · {inFlight.aircraftAtcType ?? inFlight.aircraftTitle ?? "?"}
-            </span>
-          </div>
-        </div>
-      )}
+          {inFlight && (
+            <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20">
+              <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                </span>
+                En vuelo ahora
+              </div>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-emerald-100">
+                <span>
+                  <PlaneTakeoff className="mr-1 inline h-3.5 w-3.5" />
+                  {inFlight.originIcao ?? "?"}
+                </span>
+                <span className="text-emerald-300">→</span>
+                <span>
+                  <PlaneLanding className="mr-1 inline h-3.5 w-3.5" />
+                  en ruta…
+                </span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-emerald-300/80">
+                {inFlight.aircraftAtcType ?? inFlight.aircraftTitle ?? "?"}
+              </div>
+            </div>
+          )}
 
-      {/* History table */}
-      {completed.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-8 text-center">
-          <Plane className="mx-auto mb-2 h-8 w-8 text-slate-600" />
-          <p className="text-sm font-medium text-slate-300">
-            Aún no hay vuelos registrados
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Cuando despegues en MSFS con SimConnect activo, el watcher creará
-            una entrada automáticamente. Mientras tanto puedes poblar la tabla
-            con el botón "Demo".
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/40">
-          <table className="w-full min-w-[820px] text-left text-xs">
-            <thead className="bg-slate-900/60 text-[10px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-3 py-2">Fecha</th>
-                <th className="px-3 py-2">Origen → Destino</th>
-                <th className="px-3 py-2">Aircraft</th>
-                <th className="px-3 py-2 text-right">Duración</th>
-                <th className="px-3 py-2 text-right">Distancia</th>
-                <th className="px-3 py-2 text-right">Max alt</th>
-                <th className="px-3 py-2 text-right">Max vel</th>
-                <th className="px-3 py-2 text-right">FPM</th>
-                <th className="px-3 py-2"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
+          {/* Lista compacta de vuelos (cards verticales en lugar de
+              tabla) — más legible cuando vive en una columna de 440px
+              al lado del mapa. Scroll interno + max-height para que
+              no salga del viewport. */}
+          {completed.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-center">
+              <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
+              <p className="text-sm font-medium text-slate-300">
+                Aún no hay vuelos registrados
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Cuando despegues en MSFS con SimConnect activo, el watcher
+                creará una entrada automáticamente. Mientras tanto puedes
+                poblar con el botón "Demo".
+              </p>
+            </div>
+          ) : (
+            <ul className="max-h-[calc(100vh-22rem)] space-y-1.5 overflow-y-auto pr-1">
               {completed.map((e) => (
-                <FlightRow
+                <FlightCard
                   key={e.id}
                   entry={e}
                   onDelete={() => void remove(e.id)}
                 />
               ))}
-            </tbody>
-          </table>
+            </ul>
+          )}
         </div>
-      )}
+      </div>
     </section>
   );
 }
@@ -257,7 +249,7 @@ function StatCard({
   );
 }
 
-function FlightRow({
+function FlightCard({
   entry,
   onDelete,
 }: {
@@ -270,19 +262,19 @@ function FlightRow({
   const distance =
     entry.distanceNm !== null
       ? `${Math.round(entry.distanceNm).toLocaleString("es-ES")} nm`
-      : "—";
+      : null;
   const maxAlt =
     entry.maxAltitudeFt !== null
       ? `${entry.maxAltitudeFt.toLocaleString("es-ES")} ft`
-      : "—";
+      : null;
   const maxSpeed =
     entry.maxGroundSpeedKt !== null
       ? `${entry.maxGroundSpeedKt} kt`
       : entry.maxTrueAirspeedKt !== null
         ? `${entry.maxTrueAirspeedKt} kt`
-        : "—";
+        : null;
   const fpm = entry.landingFpm;
-  const fpmLabel = fpm !== null ? `${fpm} fpm` : "—";
+  const fpmLabel = fpm !== null ? `${fpm} fpm` : null;
   const fpmTone =
     fpm === null
       ? "text-slate-500"
@@ -295,60 +287,79 @@ function FlightRow({
             : "text-rose-300";
 
   return (
-    <tr className="group hover:bg-slate-800/40">
-      <td className="px-3 py-2 text-slate-400">{dateLabel}</td>
-      <td className="px-3 py-2 font-mono text-slate-200">
-        <div className="flex items-center gap-1.5">
-          <span>{entry.originIcao ?? "?"}</span>
-          <span className="text-emerald-300">→</span>
-          <span>{entry.destinationIcao ?? "?"}</span>
-        </div>
-        {(entry.departureGate || entry.arrivalGate) && (
-          <div className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-500">
-            <MapPin className="h-2.5 w-2.5" />
-            {entry.departureGate && (
-              <span title="Gate salida">{shortGate(entry.departureGate)}</span>
-            )}
-            {entry.arrivalGate && (
+    <li className="group rounded-lg border border-slate-800 bg-slate-900/40 p-2.5 hover:border-slate-700">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 font-mono text-sm text-slate-100">
+            <span>{entry.originIcao ?? "?"}</span>
+            <span className="text-emerald-300">→</span>
+            <span>{entry.destinationIcao ?? "?"}</span>
+          </div>
+          <div className="mt-0.5 text-[10px] text-slate-500">
+            {dateLabel}
+            {entry.aircraftAtcType && (
               <>
-                <span>·</span>
-                <span title="Gate llegada">
-                  {shortGate(entry.arrivalGate)}
-                </span>
+                {" · "}
+                {entry.aircraftAtcType}
               </>
             )}
           </div>
-        )}
-      </td>
-      <td className="px-3 py-2 text-slate-300">
-        {entry.aircraftAtcType ?? entry.aircraftTitle ?? "—"}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums text-slate-200">
-        {duration}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums text-slate-300">
-        {distance}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums text-slate-300">
-        {maxAlt}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums text-slate-300">
-        <Gauge className="mr-1 inline h-3 w-3 text-slate-500" />
-        {maxSpeed}
-      </td>
-      <td className={`px-3 py-2 text-right tabular-nums ${fpmTone}`}>
-        {fpmLabel}
-      </td>
-      <td className="px-2 py-2 text-right">
+        </div>
         <button
           onClick={onDelete}
           title="Eliminar entrada"
-          className="rounded p-1 text-slate-600 opacity-0 hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
+          className="rounded p-0.5 text-slate-600 opacity-0 hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3 w-3" />
         </button>
-      </td>
-    </tr>
+      </div>
+      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-slate-400">
+        <div className="flex items-center gap-1">
+          <Clock className="h-2.5 w-2.5 text-slate-500" />
+          <span className="tabular-nums text-slate-300">{duration}</span>
+        </div>
+        {distance && (
+          <div className="flex items-center gap-1">
+            <Ruler className="h-2.5 w-2.5 text-slate-500" />
+            <span className="tabular-nums text-slate-300">{distance}</span>
+          </div>
+        )}
+        {maxAlt && (
+          <div className="flex items-center gap-1">
+            <TrendingDown className="h-2.5 w-2.5 rotate-180 text-slate-500" />
+            <span className="tabular-nums text-slate-300">{maxAlt}</span>
+          </div>
+        )}
+        {maxSpeed && (
+          <div className="flex items-center gap-1">
+            <Gauge className="h-2.5 w-2.5 text-slate-500" />
+            <span className="tabular-nums text-slate-300">{maxSpeed}</span>
+          </div>
+        )}
+        {fpmLabel && (
+          <div className={`flex items-center gap-1 ${fpmTone}`}>
+            <TrendingDown className="h-2.5 w-2.5" />
+            <span className="tabular-nums">{fpmLabel}</span>
+          </div>
+        )}
+      </div>
+      {(entry.departureGate || entry.arrivalGate) && (
+        <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+          <MapPin className="h-2.5 w-2.5" />
+          {entry.departureGate && (
+            <span title="Gate salida">{shortGate(entry.departureGate)}</span>
+          )}
+          {entry.arrivalGate && (
+            <>
+              <span>·</span>
+              <span title="Gate llegada">
+                {shortGate(entry.arrivalGate)}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 

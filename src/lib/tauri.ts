@@ -764,6 +764,7 @@ const demoApi: Api = {
       minimizeToTray: false,
       onboardingCompleted: true, // demo: skip tour
       defaultView: "dashboard",
+      theme: "dark",
       autostartEnabled: false,
       simbriefPilotId: null,
       communityPath: "C:/Demo/Community",

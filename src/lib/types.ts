@@ -176,6 +176,8 @@ export interface AppSettings {
   minimizeToTray: boolean;
   onboardingCompleted: boolean;
   defaultView: string;
+  /** Tema visual: "dark" o "light". */
+  theme: string;
   autostartEnabled: boolean;
   simbriefPilotId: string | null;
   communityPath: string | null;

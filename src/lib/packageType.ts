@@ -88,26 +88,67 @@ function looksLikeLivery(p: CommunityPackage): boolean {
 /**
  * Clasificación basada en el manifest, con fallbacks heurísticos
  * para casos donde el `content_type` no está poblado correctamente.
+ *
+ * v0.1.14: mucho más permisivo — el usuario reportó demasiados
+ * "Sin clasificar" en su lista. Aceptamos content_types no
+ * estándar (LIVERY, PAINT, REPAINT, SOUNDPACK, etc.) y siempre
+ * corremos `looksLikeLivery`/`looksLikeAircraft` cuando el ct
+ * no es SCENERY/INSTRUMENT.
  */
 export function derivedType(p: CommunityPackage): DerivedType {
   const ct = p.contentType?.toUpperCase().trim() ?? "";
 
   if (ct === "SCENERY") return "SCENERY";
+  if (ct === "INSTRUMENT") return "INSTRUMENT";
+
+  // Content types no estándar pero comunes en addons de terceros.
+  if (["LIVERY", "PAINT", "REPAINT", "PAINTKIT", "TEXTURE"].includes(ct)) {
+    return "LIVERY";
+  }
+  if (["SOUND", "SOUNDPACK", "SOUND-PACK", "MUSIC"].includes(ct)) {
+    return "MISC";
+  }
 
   if (ct === "AIRCRAFT") {
     return looksLikeLivery(p) ? "LIVERY" : "AIRCRAFT";
   }
 
-  if (ct === "INSTRUMENT") return "INSTRUMENT";
   if (ct === "MISC") return "MISC";
 
-  // Sin content_type — antes lo dejábamos en UNKNOWN sin más,
-  // pero el usuario reportó que muchas liveries caen aquí. Si el
-  // título/folder tiene patrones inconfundibles de livery (matrícula,
-  // "Airlines", la palabra "livery"), lo clasificamos como tal en
-  // vez de esconderlo bajo UNKNOWN.
-  if (!ct && looksLikeLivery(p)) return "LIVERY";
+  // Sin content_type O content_type desconocido — corremos las
+  // heurísticas en orden:
+  //   1. Patrones explícitos de livery (Paintkit, matrícula, etc).
+  //   2. Patrones de aircraft (modelo en el nombre/folder).
+  //   3. Caer a UNKNOWN sólo si nada calza.
+  if (looksLikeLivery(p)) return "LIVERY";
+  if (looksLikeAircraft(p)) return "AIRCRAFT";
   return "UNKNOWN";
+}
+
+/** Heurística para detectar aircraft sin manifest claro:
+ *  · Modelo de avión en el título o folder (A350, 737, CRJ, etc).
+ *  · Palabras "aircraft", "plane", "jet" en el título.
+ *  Llamada SÓLO después de `looksLikeLivery` para evitar que un
+ *  livery de A350 caiga como AIRCRAFT. */
+function looksLikeAircraft(p: CommunityPackage): boolean {
+  const aircraftModelRegex =
+    /\b(a3(?:1[89]|2[01]|30|40|50|80)|b73[6789]|b74[78]|b75[7]|b76[7]|b77[7]|b78[7]|crj|md[-_ ]?(?:11|80|90)|tbm[-_ ]?9(?:30|40)|c1?7[2358]|c20[8]|atr[-_ ]?(?:42|72)|q400|dh[c]?[-_ ]?8|cj4|king\s*air|cessna|piper|mooney)\b/i;
+  if (aircraftModelRegex.test(p.title)) return true;
+  if (aircraftModelRegex.test(p.folderName)) return true;
+  if (/\b(aircraft|airplane|jet|airliner)\b/i.test(p.title)) return true;
+  return false;
+}
+
+/** True si el thumbnail del paquete es probablemente un placeholder
+ *  (creator no se molestó en hacer una imagen real). Lo detectamos
+ *  por el TÍTULO — si contiene "NTEST", "Template", "Placeholder",
+ *  "Generic" o variantes, no vale la pena cargar el thumbnail (es
+ *  el mismo PNG gris en todos). Devolvemos true → renderear el
+ *  icono de categoría en su lugar. */
+export function looksLikePlaceholderTitle(title: string): boolean {
+  return /\b(N?TEST|TEMPLATE|PLACEHOLDER|DEFAULT|SAMPLE|EXAMPLE|GENERIC|TEMP|DEV)\b/i.test(
+    title,
+  );
 }
 
 /**

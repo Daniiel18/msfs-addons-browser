@@ -12,7 +12,12 @@ import {
 import type { CommunityPackage } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { PackageDetailModal } from "./PackageDetailModal";
-import { derivedType, isAddon, type DerivedType } from "../lib/packageType";
+import {
+  derivedType,
+  isAddon,
+  looksLikePlaceholderTitle,
+  type DerivedType,
+} from "../lib/packageType";
 import { api } from "../lib/tauri";
 
 /**
@@ -295,10 +300,18 @@ function EmptyState({
 
 const thumbnailCache = new Map<string, string | null>();
 
-function useThumbnail(folderName: string): string | null {
+function useThumbnail(folderName: string, skip: boolean = false): string | null {
   const cached = thumbnailCache.get(folderName);
   const [src, setSrc] = useState<string | null>(cached ?? null);
   useEffect(() => {
+    // Si el caller dice "skip" (título de placeholder/test), ni
+    // siquiera intentamos cargar el thumbnail. Cacheamos null para
+    // evitar re-intentos.
+    if (skip) {
+      thumbnailCache.set(folderName, null);
+      setSrc(null);
+      return;
+    }
     if (thumbnailCache.has(folderName)) {
       setSrc(thumbnailCache.get(folderName) ?? null);
       return;
@@ -308,8 +321,15 @@ function useThumbnail(folderName: string): string | null {
       .packageThumbnail(folderName)
       .then((dataUrl) => {
         if (cancelled) return;
-        thumbnailCache.set(folderName, dataUrl);
-        setSrc(dataUrl);
+        // Heurística anti-placeholder: si el data URL es muy chico
+        // (<3 KB de base64 ≈ <2 KB de imagen real), probablemente
+        // es un PNG genérico "PLACEHOLDER" que el dev dejó como
+        // marcador. Cacheamos null y renderemos el icono de
+        // categoría en su lugar.
+        const looksTiny = dataUrl !== null && dataUrl.length < 3000;
+        const finalUrl = looksTiny ? null : dataUrl;
+        thumbnailCache.set(folderName, finalUrl);
+        setSrc(finalUrl);
       })
       .catch(() => {
         if (cancelled) return;
@@ -319,7 +339,7 @@ function useThumbnail(folderName: string): string | null {
     return () => {
       cancelled = true;
     };
-  }, [folderName]);
+  }, [folderName, skip]);
   return src;
 }
 
@@ -334,7 +354,11 @@ function PackageCard({
   hasUpdate: boolean;
   onClick: () => void;
 }) {
-  const thumb = useThumbnail(pkg.folderName);
+  // Skip de thumbnails para títulos con keywords de placeholder
+  // (NTEST, PAINTKIT, TEMPLATE, etc.) — muchos addons dejan el
+  // PNG gris "PLACEHOLDER" en esos casos.
+  const skipThumb = looksLikePlaceholderTitle(pkg.title);
+  const thumb = useThumbnail(pkg.folderName, skipThumb);
   const sizeMb =
     pkg.sizeBytes != null ? (pkg.sizeBytes / 1_000_000).toFixed(0) : null;
 

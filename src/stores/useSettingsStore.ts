@@ -41,6 +41,7 @@ const DEFAULTS: AppSettings = {
   minimizeToTray: false,
   onboardingCompleted: false,
   defaultView: "dashboard",
+  theme: "dark",
   autostartEnabled: false,
   simbriefPilotId: null,
   communityPath: null,
