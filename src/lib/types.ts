@@ -201,6 +201,10 @@ export interface AppSettings {
   defaultView: string;
   autostartEnabled: boolean;
   simbriefPilotId: string | null;
+  /** Path manual al `.exe` de PMDG Operations Center. Lo usa la
+   *  detección de .ptp cuando OC no está en una ubicación
+   *  estándar (portable en otro drive, instalación custom, etc). */
+  pmdgOcPath: string | null;
   communityPath: string | null;
   logsPath: string | null;
   appDataPath: string | null;
@@ -321,6 +325,18 @@ export interface ScanReport {
   skippedNoManifest: number;
   skippedInvalidManifest: number;
   communityPath: string;
+}
+
+/** Resultado del comando `diagnose_pmdg_oc`. La UI lo muestra en
+ *  Settings para que el usuario sepa qué paths se probaron y dónde
+ *  tiene que apuntar el override si la detección falló. */
+export interface OcDetectionReport {
+  /** Path detectado o null si no se encontró. */
+  detectedPath: string | null;
+  /** True si vino del setting de override del usuario. */
+  fromSetting: boolean;
+  /** Lista de candidatos con prefijo ✓/✗ según existencia. */
+  triedPaths: string[];
 }
 
 /** Una actualización detectada al cruzar Community con el catálogo. */

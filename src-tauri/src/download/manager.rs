@@ -517,7 +517,11 @@ impl DownloadManager {
         let archive_for_task = archive.clone();
         let community_for_task = community_path.clone();
         let install_outcome = tokio::task::spawn_blocking(move || {
-            install::install_archive(&archive_for_task, &community_for_task)
+            // Downloads automáticos no usan override de PMDG OC —
+            // si el torrent contiene .ptp, igual cae al inbox o usa
+            // la detección por defecto. Si el usuario quiere
+            // override, lo aplica al hacer install manual.
+            install::install_archive(&archive_for_task, &community_for_task, None)
         })
         .await;
 

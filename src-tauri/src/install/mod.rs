@@ -16,7 +16,7 @@
 //!   extraemos en proceso con `unrar` + `sevenz-rust2`. Si aparece un
 //!   formato desconocido, devolvemos un error limpio.
 
-mod pmdg;
+pub mod pmdg;
 
 use std::fs;
 use std::io;
@@ -99,7 +99,11 @@ pub struct PtpPayload {
 ///
 /// The temp dir is deleted when this function returns, regardless of
 /// outcome — that's what fixes the legacy "dangling `%TEMP%` dirs" bug.
-pub fn install_archive(archive_path: &Path, community_path: &Path) -> anyhow::Result<InstallResult> {
+pub fn install_archive(
+    archive_path: &Path,
+    community_path: &Path,
+    pmdg_oc_override: Option<&str>,
+) -> anyhow::Result<InstallResult> {
     if !archive_path.is_file() {
         return Err(anyhow!(
             "No se encontró el archivo: {}",
@@ -133,6 +137,7 @@ pub fn install_archive(archive_path: &Path, community_path: &Path) -> anyhow::Re
             &[archive_path.to_path_buf()],
             None,
             community_path,
+            pmdg_oc_override,
         )?;
         tracing::info!(
             "install: archivo .ptp directo → {}",
@@ -188,6 +193,7 @@ pub fn install_archive(archive_path: &Path, community_path: &Path) -> anyhow::Re
                 &ptps,
                 parent_hint.as_deref(),
                 community_path,
+                pmdg_oc_override,
             )?;
             tracing::info!(
                 "install: archive contiene {} livery(es) PMDG (.ptp) → {}",
@@ -322,6 +328,7 @@ fn persist_ptp_payload(
     ptps: &[PathBuf],
     parent_hint: Option<&str>,
     community_path: &Path,
+    pmdg_oc_override: Option<&str>,
 ) -> anyhow::Result<PtpPayload> {
     let documents = directories_documents()
         .ok_or_else(|| anyhow!("no se pudo localizar la carpeta `Documents` del usuario"))?;
@@ -350,7 +357,7 @@ fn persist_ptp_payload(
         // nuevo flujo (lanzar PMDG OC con el .ptp) no necesita
         // saber el aircraft, OC lo detecta del propio .ptp.
         let aircraft_str = aircraft.as_deref().unwrap_or("desconocido");
-        match pmdg::install_livery(&dst, aircraft_str, community_path) {
+        match pmdg::install_livery(&dst, aircraft_str, community_path, pmdg_oc_override) {
             Ok(Some(report)) => {
                 tracing::info!(
                     target: "install",

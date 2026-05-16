@@ -55,12 +55,27 @@ pub async fn install_archive(
     };
     tracing::info!(target: "install", "destino Community: {}", community.display());
 
+    // Lee setting de override de PMDG OC para que install_livery sepa
+    // dónde buscarlo cuando el usuario lo tiene en un path no estándar
+    // (p.ej. portable en D:\Downloads\PMDG Operations Center\).
+    let pmdg_oc_path: Option<String> = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'pmdg_oc_path' AND value IS NOT NULL AND value <> ''",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    if let Some(p) = &pmdg_oc_path {
+        tracing::info!(target: "install", "pmdg_oc_path override del usuario: {}", p);
+    }
+
     let archive = PathBuf::from(&archive_path);
     let archive_for_task = archive.clone();
     let community_for_task = community.clone();
+    let oc_for_task = pmdg_oc_path.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        install::install_archive(&archive_for_task, &community_for_task)
+        install::install_archive(&archive_for_task, &community_for_task, oc_for_task.as_deref())
     })
     .await
     .map_err(|e| {
@@ -127,4 +142,26 @@ pub async fn forget_install(
     repo::forget_install(&state.db, &id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Diagnóstico: dónde está PMDG Operations Center.exe en este
+/// sistema, qué paths se intentaron y cuál coincidió. El frontend
+/// lo invoca desde Settings cuando el usuario quiere ver por qué
+/// la detección automática falló.
+///
+/// Devuelve los paths SIEMPRE — el usuario los necesita aunque
+/// la detección haya tenido éxito (para saber dónde apuntar el
+/// setting si quiere cambiar a otra instancia de OC).
+#[tauri::command]
+pub async fn diagnose_pmdg_oc(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::install::pmdg::OcDetectionReport, String> {
+    let setting: Option<String> = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'pmdg_oc_path' AND value IS NOT NULL AND value <> ''",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    Ok(crate::install::pmdg::diagnose_oc_detection(setting.as_deref()))
 }

@@ -304,6 +304,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </Section>
 
+              <PmdgOcSection />
+
               <Section title="Mostrar en mapa (FlightBook)" icon={<Bell className="h-3.5 w-3.5" />}>
                 <Toggle
                   label="Líneas de SimBrief"
@@ -478,6 +480,166 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+/** Sección de Settings para configurar dónde está PMDG OC. Vive
+ *  acá porque tiene su propio estado local (diagnóstico) y no
+ *  encajaba en el patrón compartido `Toggle/PathRow`. */
+function PmdgOcSection() {
+  const settings = useSettingsStore((s) => s.settings);
+  const reload = useSettingsStore((s) => s.bootstrap);
+  const [diag, setDiag] = useState<{
+    detectedPath: string | null;
+    fromSetting: boolean;
+    triedPaths: string[];
+  } | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+
+  const runDiag = async () => {
+    setDiagLoading(true);
+    try {
+      const r = await api.diagnosePmdgOc();
+      setDiag(r);
+      setDiagOpen(true);
+    } catch (e) {
+      console.warn("diagnose_pmdg_oc failed:", e);
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
+  const onBrowse = async () => {
+    const picked = await api.pickFilePath([
+      { name: "PMDG Operations Center", extensions: ["exe"] },
+    ]);
+    if (!picked) return;
+    setSaveBusy(true);
+    try {
+      await api.setAppSetting("pmdg_oc_path", picked);
+      await reload();
+      // Refrescamos diagnóstico para mostrar el nuevo path como detectado.
+      await runDiag();
+    } finally {
+      setSaveBusy(false);
+    }
+  };
+
+  const onClear = async () => {
+    setSaveBusy(true);
+    try {
+      await api.setAppSetting("pmdg_oc_path", "");
+      await reload();
+      await runDiag();
+    } finally {
+      setSaveBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="PMDG Operations Center"
+      icon={<Plane className="h-3.5 w-3.5" />}
+    >
+      <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-400">
+        <p className="mb-2">
+          Los archivos <span className="font-mono text-slate-300">.ptp</span>{" "}
+          de PMDG están <strong>encriptados</strong> (AES + clave propietaria).
+          Sólo <em>PMDG Operations Center</em> puede instalarlos. Al arrastrar
+          un .ptp, la app intenta lanzar OC con el archivo como argumento. Si
+          OC no está en una ubicación estándar, configurálo aquí.
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300">
+            Path actual
+          </span>
+          <span className="break-all font-mono text-[10px] text-slate-300">
+            {settings.pmdgOcPath ?? "(auto-detección)"}
+          </span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            onClick={onBrowse}
+            disabled={saveBusy}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/60 px-2.5 py-1 text-[11px] text-slate-200 hover:border-brand-500/40 disabled:opacity-50"
+          >
+            {saveBusy ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <FolderOpen className="h-3 w-3" />
+            )}
+            Examinar…
+          </button>
+          {settings.pmdgOcPath && (
+            <button
+              onClick={onClear}
+              disabled={saveBusy}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2.5 py-1 text-[11px] text-slate-400 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-50"
+            >
+              Limpiar
+            </button>
+          )}
+          <button
+            onClick={runDiag}
+            disabled={diagLoading}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2.5 py-1 text-[11px] text-slate-300 hover:border-brand-500/40 disabled:opacity-50"
+          >
+            {diagLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Info className="h-3 w-3" />
+            )}
+            Diagnosticar
+          </button>
+        </div>
+        {diag && diagOpen && (
+          <div className="mt-3 rounded-md border border-slate-800 bg-slate-950/60 p-2">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-300">
+                Diagnóstico
+              </span>
+              <button
+                onClick={() => setDiagOpen(false)}
+                className="text-[10px] text-slate-500 hover:text-slate-300"
+              >
+                Ocultar
+              </button>
+            </div>
+            <div className="mb-1.5 text-[11px]">
+              {diag.detectedPath ? (
+                <span className="text-emerald-300">
+                  ✓ Detectado en:{" "}
+                  <span className="font-mono">{diag.detectedPath}</span>
+                  {diag.fromSetting && (
+                    <span className="ml-1 text-slate-500">
+                      (desde setting)
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-rose-300">
+                  ✗ No se encontró PMDG Operations Center en ningún path.
+                </span>
+              )}
+            </div>
+            <details>
+              <summary className="cursor-pointer text-[10px] text-slate-500 hover:text-slate-300">
+                Paths probados ({diag.triedPaths.length})
+              </summary>
+              <ul className="mt-1.5 max-h-40 space-y-0.5 overflow-y-auto rounded bg-slate-950/60 p-1.5 text-[10px] font-mono text-slate-400">
+                {diag.triedPaths.map((p, i) => (
+                  <li key={i} className="break-all">
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </div>
+        )}
+      </div>
+    </Section>
   );
 }
 
