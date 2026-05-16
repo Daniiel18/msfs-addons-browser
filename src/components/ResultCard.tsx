@@ -104,6 +104,16 @@ function shareAircraftModel(a: string, b: string): boolean {
   return false;
 }
 
+/** True si el nombre delata un addon "categoría" (livery, sound,
+ *  preset, paint, etc.) — usado para el filtro asimétrico que
+ *  evita marcar como "instalado/update disponible" un livery pack
+ *  cuando lo que el usuario tiene es el avión base. */
+function isCategoryAddonName(s: string): boolean {
+  return /\b(liver(y|ies)|paint|texture|sound\s*pack|sound\b|preset|profile|config|tweak|enhancement|\bmod\b|\bpack\b|repaint)/i.test(
+    s,
+  );
+}
+
 /** Convierte una fecha del scraping (ISO-8601 o texto crudo del
  *  `<time>` de WordPress) en algo legible al usuario. Si parsea como
  *  ISO la formateamos en `dd MMM yyyy`; si no, devolvemos el texto
@@ -160,16 +170,27 @@ function deriveInstallState(
   // Airbus A350" del catálogo vs "iniBuilds A350-900" del manifest:
   // el creator matchea por substring (iniBuilds ⊂ iniBuilds Limited)
   // y ambos contienen el modelo A350.
+  //
+  // **Filtro asimétrico anti-categoría** (v0.1.10, mismo principio
+  // que el SQL en compute_available): si el addon del catálogo es
+  // de otra "categoría" (livery, sound, preset, paint, mod, pack)
+  // pero el paquete instalado NO lo es, NO matchea — un avión
+  // base no se "actualiza" con un livery pack. Bug reportado
+  // por usuario: tenía PMDG 737-800 base y aparecía como UPDATE
+  // disponible "Boeing 737-700/800/900 Liveries by PMDG".
   if (!exactMatch && addon.developer) {
     exactMatch = packages.find((p) => {
       if (!sameCreator(p.creator, addon.developer)) return false;
       const a = addon.name.toLowerCase();
       const b = p.title.toLowerCase();
-      return (
+      const titlesOverlap =
         a.includes(b) ||
         b.includes(a) ||
-        shareAircraftModel(addon.name, p.title)
-      );
+        shareAircraftModel(addon.name, p.title);
+      if (!titlesOverlap) return false;
+      // Asimetría: a (catálogo) contiene categoría, b (instalado) no → reject.
+      if (isCategoryAddonName(a) && !isCategoryAddonName(b)) return false;
+      return true;
     });
   }
 

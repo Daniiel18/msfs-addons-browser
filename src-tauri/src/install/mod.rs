@@ -346,35 +346,40 @@ fn persist_ptp_payload(
         })?;
         let aircraft = detect_ptp_aircraft(&dst, parent_hint);
         let mut auto_target: Option<String> = None;
-        if let Some(ac) = &aircraft {
-            tracing::info!(target: "install", ".ptp '{}' → aircraft detectado: {}", name, ac);
-            match pmdg::install_livery(&dst, ac, community_path) {
-                Ok(Some(report)) => {
-                    tracing::info!(
-                        target: "install",
-                        "PMDG auto-install: {} → {} (texture.{} en [fltsim.{}])",
-                        name,
-                        report.aircraft_dir.display(),
-                        report.texture_folder,
-                        report.fltsim_index
-                    );
-                    auto_target = Some(report.aircraft_dir.to_string_lossy().into_owned());
-                }
-                Ok(None) => tracing::info!(
+        // Llamamos a install_livery aunque `aircraft` sea None — el
+        // nuevo flujo (lanzar PMDG OC con el .ptp) no necesita
+        // saber el aircraft, OC lo detecta del propio .ptp.
+        let aircraft_str = aircraft.as_deref().unwrap_or("desconocido");
+        match pmdg::install_livery(&dst, aircraft_str, community_path) {
+            Ok(Some(report)) => {
+                tracing::info!(
                     target: "install",
-                    "PMDG: paquete '{}' no está en Community — {} queda en inbox manual",
-                    ac, name
-                ),
-                Err(e) => tracing::warn!(
-                    target: "install",
-                    "PMDG auto-install falló para {}: {e:#}",
-                    name
-                ),
+                    "PMDG OC lanzado: {} → {} (oc='{}', launched={})",
+                    name,
+                    report.ptp_path.display(),
+                    report.oc_executable.display(),
+                    report.launched
+                );
+                // El "auto_target" ahora es el path del exe de OC
+                // (no la carpeta del avión). El frontend lo usa para
+                // decir "Enviado a PMDG OC".
+                auto_target = Some(report.oc_executable.to_string_lossy().into_owned());
             }
-        } else {
+            Ok(None) => tracing::info!(
+                target: "install",
+                "PMDG OC no detectado en el sistema — {} queda en inbox manual",
+                name
+            ),
+            Err(e) => tracing::warn!(
+                target: "install",
+                "lanzamiento de PMDG OC falló para {}: {e:#}",
+                name
+            ),
+        }
+        if aircraft.is_none() {
             tracing::info!(
                 target: "install",
-                ".ptp '{}' sin aircraft detectado — queda sólo en inbox manual",
+                ".ptp '{}' sin aircraft detectado por nuestro heurístico — PMDG OC lo detectará por su cuenta",
                 name
             );
         }

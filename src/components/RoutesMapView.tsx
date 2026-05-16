@@ -46,42 +46,52 @@ export function RoutesMapView({
     (s) => s.settings.showSimconnectLines,
   );
 
-  // Inicialización del mapa — basemap oscuro Voyager + proyección
-  // globe (3D / 360°) que el usuario pidió. Globe sólo funciona en
-  // MapLibre v3+ y se activa post-load para evitar errores de
-  // estilo no cargado todavía.
+  // Inicialización del mapa — basemap oscuro CARTO + proyección
+  // GLOBE (3D, lo que el usuario llamó "360"). En MapLibre 4.x la
+  // proyección globe se ACTIVA pasándola dentro de la opción
+  // `projection` del constructor (no via setProjection post-load —
+  // eso falla porque el style ya configuró mercator). Además
+  // forzamos `setProjection` también en `style.load` por si el
+  // basemap incluye `"projection": {"type":"mercator"}` en su
+  // styles JSON y nos lo pisa.
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      // Dark Matter (CARTO) — basemap oscuro con detalle topográfico
-      // sutil y etiquetas legibles. Combinado con la proyección
-      // globe (3D) abajo da el efecto "360" que el usuario pidió.
-      style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-      center: [0, 25],
-      zoom: 1.4,
-      // Quitamos attribution del overlay nativo — la pintamos
-      // nosotros como overlay flotante para que no estorbe.
-      attributionControl: false,
-    });
+    // Cast del MapOptions para incluir `projection` — los types de
+    // MapLibre 4.7 aún no exponen esta opción pero el runtime sí la
+    // soporta. Sin esto tsc falla con "projection does not exist
+    // in type 'MapOptions'".
+    const map = new maplibregl.Map(
+      {
+        container: containerRef.current,
+        style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+        center: [0, 25],
+        zoom: 1.4,
+        attributionControl: false,
+        projection: { type: "globe" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    );
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
 
-    // Activar proyección globe cuando el estilo carga. Si la
-    // versión de MapLibre no la soporta (debería en v3+), el
-    // try/catch silencioso deja el flat default.
-    map.once("load", () => {
+    // Re-aplicar globe cada vez que el style se carga/recarga.
+    // Necesario porque algunos style.json de CARTO incluyen
+    // `"projection": "mercator"` por defecto y pisaría nuestro
+    // setting del constructor.
+    const ensureGlobe = () => {
       try {
-        // setProjection acepta string en versiones recientes.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (map as any).setProjection({ type: "globe" });
       } catch (e) {
-        console.warn("globe projection no soportada:", e);
+        console.warn("globe projection no soportada en esta versión MapLibre:", e);
       }
-    });
+    };
+    map.on("style.load", ensureGlobe);
+    map.once("load", ensureGlobe);
 
     mapRef.current = map;
     return () => {
+      map.off("style.load", ensureGlobe);
       map.remove();
       mapRef.current = null;
     };

@@ -255,23 +255,23 @@ function PtpNote({ payload }: { payload: PtpPayload }) {
         <p className="text-[11px] text-emerald-300">
           ✓{" "}
           {count === 1
-            ? "Livery instalada en el avión PMDG"
-            : `${count} liveries instaladas en el avión PMDG`}
-          . Aparecerá directamente al elegir la aeronave en MSFS.
+            ? "Livery enviada a PMDG Operations Center"
+            : `${count} liveries enviadas a PMDG Operations Center`}
+          . Confirma la instalación en la ventana de PMDG OC que se abrió.
         </p>
       ) : someAuto ? (
         <p className="text-[11px] text-emerald-300">
-          ✓ {autoInstalled} de {count} instaladas en el avión PMDG. El resto
-          quedó en el inbox manual (no se detectó el modelo del avión, o el
-          paquete PMDG no está en Community).
+          ✓ {autoInstalled} de {count} enviadas a PMDG Operations Center. El
+          resto quedó en el inbox manual (revisa el log para detalles).
         </p>
       ) : (
         <p className="text-[11px] text-sky-300">
           {count === 1
             ? "Livery PMDG (.ptp) guardada en el Inbox"
             : `${count} liveries PMDG (.ptp) guardadas en el Inbox`}
-          . No se detectó el avión PMDG en Community — instala primero el
-          modelo base y vuelve a arrastrar la livery.
+          . No encontramos PMDG Operations Center instalado — los .ptp son un
+          formato encriptado propietario de PMDG, sólo OC los puede instalar.
+          Abre OC y arrastra los archivos del Inbox.
         </p>
       )}
       {detectedSummary && (
