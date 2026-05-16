@@ -447,23 +447,68 @@ fn pick_best_for_icao<'a>(addons: &'a [Addon], query: &str) -> Option<&'a Addon>
         })
 }
 
-/// `latest > installed` con semver tolerante. Si alguno no parsea
-/// como semver clásico, intentamos rellenar componentes faltantes
-/// (ej: `"1.5"` → `"1.5.0"`); si aún así falla, comparamos por
-/// orden lexicográfico ASCII como último recurso. Eso evita perder
-/// una update por un manifest con versión "rara".
+/// `latest > installed` con comparación de versiones tolerante.
+///
+/// Estrategia (en orden):
+///   1. Ambos parsean como semver (con leading-zero strip) → comparar.
+///   2. Si NO parsean ambos pero tienen "shape" similar (mismo
+///      número de dígitos en el major), comparar lexicográfico.
+///   3. Si tienen shape DISTINTO (ej. `1.0.0` vs `2026.01.03`),
+///      **NO** comparar — devolver false. Esto evita el bug
+///      reportado: catalog "Boeing 737-800 Liveries v2026.01.03"
+///      contra un pkg con version="1.0.0" se marcaba como update
+///      porque "2026.01.03" > "1.0.0" lexicográficamente, pero
+///      claramente son projects distintos (formatos versioning
+///      incompatibles).
 fn is_newer(latest: &str, installed: &str) -> bool {
     let l = latest.trim();
     let i = installed.trim();
     if l.is_empty() || i.is_empty() {
         return false;
     }
+    // Shape check ANTES de parsear: si los formatos son incompatibles
+    // (ej. 1 dígito en major vs 4 dígitos), NO consideramos que sean
+    // la misma identidad de versión, incluso si ambos parsean como
+    // semver. Esto evita el bug de "1.0.0 → 2026.01.03".
+    if !versions_have_compatible_shape(l, i) {
+        tracing::debug!(
+            "is_newer: shapes incompatibles '{}' vs '{}' — no se considera update",
+            l, i
+        );
+        return false;
+    }
     let lp = parse_lenient(l);
     let ip = parse_lenient(i);
-    match (lp, ip) {
-        (Some(a), Some(b)) => a > b,
-        _ => l > i,
+    if let (Some(a), Some(b)) = (&lp, &ip) {
+        return a > b;
     }
+    // Mismo shape pero alguno no parsea — comparar lexicográfico
+    // (las shapes son comparables aunque no sean semver válido).
+    l > i
+}
+
+/// True si dos strings de versión podrían razonablemente ser la
+/// misma identidad de versión del mismo addon. Distinguimos
+/// "semver clásico" (major ≤ 2 dígitos, ej. 1.2.3) de "version-
+/// fecha" (major = 4 dígitos, ej. 2026.01.03).
+///
+/// Aceptamos `1.6` vs `1.5.5` (ambos clásicos, distinto nº de
+/// partes está OK) y `2026.05.16` vs `2026.01.03` (ambos fecha).
+/// Rechazamos `1.0.0` vs `2026.01.03` — son shapes distintos
+/// y compararlos genera false positives.
+fn versions_have_compatible_shape(a: &str, b: &str) -> bool {
+    let strip = |s: &str| s.trim_start_matches('v').trim().to_string();
+    let aa = strip(a);
+    let bb = strip(b);
+    let major_a = aa.split('.').next().unwrap_or("");
+    let major_b = bb.split('.').next().unwrap_or("");
+    let a_digits = major_a.chars().filter(|c| c.is_ascii_digit()).count();
+    let b_digits = major_b.chars().filter(|c| c.is_ascii_digit()).count();
+    // Bucket: ≤3 dígitos = "clásico", ≥4 = "fecha/build-number".
+    // Distintos buckets → incompatibles.
+    let a_is_date = a_digits >= 4;
+    let b_is_date = b_digits >= 4;
+    a_is_date == b_is_date
 }
 
 fn parse_lenient(s: &str) -> Option<semver::Version> {
@@ -471,11 +516,33 @@ fn parse_lenient(s: &str) -> Option<semver::Version> {
     if let Ok(v) = semver::Version::parse(s) {
         return Some(v);
     }
-    let parts: Vec<&str> = s.split('.').collect();
+    // **Bug fix v0.1.17**: la spec semver prohíbe leading zeros
+    // en los componentes numéricos. Strings como "2026.01.03"
+    // (formato de fecha) fallaban en parse y caían a lexicográfico,
+    // dando false positives (lex "2026.01.03" > "1.0.0").
+    // Ahora stripeamos leading zeros de cada parte numérica antes
+    // de re-intentar el parse.
+    let parts: Vec<String> = s
+        .split('.')
+        .map(|p| {
+            // Conservar las partes no-numéricas tal cual (sufijos
+            // alfa como `1.0.0-beta` o `1.0.0+build`).
+            if p.chars().all(|c| c.is_ascii_digit()) {
+                let trimmed = p.trim_start_matches('0');
+                if trimmed.is_empty() {
+                    "0".to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            } else {
+                p.to_string()
+            }
+        })
+        .collect();
     let padded = match parts.len() {
         1 => format!("{}.0.0", parts[0]),
         2 => format!("{}.{}.0", parts[0], parts[1]),
-        _ => s.to_string(),
+        _ => parts.join("."),
     };
     semver::Version::parse(&padded).ok()
 }
@@ -508,5 +575,42 @@ mod tests {
     fn empty_inputs_return_false() {
         assert!(!is_newer("", "1.0.0"));
         assert!(!is_newer("1.0.0", ""));
+    }
+
+    #[test]
+    fn date_versions_with_leading_zeros_parse() {
+        // Bug reportado por usuario: catalog "v2026.01.03" debe
+        // parsearse como Version{2026, 1, 3} y NO caer a lex.
+        let v = parse_lenient("2026.01.03").expect("debe parsear");
+        assert_eq!(v.major, 2026);
+        assert_eq!(v.minor, 1);
+        assert_eq!(v.patch, 3);
+    }
+
+    #[test]
+    fn rejects_incompatible_shapes() {
+        // Catalog formato fecha (2026.01.03 = 4 dígitos en major)
+        // vs installed semver clásico (1.0.0 = 1 dígito en major)
+        // = shape distinto = no es la misma identidad de versión.
+        // El user reportó el false positive "1.0.0 → 2026.01.03"
+        // para liveries que no debían matchear.
+        assert!(!is_newer("2026.01.03", "1.0.0"));
+        assert!(!is_newer("v2026.01.03", "v1.0.0"));
+        // Inverso también: instalado fecha, catalog semver → no
+        // claim como "older".
+        assert!(!is_newer("1.0.0", "2026.01.03"));
+    }
+
+    #[test]
+    fn accepts_compatible_date_versions() {
+        // Dos versiones-fecha del mismo shape SÍ se comparan.
+        assert!(is_newer("2026.05.16", "2026.01.03"));
+        assert!(!is_newer("2026.01.03", "2026.05.16"));
+    }
+
+    #[test]
+    fn accepts_pmdg_style_versions() {
+        // PMDG usa esquemas como "1.0.7" — semver clásico.
+        assert!(is_newer("1.0.8", "1.0.7"));
     }
 }

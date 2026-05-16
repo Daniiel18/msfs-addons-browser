@@ -1,6 +1,6 @@
 [package]
 name = "msfs-addons-browser"
-version = "0.1.16"
+version = "0.1.17"
 description = "MSFS Addons Browser — search and install scenery from SceneryAddons & Simplaza"
 authors = ["n0xful"]
 edition = "2021"
