@@ -15,8 +15,11 @@
 //!   abortaba ante RAR ("opened Explorer as a side effect") — aquí
 //!   extraemos en proceso con `unrar` + `sevenz-rust2`. Si aparece un
 //!   formato desconocido, devolvemos un error limpio.
-
-pub mod pmdg;
+//!
+//! **`.ptp` no soportado** (v0.1.13): el formato `.ptp` (PMDG liveries)
+//! es propietario encriptado AES — sin la key de PMDG es imposible
+//! instalarlo. La app rechaza explícitamente archivos `.ptp` y los
+//! `.ptp` dentro de archivos comprimidos se ignoran.
 
 use std::fs;
 use std::io;
@@ -50,14 +53,6 @@ pub struct InstallResult {
     /// al usuario. `None` cuando todo se instaló como paquete normal
     /// o cuando no había nada útil dentro.
     pub installer_payload: Option<InstallerPayload>,
-    /// Si el archivo contenía liveries `.ptp` (formato PMDG Operations
-    /// Center), las copiamos a un "Inbox" visible y retornamos los
-    /// paths para que la UI le diga al usuario "abre PMDG OC y haz
-    /// click en Install Livery". No tocamos el folder del aircraft
-    /// directamente porque PMDG OC valida firma y tipo de variante
-    /// (737-700/800/900, 777-200/300ER), y un drop manual mal
-    /// orientado deja el avión en un estado raro.
-    pub ptp_payload: Option<PtpPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,27 +68,6 @@ pub struct InstallerPayload {
     pub other_installers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PtpPayload {
-    /// Carpeta inbox donde quedan las liveries (`Documents/MSFS Addons
-    /// Browser/PMDG Liveries Inbox/`). Se mantiene como fallback
-    /// manual cuando el auto-install a PMDG OC no es posible.
-    pub inbox_dir: String,
-    /// Liveries copiadas — paths absolutos finales en `inbox_dir`.
-    pub ptp_files: Vec<String>,
-    /// Aircraft detectado por archivo (en mismo orden que `ptp_files`).
-    /// Heurístico: lee el nombre + intenta abrir el .ptp como ZIP y
-    /// extraer su manifest. `None` cuando no se pudo determinar.
-    pub detected_aircraft: Vec<Option<String>>,
-    /// Path donde se copió la livery dentro de PMDG Operations
-    /// Center (auto-install). En el mismo orden que `ptp_files`.
-    /// `None` cuando el aircraft no se detectó o cuando OC no está
-    /// instalado para ese aircraft. La UI usa esto para mostrar
-    /// "✓ Auto-instalado en PMDG OC" vs "Importa manualmente".
-    pub auto_installed_at: Vec<Option<String>>,
-}
-
 /// Extract `archive_path` into a temp dir, find every MSFS package it
 /// contains, and install each into `community_path`.
 ///
@@ -102,7 +76,6 @@ pub struct PtpPayload {
 pub fn install_archive(
     archive_path: &Path,
     community_path: &Path,
-    pmdg_oc_override: Option<&str>,
 ) -> anyhow::Result<InstallResult> {
     if !archive_path.is_file() {
         return Err(anyhow!(
@@ -117,38 +90,18 @@ pub fn install_archive(
         ));
     }
 
-    // **Caso especial — `.ptp` arrastrado directamente**.
-    //
-    // Las liveries PMDG vienen como un único archivo `.ptp` (formato
-    // propio del PMDG Operations Center) o dentro de un .rar/.zip.
-    // Si el usuario arrastra el .ptp directo, no hay nada que
-    // extraer: lo copiamos al inbox de inmediato y reportamos el
-    // payload — la rama de descompresión se salta entera.
+    // `.ptp` rechazado explícitamente — formato encriptado AES
+    // de PMDG que sólo PMDG Operations Center puede instalar.
+    // Nunca tuvimos la clave; la app no soporta este formato.
     let ext = archive_path
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     if ext == "ptp" {
-        // Aquí el .ptp ES el archivo principal, no hay zip-padre que
-        // nos dé pistas extra. El nombre propio del .ptp ya entra
-        // como hint en `detect_ptp_aircraft`.
-        let payload = persist_ptp_payload(
-            &[archive_path.to_path_buf()],
-            None,
-            community_path,
-            pmdg_oc_override,
-        )?;
-        tracing::info!(
-            "install: archivo .ptp directo → {}",
-            payload.inbox_dir
-        );
-        return Ok(InstallResult {
-            packages: vec![],
-            total_bytes: 0,
-            installer_payload: None,
-            ptp_payload: Some(payload),
-        });
+        return Err(anyhow!(
+            "Los archivos .ptp (liveries PMDG) están encriptados y no son soportados por esta app. Instálalos directamente con PMDG Operations Center."
+        ));
     }
 
     let temp = tempfile::Builder::new()
@@ -166,52 +119,17 @@ pub fn install_archive(
 
     let packages = find_msfs_packages(extract_root);
 
-    // Sin paquetes MSFS dentro: probar otras pistas.
+    // Sin paquetes MSFS dentro: probar instaladores ejecutables.
     //
-    //   1. `.ptp` (liveries PMDG Operations Center) — las copiamos
-    //      al inbox público y avisamos al usuario.
-    //   2. `.exe` / `.msi` / `.msixbundle` — instalador hecho a
+    //   1. `.exe` / `.msi` / `.msixbundle` — instalador hecho a
     //      mano (Aerosoft, FlyByWire, etc.). Persistimos el extracto
     //      en un sidedir junto al archivo original.
-    //   3. Nada útil — error explícito.
-    //
-    // Probamos PTP primero porque es muy específico (extensión
-    // exclusiva de PMDG) y no se confunde con instaladores genéricos.
+    //   2. Nada útil — error explícito.
     if packages.is_empty() {
-        let ptps = find_ptp_files(extract_root);
-        if !ptps.is_empty() {
-            // Pasamos el nombre del archivo padre como hint —
-            // muchas distribuciones de liveries traen el aircraft
-            // en el nombre del zip (ej. "JV - Delta Air Lines PMDG
-            // 737-800 Pack 1.1_OfXHn.zip") pero los .ptp adentro
-            // sólo tienen registraciones (N3746H, etc.).
-            let parent_hint = archive_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string());
-            let payload = persist_ptp_payload(
-                &ptps,
-                parent_hint.as_deref(),
-                community_path,
-                pmdg_oc_override,
-            )?;
-            tracing::info!(
-                "install: archive contiene {} livery(es) PMDG (.ptp) → {}",
-                payload.ptp_files.len(),
-                payload.inbox_dir
-            );
-            return Ok(InstallResult {
-                packages: vec![],
-                total_bytes: 0,
-                installer_payload: None,
-                ptp_payload: Some(payload),
-            });
-        }
-
         let installers = find_installers(extract_root);
         if installers.is_empty() {
             return Err(anyhow!(
-                "No se encontraron paquetes MSFS (manifest.json + layout.json), liveries PMDG (.ptp) ni instaladores ejecutables dentro del archivo."
+                "No se encontraron paquetes MSFS (manifest.json + layout.json) ni instaladores ejecutables dentro del archivo."
             ));
         }
         let payload = persist_installer_payload(archive_path, extract_root, &installers)?;
@@ -223,7 +141,6 @@ pub fn install_archive(
             packages: vec![],
             total_bytes: 0,
             installer_payload: Some(payload),
-            ptp_payload: None,
         });
     }
     tracing::info!("install: found {} package(s) to install", packages.len());
@@ -274,257 +191,7 @@ pub fn install_archive(
         packages: installed,
         total_bytes,
         installer_payload: None,
-        ptp_payload: None,
     })
-}
-
-/// Busca archivos `.ptp` (liveries PMDG Operations Center) en el
-/// árbol extraído. Profundidad limitada a 4 — los .rar/.zip que
-/// distribuyen liveries pueden envolver con uno o dos folders
-/// extras pero rara vez más.
-fn find_ptp_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    walk_ptp(root, 0, &mut out);
-    out
-}
-
-fn walk_ptp(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > 4 || !dir.is_dir() {
-        return;
-    }
-    let Ok(iter) = fs::read_dir(dir) else { return };
-    for entry in iter.flatten() {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
-            walk_ptp(&path, depth + 1, out);
-        } else if ft.is_file() {
-            let ext = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            if ext == "ptp" {
-                out.push(path);
-            }
-        }
-    }
-}
-
-/// Copia los `.ptp` detectados al inbox visible al usuario y, en
-/// paralelo, los instala **directamente en el paquete PMDG dentro
-/// de Community** — replicando el flujo del PMDG Operations Center
-/// sin que el usuario tenga que abrirlo.
-///
-/// El inbox sigue existiendo como fallback manual: si la detección
-/// del aircraft falla, o el paquete PMDG no está en Community, la
-/// livery queda copiada ahí para que el usuario la importe a mano
-/// desde el OC tradicional.
-///
-/// `parent_hint` es el nombre del archivo padre (ej. `.zip` que
-/// envuelve a los .ptp). Lo usamos como tercera fuente de pista
-/// cuando los `.ptp` adentro son sólo registraciones (`N3746H.ptp`).
-fn persist_ptp_payload(
-    ptps: &[PathBuf],
-    parent_hint: Option<&str>,
-    community_path: &Path,
-    pmdg_oc_override: Option<&str>,
-) -> anyhow::Result<PtpPayload> {
-    let documents = directories_documents()
-        .ok_or_else(|| anyhow!("no se pudo localizar la carpeta `Documents` del usuario"))?;
-    let inbox = documents
-        .join("MSFS Addons Browser")
-        .join("PMDG Liveries Inbox");
-    fs::create_dir_all(&inbox).with_context(|| {
-        format!("no se pudo crear la carpeta inbox {}", inbox.display())
-    })?;
-
-    let mut copied: Vec<String> = Vec::with_capacity(ptps.len());
-    let mut detected: Vec<Option<String>> = Vec::with_capacity(ptps.len());
-    let mut auto_installed: Vec<Option<String>> = Vec::with_capacity(ptps.len());
-    for src in ptps {
-        let name = src
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("nombre de livery inválido: {:?}", src))?;
-        let dst = inbox.join(name);
-        fs::copy(src, &dst).with_context(|| {
-            format!("no se pudo copiar {} → {}", src.display(), dst.display())
-        })?;
-        let aircraft = detect_ptp_aircraft(&dst, parent_hint);
-        let mut auto_target: Option<String> = None;
-        // Llamamos a install_livery aunque `aircraft` sea None — el
-        // nuevo flujo (lanzar PMDG OC con el .ptp) no necesita
-        // saber el aircraft, OC lo detecta del propio .ptp.
-        let aircraft_str = aircraft.as_deref().unwrap_or("desconocido");
-        match pmdg::install_livery(&dst, aircraft_str, community_path, pmdg_oc_override) {
-            Ok(Some(report)) => {
-                tracing::info!(
-                    target: "install",
-                    "PMDG OC lanzado: {} → {} (oc='{}', launched={})",
-                    name,
-                    report.ptp_path.display(),
-                    report.oc_executable.display(),
-                    report.launched
-                );
-                // El "auto_target" ahora es el path del exe de OC
-                // (no la carpeta del avión). El frontend lo usa para
-                // decir "Enviado a PMDG OC".
-                auto_target = Some(report.oc_executable.to_string_lossy().into_owned());
-            }
-            Ok(None) => tracing::info!(
-                target: "install",
-                "PMDG OC no detectado en el sistema — {} queda en inbox manual",
-                name
-            ),
-            Err(e) => tracing::warn!(
-                target: "install",
-                "lanzamiento de PMDG OC falló para {}: {e:#}",
-                name
-            ),
-        }
-        if aircraft.is_none() {
-            tracing::info!(
-                target: "install",
-                ".ptp '{}' sin aircraft detectado por nuestro heurístico — PMDG OC lo detectará por su cuenta",
-                name
-            );
-        }
-        detected.push(aircraft);
-        auto_installed.push(auto_target);
-        copied.push(dst.to_string_lossy().into_owned());
-    }
-
-    Ok(PtpPayload {
-        inbox_dir: inbox.to_string_lossy().into_owned(),
-        ptp_files: copied,
-        detected_aircraft: detected,
-        auto_installed_at: auto_installed,
-    })
-}
-
-/// Detecta el aircraft de una livery PMDG `.ptp` con **tres** pasadas:
-///
-///   1. **Nombre de archivo** — patrones canónicos `PMDG_737-800_…`,
-///      `_777-300ER_`, `_747-8_`, etc. Cubre el caso ideal.
-///
-///   2. **Nombre del archivo padre** (`parent_hint`) — muchos packs
-///      distribuyen los .ptp con sólo la registración (`N3746H.ptp`),
-///      pero el aircraft está en el zip envoltorio
-///      ("JV - Delta Air Lines PMDG 737-800 Pack 1.1.zip").
-///
-///   3. **Contenido como ZIP** — la mayoría de `.ptp` son ZIP
-///      renombrados. Abrimos y buscamos `aircraft.cfg` /
-///      `manifest.json`; ahí suele haber referencia al tipo de
-///      avión. Sirve como fallback final.
-///
-/// Devuelve la cadena del aircraft (ej. "PMDG 737-800") o `None`
-/// cuando las tres pasadas fallaron.
-fn detect_ptp_aircraft(path: &Path, parent_hint: Option<&str>) -> Option<String> {
-    let name = path.file_name()?.to_string_lossy().to_string();
-    if let Some(ac) = detect_aircraft_from_name(&name) {
-        return Some(ac);
-    }
-    if let Some(hint) = parent_hint {
-        if let Some(ac) = detect_aircraft_from_name(hint) {
-            return Some(ac);
-        }
-    }
-    // Fallback: abrir como ZIP y buscar aircraft.cfg / manifest dentro.
-    if let Ok(file) = fs::File::open(path) {
-        if let Ok(mut zip) = zip::ZipArchive::new(file) {
-            // 1) Pista por nombre de entradas (carpetas tipo "PMDG 737-800/…").
-            for i in 0..zip.len() {
-                let Ok(entry) = zip.by_index(i) else { continue };
-                let entry_name = entry.name().to_lowercase();
-                if let Some(ac) = detect_aircraft_from_name(&entry_name) {
-                    return Some(ac);
-                }
-            }
-            // 2) Pista por contenido de aircraft.cfg / manifest.json:
-            //    PMDG suele poner `sim = "PMDG 737-800"` en el cfg
-            //    o `"title": "PMDG 737-800 …"` en el manifest.
-            for i in 0..zip.len() {
-                let Ok(mut entry) = zip.by_index(i) else { continue };
-                let entry_name = entry.name().to_lowercase();
-                if entry_name.ends_with("aircraft.cfg")
-                    || entry_name.ends_with("manifest.json")
-                {
-                    let mut buf = String::new();
-                    if io::Read::read_to_string(&mut entry, &mut buf).is_ok() {
-                        if let Some(ac) = detect_aircraft_from_name(&buf) {
-                            return Some(ac);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Busca patrones de aircraft en un nombre. Ordenados de más
-/// específico a menos para ganar precisión.
-fn detect_aircraft_from_name(name: &str) -> Option<String> {
-    let lower = name.to_lowercase();
-    // Boeing — variantes del 737, 747, 777
-    if lower.contains("737-700") || lower.contains("_737_700") || lower.contains("737ng-700") {
-        return Some("PMDG 737-700".into());
-    }
-    if lower.contains("737-800") || lower.contains("_738_") || lower.contains("738-") {
-        return Some("PMDG 737-800".into());
-    }
-    if lower.contains("737-900") || lower.contains("_739_") {
-        return Some("PMDG 737-900".into());
-    }
-    if lower.contains("737-600") {
-        return Some("PMDG 737-600".into());
-    }
-    if lower.contains("777-200lr") || lower.contains("_77l_") {
-        return Some("PMDG 777-200LR".into());
-    }
-    if lower.contains("777-300er") || lower.contains("_77w_") {
-        return Some("PMDG 777-300ER".into());
-    }
-    if lower.contains("777f") || lower.contains("777-200f") {
-        return Some("PMDG 777F".into());
-    }
-    if lower.contains("747-400") || lower.contains("_744_") {
-        return Some("PMDG 747-400".into());
-    }
-    if lower.contains("747-8") || lower.contains("_748_") {
-        return Some("PMDG 747-8".into());
-    }
-    if lower.contains("747f") {
-        return Some("PMDG 747F".into());
-    }
-    if lower.contains("dc-6") || lower.contains("dc6") {
-        return Some("PMDG DC-6".into());
-    }
-    // Heurística genérica para 737/747/777 sin variante específica.
-    if lower.contains("_737") || lower.contains("-737") {
-        return Some("PMDG 737".into());
-    }
-    if lower.contains("_777") || lower.contains("-777") {
-        return Some("PMDG 777".into());
-    }
-    if lower.contains("_747") || lower.contains("-747") {
-        return Some("PMDG 747".into());
-    }
-    None
-}
-
-/// Resuelve `~/Documents` en Windows sin pulling de `dirs`/`directories`
-/// (no son deps actuales). Lee `USERPROFILE\Documents` que es donde
-/// MSFS y PMDG OC esperan encontrar configs/inputs.
-fn directories_documents() -> Option<PathBuf> {
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let p = PathBuf::from(profile).join("Documents");
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 /// Busca ejecutables sueltos en el árbol extraído. Sólo extensiones

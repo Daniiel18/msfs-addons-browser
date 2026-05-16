@@ -9,7 +9,6 @@ import type {
   Addon,
   AddonOnMap,
   AppSettings,
-  OcDetectionReport,
   AvailableUpdate,
   BackupResult,
   BrowsePage,
@@ -77,10 +76,6 @@ interface Api {
   listInstalled: () => Promise<InstalledAddon[]>;
   /** Quita una fila del historial. No toca el disco. */
   forgetInstall: (id: string) => Promise<void>;
-  /** Diagnóstico: dónde está/debería estar `PMDG Operations Center.exe`. */
-  diagnosePmdgOc: () => Promise<OcDetectionReport>;
-  /** Diálogo nativo de elección de archivo. Filtros: `{name, extensions}`. */
-  pickFilePath: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
 
   // GSX
   /** Devuelve los perfiles GSX Pro publicados para `icao` (puede estar
@@ -245,13 +240,6 @@ const realApi: Api = {
   },
   listInstalled: () => invoke<InstalledAddon[]>("list_installed"),
   forgetInstall: (id) => invoke<void>("forget_install", { id }),
-  diagnosePmdgOc: () => invoke<OcDetectionReport>("diagnose_pmdg_oc"),
-  async pickFilePath(filters) {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const result = await open({ multiple: false, directory: false, filters });
-    if (result === null) return null;
-    return typeof result === "string" ? result : null;
-  },
 
   gsxLookup: (icao) => invoke<GsxProfile[]>("gsx_lookup", { icao }),
 
@@ -586,16 +574,6 @@ const demoApi: Api = {
   async forgetInstall() {
     // no-op en demo
   },
-  async diagnosePmdgOc() {
-    return {
-      detectedPath: null,
-      fromSetting: false,
-      triedPaths: ["(modo demo — no se ejecutó la detección real)"],
-    };
-  },
-  async pickFilePath() {
-    return null;
-  },
 
   async gsxLookup(icao) {
     // En modo demo simulamos que sólo LFPG y KJFK tienen perfil GSX
@@ -788,7 +766,6 @@ const demoApi: Api = {
       defaultView: "dashboard",
       autostartEnabled: false,
       simbriefPilotId: null,
-      pmdgOcPath: null,
       communityPath: "C:/Demo/Community",
       logsPath: null,
       appDataPath: null,

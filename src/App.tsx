@@ -26,6 +26,7 @@ import { MapView } from "./components/MapView";
 import { AddonsView } from "./components/AddonsView";
 import { DashboardView } from "./components/DashboardView";
 import { FlightBookView } from "./components/FlightBookView";
+import { TitleBar } from "./components/TitleBar";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
 import { Toaster } from "./components/Toaster";
@@ -274,11 +275,10 @@ export default function App() {
         if (isTauri) {
           try {
             const win = getCurrentWindow();
-            // Devolvemos al modo "app normal": title bar nativo,
-            // resizable, tamaño grande, maximizada. El splash arrancó
-            // sin decorations (sin X) para que el usuario no pudiera
-            // cerrarlo ni minimizarlo durante la carga.
-            await win.setDecorations(true);
+            // Modo "app normal": NO usamos title bar nativo — pintamos
+            // un titlebar custom (`<TitleBar />`) con el mismo theme
+            // dark que la app. Mantenemos `decorations: false` y
+            // sólo agrandamos + centramos la ventana.
             await win.setResizable(true);
             await win.setMinSize(new LogicalSize(960, 640));
             await win.setSize(new LogicalSize(1280, 820));
@@ -381,6 +381,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
+      {isTauri && <TitleBar />}
       {!isTauri && (
         <div className="flex items-center justify-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-200">
           <FlaskConical className="h-3.5 w-3.5" />

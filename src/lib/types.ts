@@ -88,35 +88,12 @@ export interface InstallResult {
    *  paquete MSFS. Cuando viene poblado, `packages` está vacío y
    *  el frontend debe ofrecer al usuario abrir el instalador. */
   installerPayload: InstallerPayload | null;
-  /** Si el archivo contenía liveries PMDG (.ptp). La app intenta
-   *  instalarlas directamente en el paquete PMDG dentro de Community
-   *  (copiando texturas + mergeando aircraft.cfg + actualizando
-   *  layout.json) — replicando lo que hace PMDG Operations Center
-   *  pero sin requerir abrirlo. Las que no se pudieron instalar
-   *  quedan en `inboxDir` como fallback manual. */
-  ptpPayload: PtpPayload | null;
 }
 
 export interface InstallerPayload {
   extractedDir: string;
   primaryInstaller: string;
   otherInstallers: string[];
-}
-
-export interface PtpPayload {
-  inboxDir: string;
-  ptpFiles: string[];
-  /** Para cada `ptpFiles[i]`, el aircraft detectado heurísticamente
-   *  (nombre propio + nombre del archivo padre + contenido del ZIP),
-   *  ej. "PMDG 737-800". `null` cuando no se pudo determinar. */
-  detectedAircraft: (string | null)[];
-  /** Path al directorio del avión PMDG donde quedó instalada la
-   *  livery (`<community>/pmdg-aircraft-XXX/SimObjects/Airplanes/PMDG
-   *  XXX/`). Cuando está populado, la livery aparece automáticamente
-   *  al elegir la aeronave en MSFS — el usuario no tiene que abrir
-   *  PMDG Operations Center. `null` si no se detectó aircraft o si
-   *  el paquete PMDG no está instalado en Community. */
-  autoInstalledAt: (string | null)[];
 }
 
 /** Vuelo persistido del historial SimBrief. La app va acumulando
@@ -201,10 +178,6 @@ export interface AppSettings {
   defaultView: string;
   autostartEnabled: boolean;
   simbriefPilotId: string | null;
-  /** Path manual al `.exe` de PMDG Operations Center. Lo usa la
-   *  detección de .ptp cuando OC no está en una ubicación
-   *  estándar (portable en otro drive, instalación custom, etc). */
-  pmdgOcPath: string | null;
   communityPath: string | null;
   logsPath: string | null;
   appDataPath: string | null;
@@ -327,17 +300,6 @@ export interface ScanReport {
   communityPath: string;
 }
 
-/** Resultado del comando `diagnose_pmdg_oc`. La UI lo muestra en
- *  Settings para que el usuario sepa qué paths se probaron y dónde
- *  tiene que apuntar el override si la detección falló. */
-export interface OcDetectionReport {
-  /** Path detectado o null si no se encontró. */
-  detectedPath: string | null;
-  /** True si vino del setting de override del usuario. */
-  fromSetting: boolean;
-  /** Lista de candidatos con prefijo ✓/✗ según existencia. */
-  triedPaths: string[];
-}
 
 /** Una actualización detectada al cruzar Community con el catálogo. */
 export interface AvailableUpdate {

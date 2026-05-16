@@ -39,11 +39,6 @@ pub struct AppSettings {
     pub default_view: String,
     pub autostart_enabled: bool,
     pub simbrief_pilot_id: Option<String>,
-    /// Override del path a `PMDG Operations Center.exe`. Usado
-    /// cuando la detección automática falla (p.ej. instalación
-    /// portable en un drive no estándar). Cuando está poblado,
-    /// la app lo usa como FIRST candidate al instalar `.ptp`.
-    pub pmdg_oc_path: Option<String>,
     /// Carpeta Community detectada — la mostramos en read-only para
     /// que el usuario sepa qué disco/path está leyendo la app.
     pub community_path: Option<String>,
@@ -64,7 +59,6 @@ impl Default for AppSettings {
             default_view: "dashboard".to_string(),
             autostart_enabled: false,
             simbrief_pilot_id: None,
-            pmdg_oc_path: None,
             community_path: None,
             logs_path: None,
             app_data_path: None,
@@ -107,10 +101,6 @@ pub async fn get_app_settings(
         autostart_enabled,
         simbrief_pilot_id: kv
             .get("simbrief_pilot_id")
-            .filter(|s| !s.trim().is_empty())
-            .cloned(),
-        pmdg_oc_path: kv
-            .get("pmdg_oc_path")
             .filter(|s| !s.trim().is_empty())
             .cloned(),
         community_path,
@@ -208,9 +198,6 @@ fn is_valid_key(key: &str) -> bool {
             | "pref_minimize_to_tray"
             | "pref_onboarding_completed"
             | "pref_default_view"
-            // Path al `.exe` de PMDG OC; el usuario lo configura
-            // desde Settings cuando la detección automática falla.
-            | "pmdg_oc_path"
     )
 }
 

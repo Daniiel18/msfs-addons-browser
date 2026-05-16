@@ -108,7 +108,6 @@ pub fn run() {
             commands::install::community_folder,
             commands::install::install_archive,
             commands::install::forget_install,
-            commands::install::diagnose_pmdg_oc,
             commands::gsx::gsx_lookup,
             commands::updater::check_for_update,
             commands::updater::install_update,

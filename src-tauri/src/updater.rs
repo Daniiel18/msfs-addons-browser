@@ -52,8 +52,14 @@ pub struct UpdateInfo {
     pub published_at: Option<String>,
 }
 
+// Bug fix v0.1.13: NO usar `rename_all = "camelCase"` — la API REST
+// de GitHub devuelve sus campos en **snake_case** (tag_name,
+// html_url, browser_download_url, etc). El rename forzaba a serde a
+// buscar `browserDownloadUrl` (camelCase) que NUNCA aparece en la
+// respuesta, y el parse fallaba con "missing field
+// `browserDownloadUrl` at line 1 column 3244". Sin rename, los
+// nombres de campos Rust (ya snake_case) matchean directo el JSON.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct GhRelease {
     tag_name: String,
     html_url: String,
@@ -70,7 +76,6 @@ struct GhRelease {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct GhAsset {
     name: String,
     browser_download_url: String,

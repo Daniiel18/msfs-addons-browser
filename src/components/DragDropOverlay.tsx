@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, FileDown, Loader2, Upload } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import type { InstallResult, InstallerPayload, PtpPayload } from "../lib/types";
+import type { InstallResult, InstallerPayload } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
@@ -65,13 +65,10 @@ export function DragDropOverlay() {
             setResults((prev) =>
               prev.map((r, idx) => {
                 if (idx !== i) return r;
-                // Tres outcomes posibles, en orden de prioridad:
-                //   1. PTP livery (PMDG OC) → guardada en inbox.
-                //   2. Instalador externo (.exe/.msi) detectado.
-                //   3. Paquete MSFS instalado normalmente.
-                if (res.ptpPayload) {
-                  return { path, state: "ptp", payload: res.ptpPayload };
-                }
+                // Dos outcomes posibles:
+                //   1. Instalador externo (.exe/.msi) detectado.
+                //   2. Paquete MSFS instalado normalmente.
+                // (`.ptp` se rechaza en el backend con error.)
                 if (res.installerPayload) {
                   return {
                     path,
@@ -146,7 +143,6 @@ type DropResult =
   | { path: string; state: "processing" }
   | { path: string; state: "installed"; packageCount: number }
   | { path: string; state: "installer"; payload: InstallerPayload }
-  | { path: string; state: "ptp"; payload: PtpPayload }
   | { path: string; state: "error"; error: string };
 
 function DropResultsToast({
@@ -197,9 +193,6 @@ function DropResultItem({ result }: { result: DropResult }) {
           {result.state === "installer" && (
             <FileDown className="h-3.5 w-3.5 text-amber-400" />
           )}
-          {result.state === "ptp" && (
-            <FileDown className="h-3.5 w-3.5 text-sky-400" />
-          )}
           {result.state === "error" && (
             <AlertCircle className="h-3.5 w-3.5 text-rose-400" />
           )}
@@ -218,76 +211,12 @@ function DropResultItem({ result }: { result: DropResult }) {
           {result.state === "installer" && (
             <InstallerNote payload={result.payload} />
           )}
-          {result.state === "ptp" && <PtpNote payload={result.payload} />}
           {result.state === "error" && (
             <p className="text-[11px] text-rose-300">{result.error}</p>
           )}
         </div>
       </div>
     </li>
-  );
-}
-
-function PtpNote({ payload }: { payload: PtpPayload }) {
-  const count = payload.ptpFiles.length;
-  const autoInstalled = payload.autoInstalledAt.filter((p) => !!p).length;
-  const allAuto = autoInstalled === count && count > 0;
-  const someAuto = autoInstalled > 0 && !allAuto;
-
-  // Cuenta agrupada de aircrafts detectados — no listar
-  // "PMDG 737-800 · PMDG 737-800" cuando son 3 del mismo avión.
-  const detectedSummary = (() => {
-    const counts = new Map<string, number>();
-    for (const ac of payload.detectedAircraft) {
-      if (!ac) continue;
-      counts.set(ac, (counts.get(ac) ?? 0) + 1);
-    }
-    const parts = Array.from(counts.entries()).map(([k, v]) =>
-      v > 1 ? `${k} (×${v})` : k,
-    );
-    return parts.join(" · ");
-  })();
-  const undetected = payload.detectedAircraft.filter((a) => !a).length;
-
-  return (
-    <div className="mt-1 space-y-1">
-      {allAuto ? (
-        <p className="text-[11px] text-emerald-300">
-          ✓{" "}
-          {count === 1
-            ? "Livery enviada a PMDG Operations Center"
-            : `${count} liveries enviadas a PMDG Operations Center`}
-          . Confirma la instalación en la ventana de PMDG OC que se abrió.
-        </p>
-      ) : someAuto ? (
-        <p className="text-[11px] text-emerald-300">
-          ✓ {autoInstalled} de {count} enviadas a PMDG Operations Center. El
-          resto quedó en el inbox manual (revisa el log para detalles).
-        </p>
-      ) : (
-        <p className="text-[11px] text-sky-300">
-          {count === 1
-            ? "Livery PMDG (.ptp) guardada en el Inbox"
-            : `${count} liveries PMDG (.ptp) guardadas en el Inbox`}
-          . No encontramos PMDG Operations Center instalado — los .ptp son un
-          formato encriptado propietario de PMDG, sólo OC los puede instalar.
-          Abre OC y arrastra los archivos del Inbox.
-        </p>
-      )}
-      {detectedSummary && (
-        <p className="text-[11px] text-emerald-300">
-          ✦ Detectado: <span className="font-medium">{detectedSummary}</span>
-          {undetected > 0 &&
-            ` · ${undetected} sin identificar (revisar nombre)`}
-        </p>
-      )}
-      <button
-        onClick={() => api.openLocalPath(payload.inboxDir)}
-        className="text-[11px] text-sky-200 underline hover:text-sky-100"
-      >
-        Abrir Inbox
-      </button>
-    </div>
   );
 }
 

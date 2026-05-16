@@ -43,7 +43,6 @@ const DEFAULTS: AppSettings = {
   defaultView: "dashboard",
   autostartEnabled: false,
   simbriefPilotId: null,
-  pmdgOcPath: null,
   communityPath: null,
   logsPath: null,
   appDataPath: null,
