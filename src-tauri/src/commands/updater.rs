@@ -130,12 +130,77 @@ pub async fn install_update(
     launch_installer_detached(&installer_path, ext)
         .map_err(|e| format!("no se pudo lanzar el instalador: {}", e))?;
 
+    // **Safety net** (v0.1.15): aunque NSIS Tauri-default debería
+    // relanzar la app post-install, los reports del usuario dicen
+    // que no siempre lo hace. Lanzamos también un `cmd.exe` helper
+    // detached que:
+    //   1. Espera 8 segundos (tiempo de install típico).
+    //   2. Lanza el `.exe` actual (mismo path) si existe.
+    // Si NSIS ya relanzó por su cuenta, Windows abre una segunda
+    // instancia que el `single_instance` plugin de Tauri rechazaría
+    // — pero en nuestra app no tenemos single_instance, así que
+    // simplemente se abrirá UNA ventana extra (raro pero no roto).
+    // Si NSIS NO relanzó, este helper sí. Net-neutral.
+    if let Ok(current_exe) = std::env::current_exe() {
+        let exe_str = current_exe.to_string_lossy().into_owned();
+        if let Err(e) = launch_relaunch_helper(&exe_str) {
+            tracing::warn!(
+                target: "updater",
+                "no se pudo lanzar el helper de relaunch (no fatal): {}",
+                e
+            );
+        } else {
+            tracing::info!(
+                target: "updater",
+                "helper de relaunch agendado para {} en 8s",
+                exe_str
+            );
+        }
+    }
+
     // Un breve sleep para que el proceso del installer tenga tiempo
     // de iniciarse antes de que cerremos. 800ms es generoso pero
     // no perceptible para el usuario (ya vio la barra al 100%).
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     tracing::info!(target: "updater", "lanzando exit(0) para que el installer reemplace archivos");
     app.exit(0);
+    Ok(())
+}
+
+/// Lanza un `cmd.exe` detached que espera 8 segundos y luego abre
+/// el `.exe` indicado. Sirve como backup garantizado de la
+/// auto-relaunch del NSIS Tauri (que no siempre fira en silent
+/// mode). El helper sobrevive al `exit(0)` de la app actual gracias
+/// a `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`.
+#[cfg(target_os = "windows")]
+fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    // `timeout /t 8 /nobreak >NUL` espera 8s sin mostrar countdown
+    // (con /nobreak no se puede cancelar con tecla, pero el flag
+    // existe para esa misma razón). Después `start "" "<path>"`
+    // abre el exe sin bloquear.
+    //
+    // Nota: el "" tras start es el título de ventana (vacío),
+    // requerido por la sintaxis de `start` cuando el path va
+    // entre comillas.
+    let cmd_line = format!(
+        r#"timeout /t 8 /nobreak >NUL & start "" "{}""#,
+        exe_path
+    );
+
+    std::process::Command::new("cmd")
+        .args(["/c", &cmd_line])
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn launch_relaunch_helper(_exe_path: &str) -> std::io::Result<()> {
     Ok(())
 }
 

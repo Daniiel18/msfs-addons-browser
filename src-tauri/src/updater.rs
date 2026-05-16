@@ -168,6 +168,17 @@ pub async fn check_latest(http: &reqwest::Client) -> anyhow::Result<Option<Updat
     }))
 }
 
+/// Elige el asset Windows preferido. **Orden importa**:
+///
+///   1. `.exe` (NSIS) — preferido porque:
+///      · Soporta install per-user sin admin (Tauri default).
+///      · Reemplaza el `.exe` corriendo usando Restart Manager.
+///      · Tauri lo configura para relanzar la app post-install.
+///   2. `.msix` — usado raramente, MS Store apps.
+///   3. `.msi` — último recurso. **NO recomendado** porque
+///      `msiexec /quiet` instala bien pero NO relanza la app, y
+///      el usuario reportó (log v0.1.13→v0.1.14) que tras
+///      `exit(0)` la app desaparecía y no volvía a abrir.
 fn pick_windows_asset(assets: &[GhAsset]) -> Option<String> {
     let by_ext = |ext: &str| {
         assets
@@ -175,7 +186,7 @@ fn pick_windows_asset(assets: &[GhAsset]) -> Option<String> {
             .find(|a| a.name.to_lowercase().ends_with(ext))
             .map(|a| a.browser_download_url.clone())
     };
-    by_ext(".msix")
+    by_ext(".exe")
+        .or_else(|| by_ext(".msix"))
         .or_else(|| by_ext(".msi"))
-        .or_else(|| by_ext(".exe"))
 }
