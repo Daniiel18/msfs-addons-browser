@@ -110,6 +110,7 @@ pub fn run() {
             commands::install::forget_install,
             commands::gsx::gsx_lookup,
             commands::updater::check_for_update,
+            commands::updater::install_update,
             commands::airports::list_addons_on_map,
             commands::airports::refresh_airports_dataset,
             commands::community::scan_community,

@@ -3137,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "msfs-addons-browser"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",

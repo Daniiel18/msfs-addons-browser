@@ -88,6 +88,19 @@ interface Api {
    *  instalada. Devuelve `null` cuando estamos al día o cuando la
    *  consulta falló (offline, GitHub caído, etc.). */
   checkForUpdate: () => Promise<UpdateInfo | null>;
+  /** Baja el instalador del asset indicado a `%TEMP%`, lo lanza en
+   *  modo silent (`/S` NSIS · `/quiet` MSI), y cierra la app actual
+   *  para que el installer pueda reemplazar los archivos en disco.
+   *  Si todo va bien la app no retorna — el `exit(0)` la mata. Si
+   *  falla la descarga o el spawn devuelve un error. */
+  installUpdate: (assetUrl: string) => Promise<void>;
+  /** Listener del progreso de descarga del installer. Se suscribe
+   *  durante `installUpdate` y se llama cada chunk con bytes
+   *  descargados + total (puede ser `null` si el servidor no envió
+   *  Content-Length). Devuelve unsubscribe. */
+  onUpdateProgress: (
+    cb: (p: { downloadedBytes: number; totalBytes: number | null }) => void,
+  ) => Promise<() => void>;
 
   // Mapa
   /** Devuelve los addons del catálogo local con coords resolvibles.
@@ -231,6 +244,18 @@ const realApi: Api = {
   gsxLookup: (icao) => invoke<GsxProfile[]>("gsx_lookup", { icao }),
 
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
+  installUpdate: (assetUrl) =>
+    invoke<void>("install_update", { assetUrl }),
+  onUpdateProgress: async (cb) => {
+    // Lazy-import del evento — los entornos non-Tauri (vitest, demo
+    // mode) no traen `@tauri-apps/api/event` con un canal real.
+    const { listen } = await import("@tauri-apps/api/event");
+    const unlisten = await listen<{
+      downloadedBytes: number;
+      totalBytes: number | null;
+    }>("updater://progress", (e) => cb(e.payload));
+    return () => unlisten();
+  },
 
   listAddonsOnMap: () => invoke<AddonOnMap[]>("list_addons_on_map"),
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
@@ -596,6 +621,15 @@ const demoApi: Api = {
         "## What's new\n\n- **GSX integration**: badge en cada resultado con perfil disponible.\n- **World map**: vista de mundo con clustering verde.\n- Fix de varios crashes al cancelar torrents.\n",
       publishedAt: new Date().toISOString(),
     };
+  },
+  async installUpdate() {
+    // En demo no hay nada que instalar — sólo loggeamos.
+    console.info("[demo] installUpdate llamado (no-op)");
+  },
+  async onUpdateProgress() {
+    // En demo no llega ningún evento, sólo devolvemos un unsubscribe
+    // vacío para que el caller pueda hacer cleanup sin chequeos extra.
+    return async () => {};
   },
 
   async listAddonsOnMap() {
