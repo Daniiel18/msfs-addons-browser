@@ -177,43 +177,58 @@ pub async fn refresh_for_installed(
     sources: &[Arc<dyn Source>],
 ) -> anyhow::Result<RefreshSummary> {
     let started = std::time::Instant::now();
+    // ICAOs vienen sólo de SCENERY instalada — útiles para
+    // SceneryAddons (que ES un catálogo de aeropuertos).
     let icaos = repo::community_icaos_with_version(pool).await?;
+    // Keywords vienen de AIRCRAFT/INSTRUMENT/MISC — útiles para
+    // ambos catálogos (Simplaza tiene aviones; SceneryAddons a
+    // veces también).
     let keywords = repo::community_addon_keywords_with_version(pool).await?;
-    // Mezcla ICAOs (SCENERY) + keywords del título (AIRCRAFT/MISC).
-    // Eso hace que las búsquedas de Simplaza alimenten la cache
-    // del catálogo para aviones — sin lo cual `compute_available`
-    // nunca encontraba updates de PMDG, Fenix, etc.
-    let mut search_terms: Vec<String> = Vec::with_capacity(icaos.len() + keywords.len());
-    search_terms.extend(icaos);
-    search_terms.extend(keywords);
-    search_terms.sort();
-    search_terms.dedup();
 
     let mut summary = RefreshSummary {
-        icaos_checked: search_terms.len(),
+        icaos_checked: icaos.len() + keywords.len(),
         queries_run: 0,
         queries_skipped_cached: 0,
         queries_failed: 0,
         addons_seen: 0,
         elapsed_ms: 0,
     };
-    if search_terms.is_empty() || sources.is_empty() {
+    if (icaos.is_empty() && keywords.is_empty()) || sources.is_empty() {
         summary.elapsed_ms = started.elapsed().as_millis();
         return Ok(summary);
     }
-    let icaos = search_terms;
 
-    // Construir la lista de pares (icao, source) que necesitan
-    // verificación. Lo hacemos secuencial pero es ligero — sólo
-    // SELECTs muy baratos contra el cache.
+    // **Bug fix v0.1.16**: en v0.1.15 mandábamos TODOS los términos
+    // a TODAS las sources. Eso era ~50% queries desperdiciadas:
+    // Simplaza no tiene aeropuertos → buscar `KLAS` en Simplaza
+    // siempre devolvía 0 resultados útiles, pero igual ocupaba un
+    // request del semáforo y ensuciaba el log.
+    //
+    // Ahora seleccionamos qué query va a qué source según pertinencia:
+    //   · ICAOs → sólo `sceneryaddons` (catálogo de aeropuertos).
+    //   · Keywords aircraft → todas las sources (los aviones se
+    //     publican en ambos catálogos).
     let mut tasks: Vec<(String, Arc<dyn Source>)> = Vec::new();
     for icao in &icaos {
         for source in sources {
+            // Skip Simplaza para ICAOs — no tiene aeropuertos.
+            if source.id() == "simplaza" {
+                continue;
+            }
             if cache_is_fresh(pool, icao, source.id()).await {
                 summary.queries_skipped_cached += 1;
                 continue;
             }
             tasks.push((icao.clone(), source.clone()));
+        }
+    }
+    for keyword in &keywords {
+        for source in sources {
+            if cache_is_fresh(pool, keyword, source.id()).await {
+                summary.queries_skipped_cached += 1;
+                continue;
+            }
+            tasks.push((keyword.clone(), source.clone()));
         }
     }
 

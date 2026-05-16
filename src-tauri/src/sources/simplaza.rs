@@ -98,6 +98,62 @@ fn extract_hoster(href: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
+/// Extrae tokens "relevantes" para matching laxo: alfanuméricos
+/// de >=3 chars + prefijos de tokens compuestos.
+///
+///   "A32NX"     → ["a32nx", "a32"]
+///   "B737-800"  → ["b737", "800", "b737-800"]
+///   "PMDG"      → ["pmdg"]
+///   "iniBuilds" → ["inibuilds"]
+///   "Fenix"     → ["fenix"]
+///
+/// Permite que "A32NX" matchee "Airbus A320 Liveries" (comparten
+/// el token "a32"). Llamado UNA vez por search query, no por
+/// resultado, así que tamaño O(longitud del query).
+fn extract_relevance_tokens(q_lower: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    // 1) Token raw como vino.
+    if q_lower.len() >= 3 {
+        tokens.push(q_lower.to_string());
+    }
+    // 2) Sub-tokens alfanuméricos separados por no-alfa.
+    for tok in q_lower.split(|c: char| !c.is_alphanumeric()) {
+        if tok.len() >= 3 {
+            tokens.push(tok.to_string());
+        }
+    }
+    // 3) Prefijos alfa+digit (ej. "A32NX" → "a32").
+    // Buscamos secuencias de [letters][digits] sin separador.
+    let chars: Vec<char> = q_lower.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_alphabetic() {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_alphabetic() {
+                j += 1;
+            }
+            // Ahora chars[i..j] son letras. Si lo que sigue son
+            // dígitos, capturamos `letras+dígitos` como prefijo.
+            if j < chars.len() && chars[j].is_ascii_digit() {
+                let mut k = j;
+                while k < chars.len() && chars[k].is_ascii_digit() {
+                    k += 1;
+                }
+                let prefix: String = chars[i..k].iter().collect();
+                if prefix.len() >= 3 {
+                    tokens.push(prefix);
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
 fn prettify_hoster(h: &str) -> String {
     // Common hosters with canonical capitalization; fall back to Title-case
     // of whatever came in the query string.
@@ -244,8 +300,21 @@ impl Source for SimplazaSource {
         tracing::info!("simplaza: parsed {} raw entries", entries.len());
 
         let q_lower = q.to_lowercase();
+        // Tokens del query (alfanuméricos ≥3 chars). Para "A32NX"
+        // extrae ["a32nx", "a32", "nx"]. Para "iniBuilds" extrae
+        // ["inibuilds"]. Esto sirve para el filtro relajado abajo.
+        let q_tokens = extract_relevance_tokens(&q_lower);
 
-        // First pass: filter by relevance (title or developer must contain query).
+        // First pass: filter by relevance — el v0.1.15 era demasiado
+        // estricto (exigía substring exacto en título o developer).
+        // Eso rechazaba "Airbus A320 Neo" cuando el query era
+        // "A32NX" (no contiene "A32NX" pero sí "A32"). El log del
+        // usuario mostraba `parsed 30 raw → 0 candidates` por esto.
+        //
+        // v0.1.16: aceptamos si el título O el developer contienen
+        // el query completo, O al menos un token alfanumérico del
+        // query con >=3 chars. Eso da match para A32NX↔A320 y para
+        // queries genéricos como "PMDG" ↔ "PMDG 737 NGX Liveries Pack".
         let relevant: Vec<_> = entries
             .into_iter()
             .filter_map(
@@ -256,12 +325,18 @@ impl Source for SimplazaSource {
                      released_at,
                  }| {
                     let parsed = crate::parser::parse(&title);
-                    let in_title = title.to_lowercase().contains(&q_lower);
-                    let in_dev = parsed
+                    let t_lower = title.to_lowercase();
+                    let dev_lower = parsed
                         .developer
                         .as_deref()
-                        .map_or(false, |d| d.to_lowercase().contains(&q_lower));
-                    if !in_title && !in_dev {
+                        .map(|d| d.to_lowercase())
+                        .unwrap_or_default();
+                    let in_title = t_lower.contains(&q_lower);
+                    let in_dev = !dev_lower.is_empty() && dev_lower.contains(&q_lower);
+                    let token_hit = q_tokens
+                        .iter()
+                        .any(|tok| t_lower.contains(tok) || dev_lower.contains(tok));
+                    if !in_title && !in_dev && !token_hit {
                         return None;
                     }
                     Some((title, page_url, image_url, released_at, parsed))
