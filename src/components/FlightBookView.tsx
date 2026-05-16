@@ -16,6 +16,7 @@ import {
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import type { FlightLogEntry } from "../lib/types";
 import { api } from "../lib/tauri";
+import { RoutesMapView } from "./RoutesMapView";
 
 /**
  * Vista completa del FlightBook — bitácora de vuelos reales
@@ -119,6 +120,11 @@ export function FlightBookView() {
           <span>{lastError}</span>
         </div>
       )}
+
+      {/* Mapa de rutas — vive aquí, no en la pestaña Mapas. Muestra
+          líneas SimBrief (cyan dasheado) y SimConnect (verde sólido)
+          sin clusters de aeropuertos, sobre basemap oscuro. */}
+      <RoutesMapView height={340} />
 
       {/* Summary cards */}
       {stats && (
@@ -346,8 +352,13 @@ function FlightRow({
   );
 }
 
-/** Acorta "Position: 50.9012, 4.4844" → "50.90,4.48". */
+/** Acorta el formato del gate fallback. Devuelve el string original
+ *  cuando ya viene en un formato corto ("Stand · ...") o cuando no
+ *  matchea ningún patrón conocido. */
 function shortGate(gate: string): string {
+  // Nuevo formato: "Stand · 320° 280m de EBBR" — ya es corto.
+  if (gate.startsWith("Stand")) return gate;
+  // Formato legacy: "Position: 50.9012, 4.4844"
   const m = gate.match(/^Position:\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
   if (!m) return gate;
   const lat = Number(m[1]).toFixed(2);

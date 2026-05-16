@@ -57,10 +57,40 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [backing, setBacking] = useState(false);
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  // Versión real instalada — la lee Tauri desde tauri.conf.json en
+  // runtime, así nunca queda hardcoded en el bundle JS.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) setPilotDraft(pilotId ?? "");
   }, [open, pilotId]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    // Lazy-import: en modo demo (browser puro) `@tauri-apps/api/app`
+    // no existe — caemos al string del package.json del frontend que
+    // sí está embebido por Vite.
+    import("@tauri-apps/api/app")
+      .then(({ getVersion }) => getVersion())
+      .then((v) => {
+        if (!cancelled) setAppVersion(v);
+      })
+      .catch(() => {
+        // Fallback a la versión bundleada por Vite. No es la versión
+        // del binario, pero al menos no muestra "—".
+        import("../../package.json")
+          .then((pkg) => {
+            if (!cancelled) setAppVersion((pkg as { version: string }).version);
+          })
+          .catch(() => {
+            if (!cancelled) setAppVersion(null);
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -267,22 +297,23 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
                 <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400">
                   <Activity className="mr-1 inline h-3 w-3 text-emerald-300" />
-                  SimConnect (vuelos reales): el watcher se activará cuando MSFS
-                  esté corriendo. Funcionalidad en desarrollo — la integración
-                  real con SimConnect se conecta en la próxima versión.
+                  SimConnect (vuelos reales): el watcher arranca con la app y
+                  se conecta automáticamente cuando MSFS está corriendo.
+                  Cada vuelo registrado aparece en{" "}
+                  <span className="font-medium text-emerald-200">FlightBook</span>.
                 </div>
               </Section>
 
-              <Section title="Mostrar en mapa" icon={<Bell className="h-3.5 w-3.5" />}>
+              <Section title="Mostrar en mapa (FlightBook)" icon={<Bell className="h-3.5 w-3.5" />}>
                 <Toggle
                   label="Líneas de SimBrief"
-                  hint="Vuelos planificados (cyan, dasheado)."
+                  hint="Vuelos planificados (cyan, dasheado) en el mapa de FlightBook."
                   checked={settings.showSimbriefLines}
                   onChange={(v) => setBoolean("showSimbriefLines", v)}
                 />
                 <Toggle
                   label="Líneas de SimConnect"
-                  hint="Vuelos reales registrados (verde, sólido)."
+                  hint="Vuelos reales registrados (verde, sólido) en el mapa de FlightBook."
                   checked={settings.showSimconnectLines}
                   onChange={(v) => setBoolean("showSimconnectLines", v)}
                 />
@@ -425,7 +456,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <div className="space-y-1 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-400">
                   <div>
                     <span className="text-slate-500">Versión:</span>{" "}
-                    <span className="font-mono text-slate-200">0.1.5</span>
+                    <span className="font-mono text-slate-200">
+                      {appVersion ?? "—"}
+                    </span>
                   </div>
                   <div>
                     <span className="text-slate-500">GitHub:</span>{" "}

@@ -713,14 +713,22 @@ pub mod repo {
         // Match por: creator coincide Y nombre del catálogo es
         // substring del título (o viceversa).
         //
-        // **Filtros anti-falsos-positivos**:
-        //   · `LENGTH(cp.title) >= 6` — un título de 1-2 palabras
-        //     genéricas ("Liveries", "Mods", "Pack") matchea con
-        //     casi cualquier addon del mismo creator. El usuario
-        //     reportó que su paquete `pmdg-aircraft-738-liveries`
-        //     (title="Liveries") falsamente decía "update" cuando
-        //     se cruzaba con catalog entries de PMDG aircrafts.
-        //   · Lista negra de títulos triviales (case-insensitive).
+        // **Filtros anti-falsos-positivos** (en orden de impacto):
+        //
+        //   1. Asimetría livery/sound/etc — el bug que reportó el
+        //      usuario: tener PMDG 737-600 (avión base) en Community
+        //      hacía aparecer "Boeing 737-600 Liveries by PMDG" como
+        //      update porque ambos tienen "737-600" en el nombre y
+        //      "PMDG" como creator. Un avión base NUNCA puede ser
+        //      "actualizado" por un livery pack — son artefactos
+        //      distintos. La lista de tokens cubre los content-type
+        //      tags que la comunidad usa por convención.
+        //
+        //   2. `LENGTH(cp.title) >= 6` — un título de 1-2 palabras
+        //      genéricas ("Liveries", "Mods", "Pack") matchea con
+        //      casi cualquier addon del mismo creator.
+        //
+        //   3. Lista negra de títulos triviales (case-insensitive).
         let aircraft = sqlx::query_as::<_, UpdateCandidate>(
             r#"
             SELECT cp.folder_name        AS folder_name,
@@ -751,6 +759,27 @@ pub mod repo {
                 'liveries', 'livery', 'sounds', 'sound pack', 'mods', 'mod',
                 'pack', 'addon', 'tweak', 'fix', 'pro', 'premium', 'enhanced',
                 'preset', 'presets', 'config', 'configs', 'profile', 'profiles'
+              )
+              -- Filtro asimétrico anti-categoría: si el nombre del
+              -- catálogo es claramente de otra categoría (livery/
+              -- sound/preset/etc), pero el paquete instalado NO lo
+              -- es, rechazamos. Evita "PMDG 737-600 (base)" → update
+              -- a "PMDG 737-600 Liveries Pack".
+              AND NOT (
+                (LOWER(a.name) LIKE '%liveries%' OR LOWER(a.name) LIKE '%livery%' OR LOWER(a.name) LIKE '%paint%' OR LOWER(a.name) LIKE '%texture%')
+                AND NOT (LOWER(cp.title) LIKE '%liveries%' OR LOWER(cp.title) LIKE '%livery%' OR LOWER(cp.title) LIKE '%paint%' OR LOWER(cp.title) LIKE '%texture%')
+              )
+              AND NOT (
+                (LOWER(a.name) LIKE '%sounds%' OR LOWER(a.name) LIKE '%sound pack%' OR LOWER(a.name) LIKE '%soundpack%')
+                AND NOT (LOWER(cp.title) LIKE '%sound%')
+              )
+              AND NOT (
+                (LOWER(a.name) LIKE '%preset%' OR LOWER(a.name) LIKE '%profile%' OR LOWER(a.name) LIKE '%config%')
+                AND NOT (LOWER(cp.title) LIKE '%preset%' OR LOWER(cp.title) LIKE '%profile%' OR LOWER(cp.title) LIKE '%config%')
+              )
+              AND NOT (
+                (LOWER(a.name) LIKE '%mod %' OR LOWER(a.name) LIKE '% mod' OR LOWER(a.name) LIKE '%tweak%' OR LOWER(a.name) LIKE '%enhancement%')
+                AND NOT (LOWER(cp.title) LIKE '%mod %' OR LOWER(cp.title) LIKE '% mod' OR LOWER(cp.title) LIKE '%tweak%' OR LOWER(cp.title) LIKE '%enhancement%')
               )
             "#,
         )

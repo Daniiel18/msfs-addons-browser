@@ -60,15 +60,28 @@ pub struct NearestAirport {
     pub name: String,
 }
 
+/// Variante con coordenadas — la usamos para calcular bearing y
+/// distancia desde el centro del aeropuerto hasta la posición del
+/// avión (para el "stand offset" del gate fallback).
+#[derive(Debug, Clone)]
+pub struct NearestAirportFull {
+    pub icao: String,
+    pub name: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
 const NEAREST_THRESHOLD_NM: f64 = 3.0;
 
 /// Crea una fila nueva con `ended_at = NULL`. Devuelve el id
 /// para que el watcher lo guarde en su state — al aterrizar se
 /// hará UPDATE sobre esa fila.
 ///
-/// El `departure_gate` queda como `Position: lat,lon` cuando no
-/// tenemos otra cosa — futuras versiones pueden poblar gate real
-/// si añadimos parsing de los simvars `PARKING TYPE/NUMBER/SUFFIX`.
+/// El `departure_gate` queda como `<bearing>° / <dist>m de <ICAO>`
+/// cuando no tenemos data del parking real. La detección de nombre
+/// de gate exacto ("GATE A12") requiere la SimConnect Facility Data
+/// API que aún no está implementada — el offset desde el centro del
+/// aeropuerto es lo más útil hasta entonces.
 pub async fn start_flight(
     pool: &SqlitePool,
     lat: f64,
@@ -76,11 +89,11 @@ pub async fn start_flight(
     aircraft_title: Option<&str>,
     aircraft_atc: Option<&str>,
 ) -> anyhow::Result<i64> {
-    let nearest = nearest_airport(pool, lat, lon).await?;
+    let nearest = nearest_airport_with_coords(pool, lat, lon).await?;
     let started_at = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
-    let dep_gate = format_position_fallback(lat, lon);
+    let dep_gate = format_gate_fallback(lat, lon, nearest.as_ref());
 
     let result = sqlx::query(
         r#"
@@ -105,10 +118,25 @@ pub async fn start_flight(
     Ok(result.last_insert_rowid())
 }
 
-/// Formato de "gate" cuando no tenemos data real — útil para
-/// localizar en el mapa de MSFS dónde estaba parqueado el avión.
-fn format_position_fallback(lat: f64, lon: f64) -> String {
-    format!("Position: {:.4}, {:.4}", lat, lon)
+/// Format del gate fallback. Si tenemos aeropuerto cercano, lo
+/// expresamos como `Stand · 320° 280m de EBBR` — al menos el usuario
+/// puede ubicar el parking en el plano del airport. Si no hay
+/// aeropuerto, caemos a coords crudas.
+fn format_gate_fallback(lat: f64, lon: f64, nearest: Option<&NearestAirportFull>) -> String {
+    match nearest {
+        Some(n) => {
+            let dist_nm = haversine_nm(n.latitude, n.longitude, lat, lon);
+            let bearing = bearing_deg(n.latitude, n.longitude, lat, lon);
+            // Convertir nm → metros para que sea más legible (gates
+            // están a decenas/cientos de metros del centro de pista).
+            let dist_m = (dist_nm * 1852.0).round() as i64;
+            format!(
+                "Stand · {:03.0}° {}m de {}",
+                bearing, dist_m, n.icao
+            )
+        }
+        None => format!("Position: {:.4}, {:.4}", lat, lon),
+    }
 }
 
 /// Métricas extra capturadas al cerrar el vuelo. Las pasamos en un
@@ -133,7 +161,7 @@ pub async fn finish_flight(
     lon: f64,
     metrics: FlightFinishMetrics,
 ) -> anyhow::Result<()> {
-    let nearest = nearest_airport(pool, lat, lon).await?;
+    let nearest = nearest_airport_with_coords(pool, lat, lon).await?;
 
     // Cargamos origen para calcular distancia y duración.
     let origin: Option<(String, f64, f64)> = sqlx::query_as(
@@ -150,7 +178,7 @@ pub async fn finish_flight(
     let distance_nm = haversine_nm(origin_lat, origin_lon, lat, lon);
     let now = chrono::Utc::now();
     let ended_at = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let arr_gate = format_position_fallback(lat, lon);
+    let arr_gate = format_gate_fallback(lat, lon, nearest.as_ref());
 
     // Duración = ahora - started_at. Si el parse falla por algún
     // motivo dejamos NULL en flight_time_s; no es crítico.
@@ -284,6 +312,58 @@ pub async fn nearest_airport(
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
     Ok(best.map(|(icao, name, _)| NearestAirport { icao, name }))
+}
+
+/// Variante con coords. Mismo algoritmo que `nearest_airport` pero
+/// devolviendo lat/lon además del ICAO/name. Usado por el formato
+/// del gate fallback para calcular el offset desde el centro.
+pub async fn nearest_airport_with_coords(
+    pool: &SqlitePool,
+    lat: f64,
+    lon: f64,
+) -> anyhow::Result<Option<NearestAirportFull>> {
+    let lat_margin = 10.0 / 60.0;
+    let lon_margin = (10.0 / 60.0) / lat.to_radians().cos().abs().max(0.01);
+    let rows: Vec<(String, String, f64, f64)> = sqlx::query_as(
+        r#"
+        SELECT icao, name, latitude, longitude
+        FROM airports
+        WHERE latitude  BETWEEN ?1 AND ?2
+          AND longitude BETWEEN ?3 AND ?4
+        "#,
+    )
+    .bind(lat - lat_margin)
+    .bind(lat + lat_margin)
+    .bind(lon - lon_margin)
+    .bind(lon + lon_margin)
+    .fetch_all(pool)
+    .await?;
+    let best = rows
+        .into_iter()
+        .map(|(icao, name, alat, alon)| {
+            let d = haversine_nm(lat, lon, alat, alon);
+            (icao, name, alat, alon, d)
+        })
+        .filter(|(_, _, _, _, d)| *d < NEAREST_THRESHOLD_NM)
+        .min_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(best.map(|(icao, name, latitude, longitude, _)| NearestAirportFull {
+        icao,
+        name,
+        latitude,
+        longitude,
+    }))
+}
+
+/// Bearing inicial (great circle) en grados [0, 360) desde
+/// (lat1,lon1) hacia (lat2,lon2). 0° = norte, 90° = este, etc.
+fn bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let dlmd = (lon2 - lon1).to_radians();
+    let y = dlmd.sin() * phi2.cos();
+    let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * dlmd.cos();
+    let theta = y.atan2(x).to_degrees();
+    (theta + 360.0) % 360.0
 }
 
 /// Haversine en millas náuticas — radio terrestre 3440.065 nm.

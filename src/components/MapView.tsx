@@ -11,11 +11,7 @@ import {
 import type { AvailableUpdate, CommunityPackage } from "../lib/types";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
-import { useSimBriefStore } from "../stores/useSimBriefStore";
-import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { useSettingsStore } from "../stores/useSettingsStore";
 import { PackageDetailModal } from "./PackageDetailModal";
-import { greatCircleLine } from "../lib/greatCircle";
 
 /**
  * Vista de mapa mundial con sidebar lateral.
@@ -43,12 +39,6 @@ export function MapView() {
 
   const allPackages = useCommunityStore((s) => s.packages);
   const updates = useCommunityStore((s) => s.updates);
-  const simbriefFlights = useSimBriefStore((s) => s.flights);
-  const flightLogEntries = useFlightLogStore((s) => s.entries);
-  const showSimbriefLines = useSettingsStore((s) => s.settings.showSimbriefLines);
-  const showSimconnectLines = useSettingsStore(
-    (s) => s.settings.showSimconnectLines,
-  );
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const detailsFor = useCommunityStore((s) => s.detailsFor);
@@ -242,155 +232,11 @@ export function MapView() {
     map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 9), duration: 600 });
   }, [focusedPkg]);
 
-  // Capa SimBrief — una LineString por vuelo entre origin y dest.
-  // Si el usuario apaga "showSimbriefLines" en settings, vaciamos
-  // la collection — el efecto que sigue lo aplica al source y la
-  // capa queda invisible sin tener que removerla físicamente.
-  const simbriefGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.MultiLineString>>(
-    () => ({
-      type: "FeatureCollection",
-      features: !showSimbriefLines
-        ? []
-        : simbriefFlights.map((f) => ({
-            type: "Feature",
-            properties: {
-              ofpId: f.ofpId,
-              label: `${f.originIcao} → ${f.destinationIcao}`,
-            },
-            geometry: {
-              type: "MultiLineString",
-              // greatCircleLine devuelve un array de polylines —
-              // múltiples si la ruta cruza el antimeridiano (Pacífico).
-              coordinates: greatCircleLine(
-                f.originLon,
-                f.originLat,
-                f.destinationLon,
-                f.destinationLat,
-              ),
-            },
-          })),
-    }),
-    [simbriefFlights, showSimbriefLines],
-  );
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      const existing = map.getSource("simbrief") as GeoJSONSource | undefined;
-      if (existing) {
-        existing.setData(simbriefGeojson);
-        return;
-      }
-      map.addSource("simbrief", { type: "geojson", data: simbriefGeojson });
-      // Línea negra sólida con halo blanco fino. Antes usábamos
-      // dasharray para diferenciar SimBrief (plan) de SimConnect
-      // (real), pero el dasheado se rompía visualmente en arcos
-      // largos del great circle. Ahora ambas son líneas continuas
-      // negras — el botón de toggle en settings (mostrar SimBrief
-      // / mostrar SimConnect) y el panel SimBrief de la sidebar
-      // ya bastan para distinguir su origen.
-      map.addLayer({
-        id: "simbrief-line-glow",
-        type: "line",
-        source: "simbrief",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#ffffff",
-          "line-width": 3.5,
-          "line-opacity": 0.7,
-        },
-      });
-      map.addLayer({
-        id: "simbrief-line",
-        type: "line",
-        source: "simbrief",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#0f172a",
-          "line-width": 1.6,
-        },
-      });
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [simbriefGeojson]);
-
-  // Capa Flight Log (SimConnect) — vuelos reales registrados.
-  // Sólo pintamos los completados (origen + destino). Si el usuario
-  // apaga "showSimconnectLines" en settings, la collection se
-  // vacía — mismo patrón que SimBrief.
-  const flightLogGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.MultiLineString>>(
-    () => ({
-      type: "FeatureCollection",
-      features: !showSimconnectLines
-        ? []
-        : flightLogEntries
-            .filter(
-              (e) =>
-                e.endedAt !== null &&
-                e.destinationLat !== null &&
-                e.destinationLon !== null,
-            )
-            .map((e) => ({
-              type: "Feature",
-              properties: {
-                id: e.id,
-                label: `${e.originIcao ?? "?"} → ${e.destinationIcao ?? "?"}`,
-                distanceNm: e.distanceNm,
-              },
-              geometry: {
-                type: "MultiLineString",
-                coordinates: greatCircleLine(
-                  e.originLon,
-                  e.originLat,
-                  e.destinationLon as number,
-                  e.destinationLat as number,
-                ),
-              },
-            })),
-    }),
-    [flightLogEntries, showSimconnectLines],
-  );
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      const existing = map.getSource("flightlog") as GeoJSONSource | undefined;
-      if (existing) {
-        existing.setData(flightLogGeojson);
-        return;
-      }
-      map.addSource("flightlog", { type: "geojson", data: flightLogGeojson });
-      // Vuelos reales: línea negra sólida más gruesa (los reales
-      // pesan más que los planes). Halo blanco para máximo
-      // contraste sobre el basemap claro.
-      map.addLayer({
-        id: "flightlog-line-glow",
-        type: "line",
-        source: "flightlog",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#ffffff",
-          "line-width": 4.5,
-          "line-opacity": 0.85,
-        },
-      });
-      map.addLayer({
-        id: "flightlog-line",
-        type: "line",
-        source: "flightlog",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#0f172a",
-          "line-width": 2.2,
-        },
-      });
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [flightLogGeojson]);
+  // NOTA: las líneas de rutas SimBrief + SimConnect vivían acá
+  // antes; las migramos al componente `RoutesMapView` que se monta
+  // dentro de `FlightBookView`. El usuario pidió que esta vista
+  // sólo muestre escenarios (aeropuertos del catálogo) y que las
+  // rutas tengan su propio mapa elegante en FlightBook.
 
   return (
     // Layout responsive: en pantallas grandes la sidebar crece a 380px
