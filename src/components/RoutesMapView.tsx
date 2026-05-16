@@ -46,18 +46,40 @@ export function RoutesMapView({
     (s) => s.settings.showSimconnectLines,
   );
 
-  // Inicialización del mapa — basemap oscuro, sin controles excepto
-  // el navegador estándar (zoom +/-) en la esquina top-right.
+  // Inicialización del mapa — basemap oscuro Voyager + proyección
+  // globe (3D / 360°) que el usuario pidió. Globe sólo funciona en
+  // MapLibre v3+ y se activa post-load para evitar errores de
+  // estilo no cargado todavía.
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
+      // Dark Matter (CARTO) — basemap oscuro con detalle topográfico
+      // sutil y etiquetas legibles. Combinado con la proyección
+      // globe (3D) abajo da el efecto "360" que el usuario pidió.
       style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
       center: [0, 25],
-      zoom: 1.6,
-      attributionControl: { compact: true },
+      zoom: 1.4,
+      // Quitamos attribution del overlay nativo — la pintamos
+      // nosotros como overlay flotante para que no estorbe.
+      attributionControl: false,
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+
+    // Activar proyección globe cuando el estilo carga. Si la
+    // versión de MapLibre no la soporta (debería en v3+), el
+    // try/catch silencioso deja el flat default.
+    map.once("load", () => {
+      try {
+        // setProjection acepta string en versiones recientes.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (map as any).setProjection({ type: "globe" });
+      } catch (e) {
+        console.warn("globe projection no soportada:", e);
+      }
+    });
+
     mapRef.current = map;
     return () => {
       map.remove();

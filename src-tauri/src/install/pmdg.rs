@@ -236,13 +236,18 @@ struct PmdgTarget {
 }
 
 fn find_pmdg_package(community: &Path, aircraft: &str) -> Option<PmdgTarget> {
-    // Folder hints — `pmdg-aircraft-XXX` donde XXX suele ser:
-    //   737 / 738 / 739 (para 737-700 / -800 / -900)
-    //   77w / 77l (para 777-300ER / 777-200LR)
-    //   744 / 748 (747-400, 747-8)
-    // Pero hay distribuciones donde la carpeta no incluye el sufijo
-    // — basta entonces con que adentro haya `SimObjects/Airplanes/PMDG <tipo>`.
-    let expected_inner = pmdg_inner_folder(aircraft)?;
+    // Tokens "fuertes" del modelo (ej. "737-800") que tienen que
+    // aparecer EN ALGUNA forma dentro del nombre de la subcarpeta de
+    // Airplanes. Aceptamos formas con guion ("737-800"), sin guion
+    // ("737800"), o variantes underscore ("PMDG_737-800").
+    let needle = match pmdg_model_token(aircraft)? {
+        // Tupla (canonical, alias[]). Aceptamos cualquiera.
+        t => t,
+    };
+    let needle_lower = needle.to_lowercase();
+    let needle_no_dash = needle_lower.replace('-', "");
+
+    let mut tried_paths: Vec<String> = Vec::new();
     let iter = fs::read_dir(community).ok()?;
     for entry in iter.flatten() {
         let path = entry.path();
@@ -250,56 +255,93 @@ fn find_pmdg_package(community: &Path, aircraft: &str) -> Option<PmdgTarget> {
             continue;
         }
         let name_lower = entry.file_name().to_string_lossy().to_lowercase();
+        // Sólo consideramos paquetes que contengan "pmdg" en el
+        // nombre del folder de Community. Esto evita falsos
+        // positivos en otros aviones que casualmente usen "737"
+        // en su nombre (FBW A32NX no, pero futuros mods sí).
         if !name_lower.contains("pmdg") {
             continue;
         }
-        let aircraft_dir = path
-            .join("SimObjects")
-            .join("Airplanes")
-            .join(&expected_inner);
-        if aircraft_dir.join("aircraft.cfg").is_file() {
-            return Some(PmdgTarget {
-                package_root: path,
-                aircraft_dir,
-            });
-        }
-        // Algunos paquetes tienen varios aviones dentro
-        // (`PMDG 737-700 BBJ`, `PMDG 737-800` en `pmdg-aircraft-737`).
-        // Hacer un fallback escaneando los hijos de Airplanes/.
         let airplanes_dir = path.join("SimObjects").join("Airplanes");
-        if let Ok(sub_iter) = fs::read_dir(&airplanes_dir) {
-            for sub in sub_iter.flatten() {
-                let sub_path = sub.path();
-                let sub_name = sub.file_name().to_string_lossy().to_string();
-                if sub_name.eq_ignore_ascii_case(&expected_inner)
-                    && sub_path.join("aircraft.cfg").is_file()
-                {
-                    return Some(PmdgTarget {
-                        package_root: path,
-                        aircraft_dir: sub_path,
-                    });
-                }
+        if !airplanes_dir.is_dir() {
+            tried_paths.push(format!("{} (sin SimObjects/Airplanes)", path.display()));
+            continue;
+        }
+
+        // Recorrer TODOS los aviones dentro de Airplanes/ y
+        // buscar el primero cuyo nombre contenga el token del
+        // modelo. Esto cubre:
+        //   · Carpeta "PMDG 737-800" (default release).
+        //   · Carpeta "PMDG 737-800NGX" (nombres legacy/skinned).
+        //   · Carpeta "Boeing 737-800" (rare community fork).
+        //   · Carpeta "PMDG_737-800" (underscore-style).
+        let Ok(sub_iter) = fs::read_dir(&airplanes_dir) else {
+            tried_paths.push(format!("{} (no se pudo leer)", airplanes_dir.display()));
+            continue;
+        };
+        for sub in sub_iter.flatten() {
+            let sub_path = sub.path();
+            if !sub_path.is_dir() {
+                continue;
             }
+            let sub_name = sub.file_name().to_string_lossy().to_string();
+            let sub_lower = sub_name.to_lowercase();
+            let sub_no_dash = sub_lower.replace('-', "").replace('_', "");
+
+            let matches_model = sub_lower.contains(&needle_lower)
+                || sub_no_dash.contains(&needle_no_dash);
+
+            if matches_model && sub_path.join("aircraft.cfg").is_file() {
+                tracing::info!(
+                    target: "install",
+                    "PMDG: match {} → {} (token '{}' en '{}')",
+                    aircraft,
+                    sub_path.display(),
+                    needle,
+                    sub_name
+                );
+                return Some(PmdgTarget {
+                    package_root: path.clone(),
+                    aircraft_dir: sub_path,
+                });
+            }
+            tried_paths.push(format!(
+                "{} (no matchea token '{}')",
+                sub_path.display(),
+                needle
+            ));
         }
     }
+
+    tracing::info!(
+        target: "install",
+        "PMDG: no se encontró paquete para {} (token '{}'). Carpetas probadas:\n  · {}",
+        aircraft,
+        needle,
+        tried_paths.join("\n  · ")
+    );
     None
 }
 
-/// Traduce un nombre de aircraft ("PMDG 737-800") al nombre de
-/// carpeta que el paquete usa dentro de `SimObjects/Airplanes/`.
-fn pmdg_inner_folder(aircraft: &str) -> Option<String> {
+/// Devuelve el token del modelo PMDG. Es lo que tiene que aparecer
+/// en alguna forma dentro del nombre de la subcarpeta de Airplanes
+/// para que consideremos un match.
+///
+/// ej. "PMDG 737-800" → "737-800". Los normalizadores que llaman
+/// también prueban "737800" (sin guion) y otras variantes.
+fn pmdg_model_token(aircraft: &str) -> Option<&'static str> {
     match aircraft {
-        "PMDG 737-600" => Some("PMDG 737-600".into()),
-        "PMDG 737-700" => Some("PMDG 737-700".into()),
-        "PMDG 737-800" => Some("PMDG 737-800".into()),
-        "PMDG 737-900" => Some("PMDG 737-900".into()),
-        "PMDG 747-400" => Some("PMDG 747-400".into()),
-        "PMDG 747-8"   => Some("PMDG 747-8".into()),
-        "PMDG 747F"    => Some("PMDG 747-8F".into()),
-        "PMDG 777-200LR" => Some("PMDG 777-200LR".into()),
-        "PMDG 777-300ER" => Some("PMDG 777-300ER".into()),
-        "PMDG 777F"    => Some("PMDG 777F".into()),
-        "PMDG DC-6"    => Some("PMDG DC-6".into()),
+        "PMDG 737-600"   => Some("737-600"),
+        "PMDG 737-700"   => Some("737-700"),
+        "PMDG 737-800"   => Some("737-800"),
+        "PMDG 737-900"   => Some("737-900"),
+        "PMDG 747-400"   => Some("747-400"),
+        "PMDG 747-8"     => Some("747-8"),
+        "PMDG 747F"      => Some("747-8F"),
+        "PMDG 777-200LR" => Some("777-200LR"),
+        "PMDG 777-300ER" => Some("777-300ER"),
+        "PMDG 777F"      => Some("777F"),
+        "PMDG DC-6"      => Some("DC-6"),
         _ => None,
     }
 }

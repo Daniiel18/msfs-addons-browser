@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BarChart3,
   Boxes,
@@ -32,6 +32,7 @@ import { Toaster } from "./components/Toaster";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsModal } from "./components/SettingsModal";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
+import type { UpdateInfo } from "./lib/types";
 import { FlyingNowBadge } from "./components/FlyingNowBadge";
 import { OnboardingTour } from "./components/OnboardingTour";
 
@@ -61,20 +62,46 @@ export default function App() {
 
   const [ready, setReady] = useState(false);
   // Tareas que el splash AWAITEA antes de dar paso a la app.
-  // Mantenemos solo las baratas: HTTP "list sources" + DB
-  // bootstraps + scan de Community. Las cosas pesadas (pre-cargar
-  // catálogos, refrescar updates contra fuentes) corren en
-  // background después de que la splash se cierra — así el
-  // usuario tiene la app funcional en <10s aunque haya 200+
-  // queries de updates pendientes.
+  //
+  // Cambio v0.1.9: añadimos "Buscar actualización de la app" como
+  // primera tarea (si hay update y el usuario acepta, instalamos
+  // antes de seguir), y "Buscar actualizaciones de addons" + "Pre-
+  // cargar catálogos" al final (que antes corrían en background
+  // tras dismiss). Resultado: el usuario abre la app y ve la
+  // pestaña Buscar con resultados YA + el bell con notificaciones
+  // YA, sin esperas adicionales tras el splash.
   const [splashTasks, setSplashTasks] = useState<SplashTask[]>([
+    { label: "Buscar actualización de la app", status: "pending" },
     { label: "Cargar fuentes", status: "pending" },
     { label: "Cargar configuración", status: "pending" },
     { label: "Cargar SimBrief", status: "pending" },
     { label: "Cargar Flight Log", status: "pending" },
     { label: "Suscribir descargas", status: "pending" },
     { label: "Escanear carpeta Community", status: "pending" },
+    { label: "Buscar actualizaciones de addons", status: "pending" },
+    { label: "Pre-cargar catálogos", status: "pending" },
   ]);
+
+  // Estado del flujo de actualización de la app (auto-update embebido
+  // en el splash). Si `appUpdate` es non-null el splash muestra el
+  // banner "Hay vX.Y.Z, instalar ahora?". Si el usuario acepta,
+  // `installing=true` y `updateProgress` se va llenando con bytes
+  // descargados. Cuando termine, el backend hace exit(0) y la app
+  // se reabre en la versión nueva. Si el usuario salta, seguimos
+  // con el bootstrap normal.
+  const [appUpdate, setAppUpdate] = useState<UpdateInfo | null>(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<{
+    downloadedBytes: number;
+    totalBytes: number | null;
+  } | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  // Promesa que resuelve cuando el usuario decide qué hacer con la
+  // update (instalar o saltar). El bootstrap espera por esto.
+  const [updateDecision, setUpdateDecision] = useState<{
+    resolve: () => void;
+  } | null>(null);
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
 
@@ -84,6 +111,46 @@ export default function App() {
       next[idx] = { ...next[idx], status, error: err };
       return next;
     });
+
+  // Ref para que el bloque async del bootstrap pueda chequear el
+  // estado actual de "installing" sin re-renderizar.
+  const useInstallingFlagRef = useRef(false);
+
+  // Handler: el usuario pulsó "Instalar ahora" en el splash.
+  // Llama al backend; el backend baja el setup, lo lanza silent
+  // y hace exit(0). El splash queda mostrando la barra de
+  // progreso hasta que la app muera.
+  const handleInstallUpdate = async () => {
+    if (!appUpdate?.assetUrl) return;
+    setUpdateInstalling(true);
+    useInstallingFlagRef.current = true;
+    setUpdateProgress({ downloadedBytes: 0, totalBytes: null });
+    try {
+      const unsub = await api.onUpdateProgress((p) => setUpdateProgress(p));
+      try {
+        await api.installUpdate(appUpdate.assetUrl);
+      } finally {
+        unsub();
+      }
+    } catch (e) {
+      console.warn("installUpdate failed:", e);
+      setUpdateInstalling(false);
+      useInstallingFlagRef.current = false;
+      setUpdateProgress(null);
+      // Resolvemos la promesa para que el bootstrap continúe sin
+      // update — el usuario verá la app actual.
+      updateDecision?.resolve();
+      setUpdateDecision(null);
+    }
+  };
+
+  // Handler: usuario pulsó "Saltar". Continuamos con el bootstrap
+  // sin instalar; el banner global (`UpdateBanner`) le seguirá
+  // ofreciendo el update dentro de la app.
+  const handleSkipUpdate = () => {
+    updateDecision?.resolve();
+    setUpdateDecision(null);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -96,6 +163,36 @@ export default function App() {
           if (!cancelled) markTask(idx, "error", String(e));
         }
       };
+
+      // FASE 0 — versión + chequeo de update de la app. Esto va
+      // primero porque si hay update y el usuario acepta, instalar
+      // mata el proceso y no tiene sentido cargar nada más.
+      if (isTauri) {
+        try {
+          const { getVersion } = await import("@tauri-apps/api/app");
+          const v = await getVersion();
+          if (!cancelled) setAppVersion(v);
+        } catch (e) {
+          console.warn("getVersion failed:", e);
+        }
+      }
+      await wrap(0, async () => {
+        const u = await api.checkForUpdate().catch(() => null);
+        if (cancelled) return;
+        if (!u) return; // estamos al día
+        // Mostrar el banner y bloquear hasta que el usuario decida.
+        setAppUpdate(u);
+        await new Promise<void>((resolve) => {
+          setUpdateDecision({ resolve });
+        });
+        // Si el usuario eligió "Instalar", el effect que escucha
+        // `updateInstalling` ya disparó `api.installUpdate` y la app
+        // se cerrará sola. Aquí simplemente esperamos un buen rato
+        // para que NO se vea la UI antes del exit.
+        if (useInstallingFlagRef.current) {
+          await new Promise<void>((r) => setTimeout(r, 60_000));
+        }
+      });
 
       // FASE 1 — sources + bootstraps de DB en paralelo.
       const sourcesPromise = (async () => {
@@ -111,21 +208,21 @@ export default function App() {
         }
         return s;
       })();
-      const sourcesTask = wrap(0, () => sourcesPromise);
+      const sourcesTask = wrap(1, () => sourcesPromise);
 
       const phase1 = Promise.all([
         sourcesTask,
-        wrap(1, () => bootstrapSettings()),
-        wrap(2, () => bootstrapSimBrief()),
-        wrap(3, () => bootstrapFlightLog()),
-        wrap(4, () => bootstrapDownloads()),
+        wrap(2, () => bootstrapSettings()),
+        wrap(3, () => bootstrapSimBrief()),
+        wrap(4, () => bootstrapFlightLog()),
+        wrap(5, () => bootstrapDownloads()),
       ]);
 
       // FASE 2 — scan del FS. Independiente de la red. Limitamos
       // a 8 segundos máx para no bloquear el splash si la carpeta
       // Community es muy grande; el scan completo continúa en
       // background si se trunca.
-      const phase2 = wrap(5, () =>
+      const phase2 = wrap(6, () =>
         Promise.race([
           scanFromFS(),
           new Promise<void>((resolve) =>
@@ -137,30 +234,39 @@ export default function App() {
         ]),
       );
 
-      // Esperamos sólo las fases bloqueantes — splash dura como
-      // mucho ~10s (8s scan + ~2s margen). Después dejamos que
-      // las tareas pesadas (pre-cargar catálogos + refresh de
-      // updates) corran en background sin bloquear al usuario.
       await Promise.allSettled([phase1, phase2]);
 
-      // **Background tasks** — disparadas tras dismissar el splash.
-      // Si fallan, no aborta nada; sólo afecta a la frescura de
-      // los datos auxiliares.
-      void (async () => {
-        try {
-          const srcs = await sourcesPromise;
-          if (srcs && !cancelled) {
-            await Promise.all(srcs.map((src) => preloadCatalog(src.id)));
-          }
-        } catch (e) {
-          console.warn("preload catalogs (bg) failed:", e);
-        }
-        if (!cancelled) {
-          refreshUpdatesActive().catch((e) =>
-            console.warn("refresh updates (bg) failed:", e),
-          );
-        }
-      })();
+      // FASE 3 — refresh de updates contra catálogos + pre-load
+      // de catálogos. Antes corrían en background tras dismiss;
+      // ahora forman parte del splash para que cuando el usuario
+      // vea la UI todo esté listo (notificaciones populadas +
+      // pestaña Buscar con resultados visibles). Cap 12s para no
+      // bloquear infinitamente si una fuente está caída.
+      await wrap(7, () =>
+        Promise.race([
+          refreshUpdatesActive(),
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              console.warn("refresh updates hit 12s timeout");
+              resolve();
+            }, 12000),
+          ),
+        ]),
+      );
+
+      await wrap(8, async () => {
+        const srcs = await sourcesPromise;
+        if (!srcs || cancelled) return;
+        await Promise.race([
+          Promise.all(srcs.map((src) => preloadCatalog(src.id))),
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              console.warn("preload catalogs hit 10s timeout");
+              resolve();
+            }, 10000),
+          ),
+        ]);
+      });
 
       if (!cancelled) {
         await new Promise((r) => setTimeout(r, 350));
@@ -260,7 +366,17 @@ export default function App() {
   };
 
   if (!ready) {
-    return <SplashScreen tasks={splashTasks} />;
+    return (
+      <SplashScreen
+        tasks={splashTasks}
+        appVersion={appVersion}
+        appUpdate={appUpdate}
+        installing={updateInstalling}
+        updateProgress={updateProgress}
+        onInstallUpdate={handleInstallUpdate}
+        onSkipUpdate={handleSkipUpdate}
+      />
+    );
   }
 
   return (

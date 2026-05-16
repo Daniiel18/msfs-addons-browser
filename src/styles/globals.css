@@ -10,9 +10,33 @@ html, body, #root {
   height: 100%;
 }
 
+html, body {
+  /* Doble-scrollbar fix v0.1.9: en Tauri/WebView2 con ciertas
+     resoluciones se renderizaba una scrollbar de #root y otra
+     del body al mismo tiempo. Forzamos a que SOLO el body
+     scrollee verticalmente, y rechazamos cualquier overflow-x
+     accidental de tablas anchas que cree barra horizontal
+     estorbosa. */
+  overflow-x: hidden;
+}
+
+#root {
+  /* #root no debe scrollear — el scroll vertical lo gestiona el
+     body. Sin esto, contenido más alto que la viewport (FlightBook
+     con tabla larga, modal de detail, etc.) creaba dos scrollbars
+     apiladas. */
+  overflow: visible;
+  min-height: 100%;
+  height: auto;
+}
+
 body {
   @apply bg-slate-950 text-slate-100 antialiased;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Asegura una sola scrollbar vertical: si el contenido cabe en
+     la pantalla `auto` no la pinta, y si no cabe la pinta una
+     sola vez. */
+  overflow-y: auto;
 }
 
 /* Subtle custom scrollbar */

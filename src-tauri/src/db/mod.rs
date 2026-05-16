@@ -729,6 +729,30 @@ pub mod repo {
         //      casi cualquier addon del mismo creator.
         //
         //   3. Lista negra de títulos triviales (case-insensitive).
+        // Reglas para AIRCRAFT/INSTRUMENT/MISC (v0.1.9, mucho más
+        // estrictas que v0.1.8):
+        //
+        //   1. Creator del manifest matchea con developer del catálogo
+        //      (substring bidireccional).
+        //   2. Hay un EXISTS en `installed_addons` que liga el folder
+        //      a este addon_id concreto. Esto significa que el usuario
+        //      DESCARGÓ este paquete via la app — no estamos
+        //      adivinando vía heurística de título.
+        //   3. Si NO hay link explícito, igual aceptamos pero con
+        //      filtros agresivos: overlap de tokens >= 60% del
+        //      nombre del catálogo, Y todos los anti-categoría
+        //      (livery/sound/preset/etc) tienen que pasar.
+        //
+        // El usuario reportó como bug v0.1.8: tenía PMDG 737-600
+        // base aircraft instalado y aparecía como "update" un
+        // livery pack del catálogo. Aunque el filtro asimétrico
+        // estaba (y debería catch eso), el caso real fallaba.
+        // v0.1.9: cuando NO hay link explícito, EXIGIMOS overlap
+        // de longitud + ABSENCE de palabras "categoría" en el
+        // nombre del catálogo (no asimétrico — directamente
+        // rechazamos cualquier livery/sound/preset/mod/paint/
+        // texture/profile/config en a.name si el paquete instalado
+        // no fue linkeado por el usuario).
         let aircraft = sqlx::query_as::<_, UpdateCandidate>(
             r#"
             SELECT cp.folder_name        AS folder_name,
@@ -760,26 +784,57 @@ pub mod repo {
                 'pack', 'addon', 'tweak', 'fix', 'pro', 'premium', 'enhanced',
                 'preset', 'presets', 'config', 'configs', 'profile', 'profiles'
               )
-              -- Filtro asimétrico anti-categoría: si el nombre del
-              -- catálogo es claramente de otra categoría (livery/
-              -- sound/preset/etc), pero el paquete instalado NO lo
-              -- es, rechazamos. Evita "PMDG 737-600 (base)" → update
-              -- a "PMDG 737-600 Liveries Pack".
-              AND NOT (
-                (LOWER(a.name) LIKE '%liveries%' OR LOWER(a.name) LIKE '%livery%' OR LOWER(a.name) LIKE '%paint%' OR LOWER(a.name) LIKE '%texture%')
-                AND NOT (LOWER(cp.title) LIKE '%liveries%' OR LOWER(cp.title) LIKE '%livery%' OR LOWER(cp.title) LIKE '%paint%' OR LOWER(cp.title) LIKE '%texture%')
-              )
-              AND NOT (
-                (LOWER(a.name) LIKE '%sounds%' OR LOWER(a.name) LIKE '%sound pack%' OR LOWER(a.name) LIKE '%soundpack%')
-                AND NOT (LOWER(cp.title) LIKE '%sound%')
-              )
-              AND NOT (
-                (LOWER(a.name) LIKE '%preset%' OR LOWER(a.name) LIKE '%profile%' OR LOWER(a.name) LIKE '%config%')
-                AND NOT (LOWER(cp.title) LIKE '%preset%' OR LOWER(cp.title) LIKE '%profile%' OR LOWER(cp.title) LIKE '%config%')
-              )
-              AND NOT (
-                (LOWER(a.name) LIKE '%mod %' OR LOWER(a.name) LIKE '% mod' OR LOWER(a.name) LIKE '%tweak%' OR LOWER(a.name) LIKE '%enhancement%')
-                AND NOT (LOWER(cp.title) LIKE '%mod %' OR LOWER(cp.title) LIKE '% mod' OR LOWER(cp.title) LIKE '%tweak%' OR LOWER(cp.title) LIKE '%enhancement%')
+              AND (
+                -- Caso A: el usuario instaló este addon vía nuestra
+                -- app (fuerte señal — addon_id linkado).
+                EXISTS (
+                  SELECT 1 FROM installed_addons ia
+                  WHERE ia.addon_id = a.id
+                    AND (
+                      ia.name = cp.folder_name
+                      OR ia.install_path LIKE ('%' || cp.folder_name)
+                      OR ia.install_path LIKE ('%' || cp.folder_name || '%')
+                    )
+                )
+                OR
+                -- Caso B: no hay link, exigimos varios chequeos
+                -- antes de creernos el match heurístico.
+                (
+                  -- Token overlap: cp.title debe ser >= 60% del
+                  -- largo de a.name (o viceversa). Evita matches
+                  -- "Boeing 737-600" (14 chars) con
+                  -- "Boeing 737-600 Liveries by PMDG" (32 chars,
+                  -- overlap 14/32 = 43%).
+                  (
+                    INSTR(LOWER(a.name), LOWER(cp.title)) > 0
+                    AND LENGTH(cp.title) * 100 / NULLIF(LENGTH(a.name), 0) >= 60
+                  )
+                  OR (
+                    INSTR(LOWER(cp.title), LOWER(a.name)) > 0
+                    AND LENGTH(a.name) * 100 / NULLIF(LENGTH(cp.title), 0) >= 60
+                  )
+                )
+                AND
+                -- Absence de tokens categoría en el nombre del
+                -- catálogo (livery/sound/preset/mod/paint/etc).
+                -- Si el catálogo es eso, NO aplica este caso B.
+                NOT (
+                  LOWER(a.name) LIKE '%liveries%'
+                  OR LOWER(a.name) LIKE '%livery%'
+                  OR LOWER(a.name) LIKE '%paint%'
+                  OR LOWER(a.name) LIKE '%texture%'
+                  OR LOWER(a.name) LIKE '%sounds%'
+                  OR LOWER(a.name) LIKE '%sound pack%'
+                  OR LOWER(a.name) LIKE '%soundpack%'
+                  OR LOWER(a.name) LIKE '%preset%'
+                  OR LOWER(a.name) LIKE '%profile%'
+                  OR LOWER(a.name) LIKE '%config%'
+                  OR LOWER(a.name) LIKE '%mod %'
+                  OR LOWER(a.name) LIKE '% mod'
+                  OR LOWER(a.name) LIKE '%tweak%'
+                  OR LOWER(a.name) LIKE '%enhancement%'
+                  OR LOWER(a.name) LIKE '%pack%'
+                )
               )
             "#,
         )
