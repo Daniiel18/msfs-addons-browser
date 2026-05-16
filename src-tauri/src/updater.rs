@@ -29,9 +29,10 @@ const OWNER_REPO: &str = "Daniiel18/msfs-addons-browser";
 const UA: &str = "MSFSAddonsBrowser/0.1 (+https://github.com/n0xful)";
 
 /// Tiempo máximo aceptable para que la consulta de versión bloquee la
-/// pantalla de inicio. Si GitHub está caído queremos seguir adelante
-/// con la app — un timeout corto y un error suave en consola.
-const TIMEOUT_SECS: u64 = 8;
+/// pantalla de inicio. Subido de 8s → 20s en v0.1.12 porque algunos
+/// usuarios reportaban que GitHub tardaba ~12s en responder desde su
+/// red y la app daba "no hay update" silenciosamente.
+const TIMEOUT_SECS: u64 = 20;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +132,18 @@ pub async fn check_latest(http: &reqwest::Client) -> anyhow::Result<Option<Updat
         }
     };
 
+    tracing::info!(
+        target: "updater",
+        "updater: current={} latest={} → update={}",
+        current,
+        latest_str,
+        latest_v > current_v
+    );
     if latest_v <= current_v {
+        tracing::info!(
+            target: "updater",
+            "updater: ya estás en la última versión, no se ofrece update"
+        );
         return Ok(None);
     }
 

@@ -32,7 +32,6 @@
 //! - "PMDG Operations Center no se detectó. Liveries en el Inbox
 //!   — abre OC manualmente y arrástralas." (cuando no)
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -397,33 +396,3 @@ fn launch_oc_with_ptp(_oc_exe: &Path, _ptp: &Path) -> anyhow::Result<bool> {
     anyhow::bail!("PMDG OC sólo está disponible en Windows")
 }
 
-/// Hint para el usuario sobre dónde poner OC si no se encontró.
-/// Usado para construir mensajes de error útiles.
-pub fn search_paths_hint() -> String {
-    let mut paths = Vec::new();
-    for env_var in &["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Some(base) = std::env::var_os(env_var) {
-            paths.push(format!(
-                r"{}\PMDG\Operations Center\PMDG Operations Center.exe",
-                base.to_string_lossy()
-            ));
-        }
-    }
-    if let Some(home) = std::env::var_os("USERPROFILE") {
-        paths.push(format!(
-            r"{}\Downloads\PMDG Operations Center\PMDG Operations Center.exe",
-            home.to_string_lossy()
-        ));
-    }
-    paths.join(" o ")
-}
-
-// Función legacy helper que el módulo `install/mod.rs` no usaba pero
-// dejamos por si alguien quiere reactivar la copia al inbox legacy.
-#[allow(dead_code)]
-pub(crate) fn ensure_dir(p: &Path) -> std::io::Result<()> {
-    if !p.exists() {
-        fs::create_dir_all(p)?;
-    }
-    Ok(())
-}

@@ -6,6 +6,7 @@ import {
   Download,
   ExternalLink,
   Map as MapIcon,
+  RefreshCw,
   Sparkles,
   X,
 } from "lucide-react";
@@ -145,15 +146,32 @@ export function NotificationsBell() {
                   Updates de la app · paquetes Community
                 </p>
               </div>
-              {packageCount > 0 && (
+              <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() => dismissAll()}
-                  title="Marcar todas las updates de paquetes como vistas"
+                  onClick={() => {
+                    void api
+                      .checkForUpdate()
+                      .then((u) => {
+                        setAppUpdateDismissed(false);
+                        setAppUpdate(u);
+                      })
+                      .catch((e) => console.warn("re-check failed:", e));
+                  }}
+                  title="Volver a comprobar updates ahora"
                   className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
                 >
-                  <CheckCheck className="h-3.5 w-3.5" />
+                  <RefreshCw className="h-3.5 w-3.5" />
                 </button>
-              )}
+                {packageCount > 0 && (
+                  <button
+                    onClick={() => dismissAll()}
+                    title="Marcar todas las updates de paquetes como vistas"
+                    className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
+                  >
+                    <CheckCheck className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </header>
 
             {/* App update — pinned al top, en verde para diferenciar

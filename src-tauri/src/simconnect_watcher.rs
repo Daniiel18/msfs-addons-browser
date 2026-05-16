@@ -439,9 +439,51 @@ mod windows_simconnect {
         // serían `Send`.
         let current_flight_id: std::sync::Arc<std::sync::Mutex<Option<i64>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
+
+        // **Restauración ACARS-like**: al iniciar el watcher, si la
+        // DB tiene un vuelo abierto reciente, lo reanudamos. Eso
+        // resuelve "?" como origen cuando la app se cerró a mitad
+        // de vuelo y se reabrió.
+        //
+        // Usamos `tokio::runtime::Handle::current().block_on()` porque
+        // este hilo es blocking (spawn_blocking) y necesitamos
+        // ejecutar el query async aquí. El handle se hereda del
+        // runtime que llamó spawn_blocking.
+        let restore_result = std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                rt.block_on(crate::flight_log::latest_open_flight(pool)).ok()?
+            });
+            handle.join().ok().flatten()
+        });
+        if let Some(open) = restore_result {
+            tracing::info!(
+                target: "simconnect",
+                "RESTAURANDO vuelo abierto id={} origen={:?} (started_at={})",
+                open.id,
+                open.origin_icao,
+                open.started_at
+            );
+            if let Ok(mut g) = current_flight_id.lock() {
+                *g = Some(open.id);
+            }
+            phase = FlightPhase::Airborne;
+            if let Some(alt) = open.max_altitude_ft {
+                if alt > 0 {
+                    // restored, max_alt_ft set abajo
+                }
+            }
+        } else {
+            tracing::debug!(target: "simconnect", "no hay vuelo abierto previo — empezamos limpio");
+        }
+
         let mut max_alt_ft: i64 = 0;
         let mut max_gs_kt: i64 = 0;
         let mut max_tas_kt: i64 = 0;
+        let mut ticks_since_persist: u32 = 0;
         // Ventana corta de los últimos VS leídos — al detectar
         // touchdown elegimos el MÁS negativo de los últimos ~3s
         // como "landing FPM". SimConnect a veces emite un 0
@@ -511,6 +553,7 @@ mod windows_simconnect {
                         &mut max_gs_kt,
                         &mut max_tas_kt,
                         &mut recent_vs,
+                        &mut ticks_since_persist,
                     );
                 }
                 _ => {
@@ -532,6 +575,7 @@ mod windows_simconnect {
         max_gs_kt: &mut i64,
         max_tas_kt: &mut i64,
         recent_vs: &mut std::collections::VecDeque<f64>,
+        ticks_since_persist: &mut u32,
     ) {
         let lat = data.latitude_deg;
         let lon = data.longitude_deg;
@@ -711,6 +755,29 @@ mod windows_simconnect {
                 _ => {}
             }
             *phase = new_phase;
+        }
+
+        // **Persist live position cada 10 ticks** (≈10s) si hay un
+        // vuelo abierto. ACARS-like: si la app se cierra a mitad de
+        // vuelo, al reabrirse podemos restaurar el state desde la DB
+        // en lugar de empezar con "?" como origen.
+        *ticks_since_persist = ticks_since_persist.saturating_add(1);
+        if *ticks_since_persist >= 10 {
+            *ticks_since_persist = 0;
+            let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+            if let Some(id) = id_opt {
+                let pool_c = pool.clone();
+                let lat_c = lat;
+                let lon_c = lon;
+                let alt_c = alt as i64;
+                let gs_c = gs as i64;
+                tokio::spawn(async move {
+                    let _ = crate::flight_log::touch_live_position(
+                        &pool_c, id, lat_c, lon_c, alt_c, gs_c,
+                    )
+                    .await;
+                });
+            }
         }
 
         // Update shared state + emit. Hacemos try_lock para no

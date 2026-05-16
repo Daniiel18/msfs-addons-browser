@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
+
+const tracingLog = (msg: string) =>
+  console.info(`[RoutesMapView] ${msg}`);
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
@@ -46,48 +49,36 @@ export function RoutesMapView({
     (s) => s.settings.showSimconnectLines,
   );
 
-  // Inicialización del mapa — basemap oscuro CARTO + proyección
-  // GLOBE (3D, lo que el usuario llamó "360"). En MapLibre 4.x la
-  // proyección globe se ACTIVA pasándola dentro de la opción
-  // `projection` del constructor (no via setProjection post-load —
-  // eso falla porque el style ya configuró mercator). Además
-  // forzamos `setProjection` también en `style.load` por si el
-  // basemap incluye `"projection": {"type":"mercator"}` en su
-  // styles JSON y nos lo pisa.
+  // Inicialización del mapa — globo terráqueo 3D (lo que el usuario
+  // llamó "360"). MapLibre 5.x soporta globe de forma nativa via la
+  // opción `projection` del constructor. v4 no lo hacía bien — el
+  // upgrade a v5.24 era prerequisito.
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return;
-    // Cast del MapOptions para incluir `projection` — los types de
-    // MapLibre 4.7 aún no exponen esta opción pero el runtime sí la
-    // soporta. Sin esto tsc falla con "projection does not exist
-    // in type 'MapOptions'".
-    const map = new maplibregl.Map(
-      {
-        container: containerRef.current,
-        style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-        center: [0, 25],
-        zoom: 1.4,
-        attributionControl: false,
-        projection: { type: "globe" },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any,
-    );
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+      center: [0, 25],
+      zoom: 1.2,
+      attributionControl: false,
+    });
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
 
-    // Re-aplicar globe cada vez que el style se carga/recarga.
-    // Necesario porque algunos style.json de CARTO incluyen
-    // `"projection": "mercator"` por defecto y pisaría nuestro
-    // setting del constructor.
+    // Aplicar projection globe en cada style.load. MapLibre 5 lo
+    // soporta nativo pero `setProjection` debe llamarse **después**
+    // de que el estilo cargó — pasarlo en el constructor no está
+    // en MapOptions todavía.
     const ensureGlobe = () => {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (map as any).setProjection({ type: "globe" });
+        map.setProjection({ type: "globe" });
+        tracingLog("globe projection aplicada OK");
       } catch (e) {
-        console.warn("globe projection no soportada en esta versión MapLibre:", e);
+        console.warn("globe projection falló:", e);
       }
     };
+    if (map.isStyleLoaded()) ensureGlobe();
     map.on("style.load", ensureGlobe);
-    map.once("load", ensureGlobe);
 
     mapRef.current = map;
     return () => {

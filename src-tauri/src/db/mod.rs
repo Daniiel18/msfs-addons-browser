@@ -774,6 +774,29 @@ pub mod repo {
               AND (
                 INSTR(LOWER(a.name), LOWER(cp.title)) > 0
                 OR INSTR(LOWER(cp.title), LOWER(a.name)) > 0
+                -- Shared aircraft-model token. SQLite GLOB es
+                -- limitado pero suficiente para los modelos más
+                -- comunes que actualizan: A3xx, A350, 737/738/739,
+                -- 747, 777, etc. La idea: ambos lados contienen
+                -- el mismo patrón. Ej. cp.title="iniBuilds A350-900"
+                -- y a.name="Airbus A350" comparten "a350".
+                OR (LOWER(cp.title) GLOB '*a350*' AND LOWER(a.name) GLOB '*a350*')
+                OR (LOWER(cp.title) GLOB '*a330*' AND LOWER(a.name) GLOB '*a330*')
+                OR (LOWER(cp.title) GLOB '*a320*' AND LOWER(a.name) GLOB '*a320*')
+                OR (LOWER(cp.title) GLOB '*a319*' AND LOWER(a.name) GLOB '*a319*')
+                OR (LOWER(cp.title) GLOB '*a321*' AND LOWER(a.name) GLOB '*a321*')
+                OR (LOWER(cp.title) GLOB '*a380*' AND LOWER(a.name) GLOB '*a380*')
+                OR (LOWER(cp.title) GLOB '*737-700*' AND LOWER(a.name) GLOB '*737-700*')
+                OR (LOWER(cp.title) GLOB '*737-800*' AND LOWER(a.name) GLOB '*737-800*')
+                OR (LOWER(cp.title) GLOB '*737-900*' AND LOWER(a.name) GLOB '*737-900*')
+                OR (LOWER(cp.title) GLOB '*747-400*' AND LOWER(a.name) GLOB '*747-400*')
+                OR (LOWER(cp.title) GLOB '*747-8*' AND LOWER(a.name) GLOB '*747-8*')
+                OR (LOWER(cp.title) GLOB '*777-200*' AND LOWER(a.name) GLOB '*777-200*')
+                OR (LOWER(cp.title) GLOB '*777-300*' AND LOWER(a.name) GLOB '*777-300*')
+                OR (LOWER(cp.title) GLOB '*cessna*172*' AND LOWER(a.name) GLOB '*cessna*172*')
+                OR (LOWER(cp.title) GLOB '*787-8*' AND LOWER(a.name) GLOB '*787-8*')
+                OR (LOWER(cp.title) GLOB '*787-9*' AND LOWER(a.name) GLOB '*787-9*')
+                OR (LOWER(cp.title) GLOB '*787-10*' AND LOWER(a.name) GLOB '*787-10*')
               )
             WHERE cp.package_version IS NOT NULL AND cp.package_version <> ''
               AND a.version IS NOT NULL AND a.version <> ''

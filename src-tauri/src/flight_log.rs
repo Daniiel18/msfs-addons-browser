@@ -53,16 +53,9 @@ pub struct FlightLogEntry {
     pub source: String,
 }
 
-/// Resultado del lookup de aeropuerto más cercano.
-#[derive(Debug, Clone)]
-pub struct NearestAirport {
-    pub icao: String,
-    pub name: String,
-}
-
-/// Variante con coordenadas — la usamos para calcular bearing y
-/// distancia desde el centro del aeropuerto hasta la posición del
-/// avión (para el "stand offset" del gate fallback).
+/// Resultado del lookup de aeropuerto más cercano. Incluye
+/// coordenadas para que `format_gate_fallback` pueda calcular
+/// bearing y distancia desde el centro del aeropuerto.
 #[derive(Debug, Clone)]
 pub struct NearestAirportFull {
     pub icao: String,
@@ -246,6 +239,107 @@ pub async fn touch_max_altitude(
     Ok(())
 }
 
+/// **ACARS-like persistent tracking**: cada tick el watcher escribe
+/// la posición + altitud + groundspeed actuales en la fila del
+/// vuelo abierto. Sirve dos propósitos:
+///
+///   1. Si la app se cierra a mitad de vuelo y se reabre, podemos
+///      restaurar el state del watcher sin haber perdido nada.
+///   2. Si el avión se estrella / el sim crashea, el último punto
+///      queda guardado y la UI muestra "interrumpido en lat,lon".
+///
+/// Es muy barato: un UPDATE por id, ejecutado max 1 vez por
+/// segundo (la frecuencia del SimConnect poll).
+pub async fn touch_live_position(
+    pool: &SqlitePool,
+    id: i64,
+    lat: f64,
+    lon: f64,
+    alt_ft: i64,
+    gs_kt: i64,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET last_position_lat    = ?1,
+            last_position_lon    = ?2,
+            last_position_alt_ft = ?3,
+            last_position_gs_kt  = ?4,
+            last_position_at     = ?5
+        WHERE id = ?6
+        "#,
+    )
+    .bind(lat)
+    .bind(lon)
+    .bind(alt_ft)
+    .bind(gs_kt)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Vuelo abierto (sin `ended_at`) — usado para restaurar el state
+/// del watcher al reabrir la app tras un cierre forzado/intencional.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OpenFlight {
+    pub id: i64,
+    pub started_at: String,
+    pub origin_lat: f64,
+    pub origin_lon: f64,
+    pub origin_icao: Option<String>,
+    pub max_altitude_ft: Option<i64>,
+}
+
+/// Devuelve el vuelo abierto más reciente, si existe. El watcher
+/// lo invoca al arrancar — si hay uno con `last_position_at` < 1h,
+/// asume que el usuario sigue volando y restaura el state.
+pub async fn latest_open_flight(pool: &SqlitePool) -> anyhow::Result<Option<OpenFlight>> {
+    let row = sqlx::query_as::<_, OpenFlight>(
+        r#"
+        SELECT id, started_at, origin_lat, origin_lon, origin_icao, max_altitude_ft
+        FROM flight_log
+        WHERE ended_at IS NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Cierra todos los vuelos abiertos que llevan más de N segundos
+/// sin update de `last_position_at`. Eso evita acumular "vuelos
+/// fantasma" cuando la app crasheó / el sim crasheó / el usuario
+/// olvidó cerrar el flight plan. Los marcamos con `ended_at =
+/// last_position_at` y los datos de aterrizaje quedan vacíos para
+/// indicar que fue un cierre artificial.
+pub async fn close_stale_open_flights(
+    pool: &SqlitePool,
+    max_idle_seconds: i64,
+) -> anyhow::Result<u64> {
+    let r = sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET ended_at = COALESCE(last_position_at, started_at)
+        WHERE ended_at IS NULL
+          AND (
+            last_position_at IS NULL
+            OR (strftime('%s', 'now') - strftime('%s', last_position_at)) > ?1
+          )
+        "#,
+    )
+    .bind(max_idle_seconds)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntry>> {
     let rows = sqlx::query_as::<_, FlightLogEntry>(
         r#"
@@ -277,46 +371,8 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
 /// Busca el aeropuerto en `airports` cuya distancia haversine al
 /// punto sea mínima y < `NEAREST_THRESHOLD_NM`. SQLite no tiene
 /// trig nativa; pre-filtramos con un bounding box rectangular y
-/// luego haversine en Rust.
-pub async fn nearest_airport(
-    pool: &SqlitePool,
-    lat: f64,
-    lon: f64,
-) -> anyhow::Result<Option<NearestAirport>> {
-    // Bounding box: 1 grado lat ≈ 60 nm, 1 grado lon ≈ 60 nm * cos(lat).
-    // Ampliamos a ~10 nm de margen para no perder candidatos en el borde.
-    let lat_margin = 10.0 / 60.0;
-    let lon_margin = (10.0 / 60.0) / lat.to_radians().cos().abs().max(0.01);
-    let rows: Vec<(String, String, f64, f64)> = sqlx::query_as(
-        r#"
-        SELECT icao, name, latitude, longitude
-        FROM airports
-        WHERE latitude  BETWEEN ?1 AND ?2
-          AND longitude BETWEEN ?3 AND ?4
-        "#,
-    )
-    .bind(lat - lat_margin)
-    .bind(lat + lat_margin)
-    .bind(lon - lon_margin)
-    .bind(lon + lon_margin)
-    .fetch_all(pool)
-    .await?;
-
-    let best = rows
-        .into_iter()
-        .map(|(icao, name, alat, alon)| {
-            let d = haversine_nm(lat, lon, alat, alon);
-            (icao, name, d)
-        })
-        .filter(|(_, _, d)| *d < NEAREST_THRESHOLD_NM)
-        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
-
-    Ok(best.map(|(icao, name, _)| NearestAirport { icao, name }))
-}
-
-/// Variante con coords. Mismo algoritmo que `nearest_airport` pero
-/// devolviendo lat/lon además del ICAO/name. Usado por el formato
-/// del gate fallback para calcular el offset desde el centro.
+/// luego haversine en Rust. Devuelve coordenadas para que el caller
+/// pueda calcular bearing/offset si lo necesita.
 pub async fn nearest_airport_with_coords(
     pool: &SqlitePool,
     lat: f64,
