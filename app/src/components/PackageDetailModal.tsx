@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
-  ChevronDown,
-  ChevronUp,
   Download,
   ExternalLink,
   Folder,
@@ -21,6 +19,8 @@ import type {
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
+import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useToastStore } from "../stores/useToastStore";
 
 interface Props {
   pkg: CommunityPackage;
@@ -37,12 +37,20 @@ interface Props {
  *      → desinstalamos + descargamos. Esto sustituye el "Reparar"
  *      original que elegía silenciosamente el primer torrent y
  *      sorprendía al usuario.
- *   2. **Desinstalar** — borra el folder en Community + filas de DB.
- *      Confirmación adicional para evitar accidentes.
+ *   2. **Desinstalar** — borra el folder en TODAS las Community
+ *      detectadas (Steam/MSStore × 2020/2024) + carpetas extras +
+ *      filas de DB. Confirmación adicional para evitar accidentes;
+ *      el resultado se reporta vía toast (paths borrados / fallidos).
  *   3. **Abrir carpeta** — abre `install_path` con el explorador.
  *
  * El modal hace un search lazy del ICAO al abrir para enseñarle al
  * usuario qué métodos están disponibles ahora mismo en cada fuente.
+ *
+ * Cambio v0.1.19: la sección **Changelog** se eliminó de este
+ * modal — vivía como acordeón para paquetes con ICAO (escenarios)
+ * pero el usuario reportó que era ruido en el detalle de un paquete
+ * ya instalado. El changelog ahora vive en un botón dentro de los
+ * cards de búsqueda de Simplaza (`ResultCard.tsx`).
  */
 export function PackageDetailModal({ pkg, update, onClose }: Props) {
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
@@ -54,6 +62,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
 
   const rescan = useCommunityStore((s) => s.rescan);
   const startDownload = useDownloadsStore((s) => s.start);
+  const pushToast = useToastStore((s) => s.push);
 
   // Buscamos por ICAO si lo tenemos (SCENERY) y, además, por
   // nombre/keyword en Simplaza siempre — ese catálogo busca por
@@ -128,8 +137,34 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
     setBusy("uninstalling");
     setError(null);
     try {
-      await api.uninstallCommunityPackage(pkg.folderName);
+      const report = await api.uninstallCommunityPackage(pkg.folderName);
       await rescan();
+      // Reporte al usuario — toast verde con cuántas ubicaciones se
+      // limpiaron. Si hubo fallos parciales (típicamente MSFS abierto
+      // bloqueando handles), un segundo toast rojo los detalla.
+      const removed = report.removedPaths.length;
+      pushToast({
+        kind: removed > 0 ? "success" : "info",
+        title:
+          removed === 0
+            ? "Paquete no encontrado en disco"
+            : removed === 1
+              ? "Desinstalado de 1 ubicación"
+              : `Desinstalado de ${removed} ubicaciones`,
+        message:
+          removed > 0
+            ? report.removedPaths.join(" · ")
+            : "Limpiamos sólo las filas de la base de datos.",
+      });
+      if (report.failedPaths.length > 0) {
+        pushToast({
+          kind: "error",
+          title: `${report.failedPaths.length} ubicación(es) con error`,
+          message: report.failedPaths
+            .map((f) => `${f.path}: ${f.error}`)
+            .join(" · "),
+        });
+      }
       onClose();
     } catch (e) {
       setError(String(e));
@@ -256,19 +291,8 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                 label="Última modificación"
                 value={pkg.folderModifiedAt ?? "—"}
               />
+              <GsxProfileRow icao={pkg.icao} />
             </dl>
-
-            {/* Changelog expandible. Sólo visible cuando el modal
-                tiene un ICAO con que cruzar el catálogo — el detail
-                page de la fuente es donde vive el changelog. */}
-            {pkg.icao && (
-              <ChangelogSection
-                pkg={pkg}
-                onLoadCatalog={loadCatalogIfNeeded}
-                matches={matches}
-                searching={searching}
-              />
-            )}
 
             {error && (
               <div className="mt-4 flex items-start gap-2 rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200 ring-1 ring-rose-500/30">
@@ -283,8 +307,9 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                   ¿Borrar definitivamente <span className="font-mono">{pkg.folderName}</span>?
                 </p>
                 <p className="mt-1 text-rose-200/80">
-                  Se eliminará la carpeta en Community y las filas asociadas en
-                  la base de datos. No se puede deshacer.
+                  Se eliminará la carpeta en TODAS las carpetas Community
+                  detectadas (Steam, MS Store, MSFS 2024 si aplica) más las
+                  filas asociadas en la base de datos. No se puede deshacer.
                 </p>
                 <div className="mt-2 flex justify-end gap-2">
                   <button
@@ -568,6 +593,28 @@ function Detail({
   );
 }
 
+/** (v1.1.4) Renderiza la fila "Perfil GSX" con badge instalado/no
+ *  instalado. Lee del store local hidratado al boot. */
+function GsxProfileRow({ icao }: { icao: string | null }) {
+  const installedIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  if (!icao) return null;
+  const has = installedIcaos.has(icao.toUpperCase());
+  return (
+    <>
+      <dt className="text-slate-500">Perfil GSX</dt>
+      <dd className="truncate">
+        {has ? (
+          <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-200 ring-1 ring-violet-500/40">
+            ✓ Instalado
+          </span>
+        ) : (
+          <span className="text-[11px] text-slate-500">No detectado</span>
+        )}
+      </dd>
+    </>
+  );
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const k = ["KB", "MB", "GB", "TB"];
@@ -579,139 +626,3 @@ function formatBytes(n: number): string {
   }
   return `${v.toFixed(v < 10 ? 1 : 0)} ${k[i]}`;
 }
-
-/**
- * Sección desplegable con el changelog scrapeado de la página
- * detalle de la fuente. Tres estados:
- *   · Cerrado: sólo muestra el botón "Mostrar changelog".
- *   · Abierto + cargando: spinner.
- *   · Abierto + listo: lista bullet de líneas.
- *
- * El catálogo (matches) se necesita para saber a qué página apuntar.
- * Si todavía no se cargó, abrir el changelog dispara el lazy fetch.
- */
-function ChangelogSection({
-  pkg,
-  onLoadCatalog,
-  matches,
-  searching,
-}: {
-  pkg: CommunityPackage;
-  onLoadCatalog: () => Promise<void>;
-  matches: Addon[];
-  searching: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [lines, setLines] = useState<string[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // Elegimos la página del catálogo más probable: el match exacto
-  // por nombre normalizado (mismo desarrollador) si existe, si no
-  // el primero que comparta ICAO. Es el mismo criterio que el
-  // wizard usa para no traer changelogs de variantes ajenas.
-  const target = useMemo(() => {
-    if (matches.length === 0) return null;
-    const wantedNorm = pkg.title
-      .toLowerCase()
-      .replace(/\sv\d+(?:\.\d+)+\b.*$/i, "")
-      .trim();
-    const exact = matches.find(
-      (m) =>
-        m.name
-          .toLowerCase()
-          .replace(/\sv\d+(?:\.\d+)+\b.*$/i, "")
-          .trim() === wantedNorm,
-    );
-    return exact ?? matches[0];
-  }, [matches, pkg.title]);
-
-  const handleToggle = async () => {
-    const next = !open;
-    setOpen(next);
-    if (!next) return;
-    if (lines !== null) return; // ya cargado en sesión
-    setError(null);
-    setLoading(true);
-    try {
-      // Asegura catálogo cargado antes de pedir la página de detalle.
-      if (matches.length === 0) {
-        await onLoadCatalog();
-      }
-      // El target se recomputa después del load — leemos del closure
-      // de matches, pero el lazy load ya llenó el state, así que
-      // matches estará actualizado en la siguiente prop pass. Para
-      // la primera abertura usamos un retry simple si target es null.
-      const page = target;
-      if (!page) {
-        setError("No se encontró el addon en el catálogo de fuentes.");
-        setLines([]);
-        return;
-      }
-      const cl = await api.fetchChangelog(page.pageUrl);
-      setLines(cl.lines);
-    } catch (e) {
-      setError(String(e));
-      setLines([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <section className="mt-4 rounded-lg border border-slate-800 bg-slate-900/40">
-      <button
-        onClick={handleToggle}
-        className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/40"
-      >
-        <span className="inline-flex items-center gap-1.5">
-          {open ? (
-            <ChevronUp className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" />
-          )}
-          Changelog
-        </span>
-        {target && (
-          <span className="font-mono text-[10px] text-slate-500">
-            {target.source}
-            {target.version ? ` · v${target.version}` : ""}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="border-t border-slate-800 px-3 py-2 text-xs">
-          {(loading || searching) && (
-            <div className="inline-flex items-center gap-2 text-slate-500">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {searching ? "Buscando en el catálogo…" : "Leyendo página de detalle…"}
-            </div>
-          )}
-          {!loading && error && (
-            <p className="text-rose-300">{error}</p>
-          )}
-          {!loading && !error && lines && lines.length === 0 && (
-            <p className="text-slate-500">
-              No se encontró un changelog en la página de detalle.
-            </p>
-          )}
-          {!loading && !error && lines && lines.length > 0 && (
-            <ul className="ml-3 list-disc space-y-0.5 text-slate-300">
-              {lines.slice(0, 30).map((l, i) => (
-                <li key={i} className="leading-snug">
-                  {l}
-                </li>
-              ))}
-              {lines.length > 30 && (
-                <li className="italic text-slate-500">
-                  … y {lines.length - 30} líneas más
-                </li>
-              )}
-            </ul>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-

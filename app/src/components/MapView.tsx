@@ -11,11 +11,9 @@ import {
 import type { AvailableUpdate, CommunityPackage } from "../lib/types";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
-import { useSimBriefStore } from "../stores/useSimBriefStore";
-import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { useSettingsStore } from "../stores/useSettingsStore";
+import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { api } from "../lib/tauri";
 import { PackageDetailModal } from "./PackageDetailModal";
-import { greatCircleLine } from "../lib/greatCircle";
 
 /**
  * Vista de mapa mundial con sidebar lateral.
@@ -43,12 +41,6 @@ export function MapView() {
 
   const allPackages = useCommunityStore((s) => s.packages);
   const updates = useCommunityStore((s) => s.updates);
-  const simbriefFlights = useSimBriefStore((s) => s.flights);
-  const flightLogEntries = useFlightLogStore((s) => s.entries);
-  const showSimbriefLines = useSettingsStore((s) => s.settings.showSimbriefLines);
-  const showSimconnectLines = useSettingsStore(
-    (s) => s.settings.showSimconnectLines,
-  );
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const detailsFor = useCommunityStore((s) => s.detailsFor);
@@ -242,155 +234,11 @@ export function MapView() {
     map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 9), duration: 600 });
   }, [focusedPkg]);
 
-  // Capa SimBrief — una LineString por vuelo entre origin y dest.
-  // Si el usuario apaga "showSimbriefLines" en settings, vaciamos
-  // la collection — el efecto que sigue lo aplica al source y la
-  // capa queda invisible sin tener que removerla físicamente.
-  const simbriefGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.MultiLineString>>(
-    () => ({
-      type: "FeatureCollection",
-      features: !showSimbriefLines
-        ? []
-        : simbriefFlights.map((f) => ({
-            type: "Feature",
-            properties: {
-              ofpId: f.ofpId,
-              label: `${f.originIcao} → ${f.destinationIcao}`,
-            },
-            geometry: {
-              type: "MultiLineString",
-              // greatCircleLine devuelve un array de polylines —
-              // múltiples si la ruta cruza el antimeridiano (Pacífico).
-              coordinates: greatCircleLine(
-                f.originLon,
-                f.originLat,
-                f.destinationLon,
-                f.destinationLat,
-              ),
-            },
-          })),
-    }),
-    [simbriefFlights, showSimbriefLines],
-  );
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      const existing = map.getSource("simbrief") as GeoJSONSource | undefined;
-      if (existing) {
-        existing.setData(simbriefGeojson);
-        return;
-      }
-      map.addSource("simbrief", { type: "geojson", data: simbriefGeojson });
-      // Línea negra sólida con halo blanco fino. Antes usábamos
-      // dasharray para diferenciar SimBrief (plan) de SimConnect
-      // (real), pero el dasheado se rompía visualmente en arcos
-      // largos del great circle. Ahora ambas son líneas continuas
-      // negras — el botón de toggle en settings (mostrar SimBrief
-      // / mostrar SimConnect) y el panel SimBrief de la sidebar
-      // ya bastan para distinguir su origen.
-      map.addLayer({
-        id: "simbrief-line-glow",
-        type: "line",
-        source: "simbrief",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#ffffff",
-          "line-width": 3.5,
-          "line-opacity": 0.7,
-        },
-      });
-      map.addLayer({
-        id: "simbrief-line",
-        type: "line",
-        source: "simbrief",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#0f172a",
-          "line-width": 1.6,
-        },
-      });
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [simbriefGeojson]);
-
-  // Capa Flight Log (SimConnect) — vuelos reales registrados.
-  // Sólo pintamos los completados (origen + destino). Si el usuario
-  // apaga "showSimconnectLines" en settings, la collection se
-  // vacía — mismo patrón que SimBrief.
-  const flightLogGeojson = useMemo<GeoJSON.FeatureCollection<GeoJSON.MultiLineString>>(
-    () => ({
-      type: "FeatureCollection",
-      features: !showSimconnectLines
-        ? []
-        : flightLogEntries
-            .filter(
-              (e) =>
-                e.endedAt !== null &&
-                e.destinationLat !== null &&
-                e.destinationLon !== null,
-            )
-            .map((e) => ({
-              type: "Feature",
-              properties: {
-                id: e.id,
-                label: `${e.originIcao ?? "?"} → ${e.destinationIcao ?? "?"}`,
-                distanceNm: e.distanceNm,
-              },
-              geometry: {
-                type: "MultiLineString",
-                coordinates: greatCircleLine(
-                  e.originLon,
-                  e.originLat,
-                  e.destinationLon as number,
-                  e.destinationLat as number,
-                ),
-              },
-            })),
-    }),
-    [flightLogEntries, showSimconnectLines],
-  );
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      const existing = map.getSource("flightlog") as GeoJSONSource | undefined;
-      if (existing) {
-        existing.setData(flightLogGeojson);
-        return;
-      }
-      map.addSource("flightlog", { type: "geojson", data: flightLogGeojson });
-      // Vuelos reales: línea negra sólida más gruesa (los reales
-      // pesan más que los planes). Halo blanco para máximo
-      // contraste sobre el basemap claro.
-      map.addLayer({
-        id: "flightlog-line-glow",
-        type: "line",
-        source: "flightlog",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#ffffff",
-          "line-width": 4.5,
-          "line-opacity": 0.85,
-        },
-      });
-      map.addLayer({
-        id: "flightlog-line",
-        type: "line",
-        source: "flightlog",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#0f172a",
-          "line-width": 2.2,
-        },
-      });
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [flightLogGeojson]);
+  // NOTA: las líneas de rutas SimBrief + SimConnect vivían acá
+  // antes; las migramos al componente `RoutesMapView` que se monta
+  // dentro de `FlightBookView`. El usuario pidió que esta vista
+  // sólo muestre escenarios (aeropuertos del catálogo) y que las
+  // rutas tengan su propio mapa elegante en FlightBook.
 
   return (
     // Layout responsive: en pantallas grandes la sidebar crece a 380px
@@ -468,6 +316,9 @@ function Sidebar({
   onShowDetails: (folder: string) => void;
 }) {
   const [filter, setFilter] = useState("");
+  // (v2.0.0) Set de ICAOs con perfil GSX local — para badge por
+  // escenario en esta lista (no ya sólo en results de búsqueda).
+  const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -486,9 +337,6 @@ function Sidebar({
           <h3 className="text-sm font-semibold text-slate-100">
             Instalados ({packages.length})
           </h3>
-          <p className="text-[11px] text-slate-500">
-            Carpeta Community · re-escaneo automático
-          </p>
         </div>
       </header>
 
@@ -529,6 +377,10 @@ function Sidebar({
           {visible.map((p) => {
             const update = updatesByFolder.get(p.folderName);
             const isFocused = focused === p.folderName;
+            // (v2.0.0) ¿Tiene perfil GSX local para este ICAO? Sólo
+            // tiene sentido en sceneries con ICAO definido.
+            const hasGsx =
+              !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
             return (
               <li
                 key={p.folderName}
@@ -557,6 +409,34 @@ function Sidebar({
                         <span className="font-mono text-[11px] font-semibold text-brand-300">
                           {p.icao}
                         </span>
+                      )}
+                      {p.icao && hasGsx && (
+                        <span
+                          className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
+                          title={`Perfil GSX detectado en %APPDATA%\\Virtuali\\GSX\\MSFS para ${p.icao}`}
+                        >
+                          ✓ GSX
+                        </span>
+                      )}
+                      {p.icao && !hasGsx && (
+                        <a
+                          href="#"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            // (v2.1.1) URL canónica de búsqueda GSX en
+                            // flightsim.to — el `?q=ICAO` filtra dentro
+                            // de la subcategoría gsx-pro.
+                            const url = `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(
+                              p.icao!,
+                            )}`;
+                            void api.openExternal(url);
+                          }}
+                          className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
+                          title={`Sin perfil GSX local para ${p.icao}. Click → buscar en flightsim.to`}
+                        >
+                          ✗ GSX
+                        </a>
                       )}
                       {update && (
                         <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30">

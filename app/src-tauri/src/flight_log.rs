@@ -35,14 +35,47 @@ pub struct FlightLogEntry {
     pub distance_nm: Option<f64>,
     pub flight_time_s: Option<i64>,
     pub max_altitude_ft: Option<i64>,
+    /// Vertical speed (FPM) capturado en el momento del touchdown.
+    /// Negativo = descenso (lo normal); positivo = subida (raro).
+    /// Una "buen aterrizaje" suele estar entre -100 y -500 FPM;
+    /// arriba de -600 ya es duro, arriba de -1000 abusivo.
+    pub landing_fpm: Option<i64>,
+    /// Velocidad máxima sobre tierra durante el vuelo (knots).
+    pub max_ground_speed_kt: Option<i64>,
+    /// Velocidad máxima true airspeed (knots) — útil para distinguir
+    /// performance real del avión vs. lo que el viento añade/quita.
+    pub max_true_airspeed_kt: Option<i64>,
+    /// Parking spot / gate de salida — formato "GATE A12", "RAMP 3"
+    /// o `Position: lat,lon` cuando no detectamos parking conocido.
+    pub departure_gate: Option<String>,
+    /// Parking spot / gate de llegada.
+    pub arrival_gate: Option<String>,
+    /// Pasajeros transportados — manual (la integración GSX queda
+    /// para una release futura). Editable vía `update_flight_log_entry`.
+    pub passengers: Option<i64>,
+    /// Carga útil (kg) — manual, editable.
+    pub cargo_kg: Option<i64>,
+    /// Combustible consumido (kg) — automático cuando SimConnect
+    /// está conectado: diferencia entre FUEL TOTAL QUANTITY WEIGHT al
+    /// OUT (pushback) y al IN (engine shutdown). Manualmente
+    /// editable.
+    pub fuel_used_kg: Option<i64>,
+    /// Segundos totales con el sim pausado durante el vuelo. Lo
+    /// usamos para restar al raw `flight_time_s` y devolver block
+    /// time REAL (sin contar pausas).
+    pub paused_seconds: i64,
     pub source: String,
 }
 
-/// Resultado del lookup de aeropuerto más cercano.
+/// Resultado del lookup de aeropuerto más cercano. Incluye
+/// coordenadas para que `format_gate_fallback` pueda calcular
+/// bearing y distancia desde el centro del aeropuerto.
 #[derive(Debug, Clone)]
-pub struct NearestAirport {
+pub struct NearestAirportFull {
     pub icao: String,
     pub name: String,
+    pub latitude: f64,
+    pub longitude: f64,
 }
 
 const NEAREST_THRESHOLD_NM: f64 = 3.0;
@@ -50,6 +83,13 @@ const NEAREST_THRESHOLD_NM: f64 = 3.0;
 /// Crea una fila nueva con `ended_at = NULL`. Devuelve el id
 /// para que el watcher lo guarde en su state — al aterrizar se
 /// hará UPDATE sobre esa fila.
+///
+/// **v3.0.0** — `departure_gate` se queda como `NULL` hasta que la
+/// `RequestFacilityData` de SimConnect devuelve el nombre real del
+/// parking (ej. "A34", "B12", "Ramp 4"). Antes guardábamos un
+/// fallback `Stand · 341° 855m de LGKO` que el usuario reportó como
+/// ruidoso y confuso. Si la API falla, el campo queda NULL y la UI
+/// simplemente no muestra el chip de gate.
 pub async fn start_flight(
     pool: &SqlitePool,
     lat: f64,
@@ -57,7 +97,19 @@ pub async fn start_flight(
     aircraft_title: Option<&str>,
     aircraft_atc: Option<&str>,
 ) -> anyhow::Result<i64> {
-    let nearest = nearest_airport(pool, lat, lon).await?;
+    let nearest = nearest_airport_with_coords(pool, lat, lon).await?;
+    // (v1.1.1) Defensa contra "vuelos fantasma" cuando MSFS reporta
+    // posición (0, 0) durante el splash/menú antes de que el
+    // escenario cargue. Si Y no hay airport cercano (esa zona del
+    // Atlántico ecuatorial no tiene ninguno), rechazamos la creación.
+    // El state machine del watcher YA filtra esto upstream, pero
+    // esta guard cubre cualquier camino que llegue aquí (ej. el
+    // comando debug_seed_flight_log o llamadas manuales).
+    if nearest.is_none() && lat.abs() < 0.01 && lon.abs() < 0.01 {
+        anyhow::bail!(
+            "posición (0, 0) sin airport cercano — probablemente MSFS aún cargando el escenario, vuelo no creado"
+        );
+    }
     let started_at = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
@@ -66,9 +118,9 @@ pub async fn start_flight(
         r#"
         INSERT INTO flight_log (
             started_at, origin_lat, origin_lon, origin_icao, origin_name,
-            aircraft_title, aircraft_atc_type, source
+            aircraft_title, aircraft_atc_type, departure_gate, source
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'simconnect')
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'simconnect')
         "#,
     )
     .bind(&started_at)
@@ -84,16 +136,58 @@ pub async fn start_flight(
     Ok(result.last_insert_rowid())
 }
 
-/// Cierra un vuelo abierto: rellena destino, distancia, duración
-/// y altitud máxima.
+/// (v3.0.0 — deprecado) Formateo del gate fallback estilo
+/// `Stand · 320° 280m de EBBR`. Ya no se usa porque el usuario
+/// reportó la string como confusa; ahora dejamos los gates NULL hasta
+/// tener el nombre real de SimConnect Facility Data API. Se conserva
+/// la función por compat con código legado pero ningún call site
+/// activo la invoca.
+#[allow(dead_code)]
+fn format_gate_fallback(lat: f64, lon: f64, nearest: Option<&NearestAirportFull>) -> String {
+    match nearest {
+        Some(n) => {
+            let dist_nm = haversine_nm(n.latitude, n.longitude, lat, lon);
+            let bearing = bearing_deg(n.latitude, n.longitude, lat, lon);
+            let dist_m = (dist_nm * 1852.0).round() as i64;
+            format!(
+                "Stand · {:03.0}° {}m de {}",
+                bearing, dist_m, n.icao
+            )
+        }
+        None => format!("Position: {:.4}, {:.4}", lat, lon),
+    }
+}
+
+/// Métricas extra capturadas al cerrar el vuelo. Las pasamos en un
+/// struct para evitar arguments-explosion en la signatura.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlightFinishMetrics {
+    pub max_altitude_ft: Option<i64>,
+    /// FPM en el touchdown — negativo = descenso (lo normal).
+    pub landing_fpm: Option<i64>,
+    /// Ground speed máxima durante el vuelo.
+    pub max_ground_speed_kt: Option<i64>,
+    /// True airspeed máxima durante el vuelo.
+    pub max_true_airspeed_kt: Option<i64>,
+    /// Combustible consumido (kg) — diferencia entre fuel inicial
+    /// (capturado al OUT) y fuel final (al IN). Si SimConnect no
+    /// estaba conectado al OUT, queda `None`.
+    pub fuel_used_kg: Option<i64>,
+    /// Total de segundos con el sim pausado durante el vuelo.
+    /// `finish_flight` resta esto del raw duration → block time real.
+    pub paused_seconds: i64,
+}
+
+/// Cierra un vuelo abierto: rellena destino, distancia, duración,
+/// altitud máxima y las nuevas métricas (landing FPM + max speeds).
 pub async fn finish_flight(
     pool: &SqlitePool,
     id: i64,
     lat: f64,
     lon: f64,
-    max_altitude_ft: Option<i64>,
+    metrics: FlightFinishMetrics,
 ) -> anyhow::Result<()> {
-    let nearest = nearest_airport(pool, lat, lon).await?;
+    let nearest = nearest_airport_with_coords(pool, lat, lon).await?;
 
     // Cargamos origen para calcular distancia y duración.
     let origin: Option<(String, f64, f64)> = sqlx::query_as(
@@ -111,24 +205,41 @@ pub async fn finish_flight(
     let now = chrono::Utc::now();
     let ended_at = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    // Duración = ahora - started_at. Si el parse falla por algún
-    // motivo dejamos NULL en flight_time_s; no es crítico.
-    let flight_time_s = chrono::DateTime::parse_from_rfc3339(&started_at)
+    // Duración = ahora - started_at MENOS el tiempo pausado. Eso
+    // refleja block-time REAL (sin las pausas que el usuario hizo
+    // para preparar charts, comer, etc). Si el parse falla, NULL.
+    let raw_seconds = chrono::DateTime::parse_from_rfc3339(&started_at)
         .ok()
-        .map(|dt| (now.signed_duration_since(dt.with_timezone(&chrono::Utc))).num_seconds());
+        .map(|dt| now.signed_duration_since(dt.with_timezone(&chrono::Utc)).num_seconds());
+    let flight_time_s = raw_seconds.map(|s| (s - metrics.paused_seconds).max(0));
 
+    // (v3.0.0) `arrival_gate` con COALESCE — sólo escribe si la fila
+    // todavía no tiene gate real (la mayoría de las veces SimConnect
+    // Facility Data ya lo populó en `process_pending_gate`). Antes
+    // siempre sobreescribíamos con el fallback `Stand · X° Ym`, lo
+    // que pisoteaba el nombre real cuando llegaba ANTES del IN. Ahora
+    // dejamos el campo NULL si SimConnect no nos dio uno.
+    // (v2.2.0) `fuel_used_kg`: PRIORIZAR el valor existente (de
+    // SimBrief vía pre-populate al OUT). Sólo usar el cálculo de
+    // SimConnect si la fila no tiene fuel todavía.
     sqlx::query(
         r#"
         UPDATE flight_log
-        SET ended_at         = ?1,
-            destination_lat  = ?2,
-            destination_lon  = ?3,
-            destination_icao = ?4,
-            destination_name = ?5,
-            distance_nm      = ?6,
-            flight_time_s    = ?7,
-            max_altitude_ft  = COALESCE(?8, max_altitude_ft)
-        WHERE id = ?9
+        SET ended_at             = ?1,
+            destination_lat      = ?2,
+            destination_lon      = ?3,
+            destination_icao     = ?4,
+            destination_name     = ?5,
+            distance_nm          = ?6,
+            flight_time_s        = ?7,
+            max_altitude_ft      = COALESCE(?8, max_altitude_ft),
+            landing_fpm          = ?9,
+            max_ground_speed_kt  = ?10,
+            max_true_airspeed_kt = ?11,
+            arrival_gate         = COALESCE(arrival_gate, NULL),
+            fuel_used_kg         = COALESCE(fuel_used_kg, ?12),
+            paused_seconds       = ?13
+        WHERE id = ?14
         "#,
     )
     .bind(&ended_at)
@@ -138,11 +249,125 @@ pub async fn finish_flight(
     .bind(nearest.as_ref().map(|n| n.name.as_str()))
     .bind(distance_nm)
     .bind(flight_time_s)
-    .bind(max_altitude_ft)
+    .bind(metrics.max_altitude_ft)
+    .bind(metrics.landing_fpm)
+    .bind(metrics.max_ground_speed_kt)
+    .bind(metrics.max_true_airspeed_kt)
+    .bind(metrics.fuel_used_kg)
+    .bind(metrics.paused_seconds)
     .bind(id)
     .execute(pool)
     .await?;
 
+    Ok(())
+}
+
+/// Persiste el `fuel_initial_kg` recién captado al OUT (transición
+/// OnGround → BlockOut). El watcher recuerda este valor en su state
+/// local; lo persistimos también en DB en una columna virtual via
+/// el campo `fuel_used_kg` con signo negativo TEMPORAL — no, mejor
+/// usamos una struct sólo en memoria del watcher para no contaminar
+/// el schema. Esta función queda como helper para el futuro si
+/// queremos persistir el inicial separado del usado.
+///
+/// Por ahora el watcher hace el delta en memoria y al cerrar el
+/// vuelo pasa `fuel_used_kg` ya calculado dentro de
+/// `FlightFinishMetrics`.
+
+/// Actualiza campos editables de un vuelo ya cerrado — usado por
+/// el botón "Editar" del panel de detalle. Todos los argumentos son
+/// `Option<>`: `None` significa "no tocar este campo". Permite al
+/// usuario corregir lo que el watcher detectó mal (gates, pasajeros,
+/// carga, block time si el sim no detectó bien una pausa).
+#[derive(Debug, Clone, Default)]
+pub struct UpdateEntryInput {
+    pub flight_time_s: Option<i64>,
+    pub passengers: Option<i64>,
+    pub cargo_kg: Option<i64>,
+    pub fuel_used_kg: Option<i64>,
+    pub departure_gate: Option<String>,
+    pub arrival_gate: Option<String>,
+}
+
+pub async fn update_entry(
+    pool: &SqlitePool,
+    id: i64,
+    input: &UpdateEntryInput,
+) -> anyhow::Result<()> {
+    // Construimos el UPDATE dinámicamente para no sobreescribir con
+    // NULL los campos que el caller no quiere tocar. SQLite no tiene
+    // un "DEFAULT existing_value" syntax conciso para todos los
+    // campos, así que armamos el SET a mano.
+    let mut sets: Vec<&str> = Vec::new();
+    if input.flight_time_s.is_some() {
+        sets.push("flight_time_s = ?");
+    }
+    if input.passengers.is_some() {
+        sets.push("passengers = ?");
+    }
+    if input.cargo_kg.is_some() {
+        sets.push("cargo_kg = ?");
+    }
+    if input.fuel_used_kg.is_some() {
+        sets.push("fuel_used_kg = ?");
+    }
+    if input.departure_gate.is_some() {
+        sets.push("departure_gate = ?");
+    }
+    if input.arrival_gate.is_some() {
+        sets.push("arrival_gate = ?");
+    }
+    if sets.is_empty() {
+        return Ok(());
+    }
+    let sql = format!(
+        "UPDATE flight_log SET {} WHERE id = ?",
+        sets.join(", ")
+    );
+    let mut q = sqlx::query(&sql);
+    if let Some(v) = input.flight_time_s {
+        q = q.bind(v);
+    }
+    if let Some(v) = input.passengers {
+        q = q.bind(v);
+    }
+    if let Some(v) = input.cargo_kg {
+        q = q.bind(v);
+    }
+    if let Some(v) = input.fuel_used_kg {
+        q = q.bind(v);
+    }
+    if let Some(v) = input.departure_gate.as_ref() {
+        q = q.bind(v);
+    }
+    if let Some(v) = input.arrival_gate.as_ref() {
+        q = q.bind(v);
+    }
+    q = q.bind(id);
+    q.execute(pool).await?;
+    Ok(())
+}
+
+/// Persiste el landing_fpm en el momento exacto del touchdown
+/// (v0.1.22). Antes el FPM se guardaba sólo al `finish_flight()`
+/// (es decir, al cerrar la fila); ahora el cierre puede demorarse
+/// varios minutos esperando el engine shutdown OOOI, y queremos no
+/// perder el valor si la app crashea durante el taxi-in.
+///
+/// Se llama UNA vez por vuelo, en la transición Airborne→Landed.
+/// Llamarla múltiples veces (touch-and-go) sobreescribiría con el
+/// FPM más reciente — el watcher evita ese caso conservando sólo
+/// el primer FPM en memoria.
+pub async fn touch_landing(
+    pool: &SqlitePool,
+    id: i64,
+    landing_fpm: i64,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE flight_log SET landing_fpm = ?1 WHERE id = ?2")
+        .bind(landing_fpm)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -169,6 +394,211 @@ pub async fn touch_max_altitude(
     Ok(())
 }
 
+/// **ACARS-like persistent tracking**: cada tick el watcher escribe
+/// la posición + altitud + groundspeed actuales en la fila del
+/// vuelo abierto. Sirve dos propósitos:
+///
+///   1. Si la app se cierra a mitad de vuelo y se reabre, podemos
+///      restaurar el state del watcher sin haber perdido nada.
+///   2. Si el avión se estrella / el sim crashea, el último punto
+///      queda guardado y la UI muestra "interrumpido en lat,lon".
+///
+/// Es muy barato: un UPDATE por id, ejecutado max 1 vez por
+/// segundo (la frecuencia del SimConnect poll).
+pub async fn touch_live_position(
+    pool: &SqlitePool,
+    id: i64,
+    lat: f64,
+    lon: f64,
+    alt_ft: i64,
+    gs_kt: i64,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET last_position_lat    = ?1,
+            last_position_lon    = ?2,
+            last_position_alt_ft = ?3,
+            last_position_gs_kt  = ?4,
+            last_position_at     = ?5
+        WHERE id = ?6
+        "#,
+    )
+    .bind(lat)
+    .bind(lon)
+    .bind(alt_ft)
+    .bind(gs_kt)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Vuelo abierto (sin `ended_at`) — usado para restaurar el state
+/// del watcher al reabrir la app tras un cierre forzado/intencional.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OpenFlight {
+    pub id: i64,
+    pub started_at: String,
+    pub origin_lat: f64,
+    pub origin_lon: f64,
+    pub origin_icao: Option<String>,
+    pub max_altitude_ft: Option<i64>,
+    /// (v2.0.3) Última posición conocida — usada por el watcher para
+    /// decidir si "continuar" el vuelo (mismo lugar, mismo session) o
+    /// "abandonar" (player muy lejos = nueva sesión).
+    pub last_position_lat: Option<f64>,
+    pub last_position_lon: Option<f64>,
+    /// Timestamp ISO de la última posición. Si > 24h se considera
+    /// fantasma; el `close_stale_open_flights` lo va a cerrar al
+    /// próximo startup.
+    pub last_position_at: Option<String>,
+}
+
+/// Devuelve el vuelo abierto más reciente, si existe. El watcher
+/// lo invoca al arrancar — si hay uno con `last_position_at` < 1h,
+/// asume que el usuario sigue volando y restaura el state.
+pub async fn latest_open_flight(pool: &SqlitePool) -> anyhow::Result<Option<OpenFlight>> {
+    let row = sqlx::query_as::<_, OpenFlight>(
+        r#"
+        SELECT id, started_at, origin_lat, origin_lon, origin_icao,
+               max_altitude_ft, last_position_lat, last_position_lon,
+               last_position_at
+        FROM flight_log
+        WHERE ended_at IS NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+
+/// Cierra todos los vuelos abiertos que llevan más de N segundos
+/// sin update de `last_position_at`. Eso evita acumular "vuelos
+/// fantasma" cuando la app crasheó / el sim crasheó / el usuario
+/// olvidó cerrar el flight plan. Los marcamos con `ended_at =
+/// last_position_at` y los datos de aterrizaje quedan vacíos para
+/// indicar que fue un cierre artificial.
+pub async fn close_stale_open_flights(
+    pool: &SqlitePool,
+    max_idle_seconds: i64,
+) -> anyhow::Result<u64> {
+    let r = sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET ended_at = COALESCE(last_position_at, started_at)
+        WHERE ended_at IS NULL
+          AND (
+            last_position_at IS NULL
+            OR (strftime('%s', 'now') - strftime('%s', last_position_at)) > ?1
+          )
+        "#,
+    )
+    .bind(max_idle_seconds)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// (v2.0.3) Cierre forzado de un vuelo concreto por id. Usado por la
+/// UI cuando el usuario reconoce que el vuelo está abandonado y
+/// quiere marcarlo como cerrado sin esperar al engine shutdown.
+///
+/// Si el vuelo tiene `last_position_*` poblados, los usamos como
+/// destino + tiempo de cierre + métricas mínimas. Si no, sólo
+/// marcamos `ended_at = now`. NO inferimos altitudes ni FPM al
+/// vuelo — quedan en NULL para indicar "cierre artificial".
+pub async fn force_close_flight(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET
+            ended_at         = COALESCE(last_position_at, datetime('now')),
+            destination_lat  = COALESCE(destination_lat, last_position_lat),
+            destination_lon  = COALESCE(destination_lon, last_position_lon)
+        WHERE id = ?1
+          AND ended_at IS NULL
+        "#,
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Punto individual de la polyline de un vuelo (v0.1.23). Una fila
+/// por muestreo (~cada 10s) en la tabla `flight_log_track`. El
+/// frontend los pide para un `flight_id` específico y los pinta como
+/// LineString en el mapa de FlightBook.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct FlightTrackPoint {
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_ft: Option<i64>,
+    pub gs_kt: Option<i64>,
+    pub ts: String,
+}
+
+/// Inserta un punto en la traza del vuelo. Llamado por el watcher
+/// cada ~10s mientras el vuelo está en fases BlockOut / Airborne /
+/// Landed. No es idempotente — cada muestreo es una fila nueva, el
+/// PK es AUTOINCREMENT.
+pub async fn insert_track_point(
+    pool: &SqlitePool,
+    flight_id: i64,
+    lat: f64,
+    lon: f64,
+    alt_ft: i64,
+    gs_kt: i64,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO flight_log_track (flight_id, lat, lon, alt_ft, gs_kt, ts)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(flight_id)
+    .bind(lat)
+    .bind(lon)
+    .bind(alt_ft)
+    .bind(gs_kt)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Lee toda la traza de un vuelo, ordenada cronológicamente. El
+/// frontend la convierte en GeoJSON LineString para pintar.
+pub async fn list_track_for_flight(
+    pool: &SqlitePool,
+    flight_id: i64,
+) -> anyhow::Result<Vec<FlightTrackPoint>> {
+    let rows = sqlx::query_as::<_, FlightTrackPoint>(
+        r#"
+        SELECT lat, lon, alt_ft, gs_kt, ts
+        FROM flight_log_track
+        WHERE flight_id = ?1
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(flight_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntry>> {
     let rows = sqlx::query_as::<_, FlightLogEntry>(
         r#"
@@ -176,7 +606,11 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                origin_lat, origin_lon, origin_icao, origin_name,
                destination_lat, destination_lon, destination_icao, destination_name,
                aircraft_title, aircraft_atc_type, distance_nm, flight_time_s,
-               max_altitude_ft, source
+               max_altitude_ft,
+               landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
+               departure_gate, arrival_gate,
+               passengers, cargo_kg, fuel_used_kg, paused_seconds,
+               source
         FROM flight_log
         ORDER BY started_at DESC
         "#,
@@ -194,17 +628,48 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// (v1.1.1) Borra "vuelos fantasma" creados por bugs de versiones
+/// anteriores cuando MSFS reportaba el avión en world origin (0, 0)
+/// durante el splash. Sólo borra filas con origen claramente
+/// imposible — no toca historiales reales.
+///
+/// Criterios (OR):
+///   1. `|origin_lat| < 0.01 && |origin_lon| < 0.01` — world origin,
+///      no hay aeropuertos ahí (Golfo de Guinea océano).
+///   2. `origin_icao IS NULL AND distance_nm < 2 AND flight_time_s < 60` —
+///      "vuelo" microscópico sin aeropuerto que detectamos como junk.
+///
+/// Devuelve cuántas filas se borraron. La cascada elimina también
+/// los `flight_log_track` asociados (ON DELETE CASCADE en
+/// migración 015).
+pub async fn delete_junk_flights(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let r = sqlx::query(
+        r#"
+        DELETE FROM flight_log
+        WHERE (ABS(origin_lat) < 0.01 AND ABS(origin_lon) < 0.01)
+           OR (
+                origin_icao IS NULL
+                AND COALESCE(distance_nm, 0) < 2
+                AND COALESCE(flight_time_s, 0) < 60
+                AND ended_at IS NOT NULL
+              )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// Busca el aeropuerto en `airports` cuya distancia haversine al
 /// punto sea mínima y < `NEAREST_THRESHOLD_NM`. SQLite no tiene
 /// trig nativa; pre-filtramos con un bounding box rectangular y
-/// luego haversine en Rust.
-pub async fn nearest_airport(
+/// luego haversine en Rust. Devuelve coordenadas para que el caller
+/// pueda calcular bearing/offset si lo necesita.
+pub async fn nearest_airport_with_coords(
     pool: &SqlitePool,
     lat: f64,
     lon: f64,
-) -> anyhow::Result<Option<NearestAirport>> {
-    // Bounding box: 1 grado lat ≈ 60 nm, 1 grado lon ≈ 60 nm * cos(lat).
-    // Ampliamos a ~10 nm de margen para no perder candidatos en el borde.
+) -> anyhow::Result<Option<NearestAirportFull>> {
     let lat_margin = 10.0 / 60.0;
     let lon_margin = (10.0 / 60.0) / lat.to_radians().cos().abs().max(0.01);
     let rows: Vec<(String, String, f64, f64)> = sqlx::query_as(
@@ -221,21 +686,36 @@ pub async fn nearest_airport(
     .bind(lon + lon_margin)
     .fetch_all(pool)
     .await?;
-
     let best = rows
         .into_iter()
         .map(|(icao, name, alat, alon)| {
             let d = haversine_nm(lat, lon, alat, alon);
-            (icao, name, d)
+            (icao, name, alat, alon, d)
         })
-        .filter(|(_, _, d)| *d < NEAREST_THRESHOLD_NM)
-        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        .filter(|(_, _, _, _, d)| *d < NEAREST_THRESHOLD_NM)
+        .min_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(best.map(|(icao, name, latitude, longitude, _)| NearestAirportFull {
+        icao,
+        name,
+        latitude,
+        longitude,
+    }))
+}
 
-    Ok(best.map(|(icao, name, _)| NearestAirport { icao, name }))
+/// Bearing inicial (great circle) en grados [0, 360) desde
+/// (lat1,lon1) hacia (lat2,lon2). 0° = norte, 90° = este, etc.
+fn bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let dlmd = (lon2 - lon1).to_radians();
+    let y = dlmd.sin() * phi2.cos();
+    let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * dlmd.cos();
+    let theta = y.atan2(x).to_degrees();
+    (theta + 360.0) % 360.0
 }
 
 /// Haversine en millas náuticas — radio terrestre 3440.065 nm.
-fn haversine_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub fn haversine_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let r = 3440.065_f64;
     let phi1 = lat1.to_radians();
     let phi2 = lat2.to_radians();

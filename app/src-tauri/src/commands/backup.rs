@@ -218,7 +218,7 @@ fn csv_escape(s: &str) -> String {
 
 fn serialize_txt(rows: &[ExportRow]) -> String {
     let mut out = String::new();
-    out.push_str("MSFS Addons Browser — inventario de Community\n");
+    out.push_str("SimFleet — inventario de Community\n");
     out.push_str(&format!(
         "Generado: {}\nTotal: {} paquetes\n\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),

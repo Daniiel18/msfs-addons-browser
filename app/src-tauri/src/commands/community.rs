@@ -5,6 +5,7 @@ use crate::community_scanner::{self, ScanReport};
 use crate::db::repo::{self, CommunityPackageRow};
 use crate::logger::CmdTimer;
 use crate::package_ops;
+use crate::pmdg_liveries::{self, PmdgLivery};
 use crate::updates::{self, AvailableUpdate, RefreshSummary};
 use crate::{cmd_log, AppState};
 
@@ -99,34 +100,45 @@ pub async fn refresh_updates_for_installed(
     Ok(result)
 }
 
-/// Desinstala un paquete por nombre de folder. Borra el directorio
-/// en Community y limpia las filas de DB asociadas. Devuelve un
-/// scan report fresco para que el frontend reconcilie la lista.
+/// Desinstala un paquete por nombre de folder.
+///
+/// Desde v0.1.19 la desinstalación es **total**: borra el folder en
+/// CADA Community detectada (Steam 2020, MS Store 2020, Steam 2024,
+/// MS Store 2024) y en las carpetas extras
+/// (`Documents\MSFS Sceneries\<folder>`,
+/// `Documents\MSFS 2024 Sceneries\<folder>`). Devuelve un
+/// `UninstallReport` con los paths borrados + los que fallaron para
+/// que el frontend pueda enseñar al usuario qué se hizo y dónde
+/// queda residuo que requiera intervención manual (típicamente, MSFS
+/// está corriendo y bloquea el handle del directorio).
 #[tauri::command]
 pub async fn uninstall_community_package(
     folder_name: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<package_ops::UninstallReport, String> {
     cmd_log!("uninstall_community_package", "folder={}", folder_name);
     let _t = CmdTimer::start("uninstall_community_package");
-    let result = package_ops::uninstall_by_folder(&state.db, &folder_name)
-        .await
-        .map_err(|e| {
+    match package_ops::uninstall_by_folder(&state.db, &folder_name).await {
+        Ok(report) => {
+            tracing::info!(
+                target: "install",
+                "uninstall '{}' OK — {} paths borrados, {} fallaron, {} filas DB",
+                folder_name,
+                report.removed_paths.len(),
+                report.failed_paths.len(),
+                report.db_rows_cleared
+            );
+            Ok(report)
+        }
+        Err(e) => {
             tracing::error!(
                 target: "install",
                 "uninstall '{}' falló: {e:#}",
                 folder_name
             );
-            e.to_string()
-        });
-    if result.is_ok() {
-        tracing::info!(
-            target: "install",
-            "uninstall '{}' OK — carpeta borrada y filas DB limpiadas",
-            folder_name
-        );
+            Err(e.to_string())
+        }
     }
-    result
 }
 
 /// Diagnóstico exhaustivo del estado de detección de updates para
@@ -372,6 +384,31 @@ fn find_any_image(dir: &std::path::Path, depth: usize) -> Option<String> {
         }
     }
     None
+}
+
+/// (v3.0.0) Escanea liveries de PMDG en la carpeta Community.
+/// Detecta paquetes con prefijo `pmdg-aircraft-*-liveries`, parsea
+/// el `aircraft.cfg` de cada uno y devuelve la lista de variantes
+/// con tail number, airline, texture y thumbnail (si existe).
+///
+/// Es un comando independiente del scan general porque PMDG no
+/// expone metadatos en `manifest.json` — el detalle vive en el
+/// aircraft.cfg dentro de SimObjects/Airplanes/.
+#[tauri::command]
+pub async fn list_pmdg_liveries(
+    community_path: Option<String>,
+) -> Result<Vec<PmdgLivery>, String> {
+    cmd_log!("list_pmdg_liveries", "path={:?}", community_path);
+    let _t = CmdTimer::start("list_pmdg_liveries");
+    let path = resolve_path(community_path).await?;
+    let path_for_task = path.clone();
+    let liveries = tokio::task::spawn_blocking(move || {
+        pmdg_liveries::scan_pmdg_liveries(&path_for_task)
+    })
+    .await
+    .map_err(|e| format!("la tarea de escaneo PMDG falló: {e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(liveries)
 }
 
 async fn resolve_path(community_path: Option<String>) -> Result<PathBuf, String> {

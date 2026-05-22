@@ -1,8 +1,10 @@
 pub mod airports;
+pub mod cloud_sync;
 pub mod commands;
 pub mod community;
 pub mod community_scanner;
 pub mod db;
+pub mod drop_install;
 pub mod download;
 pub mod flight_log;
 pub mod gsx;
@@ -10,6 +12,7 @@ pub mod install;
 pub mod logger;
 pub mod package_ops;
 pub mod parser;
+pub mod pmdg_liveries;
 pub mod simbrief;
 pub mod simconnect_ffi;
 pub mod simconnect_watcher;
@@ -40,6 +43,10 @@ pub struct AppState {
     /// el handler de cierre de ventana. Cuando es `true`, cerrar la
     /// ventana la oculta en lugar de salir.
     pub minimize_to_tray: Arc<AtomicBool>,
+    /// (v2.1.0) Sesiones de drag-and-drop en curso. Cada entrada es
+    /// un tempdir + lista de items inspeccionados, esperando el
+    /// commit del modal de selección.
+    pub drop_sessions: drop_install::DropSessions,
 }
 
 impl AppState {
@@ -51,6 +58,17 @@ impl AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // (v2.2.0) Single instance — si la app ya está corriendo,
+        // abrir el .exe de nuevo le manda los args a la instancia
+        // existente y trae su ventana al frente. NO arrancar un
+        // segundo proceso.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         // Diálogo nativo de selección de archivos — sostiene el flujo
@@ -109,7 +127,11 @@ pub fn run() {
             commands::install::install_archive,
             commands::install::forget_install,
             commands::gsx::gsx_lookup,
+            commands::gsx::gsx_list_installed_icaos,
+            commands::gsx::gsx_install_profile,
+            commands::gsx::read_text_file,
             commands::updater::check_for_update,
+            commands::updater::install_update,
             commands::airports::list_addons_on_map,
             commands::airports::refresh_airports_dataset,
             commands::community::scan_community,
@@ -122,6 +144,7 @@ pub fn run() {
             commands::community::dismiss_all_updates,
             commands::community::clear_dismissed_updates,
             commands::community::package_thumbnail,
+            commands::community::list_pmdg_liveries,
             commands::changelog::fetch_changelog,
             commands::simbrief::get_simbrief_pilot_id,
             commands::simbrief::set_simbrief_pilot_id,
@@ -131,8 +154,11 @@ pub fn run() {
             commands::stats::get_dashboard_stats,
             commands::flight_log::list_flight_log,
             commands::flight_log::delete_flight_log_entry,
+            commands::flight_log::force_close_flight_log_entry,
             commands::flight_log::debug_seed_flight_log,
             commands::flight_log::get_flight_status,
+            commands::flight_log::get_flight_track,
+            commands::flight_log::update_flight_log_entry,
             commands::settings::get_app_settings,
             commands::settings::set_app_setting,
             commands::settings::set_autostart,
@@ -140,6 +166,19 @@ pub fn run() {
             commands::settings::reset_settings,
             commands::backup::backup_community,
             commands::backup::export_addons,
+            commands::cloud::cloud_get_config,
+            commands::cloud::cloud_set_credentials,
+            commands::cloud::cloud_start_oauth,
+            commands::cloud::cloud_disconnect,
+            commands::cloud::cloud_sync_now,
+            commands::cloud::cloud_test_connection,
+            commands::cloud::folder_sync_get_config,
+            commands::cloud::folder_sync_save,
+            commands::cloud::folder_sync_load,
+            commands::cloud::folder_sync_clear,
+            commands::drop::drop_inspect,
+            commands::drop::drop_commit,
+            commands::drop::drop_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri app");
@@ -151,6 +190,44 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
 
     logger::init(&app_data_dir)?;
     tracing::info!("app starting; data dir = {}", app_data_dir.display());
+
+    // (v3.0.0) Cleanup de instalación vieja "MSFS Addons Browser" tras
+    // el rebrand a SimFleet. Best-effort: si la app actual está corriendo
+    // desde `%LOCALAPPDATA%\Programs\SimFleet\…` (o equivalente per-machine)
+    // pero todavía existe la carpeta vieja `%LOCALAPPDATA%\Programs\MSFS Addons Browser\`,
+    // la borramos. Esto resuelve el "limpia todo rastro de carpetas e
+    // instancias viejas del sistema" del usuario sin romper los datos
+    // (que viven en AppData\Roaming\org.n0xful.msfsaddonsbrowser\,
+    // intencionalmente conservado para retrocompat).
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let old_install =
+                std::path::PathBuf::from(&local).join("Programs").join("MSFS Addons Browser");
+            // Sólo intentamos borrar si no es donde corre el exe actual
+            // (defensa contra borrar nuestra propia instalación).
+            let current_exe = std::env::current_exe().ok();
+            let current_dir = current_exe.as_ref().and_then(|p| p.parent());
+            let safe_to_delete = match current_dir {
+                Some(d) => d != old_install.as_path(),
+                None => true,
+            };
+            if safe_to_delete && old_install.is_dir() {
+                tracing::info!(
+                    "rebrand cleanup: borrando instalación vieja en {}",
+                    old_install.display()
+                );
+                match std::fs::remove_dir_all(&old_install) {
+                    Ok(()) => tracing::info!("rebrand cleanup: OK"),
+                    Err(e) => tracing::warn!(
+                        "rebrand cleanup: falló borrar {}: {} — el usuario puede limpiar manualmente",
+                        old_install.display(),
+                        e
+                    ),
+                }
+            }
+        }
+    }
 
     // Log what we know about the Community folder up-front — the UI
     // will re-query this, but having it in the log helps troubleshoot
@@ -165,7 +242,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     }
 
     let http = reqwest::Client::builder()
-        .user_agent("MSFSAddonsBrowser/0.1 (+https://github.com/n0xful)")
+        .user_agent("SimFleet/3.0 (+https://github.com/n0xful)")
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
 
@@ -185,6 +262,44 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // `installed_addons` cuando termina un torrent — clonamos el handle
     // (es barato, internamente es un Arc).
     let downloads = DownloadManager::new(app.clone(), torrent_data_dir, db.clone());
+    // Resume de descargas tras un cierre/crash de la app. Carga los
+    // jobs persistidos en `download_jobs` y re-lanza los torrents
+    // activos — librqbit detecta los ficheros parciales en
+    // `<torrent_data_dir>/job-{id}/` y continúa desde donde se quedó.
+    // Best-effort: si la DB está corrupta o vacía no rompemos el
+    // arranque de la app, sólo logueamos.
+    match downloads.restore_persisted().await {
+        Ok(n) if n > 0 => tracing::info!("downloads: {n} job(s) restaurado(s) tras restart"),
+        Ok(_) => tracing::debug!("downloads: sin jobs persistidos para restaurar"),
+        Err(e) => tracing::warn!("downloads: restore_persisted falló: {e:#}"),
+    }
+
+    // (v1.1.1) Cleanup de "vuelos fantasma" — los creaba el watcher
+    // en versiones viejas cuando MSFS reportaba el avión en world
+    // origin (0, 0) durante el splash/menú. Best-effort.
+    match flight_log::delete_junk_flights(&db).await {
+        Ok(n) if n > 0 => tracing::info!(
+            "flight_log: limpiados {n} vuelo(s) fantasma con origen no válido"
+        ),
+        Ok(_) => tracing::debug!("flight_log: sin vuelos fantasma para limpiar"),
+        Err(e) => tracing::warn!("flight_log: delete_junk_flights falló: {e:#}"),
+    }
+    // (v2.0.3) Cierre automático de vuelos huérfanos — la app o el sim
+    // se cerraron mid-flight y nunca se marcó el IN event. Si el último
+    // tick de posición tiene más de 24 h, los cerramos con
+    // `ended_at = last_position_at` (o `started_at` si nunca hubo
+    // tick) para que no queden en estado "En vuelo ahora" eternamente.
+    // El watcher seguirá restaurando los recientes (<24h) al conectar
+    // SimConnect — el usuario que pausó la noche entera no pierde
+    // nada.
+    const STALE_FLIGHT_SECONDS: i64 = 24 * 60 * 60;
+    match flight_log::close_stale_open_flights(&db, STALE_FLIGHT_SECONDS).await {
+        Ok(n) if n > 0 => tracing::info!(
+            "flight_log: auto-cerrados {n} vuelo(s) abandonados (>24h sin update de posición)"
+        ),
+        Ok(_) => tracing::debug!("flight_log: sin vuelos abandonados que cerrar"),
+        Err(e) => tracing::warn!("flight_log: close_stale_open_flights falló: {e:#}"),
+    }
     // Cliente GSX comparte el `reqwest::Client` con las fuentes — mismo
     // pool de conexiones, mismo timeout, misma resolución DNS.
     let gsx = GsxClient::new(http.clone());
@@ -253,6 +368,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         gsx,
         http,
         minimize_to_tray,
+        drop_sessions: drop_install::DropSessions::default(),
     })
 }
 
@@ -289,7 +405,7 @@ fn init_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("MSFS Addons Browser")
+        .tooltip("SimFleet")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {

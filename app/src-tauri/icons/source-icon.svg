@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MSFS Addons Browser — app icon.
+  Tema: avión + mundo. Globo verde-esmeralda (matchea el theme
+  de la app) con un avión silueta cruzando el meridiano + una
+  estela de gran-círculo. Fondo radial dark para que el icono
+  destaque sobre cualquier wallpaper.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Fondo redondo radial -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="60%" stop-color="#020617"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+    <linearGradient id="globe" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Marco redondeado tipo squircle -->
+  <rect x="0" y="0" width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- Halo radial verde detrás del globo -->
+  <circle cx="256" cy="256" r="180" fill="#10b981" opacity="0.15" filter="url(#glow)"/>
+
+  <!-- Globo terráqueo (esfera estilizada con meridianos y paralelos) -->
+  <g transform="translate(256 256)">
+    <!-- Esfera base -->
+    <circle r="140" fill="url(#globe)" stroke="#34d399" stroke-width="3" opacity="0.95"/>
+
+    <!-- Paralelos (líneas horizontales) -->
+    <ellipse cx="0" cy="-70" rx="120" ry="20" fill="none" stroke="#bbf7d0" stroke-width="2" opacity="0.55"/>
+    <ellipse cx="0" cy="0"   rx="140" ry="36" fill="none" stroke="#bbf7d0" stroke-width="2.5" opacity="0.7"/>
+    <ellipse cx="0" cy="70"  rx="120" ry="20" fill="none" stroke="#bbf7d0" stroke-width="2" opacity="0.55"/>
+
+    <!-- Meridianos (líneas verticales elípticas) -->
+    <ellipse cx="0" cy="0" rx="36"  ry="140" fill="none" stroke="#bbf7d0" stroke-width="2.5" opacity="0.7"/>
+    <ellipse cx="0" cy="0" rx="80"  ry="138" fill="none" stroke="#bbf7d0" stroke-width="2"   opacity="0.4"/>
+    <ellipse cx="0" cy="0" rx="120" ry="135" fill="none" stroke="#bbf7d0" stroke-width="2"   opacity="0.4"/>
+
+    <!-- "Continente" abstracto (mancha tipo África/Europa) -->
+    <path
+      d="M-30 -50 Q -10 -70 20 -55 Q 45 -35 35 -10 Q 50 15 30 40 Q 10 60 -15 50 Q -45 35 -45 5 Q -55 -25 -30 -50 Z"
+      fill="#064e3b" opacity="0.55"
+    />
+    <path
+      d="M50 30 Q 70 25 80 45 Q 75 65 55 70 Q 45 55 50 30 Z"
+      fill="#064e3b" opacity="0.55"
+    />
+  </g>
+
+  <!-- Arco de gran-círculo (trayectoria de vuelo) que cruza el globo -->
+  <path
+    d="M 80 360 Q 256 130 432 200"
+    stroke="url(#ring)" stroke-width="6" stroke-linecap="round"
+    fill="none" stroke-dasharray="0"
+    opacity="0.95"
+  />
+
+  <!-- Avión (silueta estilizada) en el punto medio del arco -->
+  <g transform="translate(256 200) rotate(-25)">
+    <!-- Sombra para resaltar sobre el globo -->
+    <g transform="translate(2 4)" opacity="0.4">
+      <path d="M -36 0 L -10 -10 L 10 -10 L 50 0 L 10 10 L -10 10 Z" fill="#000000"/>
+      <path d="M -2 -28 L 2 -28 L 6 0 L -6 0 Z" fill="#000000"/>
+      <path d="M -22 14 L -16 14 L 2 0 L -8 0 Z" fill="#000000"/>
+    </g>
+    <!-- Fuselaje -->
+    <path d="M -36 0 L -10 -10 L 10 -10 L 50 0 L 10 10 L -10 10 Z" fill="#f8fafc"/>
+    <!-- Cola vertical -->
+    <path d="M -2 -28 L 4 -28 L 8 0 L -6 0 Z" fill="#f8fafc"/>
+    <!-- Estabilizador horizontal -->
+    <path d="M -22 14 L -16 14 L 2 0 L -8 0 Z" fill="#f8fafc"/>
+    <!-- Ventanas (línea de puntos sutil) -->
+    <circle cx="-18" cy="0" r="1.4" fill="#0ea5e9"/>
+    <circle cx="-10" cy="0" r="1.4" fill="#0ea5e9"/>
+    <circle cx="-2"  cy="0" r="1.4" fill="#0ea5e9"/>
+    <circle cx="6"   cy="0" r="1.4" fill="#0ea5e9"/>
+    <circle cx="14"  cy="0" r="1.4" fill="#0ea5e9"/>
+  </g>
+
+  <!-- Punto destino al final del arco -->
+  <circle cx="432" cy="200" r="8" fill="#22d3ee"/>
+  <circle cx="432" cy="200" r="14" fill="none" stroke="#22d3ee" stroke-width="2" opacity="0.5"/>
+</svg>

@@ -177,43 +177,58 @@ pub async fn refresh_for_installed(
     sources: &[Arc<dyn Source>],
 ) -> anyhow::Result<RefreshSummary> {
     let started = std::time::Instant::now();
+    // ICAOs vienen sólo de SCENERY instalada — útiles para
+    // SceneryAddons (que ES un catálogo de aeropuertos).
     let icaos = repo::community_icaos_with_version(pool).await?;
+    // Keywords vienen de AIRCRAFT/INSTRUMENT/MISC — útiles para
+    // ambos catálogos (Simplaza tiene aviones; SceneryAddons a
+    // veces también).
     let keywords = repo::community_addon_keywords_with_version(pool).await?;
-    // Mezcla ICAOs (SCENERY) + keywords del título (AIRCRAFT/MISC).
-    // Eso hace que las búsquedas de Simplaza alimenten la cache
-    // del catálogo para aviones — sin lo cual `compute_available`
-    // nunca encontraba updates de PMDG, Fenix, etc.
-    let mut search_terms: Vec<String> = Vec::with_capacity(icaos.len() + keywords.len());
-    search_terms.extend(icaos);
-    search_terms.extend(keywords);
-    search_terms.sort();
-    search_terms.dedup();
 
     let mut summary = RefreshSummary {
-        icaos_checked: search_terms.len(),
+        icaos_checked: icaos.len() + keywords.len(),
         queries_run: 0,
         queries_skipped_cached: 0,
         queries_failed: 0,
         addons_seen: 0,
         elapsed_ms: 0,
     };
-    if search_terms.is_empty() || sources.is_empty() {
+    if (icaos.is_empty() && keywords.is_empty()) || sources.is_empty() {
         summary.elapsed_ms = started.elapsed().as_millis();
         return Ok(summary);
     }
-    let icaos = search_terms;
 
-    // Construir la lista de pares (icao, source) que necesitan
-    // verificación. Lo hacemos secuencial pero es ligero — sólo
-    // SELECTs muy baratos contra el cache.
+    // **Bug fix v0.1.16**: en v0.1.15 mandábamos TODOS los términos
+    // a TODAS las sources. Eso era ~50% queries desperdiciadas:
+    // Simplaza no tiene aeropuertos → buscar `KLAS` en Simplaza
+    // siempre devolvía 0 resultados útiles, pero igual ocupaba un
+    // request del semáforo y ensuciaba el log.
+    //
+    // Ahora seleccionamos qué query va a qué source según pertinencia:
+    //   · ICAOs → sólo `sceneryaddons` (catálogo de aeropuertos).
+    //   · Keywords aircraft → todas las sources (los aviones se
+    //     publican en ambos catálogos).
     let mut tasks: Vec<(String, Arc<dyn Source>)> = Vec::new();
     for icao in &icaos {
         for source in sources {
+            // Skip Simplaza para ICAOs — no tiene aeropuertos.
+            if source.id() == "simplaza" {
+                continue;
+            }
             if cache_is_fresh(pool, icao, source.id()).await {
                 summary.queries_skipped_cached += 1;
                 continue;
             }
             tasks.push((icao.clone(), source.clone()));
+        }
+    }
+    for keyword in &keywords {
+        for source in sources {
+            if cache_is_fresh(pool, keyword, source.id()).await {
+                summary.queries_skipped_cached += 1;
+                continue;
+            }
+            tasks.push((keyword.clone(), source.clone()));
         }
     }
 
@@ -378,20 +393,49 @@ async fn persist_addons(pool: &SqlitePool, addons: &[Addon]) {
 }
 
 /// Elige el "mejor" addon para representar la versión actual del
-/// ICAO en el catálogo. Heurística:
-///   1. Filtra los que tengan ICAO igual (case-insensitive) y
-///      versión no nula.
-///   2. De esos, devuelve el de mayor versión (semver lenient).
-fn pick_best_for_icao<'a>(addons: &'a [Addon], icao: &str) -> Option<&'a Addon> {
-    let target = icao.to_ascii_uppercase();
+/// query en el catálogo. Heurística en dos fases:
+///
+///   1. Si el query parece ser un ICAO (4 letras, todas alfa), exigimos
+///      `a.icao == query`. Eso vale para SCENERY.
+///   2. Si NO parece ICAO (ej. "A350", "Fenix", "iniBuilds"), buscamos
+///      el addon cuyo nombre/título contenga el keyword. Esto cubre
+///      AIRCRAFT donde el catálogo no tiene ICAO populado.
+///
+/// En ambos casos exigimos version no vacía. El v0.1.13 sólo hacía la
+/// fase 1 → para AIRCRAFT queries (keyword) siempre devolvía None →
+/// updates de Simplaza nunca aparecían (bug del log app.log.2026-05-16).
+fn pick_best_for_icao<'a>(addons: &'a [Addon], query: &str) -> Option<&'a Addon> {
+    let q_lower = query.to_lowercase();
+    let q_upper = query.to_ascii_uppercase();
+    let looks_like_icao = query.len() == 4
+        && query.chars().all(|c| c.is_ascii_alphabetic());
+
     addons
         .iter()
         .filter(|a| {
-            a.icao
+            // Versión no vacía es requisito en ambas fases.
+            let has_version = a
+                .version
                 .as_deref()
-                .map(|s| s.to_ascii_uppercase() == target)
-                .unwrap_or(false)
-                && a.version.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !has_version {
+                return false;
+            }
+            if looks_like_icao {
+                // Fase 1: ICAO match estricto.
+                return a
+                    .icao
+                    .as_deref()
+                    .map(|s| s.to_ascii_uppercase() == q_upper)
+                    .unwrap_or(false);
+            }
+            // Fase 2: keyword aircraft — el nombre o título debe
+            // contener el query (case-insensitive). Esto es lo
+            // que matchea "A350" con "iniBuilds A350-900 …".
+            let in_name = a.name.to_lowercase().contains(&q_lower);
+            let in_title = a.title.to_lowercase().contains(&q_lower);
+            in_name || in_title
         })
         .max_by(|a, b| {
             let av = a.version.as_deref().and_then(parse_lenient);
@@ -403,23 +447,68 @@ fn pick_best_for_icao<'a>(addons: &'a [Addon], icao: &str) -> Option<&'a Addon> 
         })
 }
 
-/// `latest > installed` con semver tolerante. Si alguno no parsea
-/// como semver clásico, intentamos rellenar componentes faltantes
-/// (ej: `"1.5"` → `"1.5.0"`); si aún así falla, comparamos por
-/// orden lexicográfico ASCII como último recurso. Eso evita perder
-/// una update por un manifest con versión "rara".
+/// `latest > installed` con comparación de versiones tolerante.
+///
+/// Estrategia (en orden):
+///   1. Ambos parsean como semver (con leading-zero strip) → comparar.
+///   2. Si NO parsean ambos pero tienen "shape" similar (mismo
+///      número de dígitos en el major), comparar lexicográfico.
+///   3. Si tienen shape DISTINTO (ej. `1.0.0` vs `2026.01.03`),
+///      **NO** comparar — devolver false. Esto evita el bug
+///      reportado: catalog "Boeing 737-800 Liveries v2026.01.03"
+///      contra un pkg con version="1.0.0" se marcaba como update
+///      porque "2026.01.03" > "1.0.0" lexicográficamente, pero
+///      claramente son projects distintos (formatos versioning
+///      incompatibles).
 fn is_newer(latest: &str, installed: &str) -> bool {
     let l = latest.trim();
     let i = installed.trim();
     if l.is_empty() || i.is_empty() {
         return false;
     }
+    // Shape check ANTES de parsear: si los formatos son incompatibles
+    // (ej. 1 dígito en major vs 4 dígitos), NO consideramos que sean
+    // la misma identidad de versión, incluso si ambos parsean como
+    // semver. Esto evita el bug de "1.0.0 → 2026.01.03".
+    if !versions_have_compatible_shape(l, i) {
+        tracing::debug!(
+            "is_newer: shapes incompatibles '{}' vs '{}' — no se considera update",
+            l, i
+        );
+        return false;
+    }
     let lp = parse_lenient(l);
     let ip = parse_lenient(i);
-    match (lp, ip) {
-        (Some(a), Some(b)) => a > b,
-        _ => l > i,
+    if let (Some(a), Some(b)) = (&lp, &ip) {
+        return a > b;
     }
+    // Mismo shape pero alguno no parsea — comparar lexicográfico
+    // (las shapes son comparables aunque no sean semver válido).
+    l > i
+}
+
+/// True si dos strings de versión podrían razonablemente ser la
+/// misma identidad de versión del mismo addon. Distinguimos
+/// "semver clásico" (major ≤ 2 dígitos, ej. 1.2.3) de "version-
+/// fecha" (major = 4 dígitos, ej. 2026.01.03).
+///
+/// Aceptamos `1.6` vs `1.5.5` (ambos clásicos, distinto nº de
+/// partes está OK) y `2026.05.16` vs `2026.01.03` (ambos fecha).
+/// Rechazamos `1.0.0` vs `2026.01.03` — son shapes distintos
+/// y compararlos genera false positives.
+fn versions_have_compatible_shape(a: &str, b: &str) -> bool {
+    let strip = |s: &str| s.trim_start_matches('v').trim().to_string();
+    let aa = strip(a);
+    let bb = strip(b);
+    let major_a = aa.split('.').next().unwrap_or("");
+    let major_b = bb.split('.').next().unwrap_or("");
+    let a_digits = major_a.chars().filter(|c| c.is_ascii_digit()).count();
+    let b_digits = major_b.chars().filter(|c| c.is_ascii_digit()).count();
+    // Bucket: ≤3 dígitos = "clásico", ≥4 = "fecha/build-number".
+    // Distintos buckets → incompatibles.
+    let a_is_date = a_digits >= 4;
+    let b_is_date = b_digits >= 4;
+    a_is_date == b_is_date
 }
 
 fn parse_lenient(s: &str) -> Option<semver::Version> {
@@ -427,11 +516,33 @@ fn parse_lenient(s: &str) -> Option<semver::Version> {
     if let Ok(v) = semver::Version::parse(s) {
         return Some(v);
     }
-    let parts: Vec<&str> = s.split('.').collect();
+    // **Bug fix v0.1.17**: la spec semver prohíbe leading zeros
+    // en los componentes numéricos. Strings como "2026.01.03"
+    // (formato de fecha) fallaban en parse y caían a lexicográfico,
+    // dando false positives (lex "2026.01.03" > "1.0.0").
+    // Ahora stripeamos leading zeros de cada parte numérica antes
+    // de re-intentar el parse.
+    let parts: Vec<String> = s
+        .split('.')
+        .map(|p| {
+            // Conservar las partes no-numéricas tal cual (sufijos
+            // alfa como `1.0.0-beta` o `1.0.0+build`).
+            if p.chars().all(|c| c.is_ascii_digit()) {
+                let trimmed = p.trim_start_matches('0');
+                if trimmed.is_empty() {
+                    "0".to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            } else {
+                p.to_string()
+            }
+        })
+        .collect();
     let padded = match parts.len() {
         1 => format!("{}.0.0", parts[0]),
         2 => format!("{}.{}.0", parts[0], parts[1]),
-        _ => s.to_string(),
+        _ => parts.join("."),
     };
     semver::Version::parse(&padded).ok()
 }
@@ -464,5 +575,42 @@ mod tests {
     fn empty_inputs_return_false() {
         assert!(!is_newer("", "1.0.0"));
         assert!(!is_newer("1.0.0", ""));
+    }
+
+    #[test]
+    fn date_versions_with_leading_zeros_parse() {
+        // Bug reportado por usuario: catalog "v2026.01.03" debe
+        // parsearse como Version{2026, 1, 3} y NO caer a lex.
+        let v = parse_lenient("2026.01.03").expect("debe parsear");
+        assert_eq!(v.major, 2026);
+        assert_eq!(v.minor, 1);
+        assert_eq!(v.patch, 3);
+    }
+
+    #[test]
+    fn rejects_incompatible_shapes() {
+        // Catalog formato fecha (2026.01.03 = 4 dígitos en major)
+        // vs installed semver clásico (1.0.0 = 1 dígito en major)
+        // = shape distinto = no es la misma identidad de versión.
+        // El user reportó el false positive "1.0.0 → 2026.01.03"
+        // para liveries que no debían matchear.
+        assert!(!is_newer("2026.01.03", "1.0.0"));
+        assert!(!is_newer("v2026.01.03", "v1.0.0"));
+        // Inverso también: instalado fecha, catalog semver → no
+        // claim como "older".
+        assert!(!is_newer("1.0.0", "2026.01.03"));
+    }
+
+    #[test]
+    fn accepts_compatible_date_versions() {
+        // Dos versiones-fecha del mismo shape SÍ se comparan.
+        assert!(is_newer("2026.05.16", "2026.01.03"));
+        assert!(!is_newer("2026.01.03", "2026.05.16"));
+    }
+
+    #[test]
+    fn accepts_pmdg_style_versions() {
+        // PMDG usa esquemas como "1.0.7" — semver clásico.
+        assert!(is_newer("1.0.8", "1.0.7"));
     }
 }

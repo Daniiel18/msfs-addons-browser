@@ -61,10 +61,6 @@ export function DashboardView() {
         <h2 className="text-base font-semibold text-slate-100">
           Dashboard de Community
         </h2>
-        <p className="text-xs text-slate-500">
-          Resumen de lo instalado en tu carpeta Community · auto-actualiza al
-          re-escanear.
-        </p>
       </header>
 
       {error && (

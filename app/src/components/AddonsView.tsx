@@ -9,10 +9,15 @@ import {
   Search,
   HelpCircle,
 } from "lucide-react";
-import type { CommunityPackage } from "../lib/types";
+import type { CommunityPackage, PmdgLivery } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { PackageDetailModal } from "./PackageDetailModal";
-import { derivedType, isAddon, type DerivedType } from "../lib/packageType";
+import {
+  derivedType,
+  isAddon,
+  looksLikePlaceholderTitle,
+  type DerivedType,
+} from "../lib/packageType";
 import { api } from "../lib/tauri";
 
 /**
@@ -186,6 +191,12 @@ export function AddonsView() {
         </div>
       )}
 
+      {/* (v3.0.0) Sección PMDG Liveries — escaneo dedicado de
+          paquetes `pmdg-aircraft-*-liveries` con parsing del
+          aircraft.cfg. Se renderiza siempre, vacía si no hay liveries
+          PMDG detectadas. */}
+      <PmdgLiveriesSection />
+
       {detailsPkg && (
         <PackageDetailModal
           pkg={detailsPkg}
@@ -194,6 +205,149 @@ export function AddonsView() {
         />
       )}
     </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// PMDG Liveries section (v3.0.0)
+// ----------------------------------------------------------------------------
+
+function PmdgLiveriesSection() {
+  const [liveries, setLiveries] = useState<PmdgLivery[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .listPmdgLiveries()
+      .then((data) => {
+        if (cancelled) return;
+        setLiveries(data);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(String(e));
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <section className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3 text-xs text-slate-500">
+        Escaneando liveries PMDG…
+      </section>
+    );
+  }
+  if (error) {
+    return (
+      <section className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+        Error PMDG: {error}
+      </section>
+    );
+  }
+  if (!liveries || liveries.length === 0) {
+    return null;
+  }
+
+  // Group by model (77er, 77w, 738…).
+  const byModel = new Map<string, PmdgLivery[]>();
+  for (const l of liveries) {
+    const arr = byModel.get(l.model) ?? [];
+    arr.push(l);
+    byModel.set(l.model, arr);
+  }
+  const modelLabel = (m: string) => {
+    const map: Record<string, string> = {
+      "738": "737-800",
+      "739": "737-900",
+      "77er": "777-200ER",
+      "77w": "777-300ER",
+      "77f": "777F",
+      "744": "747-400",
+      "748": "747-8",
+    };
+    return map[m] ?? m.toUpperCase();
+  };
+
+  const totalCount = liveries.length;
+
+  return (
+    <section className="rounded-xl border border-slate-800 bg-slate-900/40">
+      <header
+        className="flex cursor-pointer items-center gap-2 border-b border-slate-800 px-4 py-3"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <Plane className="h-4 w-4 text-amber-300" />
+        <h3 className="text-sm font-semibold text-slate-100">PMDG Liveries</h3>
+        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+          {totalCount}
+        </span>
+        <span className="ml-auto text-[11px] text-slate-500">
+          {expanded ? "Click para colapsar" : "Click para expandir"}
+        </span>
+      </header>
+      {expanded && (
+        <div className="space-y-4 p-4">
+          {Array.from(byModel.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([model, items]) => (
+              <div key={model}>
+                <h4 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  PMDG {modelLabel(model)}
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                    {items.length}
+                  </span>
+                </h4>
+                <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {items.map((liv, idx) => (
+                    <PmdgLiveryCard key={`${liv.title}-${idx}`} liv={liv} />
+                  ))}
+                </ul>
+              </div>
+            ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PmdgLiveryCard({ liv }: { liv: PmdgLivery }) {
+  return (
+    <li className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+      {liv.thumbnailDataUrl ? (
+        <img
+          src={liv.thumbnailDataUrl}
+          alt={liv.title}
+          className="h-12 w-20 flex-shrink-0 rounded object-cover ring-1 ring-slate-800"
+        />
+      ) : (
+        <div className="flex h-12 w-20 flex-shrink-0 items-center justify-center rounded bg-slate-900 ring-1 ring-slate-800">
+          <Plane className="h-5 w-5 text-slate-600" />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium text-slate-100">
+          {liv.airline || liv.variation || liv.title}
+        </p>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-500">
+          {liv.tailNumber && (
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">
+              {liv.tailNumber}
+            </span>
+          )}
+          {liv.texture && (
+            <span className="truncate text-slate-500">{liv.texture}</span>
+          )}
+        </div>
+      </div>
+    </li>
   );
 }
 
@@ -295,10 +449,18 @@ function EmptyState({
 
 const thumbnailCache = new Map<string, string | null>();
 
-function useThumbnail(folderName: string): string | null {
+function useThumbnail(folderName: string, skip: boolean = false): string | null {
   const cached = thumbnailCache.get(folderName);
   const [src, setSrc] = useState<string | null>(cached ?? null);
   useEffect(() => {
+    // Si el caller dice "skip" (título de placeholder/test), ni
+    // siquiera intentamos cargar el thumbnail. Cacheamos null para
+    // evitar re-intentos.
+    if (skip) {
+      thumbnailCache.set(folderName, null);
+      setSrc(null);
+      return;
+    }
     if (thumbnailCache.has(folderName)) {
       setSrc(thumbnailCache.get(folderName) ?? null);
       return;
@@ -308,8 +470,15 @@ function useThumbnail(folderName: string): string | null {
       .packageThumbnail(folderName)
       .then((dataUrl) => {
         if (cancelled) return;
-        thumbnailCache.set(folderName, dataUrl);
-        setSrc(dataUrl);
+        // Heurística anti-placeholder: si el data URL es muy chico
+        // (<3 KB de base64 ≈ <2 KB de imagen real), probablemente
+        // es un PNG genérico "PLACEHOLDER" que el dev dejó como
+        // marcador. Cacheamos null y renderemos el icono de
+        // categoría en su lugar.
+        const looksTiny = dataUrl !== null && dataUrl.length < 3000;
+        const finalUrl = looksTiny ? null : dataUrl;
+        thumbnailCache.set(folderName, finalUrl);
+        setSrc(finalUrl);
       })
       .catch(() => {
         if (cancelled) return;
@@ -319,7 +488,7 @@ function useThumbnail(folderName: string): string | null {
     return () => {
       cancelled = true;
     };
-  }, [folderName]);
+  }, [folderName, skip]);
   return src;
 }
 
@@ -334,7 +503,11 @@ function PackageCard({
   hasUpdate: boolean;
   onClick: () => void;
 }) {
-  const thumb = useThumbnail(pkg.folderName);
+  // Skip de thumbnails para títulos con keywords de placeholder
+  // (NTEST, PAINTKIT, TEMPLATE, etc.) — muchos addons dejan el
+  // PNG gris "PLACEHOLDER" en esos casos.
+  const skipThumb = looksLikePlaceholderTitle(pkg.title);
+  const thumb = useThumbnail(pkg.folderName, skipThumb);
   const sizeMb =
     pkg.sizeBytes != null ? (pkg.sizeBytes / 1_000_000).toFixed(0) : null;
 

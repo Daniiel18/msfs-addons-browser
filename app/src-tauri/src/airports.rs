@@ -432,6 +432,10 @@ fn extract_icao_from_title(title: &str) -> Option<String> {
     if bytes.len() < 4 {
         return None;
     }
+    // (v1.1.4) Misma heurística que `community_scanner::extract_icao`:
+    // prioriza candidatos precedidos por "AIRPORT-" para que folders
+    // tipo `kaze-airport-mhtg-toncontin` elijan MHTG en vez de KAZE.
+    let mut candidates: Vec<(usize, String)> = Vec::new();
     for i in 0..=bytes.len() - 4 {
         let candidate = &bytes[i..i + 4];
         if !candidate.iter().all(|b| b.is_ascii_alphabetic()) {
@@ -440,10 +444,29 @@ fn extract_icao_from_title(title: &str) -> Option<String> {
         let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
         let after_ok = i + 4 == bytes.len() || !bytes[i + 4].is_ascii_alphanumeric();
         if before_ok && after_ok {
-            return String::from_utf8(candidate.to_vec()).ok();
+            if let Ok(s) = String::from_utf8(candidate.to_vec()) {
+                candidates.push((i, s));
+            }
         }
     }
-    None
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates.into_iter().next().unwrap().1);
+    }
+    for (i, cand) in &candidates {
+        if *i < 8 {
+            continue;
+        }
+        let prefix = &bytes[*i - 8..*i];
+        if prefix.starts_with(b"AIRPORT")
+            && matches!(prefix[7], b'-' | b'_' | b' ')
+        {
+            return Some(cand.clone());
+        }
+    }
+    Some(candidates.into_iter().next().unwrap().1)
 }
 
 #[cfg(test)]

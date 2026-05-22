@@ -1,11 +1,15 @@
 [package]
-name = "msfs-addons-browser"
-version = "0.1.6"
-description = "MSFS Addons Browser — search and install scenery from SceneryAddons & Simplaza"
+name = "simfleet"
+version = "3.0.0"
+description = "SimFleet — flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
 rust-version = "1.77"
 
+# (v3.0.0) Conservamos `msfs_addons_browser_lib` como nombre interno
+# del crate para evitar refactor de cientos de imports
+# `msfs_addons_browser_lib::*`. El binario final se llama "SimFleet"
+# via tauri.conf.json `productName`.
 [lib]
 name = "msfs_addons_browser_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -25,6 +29,10 @@ tauri-plugin-dialog = "2"
 # usuario active "arrancar con Windows". El plugin maneja la entrada
 # en `HKEY_CURRENT_USER\…\Run` automáticamente.
 tauri-plugin-autostart = "2"
+# (v2.2.0) Instancia única — si el usuario abre la app y ya hay una
+# corriendo, le pasamos el control a la existente (la traemos al frente)
+# en vez de spawn un proceso nuevo.
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

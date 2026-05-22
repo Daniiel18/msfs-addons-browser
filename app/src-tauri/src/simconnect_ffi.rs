@@ -50,6 +50,18 @@ pub const SIMCONNECT_RECV_ID_QUIT: DWORD = 3;
 pub const SIMCONNECT_RECV_ID_EVENT: DWORD = 4;
 pub const SIMCONNECT_RECV_ID_SIMOBJECT_DATA: DWORD = 8;
 pub const SIMCONNECT_RECV_ID_SIMOBJECT_DATA_BYTYPE: DWORD = 9;
+/// `SIMCONNECT_RECV_ID_CLIENT_DATA = 20` — para Client Data Areas
+/// (lo usa el módulo WASM de GSX en v0.1.26).
+pub const SIMCONNECT_RECV_ID_CLIENT_DATA: DWORD = 20;
+/// `SIMCONNECT_RECV_ID_FACILITY_DATA = 33` en SimConnect SDK MSFS.
+/// Emitido por cada nodo de la jerarquía AIRPORT (apertura, cada
+/// child como TAXI_PARKING, cierre).
+pub const SIMCONNECT_RECV_ID_FACILITY_DATA: DWORD = 33;
+/// `SIMCONNECT_RECV_ID_FACILITY_DATA_END = 34` — emitido cuando
+/// la jerarquía completa de una request termina de transmitirse.
+/// El watcher usa esta señal para procesar la lista de parkings
+/// recolectados y elegir el más cercano al player.
+pub const SIMCONNECT_RECV_ID_FACILITY_DATA_END: DWORD = 34;
 
 pub const SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT: DWORD = 0;
 pub const SIMCONNECT_DATA_REQUEST_FLAG_CHANGED: DWORD = 1;
@@ -94,6 +106,84 @@ pub struct SIMCONNECT_RECV_EXCEPTION {
     pub dwIndex: DWORD,
 }
 
+/// `SIMCONNECT_RECV_EVENT` — un evento de sistema (v0.1.25, usado
+/// para detectar pausa). El campo `dwData` es 0/1 (o el valor numérico
+/// específico del evento). Para "Pause", `dwData == 1` significa
+/// "simulator paused", `dwData == 0` significa "resumed".
+#[repr(C, packed(4))]
+pub struct SIMCONNECT_RECV_EVENT {
+    pub dwSize: DWORD,
+    pub dwVersion: DWORD,
+    pub dwID: DWORD,
+    pub uGroupID: DWORD,
+    pub uEventID: DWORD,
+    pub dwData: DWORD,
+}
+
+/// `SIMCONNECT_RECV_FACILITY_DATA` (v0.1.26) — un nodo de la
+/// jerarquía AIRPORT solicitada vía `RequestFacilityData_EX1`.
+///
+/// `Type` indica el tipo de nodo (apertura del airport, taxi parking,
+/// runway, cierre, etc). Los bytes después de `Data[0]` son los
+/// campos que pediste vía `AddToFacilityDefinition` en orden.
+#[repr(C, packed(4))]
+pub struct SIMCONNECT_RECV_FACILITY_DATA {
+    pub dwSize: DWORD,
+    pub dwVersion: DWORD,
+    pub dwID: DWORD,
+    pub UserRequestId: DWORD,
+    pub UniqueRequestId: DWORD,
+    pub ParentUniqueRequestId: DWORD,
+    pub Type: DWORD,
+    pub IsListItem: DWORD,
+    pub ItemIndex: DWORD,
+    pub ListSize: DWORD,
+    /// Marker — los datos reales comienzan en este offset.
+    pub Data: [DWORD; 1],
+}
+
+/// `SIMCONNECT_RECV_FACILITY_DATA_END` — disparado cuando la
+/// jerarquía completa de la request terminó de enviarse.
+#[repr(C, packed(4))]
+pub struct SIMCONNECT_RECV_FACILITY_DATA_END {
+    pub dwSize: DWORD,
+    pub dwVersion: DWORD,
+    pub dwID: DWORD,
+    pub RequestId: DWORD,
+}
+
+/// `SIMCONNECT_RECV_CLIENT_DATA` (v0.1.26) — payload de un Client
+/// Data Area. Usado para leer los datos que el módulo WASM de GSX
+/// expone (boarding state, pax count, etc.).
+#[repr(C, packed(4))]
+pub struct SIMCONNECT_RECV_CLIENT_DATA {
+    pub dwSize: DWORD,
+    pub dwVersion: DWORD,
+    pub dwID: DWORD,
+    pub dwRequestID: DWORD,
+    pub dwObjectID: DWORD,
+    pub dwDefineID: DWORD,
+    pub dwFlags: DWORD,
+    pub dwentrynumber: DWORD,
+    pub dwoutof: DWORD,
+    pub dwDefineCount: DWORD,
+    pub dwData: [DWORD; 1],
+}
+
+// Facility data types — valores del enum `SIMCONNECT_FACILITY_DATA_TYPE`
+// según SimConnect.h. **OJO** (bug fix v1.1.2): en versiones previas
+// teníamos `TAXI_PARKING = 4`, lo cual es `HELIPAD` — por eso los
+// gates reales nunca se detectaban y se quedaban en el fallback feo
+// "Stand · X° Ym de ICAO".
+pub const SIMCONNECT_FACILITY_DATA_AIRPORT: DWORD = 0;
+pub const SIMCONNECT_FACILITY_DATA_RUNWAY: DWORD = 1;
+pub const SIMCONNECT_FACILITY_DATA_START: DWORD = 2;
+pub const SIMCONNECT_FACILITY_DATA_FREQUENCY: DWORD = 3;
+pub const SIMCONNECT_FACILITY_DATA_HELIPAD: DWORD = 4;
+pub const SIMCONNECT_FACILITY_DATA_TAXI_POINT: DWORD = 14;
+pub const SIMCONNECT_FACILITY_DATA_TAXI_PARKING: DWORD = 15;
+pub const SIMCONNECT_FACILITY_DATA_TAXI_PATH: DWORD = 16;
+
 // ----- Function pointer types -----------------------------------------------
 
 pub type FnOpen = unsafe extern "system" fn(
@@ -135,6 +225,81 @@ pub type FnGetNextDispatch = unsafe extern "system" fn(
     pcbData: *mut DWORD,
 ) -> HRESULT;
 
+/// `SimConnect_SubscribeToSystemEvent` — registra un EventID para
+/// que llegue cuando el sim emita el evento sistema indicado
+/// (`SystemEventName`). Nombres usados:
+///   · "Pause"   — fires con dwData = 1 al pausar, 0 al despausar.
+///   · "Paused"  — fires SÓLO cuando se pausa (one-shot).
+///   · "Unpaused"— fires SÓLO cuando se despausa (one-shot).
+///   · "Sim"     — fires con dwData = 1 cuando arranca un vuelo
+///                 (estado "running"), 0 al "stopping".
+pub type FnSubscribeToSystemEvent = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    EventID: DWORD,
+    SystemEventName: *const c_char,
+) -> HRESULT;
+
+// ───── Facility Data API (v0.1.26 — gates reales) ─────
+
+/// `SimConnect_AddToFacilityDefinition` — define qué campos quieres
+/// recibir de la jerarquía AIRPORT. Cada llamada añade un campo
+/// (los nombres incluyen marcadores OPEN/CLOSE — ver simconnect_watcher).
+pub type FnAddToFacilityDefinition = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    DefineID: DWORD,
+    FieldName: *const c_char,
+) -> HRESULT;
+
+/// `SimConnect_RequestFacilityData` — dispara la transmisión de los
+/// datos del aeropuerto `ICAO` (`Region` puede ser ""). MSFS responde
+/// con varios `SIMCONNECT_RECV_FACILITY_DATA` + un único
+/// `SIMCONNECT_RECV_FACILITY_DATA_END`.
+pub type FnRequestFacilityData = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    DefineID: DWORD,
+    RequestID: DWORD,
+    ICAO: *const c_char,
+    Region: *const c_char,
+) -> HRESULT;
+
+// ───── Client Data API (v0.1.26 — GSX WASM bridge) ─────
+
+/// `SimConnect_MapClientDataNameToID` — asocia el nombre del Client
+/// Data Area (string) con un ID local que usamos en siguientes calls.
+/// El WASM module de GSX define su propia area con un nombre fijo,
+/// nosotros mapeamos a un ID local.
+pub type FnMapClientDataNameToID = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    szClientDataName: *const c_char,
+    ClientDataID: DWORD,
+) -> HRESULT;
+
+/// `SimConnect_AddToClientDataDefinition` — define el layout
+/// (offsets + sizes) de un struct dentro de un Client Data Area.
+pub type FnAddToClientDataDefinition = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    DefineID: DWORD,
+    dwOffset: DWORD,
+    dwSizeOrType: DWORD,
+    fEpsilon: f32,
+    DatumID: DWORD,
+) -> HRESULT;
+
+/// `SimConnect_RequestClientData` — subscribe al stream de updates
+/// del Client Data Area. `Period` igual que SimObject Data (SECOND,
+/// SIM_FRAME, etc).
+pub type FnRequestClientData = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    ClientDataID: DWORD,
+    RequestID: DWORD,
+    DefineID: DWORD,
+    Period: DWORD,
+    Flags: DWORD,
+    origin: DWORD,
+    interval: DWORD,
+    limit: DWORD,
+) -> HRESULT;
+
 // ----- Wrapper de carga ------------------------------------------------------
 
 #[cfg(target_os = "windows")]
@@ -145,37 +310,138 @@ pub struct SimConnectLib {
     pub AddToDataDefinition: FnAddToDataDefinition,
     pub RequestDataOnSimObject: FnRequestDataOnSimObject,
     pub GetNextDispatch: FnGetNextDispatch,
+    pub SubscribeToSystemEvent: FnSubscribeToSystemEvent,
+    // v0.1.26 — Facility Data + Client Data. Cada uno es Option
+    // porque ciertos SDK / DLLs antiguos pueden no exportar el
+    // símbolo, y queremos degradar sin fallar al cargar.
+    pub AddToFacilityDefinition: Option<FnAddToFacilityDefinition>,
+    pub RequestFacilityData: Option<FnRequestFacilityData>,
+    pub MapClientDataNameToID: Option<FnMapClientDataNameToID>,
+    pub AddToClientDataDefinition: Option<FnAddToClientDataDefinition>,
+    pub RequestClientData: Option<FnRequestClientData>,
 }
 
 #[cfg(target_os = "windows")]
 impl SimConnectLib {
-    /// Carga `SimConnect.dll` desde el PATH del sistema. MSFS añade
-    /// la SDK al PATH al instalarse, así que `LoadLibrary` resuelve
-    /// la dll si MSFS está instalado en cualquiera de sus variantes.
-    /// Si no, devolvemos error y el caller cae al fallback.
+    /// Carga `SimConnect.dll` probando una larga lista de paths.
+    ///
+    /// Estrategia (en orden de preferencia):
+    ///
+    ///   1. **Junto al ejecutable** — la app **bundle** una copia de
+    ///      `SimConnect.dll` como Tauri resource. En producción
+    ///      vive en `<install-dir>/SimConnect.dll`; en dev en
+    ///      `target/debug/SimConnect.dll`. Es el primer candidato
+    ///      para que la app funcione "out of the box" aunque el
+    ///      usuario no tenga la SDK ni una install de MSFS detectable.
+    ///   2. **PATH** del sistema — captura SDKs instaladas que
+    ///      añaden el dir al PATH (raro fuera de devs).
+    ///   3. **SDKs típicas** — C:\MSFS SDK\, C:\MSFS 2024 SDK\.
+    ///   4. **Instalaciones de MSFS** — MS Store (Program Files), Steam
+    ///      (Program Files (x86)\Steam\steamapps), MSFS 2024 ídem.
+    ///   5. **`%LOCALAPPDATA%\Packages\Microsoft.FlightSimulator*`** —
+    ///      donde MSFS guarda recursos compartidos en MS Store.
+    ///
+    /// Si todo falla devolvemos error con el último mensaje — el
+    /// caller (watcher) lo loguea como info (no error, no es fatal)
+    /// y cae al fallback proceso+SimBrief.
     pub unsafe fn load() -> anyhow::Result<Self> {
-        // Lista de candidatos en orden de probabilidad. Empezamos
-        // por el nombre desnudo (PATH) y caemos a paths típicos
-        // donde MSFS deja la dll si el PATH no la expone.
-        let candidates: &[&str] = &[
-            "SimConnect.dll",
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+        // 1) Junto al ejecutable (bundled resource).
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("SimConnect.dll"));
+                // Algunos bundles ponen el dll en un subdir resources/.
+                candidates.push(dir.join("resources").join("SimConnect.dll"));
+            }
+        }
+
+        // 2) Por nombre desnudo — Windows lo busca en PATH + exe dir.
+        candidates.push(std::path::PathBuf::from("SimConnect.dll"));
+
+        // 3) SDKs.
+        for p in &[
             r"C:\MSFS SDK\SimConnect SDK\lib\SimConnect.dll",
             r"C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll",
-            r"C:\Program Files\Microsoft Flight Simulator\SimConnect SDK\lib\SimConnect.dll",
-        ];
+        ] {
+            candidates.push(std::path::PathBuf::from(p));
+        }
 
-        let lib = candidates
-            .iter()
-            .find_map(|p| {
-                tracing::debug!(target: "simconnect", "intentando cargar {}", p);
-                unsafe { libloading::Library::new(p).ok() }
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "SimConnect.dll no se encontró en PATH ni en rutas típicas de MSFS SDK"
-                )
-            })?;
+        // 4) Instalaciones de MSFS. Probamos ambos Program Files.
+        for env_var in &["ProgramFiles", "ProgramFiles(x86)"] {
+            let Some(base) = std::env::var_os(env_var) else { continue };
+            for sub in &[
+                r"Microsoft Flight Simulator\SimConnect.dll",
+                r"Microsoft Flight Simulator\SimConnect SDK\lib\SimConnect.dll",
+                r"Microsoft Flight Simulator 2024\SimConnect.dll",
+                r"Microsoft Flight Simulator 2024\SimConnect SDK\lib\SimConnect.dll",
+                r"Steam\steamapps\common\Microsoft Flight Simulator\SimConnect.dll",
+                r"Steam\steamapps\common\Microsoft Flight Simulator 2024\SimConnect.dll",
+            ] {
+                candidates.push(std::path::Path::new(&base).join(sub));
+            }
+        }
 
+        // 5) MS Store local cache. La ruta exacta varía según versión
+        // del paquete UWP, pero el padre `Microsoft.FlightSimulator_*`
+        // es estable.
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local_path = std::path::PathBuf::from(local);
+            for pkg in &[
+                "Microsoft.FlightSimulator_8wekyb3d8bbwe",
+                "Microsoft.Limitless_8wekyb3d8bbwe", // MSFS 2024 MS Store
+            ] {
+                candidates.push(
+                    local_path
+                        .join("Packages")
+                        .join(pkg)
+                        .join("LocalCache")
+                        .join("SimConnect.dll"),
+                );
+            }
+        }
+
+        // Probar cada candidato. Loguamos solo los que existen para
+        // no inundar el log con paths que nunca van a existir.
+        let mut tried: Vec<String> = Vec::new();
+        for path in &candidates {
+            let path_str = path.to_string_lossy().into_owned();
+            let exists = path.is_file()
+                // Por nombre desnudo NO podemos saber si existe sin
+                // intentar load — lo intentamos siempre.
+                || path.components().count() == 1;
+            if !exists {
+                continue;
+            }
+            tracing::debug!(target: "simconnect", "intentando SimConnect.dll: {}", path_str);
+            match unsafe { libloading::Library::new(path) } {
+                Ok(lib) => {
+                    tracing::info!(
+                        target: "simconnect",
+                        "SimConnect.dll cargada desde: {}",
+                        path_str
+                    );
+                    return Self::from_library(lib);
+                }
+                Err(e) => {
+                    tried.push(format!("{}: {}", path_str, e));
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "SimConnect.dll no se pudo cargar. Paths probados:\n{}",
+            if tried.is_empty() {
+                "(ningún candidato existía en disco)".to_string()
+            } else {
+                tried.join("\n")
+            }
+        ))
+    }
+
+    /// Resuelve los símbolos contra una `Library` ya cargada. Separar
+    /// esto del `load()` mantiene la búsqueda multi-path manejable.
+    unsafe fn from_library(lib: libloading::Library) -> anyhow::Result<Self> {
         let open: libloading::Symbol<FnOpen> = lib.get(b"SimConnect_Open\0")?;
         let close: libloading::Symbol<FnClose> = lib.get(b"SimConnect_Close\0")?;
         let add_def: libloading::Symbol<FnAddToDataDefinition> =
@@ -184,16 +450,39 @@ impl SimConnectLib {
             lib.get(b"SimConnect_RequestDataOnSimObject\0")?;
         let get_next: libloading::Symbol<FnGetNextDispatch> =
             lib.get(b"SimConnect_GetNextDispatch\0")?;
+        let subscribe: libloading::Symbol<FnSubscribeToSystemEvent> =
+            lib.get(b"SimConnect_SubscribeToSystemEvent\0")?;
 
-        // Capturamos los punteros y luego dropeamos los `Symbol`s
-        // (sus lifetimes están atadas a `lib`). Storeamos `lib` para
-        // que la dll permanezca cargada todo el tiempo de vida del
-        // wrapper.
         let open_fn = *open;
         let close_fn = *close;
         let add_def_fn = *add_def;
         let req_fn = *req;
         let get_next_fn = *get_next;
+        let subscribe_fn = *subscribe;
+
+        // Optional v0.1.26 symbols — degradan a None si la DLL no
+        // los expone (versiones más antiguas, MSFS 2020 antes de
+        // algún SU). El watcher chequea Option antes de llamar.
+        let add_fac_def: Option<FnAddToFacilityDefinition> = lib
+            .get::<FnAddToFacilityDefinition>(b"SimConnect_AddToFacilityDefinition\0")
+            .ok()
+            .map(|s| *s);
+        let req_fac_data: Option<FnRequestFacilityData> = lib
+            .get::<FnRequestFacilityData>(b"SimConnect_RequestFacilityData\0")
+            .ok()
+            .map(|s| *s);
+        let map_client: Option<FnMapClientDataNameToID> = lib
+            .get::<FnMapClientDataNameToID>(b"SimConnect_MapClientDataNameToID\0")
+            .ok()
+            .map(|s| *s);
+        let add_client_def: Option<FnAddToClientDataDefinition> = lib
+            .get::<FnAddToClientDataDefinition>(b"SimConnect_AddToClientDataDefinition\0")
+            .ok()
+            .map(|s| *s);
+        let req_client: Option<FnRequestClientData> = lib
+            .get::<FnRequestClientData>(b"SimConnect_RequestClientData\0")
+            .ok()
+            .map(|s| *s);
 
         Ok(Self {
             _lib: lib,
@@ -202,6 +491,12 @@ impl SimConnectLib {
             AddToDataDefinition: add_def_fn,
             RequestDataOnSimObject: req_fn,
             GetNextDispatch: get_next_fn,
+            SubscribeToSystemEvent: subscribe_fn,
+            AddToFacilityDefinition: add_fac_def,
+            RequestFacilityData: req_fac_data,
+            MapClientDataNameToID: map_client,
+            AddToClientDataDefinition: add_client_def,
+            RequestClientData: req_client,
         })
     }
 }
@@ -227,8 +522,12 @@ pub fn succeeded(hr: HRESULT) -> bool {
 pub mod consts {
     pub use super::{
         SIMCONNECT_DATATYPE_FLOAT64, SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
-        SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_OPEN_CONFIGINDEX_LOCAL,
-        SIMCONNECT_PERIOD_SECOND, SIMCONNECT_RECV_ID_EXCEPTION,
+        SIMCONNECT_FACILITY_DATA_AIRPORT, SIMCONNECT_FACILITY_DATA_RUNWAY,
+        SIMCONNECT_FACILITY_DATA_TAXI_PARKING, SIMCONNECT_OBJECT_ID_USER,
+        SIMCONNECT_OPEN_CONFIGINDEX_LOCAL, SIMCONNECT_PERIOD_SECOND,
+        SIMCONNECT_PERIOD_SIM_FRAME, SIMCONNECT_RECV_ID_CLIENT_DATA,
+        SIMCONNECT_RECV_ID_EVENT, SIMCONNECT_RECV_ID_EXCEPTION,
+        SIMCONNECT_RECV_ID_FACILITY_DATA, SIMCONNECT_RECV_ID_FACILITY_DATA_END,
         SIMCONNECT_RECV_ID_OPEN, SIMCONNECT_RECV_ID_QUIT,
         SIMCONNECT_RECV_ID_SIMOBJECT_DATA,
     };

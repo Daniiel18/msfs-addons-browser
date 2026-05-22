@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Download,
   ExternalLink,
+  FileText,
   Plane,
   Sparkles,
   Tag,
@@ -14,7 +15,9 @@ import type { Addon, CommunityPackage, DownloadMethod } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { isNewer } from "../lib/version";
+import { ChangelogModal } from "./ChangelogModal";
 
 /**
  * Estado de instalación de un addon de búsqueda respecto a lo que
@@ -104,6 +107,16 @@ function shareAircraftModel(a: string, b: string): boolean {
   return false;
 }
 
+/** True si el nombre delata un addon "categoría" (livery, sound,
+ *  preset, paint, etc.) — usado para el filtro asimétrico que
+ *  evita marcar como "instalado/update disponible" un livery pack
+ *  cuando lo que el usuario tiene es el avión base. */
+function isCategoryAddonName(s: string): boolean {
+  return /\b(liver(y|ies)|paint|texture|sound\s*pack|sound\b|preset|profile|config|tweak|enhancement|\bmod\b|\bpack\b|repaint)/i.test(
+    s,
+  );
+}
+
 /** Convierte una fecha del scraping (ISO-8601 o texto crudo del
  *  `<time>` de WordPress) en algo legible al usuario. Si parsea como
  *  ISO la formateamos en `dd MMM yyyy`; si no, devolvemos el texto
@@ -148,10 +161,27 @@ function deriveInstallState(
       exactMatch = sameIcao.find((p) => sameCreator(p.creator, addon.developer));
     }
     if (!exactMatch) {
+      // Fallback por título normalizado — útil cuando el manifest
+      // del paquete instalado no expone creator parseable. PERO:
+      // si ambos lados tienen developer y son DISTINTOS, NO es
+      // match. El bug reportado por el usuario: tenía RCTP de
+      // ACO Design Studio v1.2.0 instalado, y el card del RCTP
+      // de Double T en el catálogo aparecía como "Instalado" sólo
+      // porque normalizeTitle(ACO) === normalizeTitle(Double T).
+      // Asimetría: si los devs existen y difieren → distintos
+      // productos del mismo aeropuerto.
       const addonNorm = normalizeTitle(addon.name);
-      exactMatch = sameIcao.find(
-        (p) => normalizeTitle(p.title) === addonNorm,
-      );
+      exactMatch = sameIcao.find((p) => {
+        if (normalizeTitle(p.title) !== addonNorm) return false;
+        if (
+          addon.developer &&
+          p.creator &&
+          !sameCreator(p.creator, addon.developer)
+        ) {
+          return false;
+        }
+        return true;
+      });
     }
   }
 
@@ -160,16 +190,27 @@ function deriveInstallState(
   // Airbus A350" del catálogo vs "iniBuilds A350-900" del manifest:
   // el creator matchea por substring (iniBuilds ⊂ iniBuilds Limited)
   // y ambos contienen el modelo A350.
+  //
+  // **Filtro asimétrico anti-categoría** (v0.1.10, mismo principio
+  // que el SQL en compute_available): si el addon del catálogo es
+  // de otra "categoría" (livery, sound, preset, paint, mod, pack)
+  // pero el paquete instalado NO lo es, NO matchea — un avión
+  // base no se "actualiza" con un livery pack. Bug reportado
+  // por usuario: tenía PMDG 737-800 base y aparecía como UPDATE
+  // disponible "Boeing 737-700/800/900 Liveries by PMDG".
   if (!exactMatch && addon.developer) {
     exactMatch = packages.find((p) => {
       if (!sameCreator(p.creator, addon.developer)) return false;
       const a = addon.name.toLowerCase();
       const b = p.title.toLowerCase();
-      return (
+      const titlesOverlap =
         a.includes(b) ||
         b.includes(a) ||
-        shareAircraftModel(addon.name, p.title)
-      );
+        shareAircraftModel(addon.name, p.title);
+      if (!titlesOverlap) return false;
+      // Asimetría: a (catálogo) contiene categoría, b (instalado) no → reject.
+      if (isCategoryAddonName(a) && !isCategoryAddonName(b)) return false;
+      return true;
     });
   }
 
@@ -207,6 +248,18 @@ export function ResultCard({ addon }: Props) {
   const hasMirror  = addon.downloadMethods.some((m) => m.kind === "mirror");
   const startDownload = useDownloadsStore((s) => s.start);
   const communityPackages = useCommunityStore((s) => s.packages);
+  const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  // (v1.1.4) ¿Tiene perfil GSX local para este ICAO? Comparación
+  // case-insensitive. Sólo aplica a sceneries con ICAO definido.
+  const hasGsxProfile = !!(
+    addon.icao && gsxInstalledIcaos.has(addon.icao.toUpperCase())
+  );
+  // Changelog modal — sólo lo exponemos en Simplaza (lo pidió el
+  // usuario tras quitarlo del modal de detalle de paquete instalado).
+  // SceneryAddons rara vez incluye changelog útil en sus posts y el
+  // botón quedaría siempre vacío.
+  const [showChangelog, setShowChangelog] = useState(false);
+  const isSimplaza = addon.source === "simplaza";
 
   // Cruza el catálogo con lo que el usuario tiene en Community.
   // Memoizamos: el array `packages` es referencialmente estable
@@ -247,17 +300,17 @@ export function ResultCard({ addon }: Props) {
       className={`group overflow-hidden rounded-2xl border bg-slate-900/50 backdrop-blur transition-colors hover:bg-slate-900/70 ${cardBorder}`}
     >
       {/* Banner superior — ICAO + simulator como overlays sobre la
-          imagen. El badge GSX vivía aquí antes pero migró a un
-          control único debajo del SearchBar (`GsxSearchSummary`)
-          porque tener uno por resultado era redundante: GSX se
-          consulta por ICAO y todos los results de la búsqueda
-          comparten el mismo. */}
+          imagen. El badge GSX (descarga) vivía aquí antes pero migró
+          a un control único debajo del SearchBar. (v1.1.4) Ahora
+          mostramos un mini-check si el usuario tiene perfil GSX
+          local instalado para este ICAO. */}
       <Banner
         imageUrl={addon.imageUrl}
         alt={addon.name}
         icao={addon.icao}
         simulator={addon.simulator}
         installState={installState}
+        hasGsxProfile={hasGsxProfile}
       />
 
       <div className="p-5">
@@ -306,6 +359,16 @@ export function ResultCard({ addon }: Props) {
             <span className="text-xs text-slate-500">Sin métodos de descarga detectados</span>
           )}
           <div className="ml-auto flex flex-wrap gap-2">
+            {isSimplaza && (
+              <button
+                onClick={() => setShowChangelog(true)}
+                title="Ver changelog scrapeado de la página de Simplaza"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-brand-500/40 hover:bg-slate-800 hover:text-slate-100"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Changelog
+              </button>
+            )}
             {addon.downloadMethods.slice(0, 3).map((m, i) => (
               <button
                 key={i}
@@ -324,6 +387,16 @@ export function ResultCard({ addon }: Props) {
           </div>
         </footer>
       </div>
+
+      {showChangelog && (
+        <ChangelogModal
+          pageUrl={addon.pageUrl}
+          title={addon.name}
+          sourceLabel="Simplaza"
+          version={addon.version}
+          onClose={() => setShowChangelog(false)}
+        />
+      )}
     </motion.article>
   );
 }
@@ -334,12 +407,14 @@ function Banner({
   icao,
   simulator,
   installState,
+  hasGsxProfile,
 }: {
   imageUrl: string | null;
   alt: string;
   icao: string | null;
   simulator: string;
   installState: InstallState;
+  hasGsxProfile: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const showImage = imageUrl && !failed;
@@ -373,6 +448,15 @@ function Banner({
           <span className="rounded-md bg-slate-950/80 px-2 py-1 text-[11px] uppercase tracking-wide text-slate-300 ring-1 ring-slate-700 backdrop-blur">
             {simulator}
           </span>
+          {hasGsxProfile && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-2 py-1 text-[11px] font-semibold text-violet-200 ring-1 ring-violet-500/40 backdrop-blur"
+              title="Tienes un perfil GSX instalado para este aeropuerto"
+            >
+              <CheckCircle2 className="h-3 w-3" />
+              GSX
+            </span>
+          )}
         </div>
         <InstallBadge state={installState} />
       </div>

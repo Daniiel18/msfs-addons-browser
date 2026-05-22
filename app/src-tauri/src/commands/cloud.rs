@@ -1,0 +1,121 @@
+//! Comandos Tauri para la sincronización con Google Drive.
+//!
+//! Mapean 1:1 con funciones de `crate::cloud_sync`. Sólo se ocupan de:
+//!   · Aceptar parámetros del frontend.
+//!   · Mapear errores a `Result<_, String>` (Tauri serializa).
+//!   · Loguear via `CmdTimer` para diagnóstico.
+
+use crate::cloud_sync::{
+    self, CloudConfig, CloudTestReport, FolderSyncConfig, FolderSyncLoadReport,
+    FolderSyncSaveReport, OauthStart, SyncReport,
+};
+use crate::logger::CmdTimer;
+use crate::{cmd_log, AppState};
+
+#[tauri::command]
+pub async fn cloud_get_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<CloudConfig, String> {
+    cloud_sync::get_config(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_set_credentials(
+    client_id: String,
+    client_secret: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    cmd_log!("cloud_set_credentials", "stored client_id ({} chars)", client_id.len());
+    cloud_sync::set_credentials(&state.db, &client_id, &client_secret)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_start_oauth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<OauthStart, String> {
+    let _t = CmdTimer::start("cloud_start_oauth");
+    cloud_sync::start_oauth(state.db.clone(), state.http.clone(), app)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_disconnect(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    cmd_log!("cloud_disconnect", "");
+    cloud_sync::disconnect(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_sync_now(
+    state: tauri::State<'_, AppState>,
+) -> Result<SyncReport, String> {
+    let _t = CmdTimer::start("cloud_sync_now");
+    cloud_sync::sync_now(&state.db, &state.http)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v2.0.2) Diagnóstico paso a paso. No falla nunca — devuelve el
+/// reporte con los pasos completados/fallidos para que el frontend
+/// los muestre al usuario.
+#[tauri::command]
+pub async fn cloud_test_connection(
+    state: tauri::State<'_, AppState>,
+) -> Result<CloudTestReport, String> {
+    let _t = CmdTimer::start("cloud_test_connection");
+    Ok(cloud_sync::test_connection(&state.db, &state.http).await)
+}
+
+// ─── (v2.0.1) Folder sync — alternativa simple a OAuth ────────────────────────
+
+#[tauri::command]
+pub async fn folder_sync_get_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<FolderSyncConfig, String> {
+    cloud_sync::get_folder_config(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn folder_sync_save(
+    folder_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<FolderSyncSaveReport, String> {
+    let _t = CmdTimer::start("folder_sync_save");
+    cmd_log!("folder_sync_save", "folder={}", folder_path);
+    cloud_sync::save_to_folder(&state.db, &folder_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn folder_sync_load(
+    folder_path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<FolderSyncLoadReport, String> {
+    let _t = CmdTimer::start("folder_sync_load");
+    cmd_log!("folder_sync_load", "folder={}", folder_path);
+    cloud_sync::load_from_folder(&state.db, &folder_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn folder_sync_clear(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    cmd_log!("folder_sync_clear", "");
+    cloud_sync::set_folder_path(&state.db, "")
+        .await
+        .map_err(|e| e.to_string())
+}

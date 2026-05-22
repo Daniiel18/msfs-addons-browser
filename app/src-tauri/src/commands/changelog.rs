@@ -30,9 +30,20 @@ pub async fn fetch_changelog(
     page_url: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Changelog, String> {
+    tracing::info!(target: "changelog", "fetch: {}", page_url);
+    // (v2.2.0) User-Agent realista — sin esto algunos sitios devuelven
+    // 403 o un challenge de Cloudflare. Replica del UA que usamos en
+    // los scrapers de Simplaza/SceneryAddons.
     let html = state
         .http
         .get(&page_url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        )
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("Accept-Language", "en-US,en;q=0.5")
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -41,8 +52,14 @@ pub async fn fetch_changelog(
         .text()
         .await
         .map_err(|e| e.to_string())?;
+    tracing::debug!(target: "changelog", "HTML recibido {} bytes", html.len());
 
     let lines = extract_changelog_lines(&html);
+    tracing::info!(
+        target: "changelog",
+        "extraidas {} líneas de {}",
+        lines.len(), page_url
+    );
     Ok(Changelog {
         source_url: page_url,
         lines,
@@ -66,18 +83,67 @@ fn extract_changelog_lines(html: &str) -> Vec<String> {
     for (i, h) in headings.iter().enumerate() {
         let text = h.text().collect::<String>();
         let lower = text.to_lowercase();
+        // (v2.2.0) Más keywords + términos en español (Simplaza tiene
+        // contenido bilingüe ocasional).
         if lower.contains("changelog")
             || lower.contains("change log")
             || lower.contains("what's new")
+            || lower.contains("whats new")
             || lower.contains("release notes")
             || lower.contains("updates")
+            || lower.contains("update history")
             || lower.contains("history")
+            || lower.contains("version history")
+            || lower.contains("versions")
+            || lower.contains("cambios")
+            || lower.contains("historial")
+            || lower.contains("notas de versión")
+            || lower.contains("registro de cambios")
         {
+            tracing::debug!(target: "changelog", "match heading {:?}", text);
             start_idx = Some(i);
             break;
         }
     }
     let Some(idx) = start_idx else {
+        // (v2.2.0) Fallback: buscar contenedores `class=*changelog*` o
+        // `id=*changelog*`. Algunos temas WordPress meten el changelog
+        // dentro de un <div> con clase específica sin heading propio.
+        tracing::debug!(target: "changelog", "sin heading — probando selectores por clase/id");
+        let class_selectors = [
+            "[id*='changelog' i]",
+            "[class*='changelog' i]",
+            "[id*='cambios' i]",
+            "[class*='cambios' i]",
+            "[id*='history' i]",
+        ];
+        for sel_str in &class_selectors {
+            if let Ok(sel) = Selector::parse(sel_str) {
+                for elem in doc.select(&sel) {
+                    let mut lines = Vec::new();
+                    collect_lines(&elem, &mut lines);
+                    if !lines.is_empty() {
+                        tracing::info!(
+                            target: "changelog",
+                            "fallback selector {} → {} líneas",
+                            sel_str, lines.len()
+                        );
+                        let mut out: Vec<String> = Vec::new();
+                        let mut prev = String::new();
+                        for raw in lines {
+                            let cleaned = raw.trim().to_string();
+                            if cleaned.is_empty() || cleaned == prev {
+                                continue;
+                            }
+                            prev = cleaned.clone();
+                            out.push(cleaned);
+                        }
+                        return out;
+                    }
+                }
+            }
+        }
+        tracing::info!(target: "changelog", "no se encontró ningún changelog en la página");
         return Vec::new();
     };
 

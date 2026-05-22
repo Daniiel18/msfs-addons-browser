@@ -1,44 +1,104 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Plane } from "lucide-react";
+import { Download, Plane, Sparkles } from "lucide-react";
+import type { UpdateInfo } from "../lib/types";
 
 /**
  * Splash screen — pantalla de carga inicial.
  *
- * Diseño minimal y profesional:
- *   · Logo grande centrado con halo radial (anillo girando muy
- *     lento) — un solo elemento visual focal, sin ilustraciones
- *     cartoony.
- *   · Marca de la app en tipografía grande.
- *   · Tagline rotado entre frases temáticas para que cada apertura
- *     no se sienta exactamente igual.
- *   · Barra de progreso fina con gradiente.
- *   · Indicador de tarea actual (sólo la primera pendiente, no
- *     toda la lista — menos ruido visual).
- *   · Footer con counter y versión.
+ * Diseño: minimal, profesional, undecorated (sin botones de
+ * cerrar/minimizar — la idea es que el usuario NO interactúe
+ * mientras carga).
  *
- * El componente NO inicia trabajo. Sólo refleja el estado que
- * `App.tsx` le pasa. La ventana del splash es undecorated (sin
- * controles de cerrar/minimizar) — por diseño no se puede
- * interactuar mientras carga.
+ * Estados especiales:
+ *   · `appUpdate` populado → muestra un banner "Hay v0.X.Y" con
+ *     botones "Instalar / Saltar". Si el usuario pulsa Instalar,
+ *     `onInstallUpdate` corre la descarga + lanzado del installer
+ *     (la app se cierra sola tras eso). El splash entra en modo
+ *     "actualizando" con barra de progreso real.
+ *   · `updateProgress` populado → muestra una barra de descarga
+ *     mientras el installer baja.
+ *
+ * El componente NO inicia trabajo. App.tsx orquesta todo y le pasa
+ * tareas + eventos.
  */
-export function SplashScreen({ tasks }: { tasks: SplashTask[] }) {
+export function SplashScreen({
+  tasks,
+  appVersion,
+  appUpdate,
+  installing,
+  updateProgress,
+  onInstallUpdate,
+  onSkipUpdate,
+}: {
+  tasks: SplashTask[];
+  /** Versión actual de la app, leída de Tauri en runtime. */
+  appVersion: string | null;
+  /** Si está populado, mostramos el banner de actualización. */
+  appUpdate: UpdateInfo | null;
+  /** True mientras la descarga del installer está en curso. */
+  installing: boolean;
+  /** Bytes descargados / totales del installer en curso. */
+  updateProgress: { downloadedBytes: number; totalBytes: number | null } | null;
+  /** (v2.1.0) Callback recibe la preferencia de auto-restart. */
+  onInstallUpdate: (autoRestart: boolean) => void;
+  onSkipUpdate: () => void;
+}) {
+  // (v2.1.0) Auto-restart tras instalar (default true). El usuario
+  // puede destildar si prefiere abrir la app manualmente.
+  const [autoRestart, setAutoRestart] = useState(true);
+  const [showChangelog, setShowChangelog] = useState(false);
   const total = tasks.length;
   const done = tasks.filter((t) => t.status === "done").length;
   const errored = tasks.filter((t) => t.status === "error");
   const current = tasks.find((t) => t.status === "pending");
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
 
-  // Tagline aleatorio — recordado durante el ciclo de vida del
-  // splash (sin `useMemo` cambiaría en cada render).
+  // Tagline aleatorio recordado durante el ciclo de vida del splash.
   const tagline = useMemo(() => pickTagline(), []);
 
+  // Para que el "Hay update" aparezca sólo cuando el usuario aún
+  // no decidió, internamente trackeamos si ya pulsó algo.
+  const [pendingDecision, setPendingDecision] = useState(true);
+  useEffect(() => {
+    // Si appUpdate aparece nuevo, reseteamos la decisión a pendiente.
+    if (appUpdate) setPendingDecision(true);
+  }, [appUpdate]);
+
+  const showUpdateBanner = !!appUpdate && pendingDecision && !installing;
+  const downloadPct =
+    updateProgress && updateProgress.totalBytes && updateProgress.totalBytes > 0
+      ? Math.min(
+          100,
+          Math.round(
+            (updateProgress.downloadedBytes / updateProgress.totalBytes) * 100,
+          ),
+        )
+      : null;
+  const mbDown = updateProgress
+    ? (updateProgress.downloadedBytes / 1_048_576).toFixed(1)
+    : null;
+  const mbTotal =
+    updateProgress?.totalBytes != null
+      ? (updateProgress.totalBytes / 1_048_576).toFixed(1)
+      : null;
+
   return (
+    // (v2.1.1) Splash llena toda la ventana — la ventana se redimensiona
+    // a 480x640 al inicio del bootstrap (ver App.tsx), así que aquí
+    // sólo necesitamos llenar lo que hay. Antes envolvíamos una card
+    // centrada porque la ventana podía estar maximizada (F5 con app
+    // maximizada), pero ahora ya nos aseguramos del tamaño desde el
+    // efecto de bootstrap.
     <div
       data-tauri-drag-region
-      className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-slate-950 text-slate-100"
+      className="fixed inset-0 z-50 overflow-hidden bg-slate-950 text-slate-100"
     >
-      {/* Fondo: gradiente sutil + dot grid muy tenue para textura */}
+      <div
+        data-tauri-drag-region
+        className="relative flex h-full w-full flex-col"
+      >
+      {/* Fondo */}
       <div
         className="pointer-events-none absolute inset-0 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
         aria-hidden
@@ -52,17 +112,14 @@ export function SplashScreen({ tasks }: { tasks: SplashTask[] }) {
           backgroundSize: "24px 24px",
         }}
       />
-      {/* Halo verde difuso detrás del logo, da profundidad */}
       <div
         className="pointer-events-none absolute left-1/2 top-[38%] h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald-500/10 blur-3xl"
         aria-hidden
       />
 
       <div className="relative flex flex-1 flex-col items-center justify-center px-8 pb-6 pt-2">
-        {/* Logo con anillo girando — el único elemento animado
-            grande del splash. Suave, profesional. */}
+        {/* Logo con anillos animados */}
         <div className="relative mb-7 flex h-24 w-24 items-center justify-center">
-          {/* Anillo exterior — gira muy despacio en sentido horario */}
           <motion.div
             animate={{ rotate: 360 }}
             transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
@@ -75,7 +132,6 @@ export function SplashScreen({ tasks }: { tasks: SplashTask[] }) {
                 "radial-gradient(circle, transparent 38px, black 39px, black 47px, transparent 48px)",
             }}
           />
-          {/* Anillo interior — gira despacio anti-horario */}
           <motion.div
             animate={{ rotate: -360 }}
             transition={{ duration: 14, repeat: Infinity, ease: "linear" }}
@@ -88,79 +144,197 @@ export function SplashScreen({ tasks }: { tasks: SplashTask[] }) {
                 "radial-gradient(circle, transparent 30px, black 31px, black 36px, transparent 37px)",
             }}
           />
-          {/* Tarjeta central con el icono */}
           <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 ring-1 ring-emerald-500/30 shadow-2xl shadow-emerald-500/20">
             <Plane className="h-8 w-8 text-emerald-300" strokeWidth={1.5} />
           </div>
         </div>
 
-        {/* Marca + tagline */}
         <h1 className="text-center text-xl font-semibold tracking-tight text-slate-50">
-          MSFS Addons Browser
+          SimFleet
         </h1>
         <p className="mt-1.5 text-center text-[11px] tracking-wide text-slate-500">
           {tagline}
         </p>
 
-        {/* Barra de progreso fina */}
-        <div className="mt-7 w-full max-w-[300px]">
-          <div className="relative h-1 w-full overflow-hidden rounded-full bg-slate-800">
-            <motion.div
-              className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-cyan-400"
-              initial={{ width: 0 }}
-              animate={{ width: `${pct}%` }}
-              transition={{ duration: 0.4, ease: "easeOut" }}
-            />
-            {/* Brillo deslizante encima de la barra */}
-            <motion.div
-              className="absolute inset-y-0 w-12 bg-gradient-to-r from-transparent via-white/30 to-transparent"
-              animate={{ x: ["-50%", "350%"] }}
-              transition={{
-                duration: 2.2,
-                repeat: Infinity,
-                ease: "easeInOut",
-              }}
-            />
-          </div>
+        {/* Banner update — sólo si hay update y el usuario aún no
+            decidió, y no estamos descargando */}
+        {showUpdateBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 w-full max-w-[360px] rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20"
+          >
+            <div className="flex items-start gap-2 text-[11px]">
+              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" />
+              <div className="flex-1">
+                <div className="font-semibold text-emerald-100">
+                  Nueva versión disponible: v{appUpdate!.latestVersion}
+                </div>
+                <div className="text-[10px] text-emerald-200/70">
+                  Estás en v{appUpdate!.currentVersion}. Recomendamos
+                  actualizar antes de seguir.
+                </div>
+              </div>
+            </div>
 
-          {/* Indicador de tarea actual — sólo la activa, no
-              toda la lista. Menos ruido. */}
-          <div className="mt-3 flex h-4 items-center justify-center text-[11px] text-slate-400">
-            {errored.length > 0 ? (
-              <span className="text-rose-300">
-                {errored.length}{" "}
-                {errored.length === 1 ? "error" : "errores"} ·{" "}
-                {current?.label ?? "Finalizando"}
-              </span>
-            ) : current ? (
-              <motion.span
-                key={current.label}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.2 }}
-              >
-                {current.label}…
-              </motion.span>
-            ) : (
-              <motion.span
-                key="ready"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="text-emerald-300"
-              >
-                Listo
-              </motion.span>
+            {/* (v2.1.0) Changelog colapsable — el usuario quería ver
+                qué cambia antes de aceptar la actualización. */}
+            {appUpdate!.notesMarkdown && (
+              <div className="mt-2">
+                <button
+                  onClick={() => setShowChangelog((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[10px] text-emerald-200/80 hover:text-emerald-100"
+                >
+                  {showChangelog ? "▲" : "▼"} Ver cambios de esta versión
+                </button>
+                {showChangelog && (
+                  <div className="mt-1 max-h-32 overflow-y-auto rounded border border-emerald-500/20 bg-slate-950/50 px-2 py-1.5 text-left text-[10px] leading-relaxed text-emerald-100/85 whitespace-pre-wrap font-mono">
+                    {appUpdate!.notesMarkdown.slice(0, 4000)}
+                    {appUpdate!.notesMarkdown.length > 4000 && (
+                      <>
+                        …{"\n"}
+                        <a
+                          href={appUpdate!.releaseUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-emerald-300 underline"
+                        >
+                          (ver release completo)
+                        </a>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
+
+            {/* (v2.1.0) Checkbox auto-restart — default true. */}
+            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[10px] text-emerald-100/85">
+              <input
+                type="checkbox"
+                checked={autoRestart}
+                onChange={(e) => setAutoRestart(e.target.checked)}
+                className="accent-emerald-500"
+              />
+              Reiniciar la app automáticamente al terminar
+            </label>
+
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={() => onInstallUpdate(autoRestart)}
+                disabled={!appUpdate!.assetUrl}
+                className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-emerald-500/30 px-2 py-1 text-[11px] font-medium hover:bg-emerald-500/40 disabled:opacity-50"
+              >
+                <Download className="h-3 w-3" /> Instalar ahora
+              </button>
+              <button
+                onClick={() => {
+                  setPendingDecision(false);
+                  onSkipUpdate();
+                }}
+                className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+              >
+                Saltar
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Barra de progreso del download del installer cuando
+            installing está activo */}
+        {installing && updateProgress && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 w-full max-w-[320px]"
+          >
+            <div className="mb-1 flex items-center justify-between text-[10px] text-emerald-200">
+              <span>
+                {downloadPct !== null
+                  ? `Descargando v${appUpdate?.latestVersion ?? ""} · ${downloadPct}%`
+                  : `Descargando v${appUpdate?.latestVersion ?? ""}`}
+              </span>
+              <span className="font-mono tabular-nums">
+                {mbDown ?? "0"} {mbTotal ? `/ ${mbTotal}` : ""} MB
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+              <div
+                className="h-full bg-emerald-400 transition-all duration-150"
+                style={{ width: downloadPct !== null ? `${downloadPct}%` : "30%" }}
+              />
+            </div>
+            {downloadPct === 100 && (
+              <div className="mt-1 text-[10px] text-emerald-200/80">
+                Descarga completa — lanzando el instalador. La app se cerrará
+                en unos segundos.
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {/* Barra de progreso de las tareas del bootstrap. Sólo
+            visible cuando NO estamos en banner/installing — para
+            no apilar barras en pantalla. */}
+        {!showUpdateBanner && !installing && (
+          <div className="mt-7 w-full max-w-[300px]">
+            <div className="relative h-1 w-full overflow-hidden rounded-full bg-slate-800">
+              <motion.div
+                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-cyan-400"
+                initial={{ width: 0 }}
+                animate={{ width: `${pct}%` }}
+                transition={{ duration: 0.4, ease: "easeOut" }}
+              />
+              <motion.div
+                className="absolute inset-y-0 w-12 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                animate={{ x: ["-50%", "350%"] }}
+                transition={{
+                  duration: 2.2,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+              />
+            </div>
+            <div className="mt-3 flex h-4 items-center justify-center text-[11px] text-slate-400">
+              {errored.length > 0 ? (
+                <span className="text-rose-300">
+                  {errored.length}{" "}
+                  {errored.length === 1 ? "error" : "errores"} ·{" "}
+                  {current?.label ?? "Finalizando"}
+                </span>
+              ) : current ? (
+                <motion.span
+                  key={current.label}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {current.label}…
+                </motion.span>
+              ) : (
+                <motion.span
+                  key="ready"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="text-emerald-300"
+                >
+                  Listo
+                </motion.span>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      {/* Footer */}
+      {/* Footer — versión real leída de Tauri en runtime */}
       <div className="relative flex items-center justify-between border-t border-slate-800/60 bg-slate-950/40 px-5 py-2.5 text-[10px] text-slate-600">
         <span className="font-mono tabular-nums">
           {done} / {total}
         </span>
-        <span className="uppercase tracking-widest">v0.1.5</span>
+        <span className="uppercase tracking-widest">
+          v{appVersion ?? "?"}
+        </span>
+      </div>
       </div>
     </div>
   );

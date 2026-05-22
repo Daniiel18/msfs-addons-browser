@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
@@ -14,6 +15,15 @@ use crate::community;
 use crate::db::repo;
 use crate::install;
 use crate::sources::{DownloadKind, DownloadMethod};
+
+/// Intervalo mínimo entre escrituras a DB para el mismo job cuando
+/// el cambio es **sólo de progreso** (bytes/speed/eta). Las
+/// transiciones de fase se persisten siempre, sin throttle.
+///
+/// 3 segundos es buen balance: granularidad suficiente para que el
+/// usuario vea "estaba a 4.2 GB" tras un crash, y barato (~120
+/// escrituras en una descarga de 6 minutos vs ~720 sin throttle).
+const PERSIST_PROGRESS_THROTTLE_SECS: u64 = 3;
 
 /// Tauri event name the manager emits on every job state change.
 pub const EVENT_JOB_UPDATE: &str = "download://update";
@@ -44,6 +54,11 @@ struct Inner {
     /// el ancho de banda y el disco se saturaban con varias descargas
     /// concurrentes y la instalación posterior tropezaba con sí misma.
     torrent_slot: Semaphore,
+    /// Última vez que persistimos cada job a la tabla `download_jobs`.
+    /// Lo usa el throttle para no escribir DB en cada tick de
+    /// progreso (sin él, una descarga de 5min hace ~600 inserts).
+    /// Cambios de fase ignoran este map y persisten siempre.
+    last_persisted: RwLock<HashMap<String, Instant>>,
 }
 
 impl DownloadManager {
@@ -56,6 +71,7 @@ impl DownloadManager {
                 torrent_engine: Arc::new(TorrentEngine::new(torrent_data_dir)),
                 db,
                 torrent_slot: Semaphore::new(1),
+                last_persisted: RwLock::default(),
             }),
         }
     }
@@ -224,6 +240,104 @@ impl DownloadManager {
         }
         // Also drop any lingering cancel token (defensive).
         self.inner.cancels.write().await.remove(id);
+        // Best-effort: borra la fila persistida. Si falla, sólo logueamos
+        // — el usuario verá la fila reaparecer al próximo restart, que es
+        // mejor que crashear el clear.
+        if let Err(e) = repo::delete_download_job(&self.inner.db, id).await {
+            tracing::warn!("clear: no se pudo borrar download_job {id} de DB: {e:#}");
+        }
+        self.inner.last_persisted.write().await.remove(id);
+    }
+
+    /// Restaura los jobs persistidos al arrancar la app — los carga
+    /// en memoria, emite el evento de update para que la UI los
+    /// pinte y re-lanza `run_torrent` para los que estaban activos.
+    ///
+    /// Llamado UNA vez desde `init_state` después de construir el
+    /// manager. Idempotente sólo en el sentido de que ejecutarlo dos
+    /// veces persiste cada job dos veces — no spawnea downloads
+    /// duplicados porque la segunda llamada vería los jobs ya en el
+    /// HashMap, pero la lógica de re-spawn no chequea eso. Por eso
+    /// llamarlo dos veces es bug, no idempotente. **No lo llames
+    /// dos veces.**
+    ///
+    /// Política de restauración por fase:
+    /// - `Queued | Resolving | Downloading | Paused | Installing`:
+    ///   torrent → re-spawn `run_torrent`. librqbit detecta los
+    ///   ficheros parciales en `job-{id}/` y resume (gracias a
+    ///   `overwrite: true`).
+    /// - Mirror/Direct no-terminales: pasaron por `run_open_url` que
+    ///   completa al instante. Si los vemos no-terminales es porque
+    ///   la app crasheó *durante* el opener — los marcamos como
+    ///   `Error` con mensaje explicativo y dejamos que el usuario
+    ///   re-clique si quiere.
+    /// - Terminales (`Completed | Cancelled | Error`): se quedan en
+    ///   memoria como historial visible; no se acciona nada.
+    pub async fn restore_persisted(&self) -> anyhow::Result<usize> {
+        let jobs = repo::list_download_jobs(&self.inner.db).await?;
+        let count = jobs.len();
+        tracing::info!("downloads: restaurando {} job(s) persistido(s)", count);
+
+        for job in jobs {
+            // Cargar en memoria + emitir para que el frontend
+            // muestre la entrada inmediatamente al abrir el panel.
+            {
+                let mut map = self.inner.jobs.write().await;
+                map.insert(job.id.clone(), job.clone());
+            }
+            let _ = self.inner.app.emit(EVENT_JOB_UPDATE, &job);
+
+            let is_terminal = matches!(
+                job.phase,
+                DownloadPhase::Completed | DownloadPhase::Cancelled | DownloadPhase::Error
+            );
+            if is_terminal {
+                continue;
+            }
+
+            match job.method_kind.as_str() {
+                "torrent" => {
+                    tracing::info!(
+                        "downloads: resume torrent {} (phase={:?}, bytes_done={})",
+                        job.id, job.phase, job.bytes_done
+                    );
+                    let cancel = CancellationToken::new();
+                    self.inner
+                        .cancels
+                        .write()
+                        .await
+                        .insert(job.id.clone(), cancel.clone());
+
+                    let this = self.clone();
+                    let job_id = job.id.clone();
+                    let torrent_url = job.url.clone();
+                    tauri::async_runtime::spawn(async move {
+                        this.run_torrent(&job_id, torrent_url, cancel).await;
+                        this.inner.cancels.write().await.remove(&job_id);
+                    });
+                }
+                _ => {
+                    // Mirror/Direct: no hay nada que reanudar — un
+                    // open_url no tiene estado intermedio. Marcamos
+                    // como Error para no dejar al usuario mirando un
+                    // spinner eterno.
+                    tracing::warn!(
+                        "downloads: job {} ({}) estaba en phase={:?} pero no es resumible — marcado Error",
+                        job.id, job.method_kind, job.phase
+                    );
+                    self.update(&job.id, |j| {
+                        j.phase = DownloadPhase::Error;
+                        j.error = Some(
+                            "La app se cerró mientras se abría el enlace en el navegador. \
+                             Vuelve a pulsar el botón de descarga si lo necesitas."
+                                .into(),
+                        );
+                    })
+                    .await;
+                }
+            }
+        }
+        Ok(count)
     }
 
     // ───────────────── internals ─────────────────
@@ -233,6 +347,9 @@ impl DownloadManager {
             let mut map = self.inner.jobs.write().await;
             map.insert(job.id.clone(), job.clone());
         }
+        // Persistir siempre en la creación — el throttle no aplica
+        // porque es la primera vez que vemos el job.
+        self.persist(&job, true).await;
         let _ = self.inner.app.emit(EVENT_JOB_UPDATE, &job);
     }
 
@@ -240,18 +357,49 @@ impl DownloadManager {
     where
         F: FnOnce(&mut DownloadJob),
     {
-        let snapshot = {
+        // Capturamos la fase previa para decidir si la persistencia
+        // a DB es "cambio de fase" (siempre) o "sólo progreso"
+        // (throttled).
+        let (snapshot, phase_changed) = {
             let mut map = self.inner.jobs.write().await;
             match map.get_mut(id) {
                 Some(j) => {
+                    let prev = j.phase;
                     mutate(j);
-                    Some(j.clone())
+                    let changed = j.phase != prev;
+                    (Some(j.clone()), changed)
                 }
-                None => None,
+                None => (None, false),
             }
         };
         if let Some(job) = snapshot {
+            self.persist(&job, phase_changed).await;
             let _ = self.inner.app.emit(EVENT_JOB_UPDATE, &job);
+        }
+    }
+
+    /// Persiste el job a DB respetando el throttle de progreso.
+    /// `force=true` salta el throttle — usado en transiciones de
+    /// fase (Queued→Resolving→Downloading→Completed/Error/etc.).
+    async fn persist(&self, job: &DownloadJob, force: bool) {
+        if !force {
+            let mut map = self.inner.last_persisted.write().await;
+            let now = Instant::now();
+            if let Some(prev) = map.get(&job.id) {
+                if now.duration_since(*prev).as_secs() < PERSIST_PROGRESS_THROTTLE_SECS {
+                    return;
+                }
+            }
+            map.insert(job.id.clone(), now);
+        } else {
+            self.inner
+                .last_persisted
+                .write()
+                .await
+                .insert(job.id.clone(), Instant::now());
+        }
+        if let Err(e) = repo::upsert_download_job(&self.inner.db, job).await {
+            tracing::warn!("persist: upsert download_job {} falló: {e:#}", job.id);
         }
     }
 

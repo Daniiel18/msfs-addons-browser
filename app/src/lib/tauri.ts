@@ -21,16 +21,31 @@ import type {
   ExportResult,
   FlightLogEntry,
   FlightStatus,
+  FlightTrackPoint,
   DownloadMethod,
+  CloudConfig,
+  CloudOauthCompletedEvent,
+  CloudOauthStart,
+  CloudSyncReport,
+  CloudTestReport,
+  DropCommitReport,
+  DropInspection,
+  FolderSyncConfig,
+  FolderSyncLoadReport,
+  FolderSyncSaveReport,
+  GsxInstallReport,
   GsxProfile,
   InstallResult,
   InstalledAddon,
+  PmdgLivery,
   RefreshSummary,
   ScanReport,
   SimBriefFlight,
   SimBriefRefreshResult,
   SourceDescriptor,
+  UninstallReport,
   UpdateDiagnostic,
+  UpdateFlightInput,
   UpdateInfo,
 } from "./types";
 
@@ -82,12 +97,88 @@ interface Api {
    *  vacío). El backend cachea ~24h en SQLite, así que llamarlo por
    *  cada resultado de búsqueda es barato después del primer barrido. */
   gsxLookup: (icao: string) => Promise<GsxProfile[]>;
+  /** (v1.1.4) Lista los ICAOs que tienen al menos un perfil GSX
+   *  instalado en `%APPDATA%\Virtuali\GSX\MSFS`. La frontend usa esto
+   *  para mostrar un check en cada card de escenario. */
+  gsxListInstalledIcaos: () => Promise<string[]>;
+  /** (v2.0.0) Instala perfil(es) GSX desde un archivo. Acepta
+   *  `.ini`/`.py` sueltos o `.zip`/`.rar` con varios perfiles dentro.
+   *  Devuelve el reporte con cuántos archivos se instalaron y cuáles
+   *  se ignoraron por extensión. */
+  gsxInstallProfile: (sourcePath: string) => Promise<GsxInstallReport>;
+  /** (v1.1.4) Lee un archivo de texto local. Cap interno 10MB. */
+  readTextFile: (path: string) => Promise<string>;
+
+  // (v2.0.0) Sincronización con Google Drive
+  /** Estado actual de la integración con Google. */
+  cloudGetConfig: () => Promise<CloudConfig>;
+  /** Guarda el Client ID y Client Secret del OAuth client del usuario.
+   *  Sin esto, Conectar fallará. */
+  cloudSetCredentials: (
+    clientId: string,
+    clientSecret: string,
+  ) => Promise<void>;
+  /** Inicia el flow OAuth: abre listener loopback, devuelve la URL
+   *  para que la UI la abra en el navegador. Al completarse el flow,
+   *  el backend emite `cloud://oauth-completed`. */
+  cloudStartOauth: () => Promise<CloudOauthStart>;
+  /** Borra refresh_token + email guardados (conserva las credentials
+   *  para reconectar sin re-pegarlas). */
+  cloudDisconnect: () => Promise<void>;
+  /** Ejecuta un sync bidireccional ahora — pull → merge → push. */
+  cloudSyncNow: () => Promise<CloudSyncReport>;
+  /** (v2.0.2) Diagnóstico paso a paso. Prueba credenciales locales,
+   *  refresh token, identidad, Drive API alcanzable, scope correcta. */
+  cloudTestConnection: () => Promise<CloudTestReport>;
+  /** Subscribe al evento de fin de OAuth. */
+  onCloudOauthCompleted: (
+    cb: (event: CloudOauthCompletedEvent) => void,
+  ) => Promise<() => void>;
+
+  // (v2.0.1) Folder sync — alternativa simple sin OAuth
+  /** Estado del folder sync (path elegido, last save, archivo
+   *  existe). */
+  folderSyncGetConfig: () => Promise<FolderSyncConfig>;
+  /** Escribe la snapshot completa a `<folder>/msfs-addons-data.json`.
+   *  El folder se crea si no existe. */
+  folderSyncSave: (folderPath: string) => Promise<FolderSyncSaveReport>;
+  /** Lee `<folder>/msfs-addons-data.json` y mergea con la DB local. */
+  folderSyncLoad: (folderPath: string) => Promise<FolderSyncLoadReport>;
+  /** Olvida la carpeta configurada (sin tocar la copia en disco). */
+  folderSyncClear: () => Promise<void>;
+
+  // (v2.1.0) Drag-and-drop universal
+  /** Inspecciona un archivo dropeado y devuelve la lista de items
+   *  detectados (perfiles GSX, paquetes Community, etc). Crea una
+   *  sesión que mantiene el tempdir hasta el commit/cancel. */
+  dropInspect: (archivePath: string) => Promise<DropInspection>;
+  /** Instala los items seleccionados (por `sourcePath`) de la sesión. */
+  dropCommit: (
+    sessionId: string,
+    selectedPaths: string[],
+    communityPath: string | null,
+  ) => Promise<DropCommitReport>;
+  /** Libera la sesión sin instalar nada. */
+  dropCancel: (sessionId: string) => Promise<void>;
 
   // Actualizaciones
   /** Verifica contra GitHub Releases si hay una versión mayor que la
    *  instalada. Devuelve `null` cuando estamos al día o cuando la
    *  consulta falló (offline, GitHub caído, etc.). */
   checkForUpdate: () => Promise<UpdateInfo | null>;
+  /** Baja el instalador del asset indicado a `%TEMP%`, lo lanza en
+   *  modo silent (`/S` NSIS · `/quiet` MSI), y cierra la app actual
+   *  para que el installer pueda reemplazar los archivos en disco.
+   *  Si todo va bien la app no retorna — el `exit(0)` la mata. Si
+   *  falla la descarga o el spawn devuelve un error. */
+  installUpdate: (assetUrl: string, autoRestart?: boolean) => Promise<void>;
+  /** Listener del progreso de descarga del installer. Se suscribe
+   *  durante `installUpdate` y se llama cada chunk con bytes
+   *  descargados + total (puede ser `null` si el servidor no envió
+   *  Content-Length). Devuelve unsubscribe. */
+  onUpdateProgress: (
+    cb: (p: { downloadedBytes: number; totalBytes: number | null }) => void,
+  ) => Promise<() => void>;
 
   // Mapa
   /** Devuelve los addons del catálogo local con coords resolvibles.
@@ -107,8 +198,12 @@ interface Api {
   listAvailableUpdates: () => Promise<AvailableUpdate[]>;
   /** Hace barrido activo: queries por cada ICAO instalado. */
   refreshUpdatesForInstalled: () => Promise<RefreshSummary>;
-  /** Borra el directorio del paquete en Community + filas de DB. */
-  uninstallCommunityPackage: (folderName: string) => Promise<void>;
+  /** Borra el directorio del paquete en TODAS las Community detectadas
+   *  (Steam 2020, MS Store 2020, Steam 2024, MS Store 2024) + carpetas
+   *  extras (Documents\MSFS Sceneries\…) + filas de DB. Devuelve un
+   *  reporte con los paths borrados, los que fallaron y cuántas filas
+   *  de DB se limpiaron. */
+  uninstallCommunityPackage: (folderName: string) => Promise<UninstallReport>;
   /** Diagnóstico de update — devuelve el estado completo de la
    *  cadena (paquete, airport match, catalog entries, cache,
    *  bloqueador). Lo invoca el botón "Diagnosticar" del modal. */
@@ -119,6 +214,12 @@ interface Api {
    *  encodea el archivo — evita el problema de scope del asset
    *  protocol con paths arbitrarios fuera de la carpeta de la app. */
   packageThumbnail: (folderName: string) => Promise<string | null>;
+
+  /** (v3.0.0) Escanea liveries de PMDG en la carpeta Community.
+   *  Parsea cada `aircraft.cfg` dentro de paquetes con prefijo
+   *  `pmdg-aircraft-*-liveries` y devuelve título, tail number,
+   *  airline y thumbnail (path absoluto). */
+  listPmdgLiveries: () => Promise<PmdgLivery[]>;
 
   /** Scrape el changelog desde la página de detalle del addon. */
   fetchChangelog: (pageUrl: string) => Promise<Changelog>;
@@ -155,9 +256,26 @@ interface Api {
   pickSavePath: (defaultName: string, filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
   /** Diálogo nativo «select folder». */
   pickFolderPath: () => Promise<string | null>;
+  /** (v1.1.4) Abre el file picker nativo. Devuelve la ruta o null si
+   *  el usuario canceló. Acepta filtros opcionales `[{name, extensions}]`
+   *  igual que `pickSavePath`. Multi=false. */
+  pickFilePath: (
+    filters?: { name: string; extensions: string[] }[],
+  ) => Promise<string | null>;
+  /** (v1.1.4) Multi-select de archivos. Util para "Importar inventario"
+   *  donde el usuario puede seleccionar varios exports a la vez. */
+  pickFilePaths: (
+    filters?: { name: string; extensions: string[] }[],
+  ) => Promise<string[]>;
 
   // Flight log (SimConnect)
   listFlightLog: () => Promise<FlightLogEntry[]>;
+  /** Polyline real (puntos cada ~10s) de un vuelo. Lo pinta la
+   *  vista detalle en el mapa de FlightBook. */
+  getFlightTrack: (flightId: number) => Promise<FlightTrackPoint[]>;
+  /** Edita campos manualmente — `null` deja sin tocar la columna.
+   *  Usado por el modal "Editar" del panel de detalle. */
+  updateFlightLogEntry: (id: number, input: UpdateFlightInput) => Promise<void>;
   deleteFlightLogEntry: (id: number) => Promise<void>;
   /** Inserta un vuelo de prueba EBBR→LEMD para validar la UI sin
    *  necesidad de tener MSFS corriendo. No usar en producción. */
@@ -229,8 +347,55 @@ const realApi: Api = {
   forgetInstall: (id) => invoke<void>("forget_install", { id }),
 
   gsxLookup: (icao) => invoke<GsxProfile[]>("gsx_lookup", { icao }),
+  gsxListInstalledIcaos: () => invoke<string[]>("gsx_list_installed_icaos"),
+  gsxInstallProfile: (sourcePath) =>
+    invoke<GsxInstallReport>("gsx_install_profile", { sourcePath }),
+  readTextFile: (path) => invoke<string>("read_text_file", { path }),
+  cloudGetConfig: () => invoke<CloudConfig>("cloud_get_config"),
+  cloudSetCredentials: (clientId, clientSecret) =>
+    invoke<void>("cloud_set_credentials", { clientId, clientSecret }),
+  cloudStartOauth: () => invoke<CloudOauthStart>("cloud_start_oauth"),
+  cloudDisconnect: () => invoke<void>("cloud_disconnect"),
+  cloudSyncNow: () => invoke<CloudSyncReport>("cloud_sync_now"),
+  cloudTestConnection: () =>
+    invoke<CloudTestReport>("cloud_test_connection"),
+  async onCloudOauthCompleted(cb) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<CloudOauthCompletedEvent>(
+      "cloud://oauth-completed",
+      (e) => cb(e.payload),
+    );
+  },
+  folderSyncGetConfig: () =>
+    invoke<FolderSyncConfig>("folder_sync_get_config"),
+  folderSyncSave: (folderPath) =>
+    invoke<FolderSyncSaveReport>("folder_sync_save", { folderPath }),
+  folderSyncLoad: (folderPath) =>
+    invoke<FolderSyncLoadReport>("folder_sync_load", { folderPath }),
+  folderSyncClear: () => invoke<void>("folder_sync_clear"),
+  dropInspect: (archivePath) =>
+    invoke<DropInspection>("drop_inspect", { archivePath }),
+  dropCommit: (sessionId, selectedPaths, communityPath) =>
+    invoke<DropCommitReport>("drop_commit", {
+      sessionId,
+      selectedPaths,
+      communityPath,
+    }),
+  dropCancel: (sessionId) => invoke<void>("drop_cancel", { sessionId }),
 
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
+  installUpdate: (assetUrl, autoRestart) =>
+    invoke<void>("install_update", { assetUrl, autoRestart: autoRestart ?? true }),
+  onUpdateProgress: async (cb) => {
+    // Lazy-import del evento — los entornos non-Tauri (vitest, demo
+    // mode) no traen `@tauri-apps/api/event` con un canal real.
+    const { listen } = await import("@tauri-apps/api/event");
+    const unlisten = await listen<{
+      downloadedBytes: number;
+      totalBytes: number | null;
+    }>("updater://progress", (e) => cb(e.payload));
+    return () => unlisten();
+  },
 
   listAddonsOnMap: () => invoke<AddonOnMap[]>("list_addons_on_map"),
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
@@ -242,11 +407,13 @@ const realApi: Api = {
   refreshUpdatesForInstalled: () =>
     invoke<RefreshSummary>("refresh_updates_for_installed"),
   uninstallCommunityPackage: (folderName) =>
-    invoke<void>("uninstall_community_package", { folderName }),
+    invoke<UninstallReport>("uninstall_community_package", { folderName }),
   diagnoseUpdateForPackage: (folderName) =>
     invoke<UpdateDiagnostic>("diagnose_update_for_package", { folderName }),
   packageThumbnail: (folderName) =>
     invoke<string | null>("package_thumbnail", { folderName }),
+  listPmdgLiveries: () =>
+    invoke<PmdgLivery[]>("list_pmdg_liveries", { communityPath: null }),
   fetchChangelog: (pageUrl) =>
     invoke<Changelog>("fetch_changelog", { pageUrl }),
 
@@ -265,6 +432,10 @@ const realApi: Api = {
   getDashboardStats: () => invoke<DashboardStats>("get_dashboard_stats"),
 
   listFlightLog: () => invoke<FlightLogEntry[]>("list_flight_log"),
+  getFlightTrack: (flightId) =>
+    invoke<FlightTrackPoint[]>("get_flight_track", { flightId }),
+  updateFlightLogEntry: (id, input) =>
+    invoke<void>("update_flight_log_entry", { id, input }),
   deleteFlightLogEntry: (id) => invoke<void>("delete_flight_log_entry", { id }),
   debugSeedFlightLog: () => invoke<number>("debug_seed_flight_log"),
   onFlightLogChange: (cb) => listen<unknown>("flightlog://changed", () => cb()),
@@ -292,6 +463,18 @@ const realApi: Api = {
     const result = await open({ multiple: false, directory: true });
     if (result === null) return null;
     return typeof result === "string" ? result : null;
+  },
+  async pickFilePath(filters) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({ multiple: false, directory: false, filters });
+    if (result === null) return null;
+    return typeof result === "string" ? result : null;
+  },
+  async pickFilePaths(filters) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({ multiple: true, directory: false, filters });
+    if (result === null) return [];
+    return Array.isArray(result) ? result : [result];
   },
 };
 
@@ -582,6 +765,111 @@ const demoApi: Api = {
     }
     return [];
   },
+  async gsxListInstalledIcaos() {
+    return [];
+  },
+  async gsxInstallProfile(_sourcePath) {
+    return {
+      archiveKind: "single",
+      installedFiles: [],
+      skippedFiles: [],
+    };
+  },
+  async readTextFile(_path) {
+    throw new Error("readTextFile no disponible en modo demo");
+  },
+  async cloudGetConfig() {
+    return {
+      connected: false,
+      hasCredentials: false,
+      userEmail: null,
+      lastSyncAt: null,
+    };
+  },
+  async cloudSetCredentials() {
+    /* no-op demo */
+  },
+  async cloudStartOauth() {
+    return {
+      authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      redirectUri: "http://127.0.0.1:0/",
+      port: 0,
+    };
+  },
+  async cloudDisconnect() {
+    /* no-op demo */
+  },
+  async cloudSyncNow() {
+    return {
+      uploadedFlights: 0,
+      uploadedTracks: 0,
+      uploadedSettings: 0,
+      downloadedFlights: 0,
+      downloadedTracks: 0,
+      downloadedSettings: 0,
+    };
+  },
+  async cloudTestConnection() {
+    return {
+      overallOk: false,
+      steps: [
+        {
+          name: "Modo demo",
+          ok: false,
+          detail: "No disponible fuera de Tauri.",
+        },
+      ],
+      hint: null,
+    };
+  },
+  async onCloudOauthCompleted() {
+    return () => {
+      /* no-op */
+    };
+  },
+  async folderSyncGetConfig() {
+    return {
+      folderPath: null,
+      lastSyncAt: null,
+      folderExists: false,
+      dataFileExists: false,
+    };
+  },
+  async folderSyncSave(folderPath) {
+    return {
+      outputPath: `${folderPath}/msfs-addons-data.json`,
+      bytesWritten: 0,
+      flights: 0,
+      tracks: 0,
+      settings: 0,
+    };
+  },
+  async folderSyncLoad(folderPath) {
+    return {
+      sourcePath: `${folderPath}/msfs-addons-data.json`,
+      bytesRead: 0,
+      restoredFlights: 0,
+      restoredTracks: 0,
+      restoredSettings: 0,
+    };
+  },
+  async folderSyncClear() {
+    /* no-op demo */
+  },
+  async dropInspect(archivePath) {
+    return {
+      sessionId: "demo",
+      archivePath,
+      items: [],
+      isSingle: false,
+    };
+  },
+  async dropCommit() {
+    return { installedGsx: [], installedPackages: [], errors: [] };
+  },
+  async dropCancel() {
+    /* no-op demo */
+  },
 
   async checkForUpdate() {
     // En modo demo simulamos siempre que hay una versión nueva — así
@@ -596,6 +884,15 @@ const demoApi: Api = {
         "## What's new\n\n- **GSX integration**: badge en cada resultado con perfil disponible.\n- **World map**: vista de mundo con clustering verde.\n- Fix de varios crashes al cancelar torrents.\n",
       publishedAt: new Date().toISOString(),
     };
+  },
+  async installUpdate() {
+    // En demo no hay nada que instalar — sólo loggeamos.
+    console.info("[demo] installUpdate llamado (no-op)");
+  },
+  async onUpdateProgress() {
+    // En demo no llega ningún evento, sólo devolvemos un unsubscribe
+    // vacío para que el caller pueda hacer cleanup sin chequeos extra.
+    return async () => {};
   },
 
   async listAddonsOnMap() {
@@ -686,12 +983,20 @@ const demoApi: Api = {
       elapsedMs: 380,
     };
   },
-  async uninstallCommunityPackage() {
+  async uninstallCommunityPackage(folderName) {
     await sleep(120);
-    // no-op en demo
+    return {
+      folderName,
+      removedPaths: [`C:/Demo/Community/${folderName}`],
+      failedPaths: [],
+      dbRowsCleared: 1,
+    };
   },
   async packageThumbnail() {
     return null;
+  },
+  async listPmdgLiveries() {
+    return [];
   },
   async getSimbriefPilotId() {
     return null;
@@ -730,6 +1035,7 @@ const demoApi: Api = {
       minimizeToTray: false,
       onboardingCompleted: true, // demo: skip tour
       defaultView: "dashboard",
+      theme: "dark",
       autostartEnabled: false,
       simbriefPilotId: null,
       communityPath: "C:/Demo/Community",
@@ -766,7 +1072,16 @@ const demoApi: Api = {
   async pickFolderPath() {
     return null;
   },
+  async pickFilePath() {
+    return null;
+  },
+  async pickFilePaths() {
+    return [];
+  },
   async listFlightLog() {
+    return [];
+  },
+  async getFlightTrack() {
     return [];
   },
   async deleteFlightLogEntry() {
@@ -792,9 +1107,16 @@ const demoApi: Api = {
       currentLon: null,
       currentAltFt: null,
       currentGroundSpeedKt: null,
+      currentHeadingDeg: null,
       onGround: null,
+      phaseLabel: null,
+      currentGate: null,
+      currentAirportIcao: null,
       lastCheckedAt: new Date().toISOString(),
     };
+  },
+  async updateFlightLogEntry() {
+    /* no-op demo */
   },
   async onFlightStatus() {
     return async () => {};

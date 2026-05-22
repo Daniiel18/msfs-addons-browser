@@ -38,19 +38,19 @@ const STEPS: TourStep[] = [
   {
     target: "[data-tour-id='nav-dashboard']",
     title: "Dashboard",
-    body: "Tu panel de inicio: total de paquetes instalados, espacio en disco, top desarrolladores y los más grandes. Se actualiza automáticamente.",
+    body: "Tu panel de inicio: total de paquetes instalados, espacio en disco, top desarrolladores y los más grandes. Se actualiza automáticamente cuando cambia algo en tu carpeta Community.",
     placement: "bottom",
   },
   {
     target: "[data-tour-id='nav-search']",
     title: "Buscar en catálogos",
-    body: "Busca aeropuertos, aviones, liveries y mods en SceneryAddons y Simplaza. Pulsa una card para ver detalles e instalar.",
+    body: "Busca aeropuertos, aviones, liveries y mods en SceneryAddons y Simplaza. Cada card muestra si ya lo tienes instalado y si hay update disponible.",
     placement: "bottom",
   },
   {
     target: "[data-tour-id='nav-map']",
     title: "Mapa mundial",
-    body: "Vista mundial con todos tus aeropuertos instalados como puntos verdes. Líneas curvadas muestran los vuelos de SimBrief y los reales que vuelas.",
+    body: "Vista mundial con todos tus aeropuertos instalados como puntos verdes. Click en uno abre su detalle. El badge ámbar marca los que tienen update disponible.",
     placement: "bottom",
   },
   {
@@ -60,9 +60,15 @@ const STEPS: TourStep[] = [
     placement: "bottom",
   },
   {
+    target: "[data-tour-id='nav-flightbook']",
+    title: "FlightBook (vuelos reales)",
+    body: "Bitácora de tus vuelos en MSFS, capturada automáticamente con SimConnect. ICAOs, gates, FPM al aterrizar, fuel, pasajeros (vía SimBrief OFP). Click en un vuelo para ver su ruta real en el globo. Cuando estás volando, el avión naranja te marca dónde vas.",
+    placement: "bottom",
+  },
+  {
     target: "[data-tour-id='header-settings']",
     title: "Configuración",
-    body: "SimBrief Pilot ID, autostart con Windows, minimizar a la bandeja, backup de Community, exportar inventario… Todo está aquí.",
+    body: "SimBrief Pilot ID, autostart con Windows, tema dark/light, backup de Community, exportar/importar inventario, perfiles GSX… Todo está aquí.",
     placement: "bottom",
   },
   {

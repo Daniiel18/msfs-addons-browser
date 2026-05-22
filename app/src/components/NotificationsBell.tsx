@@ -6,13 +6,15 @@ import {
   Download,
   ExternalLink,
   Map as MapIcon,
+  RefreshCw,
   Sparkles,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAppStore } from "../stores/useAppStore";
-import type { UpdateInfo } from "../lib/types";
+import type { AvailableUpdate, UpdateInfo } from "../lib/types";
 import { api } from "../lib/tauri";
+import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
 
 const APP_UPDATE_DISMISSED_KEY = "msfs-addons-browser:updater:dismissed-version";
 
@@ -92,8 +94,14 @@ export function NotificationsBell() {
     setOpen(false);
   };
 
-  const openInSearch = (icao: string, source: string) => {
-    triggerSearch(icao, source);
+  const openInSearch = (u: AvailableUpdate) => {
+    // El SQL de la rama AIRCRAFT emite `icao = ""` para paquetes
+    // no-SCENERY (aviones, liveries, sounds). Sin este helper,
+    // clicar una update de A350/A320/etc. lanzaba `search("", source)`
+    // y caía en "Sin resultados para """. Ahora caemos a un keyword
+    // del título cuando el icao no es plausible.
+    const query = deriveUpdateSearchQuery(u.icao, u.title);
+    triggerSearch(query, u.source);
     setOpen(false);
   };
 
@@ -141,19 +149,33 @@ export function NotificationsBell() {
                 <h3 className="text-sm font-semibold text-slate-100">
                   Notificaciones
                 </h3>
-                <p className="text-[11px] text-slate-500">
-                  Updates de la app · paquetes Community
-                </p>
               </div>
-              {packageCount > 0 && (
+              <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() => dismissAll()}
-                  title="Marcar todas las updates de paquetes como vistas"
+                  onClick={() => {
+                    void api
+                      .checkForUpdate()
+                      .then((u) => {
+                        setAppUpdateDismissed(false);
+                        setAppUpdate(u);
+                      })
+                      .catch((e) => console.warn("re-check failed:", e));
+                  }}
+                  title="Volver a comprobar updates ahora"
                   className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
                 >
-                  <CheckCheck className="h-3.5 w-3.5" />
+                  <RefreshCw className="h-3.5 w-3.5" />
                 </button>
-              )}
+                {packageCount > 0 && (
+                  <button
+                    onClick={() => dismissAll()}
+                    title="Marcar todas las updates de paquetes como vistas"
+                    className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
+                  >
+                    <CheckCheck className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </header>
 
             {/* App update — pinned al top, en verde para diferenciar
@@ -233,9 +255,9 @@ export function NotificationsBell() {
                       className="group flex items-stretch hover:bg-slate-900/60"
                     >
                       <button
-                        onClick={() => openInSearch(u.icao, u.source)}
+                        onClick={() => openInSearch(u)}
                         className="flex flex-1 items-start gap-3 px-4 py-3 text-left"
-                        title={`Buscar ${u.icao} en ${u.source} para descargar la nueva versión`}
+                        title={`Buscar ${u.icao || u.title} en ${u.source} para descargar la nueva versión`}
                       >
                         <div className="mt-1 shrink-0">
                           <Download className="h-4 w-4 text-amber-300" />

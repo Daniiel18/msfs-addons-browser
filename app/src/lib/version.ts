@@ -30,15 +30,42 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /**
+ * **Shape check** (paridad con `versions_have_compatible_shape` en
+ * `updates.rs` del backend). Distingue versiones "clásicas" (major
+ * ≤3 dígitos, ej. `1.0.0`) de "fecha-versión" (major ≥4 dígitos,
+ * ej. `2026.01.03`). Si los buckets difieren, NO son la misma
+ * identidad de versión — usado para evitar el false positive
+ * "v1.0.0 → v2026.01.03" reportado por el usuario en el card de
+ * "Boeing 737-800 Liveries" de Simplaza.
+ */
+function versionsHaveCompatibleShape(a: string, b: string): boolean {
+  const strip = (s: string) => s.trim().replace(/^v/i, "");
+  const majorA = strip(a).split(".")[0] ?? "";
+  const majorB = strip(b).split(".")[0] ?? "";
+  const digitsA = (majorA.match(/\d/g) ?? []).length;
+  const digitsB = (majorB.match(/\d/g) ?? []).length;
+  // ≤3 dígitos = "clásico", ≥4 = "fecha/build-number".
+  const aIsDate = digitsA >= 4;
+  const bIsDate = digitsB >= 4;
+  return aIsDate === bIsDate;
+}
+
+/**
  * `latest` estrictamente mayor que `installed`. Strings vacíos
  * devuelven `false` — no hay update si una de las dos versiones es
  * desconocida.
+ *
+ * Aplica un **shape check** antes de comparar: si las dos versiones
+ * son de formatos incompatibles (ej. `1.0.0` vs `2026.01.03`),
+ * devolvemos false directamente. Eso evita el false positive del
+ * badge "UPDATE v1.0.0 → v2026.01.03" en los cards de Simplaza.
  */
 export function isNewer(latest: string | null | undefined, installed: string | null | undefined): boolean {
   if (!latest || !installed) return false;
   const l = latest.trim();
   const i = installed.trim();
   if (!l || !i) return false;
+  if (!versionsHaveCompatibleShape(l, i)) return false;
   return compareVersions(l, i) > 0;
 }
 

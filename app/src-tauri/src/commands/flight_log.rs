@@ -1,13 +1,15 @@
 //! Comandos Tauri para `flight_log`.
 //!
-//! Expuestos al frontend para listar el historial, borrar una
-//! entrada manual, y dejar un hook de "test entry" que ayuda a
-//! validar la UI mientras la integración real con SimConnect no
-//! está cableada.
+//! Expuestos al frontend para listar el historial, leer la traza
+//! de un vuelo, borrar entradas y poblar con datos demo para
+//! validación de UI sin necesidad de MSFS corriendo.
 
-use crate::flight_log::{self, FlightLogEntry};
+use crate::flight_log::{
+    self, FlightFinishMetrics, FlightLogEntry, FlightTrackPoint, UpdateEntryInput,
+};
 use crate::simconnect_watcher::FlightStatus;
 use crate::AppState;
+use serde::Deserialize;
 use tauri::Manager;
 
 #[tauri::command]
@@ -19,12 +21,82 @@ pub async fn list_flight_log(
         .map_err(|e| e.to_string())
 }
 
+/// Devuelve la polyline real (lista de track points cada ~10s)
+/// para el vuelo indicado. La UI lo invoca al clicar un vuelo en
+/// la lista de FlightBook para mostrar la ruta real en el mapa
+/// en lugar de la great-circle aproximada.
+#[tauri::command]
+pub async fn get_flight_track(
+    flight_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FlightTrackPoint>, String> {
+    flight_log::list_track_for_flight(&state.db, flight_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_flight_log_entry(
     id: i64,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     flight_log::delete_entry(&state.db, id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v2.0.3) Cierre forzado de un vuelo abierto. Usado por el botón
+/// "Forzar cierre" del FlightBook cuando un vuelo quedó huérfano
+/// (sim crasheó, app cerró mid-flight, etc.) y el usuario quiere
+/// que aparezca en el histórico en vez de quedar en "En vuelo ahora".
+#[tauri::command]
+pub async fn force_close_flight_log_entry(
+    id: i64,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    flight_log::force_close_flight(&state.db, id)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Notifica al store del frontend para que re-fetchee.
+    use tauri::Emitter;
+    let _ = app.emit("flightlog://changed", ());
+    Ok(())
+}
+
+/// Input para `update_flight_log_entry` desde el frontend. Cada
+/// campo es opcional — `None` significa "no tocar". El frontend
+/// envía sólo los campos que el usuario realmente editó.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateEntryDto {
+    pub flight_time_s: Option<i64>,
+    pub passengers: Option<i64>,
+    pub cargo_kg: Option<i64>,
+    pub fuel_used_kg: Option<i64>,
+    pub departure_gate: Option<String>,
+    pub arrival_gate: Option<String>,
+}
+
+/// Edita campos manualmente — usado por el botón "Editar" del panel
+/// de detalle del vuelo. Permite al usuario corregir lo que el
+/// watcher detectó mal (gate equivocado, block time inflado por
+/// pausa no detectada en versiones viejas, pasajeros sin GSX).
+#[tauri::command]
+pub async fn update_flight_log_entry(
+    id: i64,
+    input: UpdateEntryDto,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mapped = UpdateEntryInput {
+        flight_time_s: input.flight_time_s,
+        passengers: input.passengers,
+        cargo_kg: input.cargo_kg,
+        fuel_used_kg: input.fuel_used_kg,
+        departure_gate: input.departure_gate,
+        arrival_gate: input.arrival_gate,
+    };
+    flight_log::update_entry(&state.db, id, &mapped)
         .await
         .map_err(|e| e.to_string())
 }
@@ -42,25 +114,317 @@ pub async fn get_flight_status(app: tauri::AppHandle) -> Result<FlightStatus, St
     Ok(guard.status.clone())
 }
 
-/// Helper de testing: inserta un vuelo simulado EBBR → LEMD para
-/// que la UI pueda pintar el línea verde sin requerir que MSFS
-/// esté corriendo. Se llama desde la consola de devtools mientras
-/// la integración real con SimConnect aún no está activa.
+/// Definición de un vuelo demo para validar la UI sin MSFS.
+/// Incluye los pares origen/destino + métricas verosímiles para
+/// que la pestaña FlightBook se vea poblada. La polyline real se
+/// sintetiza con `synthetic_track` (great circle + jitter).
+struct DemoFlight {
+    aircraft_title: &'static str,
+    aircraft_icao: &'static str,
+    origin: (&'static str, f64, f64),
+    destination: (&'static str, f64, f64),
+    max_alt_ft: i64,
+    landing_fpm: i64,
+    max_gs_kt: i64,
+    max_tas_kt: i64,
+    cruise_alt_ft: i64,
+    /// Fuel quemado en kg + pasajeros + carga + passengers — para
+    /// que el panel detalle muestre métricas realistas en demos.
+    fuel_used_kg: i64,
+    passengers: i64,
+    cargo_kg: i64,
+}
+
+/// Lista de vuelos demo distribuidos por el mundo — pensados
+/// específicamente para validar la vista "globo terráqueo" con
+/// rutas en varios continentes y latitudes. Cubrimos:
+///   · Europa: EBBR→LEMD, LFPG→EGLL
+///   · Atlántico: EGLL→KJFK
+///   · USA doméstico: KJFK→KLAX
+///   · Caribe: MDSD→KMIA
+///   · Asia: VHHH→RJTT, OMDB→VTBS
+///   · Sudamérica: SBGR→SCEL
+///   · Polar: KORD→ZBAA
+const DEMO_FLIGHTS: &[DemoFlight] = &[
+    DemoFlight {
+        aircraft_title: "Airbus A320 Demo",
+        aircraft_icao: "A320",
+        origin: ("EBBR", 50.901, 4.484),
+        destination: ("LEMD", 40.471, -3.564),
+        max_alt_ft: 36_000,
+        landing_fpm: -180,
+        max_gs_kt: 454,
+        max_tas_kt: 462,
+        cruise_alt_ft: 36_000,
+        fuel_used_kg: 4_800,
+        passengers: 152,
+        cargo_kg: 1_800,
+    },
+    DemoFlight {
+        aircraft_title: "Airbus A350-900",
+        aircraft_icao: "A359",
+        origin: ("EGLL", 51.470, -0.454),
+        destination: ("KJFK", 40.640, -73.779),
+        max_alt_ft: 39_000,
+        landing_fpm: -140,
+        max_gs_kt: 538,
+        max_tas_kt: 482,
+        cruise_alt_ft: 39_000,
+        fuel_used_kg: 62_500,
+        passengers: 287,
+        cargo_kg: 14_200,
+    },
+    DemoFlight {
+        aircraft_title: "Boeing 737-800",
+        aircraft_icao: "B738",
+        origin: ("KJFK", 40.640, -73.779),
+        destination: ("KLAX", 33.943, -118.408),
+        max_alt_ft: 35_000,
+        landing_fpm: -220,
+        max_gs_kt: 481,
+        max_tas_kt: 460,
+        cruise_alt_ft: 35_000,
+        fuel_used_kg: 18_400,
+        passengers: 162,
+        cargo_kg: 3_100,
+    },
+    DemoFlight {
+        aircraft_title: "Boeing 787-9",
+        aircraft_icao: "B789",
+        origin: ("VHHH", 22.309, 113.915),
+        destination: ("RJTT", 35.553, 139.781),
+        max_alt_ft: 38_000,
+        landing_fpm: -110,
+        max_gs_kt: 502,
+        max_tas_kt: 480,
+        cruise_alt_ft: 38_000,
+        fuel_used_kg: 22_700,
+        passengers: 245,
+        cargo_kg: 8_900,
+    },
+    DemoFlight {
+        aircraft_title: "Airbus A380-800",
+        aircraft_icao: "A388",
+        origin: ("OMDB", 25.253, 55.365),
+        destination: ("VTBS", 13.690, 100.750),
+        max_alt_ft: 41_000,
+        landing_fpm: -160,
+        max_gs_kt: 525,
+        max_tas_kt: 488,
+        cruise_alt_ft: 41_000,
+        fuel_used_kg: 75_300,
+        passengers: 469,
+        cargo_kg: 18_700,
+    },
+    DemoFlight {
+        aircraft_title: "Boeing 777-300ER",
+        aircraft_icao: "B77W",
+        origin: ("SBGR", -23.435, -46.473),
+        destination: ("SCEL", -33.393, -70.785),
+        max_alt_ft: 37_000,
+        landing_fpm: -250,
+        max_gs_kt: 491,
+        max_tas_kt: 475,
+        cruise_alt_ft: 37_000,
+        fuel_used_kg: 19_800,
+        passengers: 312,
+        cargo_kg: 11_400,
+    },
+    DemoFlight {
+        aircraft_title: "Airbus A321neo",
+        aircraft_icao: "A21N",
+        origin: ("MDSD", 18.430, -69.669),
+        destination: ("KMIA", 25.794, -80.290),
+        max_alt_ft: 34_000,
+        landing_fpm: -190,
+        max_gs_kt: 466,
+        max_tas_kt: 458,
+        cruise_alt_ft: 34_000,
+        fuel_used_kg: 6_200,
+        passengers: 178,
+        cargo_kg: 2_100,
+    },
+    DemoFlight {
+        aircraft_title: "Boeing 747-400",
+        aircraft_icao: "B744",
+        origin: ("KORD", 41.978, -87.904),
+        destination: ("ZBAA", 40.080, 116.585),
+        max_alt_ft: 40_000,
+        landing_fpm: -130,
+        max_gs_kt: 558,
+        max_tas_kt: 502,
+        cruise_alt_ft: 40_000,
+        fuel_used_kg: 145_600,
+        passengers: 416,
+        cargo_kg: 26_300,
+    },
+    DemoFlight {
+        aircraft_title: "Airbus A320neo (greaser)",
+        aircraft_icao: "A20N",
+        origin: ("LFPG", 49.013, 2.550),
+        destination: ("EGLL", 51.470, -0.454),
+        max_alt_ft: 28_000,
+        landing_fpm: -85, // touchdown muy fino
+        max_gs_kt: 422,
+        max_tas_kt: 440,
+        cruise_alt_ft: 28_000,
+        fuel_used_kg: 1_900,
+        passengers: 138,
+        cargo_kg: 1_400,
+    },
+];
+
+/// Slerp (spherical linear interpolation) entre dos puntos de la
+/// esfera. Devuelve el punto al parámetro `t ∈ [0, 1]` siguiendo la
+/// great-circle exacta. Crítico para que las trazas demo
+/// transatlánticas/polares se vean correctas en el globo (linear
+/// lat/lon iba en diagonal recta — para EGLL→KJFK aparecía
+/// "atravesando España" en vez de pasar por Groenlandia).
+fn slerp_geo(lat1: f64, lon1: f64, lat2: f64, lon2: f64, t: f64) -> (f64, f64) {
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let lam1 = lon1.to_radians();
+    let lam2 = lon2.to_radians();
+
+    // Distancia angular total (haversine en forma simplificada).
+    let cos_d =
+        phi1.sin() * phi2.sin() + phi1.cos() * phi2.cos() * (lam2 - lam1).cos();
+    let d = cos_d.clamp(-1.0, 1.0).acos();
+
+    if d.abs() < 1e-10 {
+        // Puntos coincidentes o casi — devolver origen sin dividir
+        // por sin(d)=0.
+        return (lat1, lon1);
+    }
+
+    let sin_d = d.sin();
+    let a = ((1.0 - t) * d).sin() / sin_d;
+    let b = (t * d).sin() / sin_d;
+    // Slerp en coordenadas 3D unitarias.
+    let x = a * phi1.cos() * lam1.cos() + b * phi2.cos() * lam2.cos();
+    let y = a * phi1.cos() * lam1.sin() + b * phi2.cos() * lam2.sin();
+    let z = a * phi1.sin() + b * phi2.sin();
+    let phi = z.atan2((x * x + y * y).sqrt());
+    let lam = y.atan2(x);
+    (phi.to_degrees(), lam.to_degrees())
+}
+
+/// Helper: simula una traza realista entre dos aeropuertos con N
+/// puntos. Sigue la **great-circle exacta** (slerp 3D) + perfil
+/// vertical típico (climb → cruise → descent).
+fn synthetic_track(
+    origin: (f64, f64),
+    dest: (f64, f64),
+    points: usize,
+    cruise_alt_ft: i64,
+    max_gs_kt: i64,
+) -> Vec<(f64, f64, i64, i64)> {
+    let mut out = Vec::with_capacity(points);
+    for i in 0..points {
+        let t = i as f64 / (points - 1).max(1) as f64;
+        let (lat, lon) = slerp_geo(origin.0, origin.1, dest.0, dest.1, t);
+        // Perfil vertical trapezoidal: ascenso primer 15%, crucero
+        // 15-85%, descenso 85-100%.
+        let alt = if t < 0.15 {
+            (t / 0.15 * cruise_alt_ft as f64) as i64
+        } else if t > 0.85 {
+            (((1.0 - t) / 0.15) * cruise_alt_ft as f64) as i64
+        } else {
+            cruise_alt_ft
+        };
+        // GS sube en climb, baja en descent.
+        let gs = if t < 0.10 {
+            (t / 0.10 * max_gs_kt as f64) as i64
+        } else if t > 0.90 {
+            (((1.0 - t) / 0.10) * max_gs_kt as f64).max(150.0) as i64
+        } else {
+            max_gs_kt
+        };
+        out.push((lat, lon, alt, gs));
+    }
+    out
+}
+
+/// Helper de testing: borra los vuelos demo previos e inserta una
+/// colección variada con tracks sintéticos para validar la vista
+/// globo + el detalle de ruta. Idempotente: ejecutarlo varias veces
+/// no acumula duplicados.
 #[tauri::command]
 pub async fn debug_seed_flight_log(
     state: tauri::State<'_, AppState>,
 ) -> Result<i64, String> {
-    let id = flight_log::start_flight(
-        &state.db,
-        50.901,
-        4.484,
-        Some("Airbus A320 Demo"),
-        Some("A320"),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    flight_log::finish_flight(&state.db, id, 40.471, -3.564, Some(36000))
+    let pool = &state.db;
+
+    // Limpiamos demos previos — los identificamos por aircraft_title
+    // que termine en "Demo" o por algún match conocido. Mejor: borrar
+    // todos los `flight_log` cuyo `aircraft_title` matchee con
+    // alguno de nuestros demos.
+    for f in DEMO_FLIGHTS {
+        let _ = sqlx::query("DELETE FROM flight_log WHERE aircraft_title = ?1")
+            .bind(f.aircraft_title)
+            .execute(pool)
+            .await;
+    }
+
+    let mut last_id: i64 = 0;
+    for f in DEMO_FLIGHTS {
+        let id = flight_log::start_flight(
+            pool,
+            f.origin.1,
+            f.origin.2,
+            Some(f.aircraft_title),
+            Some(f.aircraft_icao),
+        )
         .await
         .map_err(|e| e.to_string())?;
-    Ok(id)
+
+        // Sintetizamos ~80 puntos de track para que la polyline se
+        // vea fluida en el mapa.
+        let track = synthetic_track(
+            (f.origin.1, f.origin.2),
+            (f.destination.1, f.destination.2),
+            80,
+            f.cruise_alt_ft,
+            f.max_gs_kt,
+        );
+        for (lat, lon, alt, gs) in track {
+            if let Err(e) =
+                flight_log::insert_track_point(pool, id, lat, lon, alt, gs).await
+            {
+                tracing::warn!("seed: insert_track_point falló: {e:#}");
+            }
+        }
+
+        flight_log::finish_flight(
+            pool,
+            id,
+            f.destination.1,
+            f.destination.2,
+            FlightFinishMetrics {
+                max_altitude_ft: Some(f.max_alt_ft),
+                landing_fpm: Some(f.landing_fpm),
+                max_ground_speed_kt: Some(f.max_gs_kt),
+                max_true_airspeed_kt: Some(f.max_tas_kt),
+                fuel_used_kg: Some(f.fuel_used_kg),
+                paused_seconds: 0,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        // Pasajeros + carga después del finish (no son métricas
+        // capturadas en vivo todavía — vienen vía edit manual o
+        // futura integración GSX).
+        let _ = flight_log::update_entry(
+            pool,
+            id,
+            &flight_log::UpdateEntryInput {
+                passengers: Some(f.passengers),
+                cargo_kg: Some(f.cargo_kg),
+                ..Default::default()
+            },
+        )
+        .await;
+        last_id = id;
+    }
+    Ok(last_id)
 }

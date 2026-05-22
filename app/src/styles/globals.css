@@ -2,18 +2,245 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme — la app nace en dark; el toggle de Settings añade la clase
+ * `light` al <html>. Tailwind tiene `darkMode: "class"`, pero la
+ * inmensa mayoría de componentes están hardcoded a tonos slate-900,
+ * así que añadir `dark:` modifiers a cada uno sería refactor masivo.
+ *
+ * En su lugar, los overrides de tema light viven aquí — sobreescriben
+ * sólo las superficies grandes (body bg + contenedor principal +
+ * borde de tabs principal) para que el usuario vea claramente que
+ * el toggle hace algo. Los cards/modales se quedan en dark (eso
+ * está documentado al usuario en SettingsModal: "Light es
+ * experimental").
+ *
+ * Cambio v0.1.19: añadimos `html.light` overrides — antes el toggle
+ * persistía la preferencia pero NO afectaba a ningún CSS porque el
+ * body tenía `@apply bg-slate-950 text-slate-100` sin variantes.
+ * Ahora el switch sí cambia visualmente la app.
+ */
 :root {
   color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
 }
 
 html, body, #root {
   height: 100%;
 }
 
+html, body {
+  /* Doble-scrollbar fix v0.1.9: en Tauri/WebView2 con ciertas
+     resoluciones se renderizaba una scrollbar de #root y otra
+     del body al mismo tiempo. Forzamos a que SOLO el body
+     scrollee verticalmente, y rechazamos cualquier overflow-x
+     accidental de tablas anchas que cree barra horizontal
+     estorbosa. */
+  overflow-x: hidden;
+}
+
+#root {
+  /* #root no debe scrollear — el scroll vertical lo gestiona el
+     body. Sin esto, contenido más alto que la viewport (FlightBook
+     con tabla larga, modal de detail, etc.) creaba dos scrollbars
+     apiladas. */
+  overflow: visible;
+  min-height: 100%;
+  height: auto;
+}
+
 body {
   @apply bg-slate-950 text-slate-100 antialiased;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Asegura una sola scrollbar vertical: si el contenido cabe en
+     la pantalla `auto` no la pinta, y si no cabe la pinta una
+     sola vez. */
+  overflow-y: auto;
 }
+
+/*
+ * Overrides de tema light (v1.1.4 — expandido).
+ *
+ * Antes sólo cambiaba body + shell + header; el resto seguía hardcoded
+ * a slate-900 lo que dejaba la app rota visualmente (texto oscuro sobre
+ * fondo oscuro, etc.). Esta versión cubre las grandes superficies:
+ *   · Bordes slate-800
+ *   · Fondos slate-900/40 (cards, panels, etc.)
+ *   · Texto secundario slate-400/500
+ * dándole coherencia al modo claro sin tener que tocar cada componente.
+ *
+ * Estrategia: regex-targeted overrides en las clases Tailwind compuestas
+ * que se usan más a menudo en la app. Es un parche, no un sistema de
+ * design tokens; pero es la diferencia entre "ilegible" y "usable".
+ */
+html.light body {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+html.light .app-shell {
+  background: linear-gradient(to bottom, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%) !important;
+}
+
+html.light .app-shell-header {
+  background-color: rgba(248, 250, 252, 0.92) !important;
+  border-bottom-color: rgba(148, 163, 184, 0.5) !important;
+  color: #0f172a;
+}
+
+/* Superficies de cards/paneles: slate-900/40 → blanco semi-transparente.
+   El atributo `class` en HTML conserva los slashes originales (no los
+   escapa), por eso usamos substring sin escapes. */
+html.light [class*="bg-slate-900/40"],
+html.light [class*="bg-slate-900/50"],
+html.light [class*="bg-slate-900/60"],
+html.light [class*="bg-slate-900/70"],
+html.light [class*="bg-slate-900/80"],
+html.light [class*="bg-slate-900/95"],
+html.light [class*="bg-slate-950/70"],
+html.light [class*="bg-slate-950/80"],
+html.light [class*="bg-slate-950/90"],
+html.light [class*="bg-slate-950/95"] {
+  background-color: rgba(255, 255, 255, 0.92) !important;
+  color: #0f172a !important;
+}
+
+/* Texto claro (slate-100/200) en superficies que ya invertimos —
+   queda casi invisible en blanco. Lo bajamos a slate-900. */
+html.light .text-slate-100,
+html.light .text-slate-200 {
+  color: #0f172a !important;
+}
+html.light .text-slate-300 {
+  color: #1e293b !important;
+}
+html.light .text-slate-400 {
+  color: #475569 !important;
+}
+html.light .text-slate-500 {
+  color: #64748b !important;
+}
+html.light .text-slate-600 {
+  color: #94a3b8 !important;
+}
+
+/* Bordes — invertidos a líneas suaves grises. */
+html.light .border-slate-700,
+html.light .border-slate-800 {
+  border-color: rgba(148, 163, 184, 0.5) !important;
+}
+html.light .ring-slate-700,
+html.light .ring-slate-800 {
+  --tw-ring-color: rgba(148, 163, 184, 0.4) !important;
+}
+
+/* Tabs nav: bg slate-900/60 al header ya invertido pierde contraste.
+   Reforzamos. */
+html.light nav[class*="bg-slate-900"] {
+  background-color: rgba(241, 245, 249, 0.85) !important;
+}
+
+/* Inputs — fondos slate-950/80 quedaban negro sobre blanco. */
+html.light input[type="text"],
+html.light input[type="search"],
+html.light input[type="number"] {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  color: #0f172a !important;
+  border-color: rgba(148, 163, 184, 0.5) !important;
+}
+
+/* Selección de tabs activa (brand-500/15 sobre brand-500/30) — el
+   anillo brand sigue siendo visible, el bg queda sutil sobre claro. */
+html.light [class*="bg-brand-500/15"] {
+  background-color: rgba(99, 102, 241, 0.18) !important;
+  color: #312e81 !important;
+}
+
+/* (v2.0.0) Refuerzos adicionales del tema claro — el usuario reportó
+   que "el modo claro sigue viendose mal". Cubrimos las superficies y
+   estados que faltaban: dropdowns flotantes, panel de descargas,
+   modales, hovers, scrollbar. */
+
+/* Surface base — bg-slate-900 (sin slash, sólido) — el dropdown de
+   Notifications, modal headers, etc. */
+html.light .bg-slate-900 {
+  background-color: rgba(248, 250, 252, 0.96) !important;
+  color: #0f172a !important;
+}
+html.light .bg-slate-950 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+/* Hovers slate-800/* — el match `[class*=...]` cubre con slash, este
+   cubre los hovers sólidos sin slash. */
+html.light .hover\:bg-slate-800:hover,
+html.light .hover\:bg-slate-900:hover,
+html.light [class*="hover:bg-slate-800"]:hover,
+html.light [class*="hover:bg-slate-900"]:hover {
+  background-color: rgba(226, 232, 240, 0.95) !important;
+}
+
+/* Divisores — divide-y / divide-slate-800. */
+html.light .divide-slate-800 > * + * {
+  border-top-color: rgba(148, 163, 184, 0.4) !important;
+}
+
+/* Tab activa de la nav principal con border ring + tinte brand */
+html.light .ring-brand-500\/30 {
+  --tw-ring-color: rgba(99, 102, 241, 0.5) !important;
+}
+
+/* Texto brand-* — los acentos azulados en cards. Mantenemos color
+   pero ajustamos contraste sobre claro. */
+html.light .text-brand-200,
+html.light .text-brand-300 {
+  color: #4338ca !important;
+}
+
+/* Scrollbar a claro. */
+html.light ::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.55);
+}
+
+/* Botones primary (bg-brand-500 sólido) sobre claro siguen siendo
+   azul/indigo — sólo aseguramos contraste de texto. */
+html.light .bg-brand-500 {
+  color: #ffffff !important;
+}
+
+/* Modal backdrops — eran semi-transparent dark; en claro reducimos
+   el dim para que se vea blanco detrás. */
+html.light [class*="bg-slate-950/70"],
+html.light [class*="bg-slate-950/80"] {
+  background-color: rgba(15, 23, 42, 0.35) !important;
+}
+
+/* Banner de ResultCard usa from-slate-800 via-slate-900 to-slate-950
+   en gradient — sobre claro queda negro. Invertimos a paleta gris
+   pálida. */
+html.light [class*="from-slate-800"][class*="to-slate-950"] {
+  background-image: linear-gradient(
+    to bottom right,
+    #e2e8f0,
+    #cbd5e1,
+    #94a3b8
+  ) !important;
+}
+
+/* SearchBar input — su placeholder texto necesita más contraste. */
+html.light input::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Ring color en cards (ring-1 ring-slate-700) ya lo cubrimos arriba.
+   Los tonos ámbar/emerald/violet específicos mantienen su color
+   original. */
 
 /* Subtle custom scrollbar */
 ::-webkit-scrollbar {

@@ -26,6 +26,7 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
 pub mod repo {
     use sqlx::SqlitePool;
 
+    use crate::download::DownloadJob;
     use crate::sources::Addon;
 
     pub async fn upsert_addon(pool: &SqlitePool, addon: &Addon) -> anyhow::Result<()> {
@@ -713,14 +714,46 @@ pub mod repo {
         // Match por: creator coincide Y nombre del catálogo es
         // substring del título (o viceversa).
         //
-        // **Filtros anti-falsos-positivos**:
-        //   · `LENGTH(cp.title) >= 6` — un título de 1-2 palabras
-        //     genéricas ("Liveries", "Mods", "Pack") matchea con
-        //     casi cualquier addon del mismo creator. El usuario
-        //     reportó que su paquete `pmdg-aircraft-738-liveries`
-        //     (title="Liveries") falsamente decía "update" cuando
-        //     se cruzaba con catalog entries de PMDG aircrafts.
-        //   · Lista negra de títulos triviales (case-insensitive).
+        // **Filtros anti-falsos-positivos** (en orden de impacto):
+        //
+        //   1. Asimetría livery/sound/etc — el bug que reportó el
+        //      usuario: tener PMDG 737-600 (avión base) en Community
+        //      hacía aparecer "Boeing 737-600 Liveries by PMDG" como
+        //      update porque ambos tienen "737-600" en el nombre y
+        //      "PMDG" como creator. Un avión base NUNCA puede ser
+        //      "actualizado" por un livery pack — son artefactos
+        //      distintos. La lista de tokens cubre los content-type
+        //      tags que la comunidad usa por convención.
+        //
+        //   2. `LENGTH(cp.title) >= 6` — un título de 1-2 palabras
+        //      genéricas ("Liveries", "Mods", "Pack") matchea con
+        //      casi cualquier addon del mismo creator.
+        //
+        //   3. Lista negra de títulos triviales (case-insensitive).
+        // Reglas para AIRCRAFT/INSTRUMENT/MISC (v0.1.9, mucho más
+        // estrictas que v0.1.8):
+        //
+        //   1. Creator del manifest matchea con developer del catálogo
+        //      (substring bidireccional).
+        //   2. Hay un EXISTS en `installed_addons` que liga el folder
+        //      a este addon_id concreto. Esto significa que el usuario
+        //      DESCARGÓ este paquete via la app — no estamos
+        //      adivinando vía heurística de título.
+        //   3. Si NO hay link explícito, igual aceptamos pero con
+        //      filtros agresivos: overlap de tokens >= 60% del
+        //      nombre del catálogo, Y todos los anti-categoría
+        //      (livery/sound/preset/etc) tienen que pasar.
+        //
+        // El usuario reportó como bug v0.1.8: tenía PMDG 737-600
+        // base aircraft instalado y aparecía como "update" un
+        // livery pack del catálogo. Aunque el filtro asimétrico
+        // estaba (y debería catch eso), el caso real fallaba.
+        // v0.1.9: cuando NO hay link explícito, EXIGIMOS overlap
+        // de longitud + ABSENCE de palabras "categoría" en el
+        // nombre del catálogo (no asimétrico — directamente
+        // rechazamos cualquier livery/sound/preset/mod/paint/
+        // texture/profile/config en a.name si el paquete instalado
+        // no fue linkeado por el usuario).
         let aircraft = sqlx::query_as::<_, UpdateCandidate>(
             r#"
             SELECT cp.folder_name        AS folder_name,
@@ -742,6 +775,29 @@ pub mod repo {
               AND (
                 INSTR(LOWER(a.name), LOWER(cp.title)) > 0
                 OR INSTR(LOWER(cp.title), LOWER(a.name)) > 0
+                -- Shared aircraft-model token. SQLite GLOB es
+                -- limitado pero suficiente para los modelos más
+                -- comunes que actualizan: A3xx, A350, 737/738/739,
+                -- 747, 777, etc. La idea: ambos lados contienen
+                -- el mismo patrón. Ej. cp.title="iniBuilds A350-900"
+                -- y a.name="Airbus A350" comparten "a350".
+                OR (LOWER(cp.title) GLOB '*a350*' AND LOWER(a.name) GLOB '*a350*')
+                OR (LOWER(cp.title) GLOB '*a330*' AND LOWER(a.name) GLOB '*a330*')
+                OR (LOWER(cp.title) GLOB '*a320*' AND LOWER(a.name) GLOB '*a320*')
+                OR (LOWER(cp.title) GLOB '*a319*' AND LOWER(a.name) GLOB '*a319*')
+                OR (LOWER(cp.title) GLOB '*a321*' AND LOWER(a.name) GLOB '*a321*')
+                OR (LOWER(cp.title) GLOB '*a380*' AND LOWER(a.name) GLOB '*a380*')
+                OR (LOWER(cp.title) GLOB '*737-700*' AND LOWER(a.name) GLOB '*737-700*')
+                OR (LOWER(cp.title) GLOB '*737-800*' AND LOWER(a.name) GLOB '*737-800*')
+                OR (LOWER(cp.title) GLOB '*737-900*' AND LOWER(a.name) GLOB '*737-900*')
+                OR (LOWER(cp.title) GLOB '*747-400*' AND LOWER(a.name) GLOB '*747-400*')
+                OR (LOWER(cp.title) GLOB '*747-8*' AND LOWER(a.name) GLOB '*747-8*')
+                OR (LOWER(cp.title) GLOB '*777-200*' AND LOWER(a.name) GLOB '*777-200*')
+                OR (LOWER(cp.title) GLOB '*777-300*' AND LOWER(a.name) GLOB '*777-300*')
+                OR (LOWER(cp.title) GLOB '*cessna*172*' AND LOWER(a.name) GLOB '*cessna*172*')
+                OR (LOWER(cp.title) GLOB '*787-8*' AND LOWER(a.name) GLOB '*787-8*')
+                OR (LOWER(cp.title) GLOB '*787-9*' AND LOWER(a.name) GLOB '*787-9*')
+                OR (LOWER(cp.title) GLOB '*787-10*' AND LOWER(a.name) GLOB '*787-10*')
               )
             WHERE cp.package_version IS NOT NULL AND cp.package_version <> ''
               AND a.version IS NOT NULL AND a.version <> ''
@@ -752,6 +808,87 @@ pub mod repo {
                 'pack', 'addon', 'tweak', 'fix', 'pro', 'premium', 'enhanced',
                 'preset', 'presets', 'config', 'configs', 'profile', 'profiles'
               )
+              AND (
+                -- Caso A: el usuario instaló este addon vía nuestra
+                -- app (fuerte señal — addon_id linkado).
+                EXISTS (
+                  SELECT 1 FROM installed_addons ia
+                  WHERE ia.addon_id = a.id
+                    AND (
+                      ia.name = cp.folder_name
+                      OR ia.install_path LIKE ('%' || cp.folder_name)
+                      OR ia.install_path LIKE ('%' || cp.folder_name || '%')
+                    )
+                )
+                OR
+                -- Caso B: no hay link explícito, exigimos varios
+                -- chequeos antes de creernos el match heurístico.
+                -- El match puede venir por substring (variantes de
+                -- nombre cortas) o por shared aircraft-model token
+                -- (ej. "iniBuilds A350-900" ↔ "Airbus A350", que no
+                -- comparten substring pero sí familia de avión).
+                -- En ambos sub-casos exigimos AUSENCIA de palabras
+                -- de categoría (livery/sound/etc) en a.name para
+                -- evitar matches livery→aircraft.
+                (
+                  -- Sub-caso B.1: substring + token overlap >= 60%.
+                  -- Evita matches "Boeing 737-600" (14 chars) con
+                  -- "Boeing 737-600 Liveries by PMDG" (32 chars,
+                  -- overlap 14/32 = 43%).
+                  (
+                    INSTR(LOWER(a.name), LOWER(cp.title)) > 0
+                    AND LENGTH(cp.title) * 100 / NULLIF(LENGTH(a.name), 0) >= 60
+                  )
+                  OR (
+                    INSTR(LOWER(cp.title), LOWER(a.name)) > 0
+                    AND LENGTH(a.name) * 100 / NULLIF(LENGTH(cp.title), 0) >= 60
+                  )
+                  OR
+                  -- Sub-caso B.2 (v0.1.18): shared aircraft-model
+                  -- token. El JOIN ya aceptó por GLOB pero el WHERE
+                  -- v0.1.17 rechazaba porque ninguno era substring
+                  -- del otro. Bug reportado: "iniBuilds A350-900"
+                  -- vs "Airbus A350" no aparecía como update.
+                  (LOWER(cp.title) GLOB '*a350*' AND LOWER(a.name) GLOB '*a350*')
+                  OR (LOWER(cp.title) GLOB '*a330*' AND LOWER(a.name) GLOB '*a330*')
+                  OR (LOWER(cp.title) GLOB '*a320*' AND LOWER(a.name) GLOB '*a320*')
+                  OR (LOWER(cp.title) GLOB '*a319*' AND LOWER(a.name) GLOB '*a319*')
+                  OR (LOWER(cp.title) GLOB '*a321*' AND LOWER(a.name) GLOB '*a321*')
+                  OR (LOWER(cp.title) GLOB '*a380*' AND LOWER(a.name) GLOB '*a380*')
+                  OR (LOWER(cp.title) GLOB '*737-700*' AND LOWER(a.name) GLOB '*737-700*')
+                  OR (LOWER(cp.title) GLOB '*737-800*' AND LOWER(a.name) GLOB '*737-800*')
+                  OR (LOWER(cp.title) GLOB '*737-900*' AND LOWER(a.name) GLOB '*737-900*')
+                  OR (LOWER(cp.title) GLOB '*747-400*' AND LOWER(a.name) GLOB '*747-400*')
+                  OR (LOWER(cp.title) GLOB '*747-8*' AND LOWER(a.name) GLOB '*747-8*')
+                  OR (LOWER(cp.title) GLOB '*777-200*' AND LOWER(a.name) GLOB '*777-200*')
+                  OR (LOWER(cp.title) GLOB '*777-300*' AND LOWER(a.name) GLOB '*777-300*')
+                  OR (LOWER(cp.title) GLOB '*cessna*172*' AND LOWER(a.name) GLOB '*cessna*172*')
+                  OR (LOWER(cp.title) GLOB '*787-8*' AND LOWER(a.name) GLOB '*787-8*')
+                  OR (LOWER(cp.title) GLOB '*787-9*' AND LOWER(a.name) GLOB '*787-9*')
+                  OR (LOWER(cp.title) GLOB '*787-10*' AND LOWER(a.name) GLOB '*787-10*')
+                )
+                AND
+                -- Absence de tokens categoría en el nombre del
+                -- catálogo (livery/sound/preset/mod/paint/etc).
+                -- Si el catálogo es eso, NO aplica este caso B.
+                NOT (
+                  LOWER(a.name) LIKE '%liveries%'
+                  OR LOWER(a.name) LIKE '%livery%'
+                  OR LOWER(a.name) LIKE '%paint%'
+                  OR LOWER(a.name) LIKE '%texture%'
+                  OR LOWER(a.name) LIKE '%sounds%'
+                  OR LOWER(a.name) LIKE '%sound pack%'
+                  OR LOWER(a.name) LIKE '%soundpack%'
+                  OR LOWER(a.name) LIKE '%preset%'
+                  OR LOWER(a.name) LIKE '%profile%'
+                  OR LOWER(a.name) LIKE '%config%'
+                  OR LOWER(a.name) LIKE '%mod %'
+                  OR LOWER(a.name) LIKE '% mod'
+                  OR LOWER(a.name) LIKE '%tweak%'
+                  OR LOWER(a.name) LIKE '%enhancement%'
+                  OR LOWER(a.name) LIKE '%pack%'
+                )
+              )
             "#,
         )
         .fetch_all(pool)
@@ -760,5 +897,169 @@ pub mod repo {
         let mut all = scenery;
         all.extend(aircraft);
         Ok(all)
+    }
+
+    // ─────────── download_jobs (v0.1.21 — resume tras cierre) ───────────
+
+    /// Persiste el estado actual de un job — usado tanto al crear
+    /// como al actualizar. INSERT OR REPLACE para que cada llamada
+    /// sea idempotente y simple.
+    ///
+    /// `created_at` se respeta en updates (no se sobreescribe con
+    /// `now`) — el caller pasa el valor original del job.
+    pub async fn upsert_download_job(
+        pool: &SqlitePool,
+        job: &DownloadJob,
+    ) -> anyhow::Result<()> {
+        let phase = phase_to_str(&job.phase);
+        sqlx::query(
+            r#"
+            INSERT INTO download_jobs (
+                id, addon_id, addon_title, source, method_kind, method_name,
+                url, phase, bytes_total, bytes_done, speed_bps, eta_seconds,
+                message, error, install_path, created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now')
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                addon_id     = excluded.addon_id,
+                addon_title  = excluded.addon_title,
+                source       = excluded.source,
+                method_kind  = excluded.method_kind,
+                method_name  = excluded.method_name,
+                url          = excluded.url,
+                phase        = excluded.phase,
+                bytes_total  = excluded.bytes_total,
+                bytes_done   = excluded.bytes_done,
+                speed_bps    = excluded.speed_bps,
+                eta_seconds  = excluded.eta_seconds,
+                message      = excluded.message,
+                error        = excluded.error,
+                install_path = excluded.install_path,
+                updated_at   = datetime('now')
+            "#,
+        )
+        .bind(&job.id)
+        .bind(&job.addon_id)
+        .bind(&job.addon_title)
+        .bind(&job.source)
+        .bind(&job.method_kind)
+        .bind(&job.method_name)
+        .bind(&job.url)
+        .bind(phase)
+        .bind(job.bytes_total as i64)
+        .bind(job.bytes_done as i64)
+        .bind(job.speed_bps as i64)
+        .bind(job.eta_seconds.map(|n| n as i64))
+        .bind(&job.message)
+        .bind(&job.error)
+        .bind(&job.install_path)
+        .bind(&job.created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Borra el job de DB. Lo invoca el manager cuando el usuario
+    /// pulsa "✕" sobre una entrada del panel de descargas.
+    pub async fn delete_download_job(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM download_jobs WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Lee todos los jobs persistidos. Orden estable por `created_at`
+    /// para que la UI los pinte como los dejó el usuario antes de
+    /// cerrar. Filas con phases desconocidas se ignoran (defensa
+    /// contra futuros cambios de enum).
+    pub async fn list_download_jobs(pool: &SqlitePool) -> anyhow::Result<Vec<DownloadJob>> {
+        let rows: Vec<DownloadJobRow> = sqlx::query_as(
+            r#"
+            SELECT id, addon_id, addon_title, source, method_kind, method_name,
+                   url, phase, bytes_total, bytes_done, speed_bps, eta_seconds,
+                   message, error, install_path, created_at
+            FROM download_jobs
+            ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let Some(phase) = phase_from_str(&r.phase) else {
+                tracing::warn!("download_jobs: phase desconocida '{}' en id={}", r.phase, r.id);
+                continue;
+            };
+            out.push(DownloadJob {
+                id: r.id,
+                addon_id: r.addon_id,
+                addon_title: r.addon_title,
+                source: r.source,
+                method_kind: r.method_kind,
+                method_name: r.method_name,
+                url: r.url,
+                phase,
+                bytes_total: r.bytes_total as u64,
+                bytes_done: r.bytes_done as u64,
+                speed_bps: r.speed_bps as u64,
+                eta_seconds: r.eta_seconds.map(|n| n as u64),
+                message: r.message,
+                error: r.error,
+                install_path: r.install_path,
+                created_at: r.created_at,
+            });
+        }
+        Ok(out)
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct DownloadJobRow {
+        id: String,
+        addon_id: String,
+        addon_title: String,
+        source: String,
+        method_kind: String,
+        method_name: String,
+        url: String,
+        phase: String,
+        bytes_total: i64,
+        bytes_done: i64,
+        speed_bps: i64,
+        eta_seconds: Option<i64>,
+        message: Option<String>,
+        error: Option<String>,
+        install_path: Option<String>,
+        created_at: String,
+    }
+
+    fn phase_to_str(p: &crate::download::DownloadPhase) -> &'static str {
+        use crate::download::DownloadPhase::*;
+        match p {
+            Queued      => "queued",
+            Resolving   => "resolving",
+            Downloading => "downloading",
+            Paused      => "paused",
+            Installing  => "installing",
+            Completed   => "completed",
+            Cancelled   => "cancelled",
+            Error       => "error",
+        }
+    }
+
+    fn phase_from_str(s: &str) -> Option<crate::download::DownloadPhase> {
+        use crate::download::DownloadPhase::*;
+        Some(match s {
+            "queued"      => Queued,
+            "resolving"   => Resolving,
+            "downloading" => Downloading,
+            "paused"      => Paused,
+            "installing"  => Installing,
+            "completed"   => Completed,
+            "cancelled"   => Cancelled,
+            "error"       => Error,
+            _ => return None,
+        })
     }
 }

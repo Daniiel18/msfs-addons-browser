@@ -6,8 +6,9 @@ type Status = "idle" | "loading" | "success" | "error";
 
 /** Vista activa en `App`. Dashboard (default home, totales) /
  *  Buscar / Mapa (sólo escenarios) / Addons (resto: aircraft,
- *  livery, sound, etc). */
-export type View = "dashboard" | "search" | "map" | "addons";
+ *  livery, sound, etc) / FlightBook (historial de vuelos reales
+ *  con métricas de SimConnect). */
+export type View = "dashboard" | "search" | "map" | "addons" | "flightbook";
 
 interface AppState {
   sources: SourceDescriptor[];
@@ -92,12 +93,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().catalogCache[sourceId]) return;
     try {
       const res = await api.browseSource(sourceId, 1);
-      set((s) => ({
-        catalogCache: {
-          ...s.catalogCache,
-          [sourceId]: { addons: res.addons, hasMore: res.hasMore },
-        },
-      }));
+      set((s) => {
+        const isActiveAndIdle =
+          s.activeSourceId === sourceId &&
+          s.status === "idle" &&
+          s.query === "" &&
+          s.results.length === 0;
+        return {
+          catalogCache: {
+            ...s.catalogCache,
+            [sourceId]: { addons: res.addons, hasMore: res.hasMore },
+          },
+          // Bug fix v0.1.9: el bootstrap llama `preloadCatalog` por
+          // cada fuente, pero el `setActiveSource` no se dispara si
+          // el `activeSourceId` ya coincide con el default
+          // ("sceneryaddons"). Resultado: `status` queda en "idle"
+          // y la pestaña "Buscar" muestra el spinner "Cargando
+          // catálogo…" eternamente hasta que el usuario clica otra
+          // pestaña/source. Ahora si esta source es la activa y
+          // todavía estamos idle, seedeamos los resultados visibles.
+          ...(isActiveAndIdle
+            ? {
+                results: res.addons,
+                status: "success" as const,
+                browseHasMore: res.hasMore,
+                browseMode: "browse" as const,
+              }
+            : {}),
+        };
+      });
     } catch (e) {
       console.warn("preloadCatalog failed:", sourceId, e);
     }

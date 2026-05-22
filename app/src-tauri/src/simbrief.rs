@@ -43,6 +43,21 @@ pub struct SimBriefFlight {
     pub est_time_enroute_s: Option<i64>,
     pub generated_at: Option<String>,
     pub fetched_at: String,
+    /// (v1.1.0) Pasajeros planificados (`pax_count_actual` o
+    /// `pax_count` del bloque `<weights>` del OFP). Lo usa la
+    /// integración OUT-event para pre-popular `flight_log.passengers`
+    /// — misma data que GSX consume.
+    pub pax_count: Option<i64>,
+    /// Carga útil planificada en **kg** (siempre normalizada, sin
+    /// importar las units del OFP). `<weights><cargo>` o
+    /// `<weights><freight_added>` cuando esté.
+    pub cargo_kg: Option<i64>,
+    /// Combustible planificado a quemar (`enroute_burn + taxi`) en
+    /// **kg**. Equivalente al "block fuel burn" que muestra GSX.
+    pub fuel_burn_kg: Option<i64>,
+    /// `"lbs"` o `"kgs"` — del OFP. Sólo para debug; los campos kg
+    /// arriba ya están normalizados.
+    pub units: Option<String>,
 }
 
 /// Resultado del refresh manual: cuántos OFPs nuevos se añadieron
@@ -69,7 +84,7 @@ pub async fn refresh_latest(
 
     let xml = http
         .get(&url)
-        .header("User-Agent", "MSFSAddonsBrowser/0.1")
+        .header("User-Agent", "SimFleet/3.0")
         .send()
         .await?
         .error_for_status()?
@@ -98,10 +113,16 @@ pub async fn refresh_latest(
             ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
             origin_icao, origin_name, origin_lat, origin_lon,
             destination_icao, destination_name, destination_lat, destination_lon,
-            route, distance_nm, est_time_enroute_s, generated_at, fetched_at
+            route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+            pax_count, cargo_kg, fuel_burn_kg, units
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'))
-        ON CONFLICT(ofp_id) DO UPDATE SET fetched_at = datetime('now')
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21)
+        ON CONFLICT(ofp_id) DO UPDATE SET
+            fetched_at   = datetime('now'),
+            pax_count    = COALESCE(excluded.pax_count, simbrief_flights.pax_count),
+            cargo_kg     = COALESCE(excluded.cargo_kg, simbrief_flights.cargo_kg),
+            fuel_burn_kg = COALESCE(excluded.fuel_burn_kg, simbrief_flights.fuel_burn_kg),
+            units        = COALESCE(excluded.units, simbrief_flights.units)
         "#,
     )
     .bind(&flight.ofp_id)
@@ -121,6 +142,10 @@ pub async fn refresh_latest(
     .bind(flight.distance_nm)
     .bind(flight.est_time_enroute_s)
     .bind(&flight.generated_at)
+    .bind(flight.pax_count)
+    .bind(flight.cargo_kg)
+    .bind(flight.fuel_burn_kg)
+    .bind(&flight.units)
     .execute(pool)
     .await?;
 
@@ -137,7 +162,8 @@ pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFligh
         SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
                origin_icao, origin_name, origin_lat, origin_lon,
                destination_icao, destination_name, destination_lat, destination_lon,
-               route, distance_nm, est_time_enroute_s, generated_at, fetched_at
+               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+               pax_count, cargo_kg, fuel_burn_kg, units
         FROM simbrief_flights
         ORDER BY COALESCE(generated_at, fetched_at) DESC
         "#,
@@ -145,6 +171,42 @@ pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFligh
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// (v1.1.0) Busca el OFP más reciente cuyo origen coincida con
+/// `origin_icao`. Filtra por antigüedad (default 48h) para evitar
+/// matchear OFPs muy viejos con vuelos nuevos del mismo aeropuerto.
+///
+/// Lo usa el watcher en el OUT event para pre-popular
+/// `flight_log.passengers/cargo_kg/fuel_used_kg` con los valores
+/// planificados del OFP — misma data que GSX consume.
+pub async fn find_recent_for_origin(
+    pool: &SqlitePool,
+    origin_icao: &str,
+    within_hours: i64,
+) -> anyhow::Result<Option<SimBriefFlight>> {
+    let row = sqlx::query_as::<_, SimBriefFlight>(
+        r#"
+        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
+               origin_icao, origin_name, origin_lat, origin_lon,
+               destination_icao, destination_name, destination_lat, destination_lon,
+               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+               pax_count, cargo_kg, fuel_burn_kg, units
+        FROM simbrief_flights
+        WHERE UPPER(origin_icao) = UPPER(?1)
+          AND (
+            generated_at IS NOT NULL
+            AND CAST(generated_at AS INTEGER) > strftime('%s', 'now', '-' || ?2 || ' hours')
+          )
+        ORDER BY CAST(generated_at AS INTEGER) DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(origin_icao)
+    .bind(within_hours)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 pub async fn delete_flight(pool: &SqlitePool, ofp_id: &str) -> anyhow::Result<()> {
@@ -201,6 +263,9 @@ static TAG_TIME_GENERATED: Lazy<Regex> = Lazy::new(|| tag_re("time_generated"));
 static TAG_ORIGIN: Lazy<Regex> = Lazy::new(|| tag_re("origin"));
 static TAG_DEST: Lazy<Regex> = Lazy::new(|| tag_re("destination"));
 static TAG_AIRCRAFT: Lazy<Regex> = Lazy::new(|| tag_re("aircraft"));
+static TAG_WEIGHTS: Lazy<Regex> = Lazy::new(|| tag_re("weights"));
+static TAG_FUEL: Lazy<Regex> = Lazy::new(|| tag_re("fuel"));
+static TAG_PARAMS: Lazy<Regex> = Lazy::new(|| tag_re("params"));
 
 /// Parser principal. Devuelve `None` si faltan los campos
 /// imprescindibles (origen, destino con lat/lon).
@@ -230,6 +295,56 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
         format!("nohash-{}", xml.len())
     });
 
+    // (v1.1.0) Units viene en `<params><units>`. Por defecto SimBrief
+    // emite "lbs" para users US y "kgs" para users con preferencia
+    // métrica. Lo usamos para convertir todos los pesos a kg.
+    let units = TAG_PARAMS
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .and_then(|m| inner_tag(m.as_str(), "units"))
+        .map(|s| s.to_lowercase());
+    let lb_to_kg = matches!(units.as_deref(), Some("lbs"));
+    let convert = |v: i64| -> i64 {
+        if lb_to_kg {
+            ((v as f64) * 0.4535924).round() as i64
+        } else {
+            v
+        }
+    };
+
+    // Weights block — pax_count_actual prefiere, sino pax_count.
+    // Cargo: `<weights><cargo>` es el más usado.
+    let (pax_count, cargo_kg) = TAG_WEIGHTS
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .map(|m| {
+            let block = m.as_str();
+            let pax = inner_tag(block, "pax_count_actual")
+                .or_else(|| inner_tag(block, "pax_count"))
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            let cargo = inner_tag(block, "cargo")
+                .or_else(|| inner_tag(block, "freight_added"))
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .map(convert);
+            (pax, cargo)
+        })
+        .unwrap_or((None, None));
+
+    // Fuel block — `enroute_burn + taxi` es la mejor aproximación al
+    // "fuel quemado durante el bloque" que GSX usa.
+    let fuel_burn_kg = TAG_FUEL
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .and_then(|m| {
+            let block = m.as_str();
+            let enroute = inner_tag(block, "enroute_burn")
+                .and_then(|s| s.trim().parse::<i64>().ok())?;
+            let taxi = inner_tag(block, "taxi")
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .unwrap_or(0);
+            Some(convert(enroute + taxi))
+        });
+
     Some(SimBriefFlight {
         ofp_id,
         pilot_id: pilot_id.to_string(),
@@ -250,6 +365,10 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
             .and_then(|s| s.trim().parse().ok()),
         generated_at: first_tag(&TAG_TIME_GENERATED, xml),
         fetched_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        pax_count,
+        cargo_kg,
+        fuel_burn_kg,
+        units,
     })
 }
 
@@ -289,6 +408,10 @@ mod tests {
     <request_id>123456</request_id>
     <userid>50956</userid>
   </fetch>
+  <params>
+    <units>lbs</units>
+    <time_generated>1735689600</time_generated>
+  </params>
   <general>
     <flight_number>BEL341</flight_number>
     <icao_airline>BEL</icao_airline>
@@ -310,6 +433,15 @@ mod tests {
   <aircraft>
     <icao_code>A320</icao_code>
   </aircraft>
+  <weights>
+    <pax_count>148</pax_count>
+    <pax_count_actual>148</pax_count_actual>
+    <cargo>3320</cargo>
+  </weights>
+  <fuel>
+    <taxi>800</taxi>
+    <enroute_burn>7800</enroute_burn>
+  </fuel>
   <times>
     <est_time_enroute>5400</est_time_enroute>
   </times>
@@ -330,6 +462,41 @@ mod tests {
         assert_eq!(f.aircraft_icao.as_deref(), Some("A320"));
         assert_eq!(f.distance_nm, Some(720));
         assert_eq!(f.est_time_enroute_s, Some(5400));
+        // (v1.1.0) Weights/fuel parsing — units=lbs, así que
+        // cargo 3320 lb → ~1506 kg, fuel (7800+800)=8600 lb → ~3901 kg.
+        assert_eq!(f.units.as_deref(), Some("lbs"));
+        assert_eq!(f.pax_count, Some(148));
+        let cargo = f.cargo_kg.expect("cargo_kg parsed");
+        assert!(
+            (cargo - 1506).abs() <= 2,
+            "cargo_kg = {} (esperado ~1506)",
+            cargo
+        );
+        let fuel = f.fuel_burn_kg.expect("fuel_burn_kg parsed");
+        assert!(
+            (fuel - 3901).abs() <= 2,
+            "fuel_burn_kg = {} (esperado ~3901)",
+            fuel
+        );
+    }
+
+    #[test]
+    fn parses_kg_units_without_conversion() {
+        let xml = r#"<?xml version="1.0"?>
+<OFP>
+  <fetch><request_id>1</request_id></fetch>
+  <params><units>kgs</units></params>
+  <origin><icao_code>LEMD</icao_code><pos_lat>40</pos_lat><pos_long>-3</pos_long></origin>
+  <destination><icao_code>EBBR</icao_code><pos_lat>50</pos_lat><pos_long>4</pos_long></destination>
+  <weights><pax_count>180</pax_count><cargo>2500</cargo></weights>
+  <fuel><taxi>300</taxi><enroute_burn>4200</enroute_burn></fuel>
+</OFP>"#;
+        let f = parse_ofp_xml(xml, "1").expect("parse");
+        assert_eq!(f.units.as_deref(), Some("kgs"));
+        assert_eq!(f.pax_count, Some(180));
+        // sin conversión: cargo 2500 kg, fuel (4200+300)=4500 kg.
+        assert_eq!(f.cargo_kg, Some(2500));
+        assert_eq!(f.fuel_burn_kg, Some(4500));
     }
 
     #[test]

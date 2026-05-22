@@ -276,14 +276,26 @@ fn pretty_folder_name(folder: &str) -> String {
 }
 
 /// Extrae un ICAO (4 letras ASCII consecutivas) con frontera de
-/// palabra. Devuelve la primera coincidencia en mayúsculas. La
-/// validación contra airports reales se hace en el caller.
+/// palabra. La validación contra airports reales se hace en el caller.
+///
+/// **(v1.1.4) Heurística "airport- wins"**: si hay múltiples 4-letras
+/// candidates en el texto y al menos uno está inmediatamente precedido
+/// por "airport-" / "airport_" / "airport " (típico de los packs de
+/// scenery: `dev-airport-ICAO-name`), preferimos ése sobre los demás.
+///
+/// Bug que esto arregla: para `kaze-airport-mhtg-toncontin`, la
+/// versión anterior elegía `KAZE` (developer name, casualmente ICAO
+/// real de Hazlehurst GA) en vez de `MHTG` (Toncontin Honduras). El
+/// resultado: Toncontin aparecía en EE.UU. en el mapa.
 fn extract_icao(text: &str) -> Option<String> {
     let upper = text.to_ascii_uppercase();
     let bytes = upper.as_bytes();
     if bytes.len() < 4 {
         return None;
     }
+
+    // Recolecta TODOS los candidatos con word boundary.
+    let mut candidates: Vec<(usize, String)> = Vec::new();
     for i in 0..=bytes.len() - 4 {
         let candidate = &bytes[i..i + 4];
         if !candidate.iter().all(|b| b.is_ascii_alphabetic()) {
@@ -292,10 +304,39 @@ fn extract_icao(text: &str) -> Option<String> {
         let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
         let after_ok = i + 4 == bytes.len() || !bytes[i + 4].is_ascii_alphanumeric();
         if before_ok && after_ok {
-            return String::from_utf8(candidate.to_vec()).ok();
+            if let Ok(s) = String::from_utf8(candidate.to_vec()) {
+                candidates.push((i, s));
+            }
         }
     }
-    None
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates.into_iter().next().unwrap().1);
+    }
+
+    // Prioridad 1: candidato precedido inmediatamente por "AIRPORT"
+    // + un separador (`-`, `_`, ` `). Los packs de scenery siguen
+    // la convención `developer-airport-ICAO-nombre`, así que un match
+    // tras "airport-" es muy probablemente el ICAO real.
+    for (i, cand) in &candidates {
+        if *i < 8 {
+            continue; // necesitamos 7 chars "AIRPORT" + 1 separador detrás
+        }
+        let prefix = &bytes[*i - 8..*i];
+        // "AIRPORT" + 1 separador no-alfanumérico
+        if prefix.starts_with(b"AIRPORT")
+            && matches!(prefix[7], b'-' | b'_' | b' ')
+        {
+            return Some(cand.clone());
+        }
+    }
+
+    // Prioridad 2: el primer match (comportamiento original). Usado
+    // cuando ningún candidato tiene "airport-" delante — la mayoría
+    // de folders fuera de la convención usan dev como prefijo opcional.
+    Some(candidates.into_iter().next().unwrap().1)
 }
 
 /// Sincroniza los resultados del scan con la base de datos. Borra

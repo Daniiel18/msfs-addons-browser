@@ -1,6 +1,11 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // Theme toggle controlado por `html.classList`. El default es
+  // dark (igual que antes); cuando el usuario activa light en
+  // Settings, removemos la clase `dark` del root y los `dark:`
+  // modifiers en Tailwind dejan de aplicar.
+  darkMode: "class",
   theme: {
     extend: {
       colors: {

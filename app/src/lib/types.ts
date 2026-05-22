@@ -88,35 +88,12 @@ export interface InstallResult {
    *  paquete MSFS. Cuando viene poblado, `packages` está vacío y
    *  el frontend debe ofrecer al usuario abrir el instalador. */
   installerPayload: InstallerPayload | null;
-  /** Si el archivo contenía liveries PMDG (.ptp). La app intenta
-   *  instalarlas directamente en el paquete PMDG dentro de Community
-   *  (copiando texturas + mergeando aircraft.cfg + actualizando
-   *  layout.json) — replicando lo que hace PMDG Operations Center
-   *  pero sin requerir abrirlo. Las que no se pudieron instalar
-   *  quedan en `inboxDir` como fallback manual. */
-  ptpPayload: PtpPayload | null;
 }
 
 export interface InstallerPayload {
   extractedDir: string;
   primaryInstaller: string;
   otherInstallers: string[];
-}
-
-export interface PtpPayload {
-  inboxDir: string;
-  ptpFiles: string[];
-  /** Para cada `ptpFiles[i]`, el aircraft detectado heurísticamente
-   *  (nombre propio + nombre del archivo padre + contenido del ZIP),
-   *  ej. "PMDG 737-800". `null` cuando no se pudo determinar. */
-  detectedAircraft: (string | null)[];
-  /** Path al directorio del avión PMDG donde quedó instalada la
-   *  livery (`<community>/pmdg-aircraft-XXX/SimObjects/Airplanes/PMDG
-   *  XXX/`). Cuando está populado, la livery aparece automáticamente
-   *  al elegir la aeronave en MSFS — el usuario no tiene que abrir
-   *  PMDG Operations Center. `null` si no se detectó aircraft o si
-   *  el paquete PMDG no está instalado en Community. */
-  autoInstalledAt: (string | null)[];
 }
 
 /** Vuelo persistido del historial SimBrief. La app va acumulando
@@ -141,6 +118,15 @@ export interface SimBriefFlight {
   estTimeEnrouteS: number | null;
   generatedAt: string | null;
   fetchedAt: string;
+  /** (v1.1.0) Pasajeros planificados del OFP. Lo usa el watcher al
+   *  OUT para pre-popular `flightLog.passengers` automáticamente. */
+  paxCount: number | null;
+  /** Carga útil planificada en kg (normalizada desde lbs si aplica). */
+  cargoKg: number | null;
+  /** Combustible planificado a quemar (taxi+enroute) en kg. */
+  fuelBurnKg: number | null;
+  /** "lbs" o "kgs" del OFP — sólo trazabilidad. */
+  units: string | null;
 }
 
 export interface SimBriefRefreshResult {
@@ -170,7 +156,25 @@ export interface FlightStatus {
   currentLon: number | null;
   currentAltFt: number | null;
   currentGroundSpeedKt: number | null;
+  /** (v1.1.4) Rumbo verdadero 0..360°. Usado para rotar el icono
+   *  del avión en el mapa del FlightBook. */
+  currentHeadingDeg: number | null;
   onGround: boolean | null;
+  /** (v0.1.25) Fase granular: "preflight" | "engine_running" |
+   *  "pushback" | "taxi_out" | "takeoff" | "climbing" | "cruise" |
+   *  "descent" | "approach" | "landed_rollout" | "taxi_in" |
+   *  "parking" | "deboarding". `null` cuando SimConnect no está
+   *  conectado o no se pudo derivar todavía. */
+  phaseLabel: string | null;
+  /** (v3.0.0) Gate / parking actual cuando el avión está en tierra.
+   *  Se popula desde SimConnect Facility Data API al conectar
+   *  (request "preflight") y se persiste en el flight_log al OUT.
+   *  Ejemplos: "A34", "C7", "Ramp 4", "Gate 12B". */
+  currentGate: string | null;
+  /** (v3.0.0) ICAO del aeropuerto más cercano al avión (nearest).
+   *  Se usa en el frontend para detener el auto-refresh de SimBrief
+   *  cuando el plan ya coincide con la posición actual. */
+  currentAirportIcao: string | null;
   lastCheckedAt: string;
 }
 
@@ -199,6 +203,8 @@ export interface AppSettings {
   minimizeToTray: boolean;
   onboardingCompleted: boolean;
   defaultView: string;
+  /** Tema visual: "dark" o "light". */
+  theme: string;
   autostartEnabled: boolean;
   simbriefPilotId: string | null;
   communityPath: string | null;
@@ -225,8 +231,31 @@ export interface FlightLogEntry {
   aircraftTitle: string | null;
   aircraftAtcType: string | null;
   distanceNm: number | null;
+  /** Duración total entre `startedAt` y `endedAt` en segundos. */
   flightTimeS: number | null;
   maxAltitudeFt: number | null;
+  /** Vertical speed (FPM) en el momento del touchdown — negativo
+   *  = descenso. -100 a -500 es un "buen aterrizaje"; -600 a
+   *  -1000 áspero; bajo -1000 abusivo. `null` si no se capturó. */
+  landingFpm: number | null;
+  /** Ground speed máxima durante el vuelo (knots). */
+  maxGroundSpeedKt: number | null;
+  /** True airspeed máxima durante el vuelo (knots). */
+  maxTrueAirspeedKt: number | null;
+  /** Parking spot / gate de salida — typically "Position: lat,lon"
+   *  cuando no detectamos parking específico. */
+  departureGate: string | null;
+  arrivalGate: string | null;
+  /** Pasajeros (manual hasta integración GSX). */
+  passengers: number | null;
+  /** Carga útil en kg (manual). */
+  cargoKg: number | null;
+  /** Combustible consumido en kg — automático cuando SimConnect
+   *  estaba conectado al OUT (initial fuel) y al IN (final fuel). */
+  fuelUsedKg: number | null;
+  /** Segundos totales con el sim pausado durante el vuelo. Ya
+   *  están restados del `flightTimeS` (block time real). */
+  pausedSeconds: number;
   source: string;
 }
 
@@ -310,6 +339,31 @@ export interface ScanReport {
   communityPath: string;
 }
 
+/** (v3.0.0) Livery de PMDG detectada en Community. Una entrada por
+ *  cada `[fltsim.N]` dentro de los `aircraft.cfg` de los paquetes
+ *  `pmdg-aircraft-{model}-liveries`. */
+export interface PmdgLivery {
+  /** "77er" | "77w" | "738" | "739" | ... */
+  model: string;
+  /** Nombre del paquete tal como aparece en Community. */
+  packageFolder: string;
+  /** `title` de la sección [fltsim.N]. */
+  title: string;
+  /** `ui_variation` o `ui_type` — nombre amigable. */
+  variation: string | null;
+  /** `atc_id` — registro / tail number. */
+  tailNumber: string | null;
+  /** `atc_airline` — operador en plain text. */
+  airline: string | null;
+  /** `texture` — subcarpeta del livery. */
+  texture: string | null;
+  /** Data URL del thumbnail (base64 JPG/PNG) o `null` si el livery
+   *  no trae imagen renderizable. El backend filtra DDS porque el
+   *  WebView no las soporta. */
+  thumbnailDataUrl: string | null;
+}
+
+
 /** Una actualización detectada al cruzar Community con el catálogo. */
 export interface AvailableUpdate {
   folderName: string;
@@ -326,6 +380,41 @@ export interface AvailableUpdate {
 export interface Changelog {
   sourceUrl: string;
   lines: string[];
+}
+
+/** Input para `update_flight_log_entry` (v0.1.25). Cada campo es
+ *  opcional — el frontend envía sólo los que el usuario editó.
+ *  `null` en un Option significa "borrar este campo" para strings;
+ *  para números no aplica, simplemente omites la clave. */
+export interface UpdateFlightInput {
+  flightTimeS?: number | null;
+  passengers?: number | null;
+  cargoKg?: number | null;
+  fuelUsedKg?: number | null;
+  departureGate?: string | null;
+  arrivalGate?: string | null;
+}
+
+/** Punto individual de la traza de un vuelo (v0.1.23). Una fila
+ *  por muestreo (~cada 10s) en `flight_log_track`. El frontend los
+ *  pide para pintar la ruta real del vuelo en el mapa. */
+export interface FlightTrackPoint {
+  lat: number;
+  lon: number;
+  altFt: number | null;
+  gsKt: number | null;
+  ts: string;
+}
+
+/** Reporte de la desinstalación total (v0.1.19). El backend borra
+ *  el folder en CADA Community detectada + carpetas extras
+ *  (Documents\MSFS Sceneries\…). Devuelve qué paths se eliminaron
+ *  y cuáles fallaron para que la UI pueda enseñar el resultado. */
+export interface UninstallReport {
+  folderName: string;
+  removedPaths: string[];
+  failedPaths: { path: string; error: string }[];
+  dbRowsCleared: number;
 }
 
 /** Diagnóstico exhaustivo del estado de detección de updates para
@@ -410,6 +499,125 @@ export interface GsxProfile {
   thumbnail: string | null;
   authorName: string | null;
   simulator: string | null;
+}
+
+/** (v2.0.0) Resultado de instalar perfil(es) GSX. Espejo de
+ *  `commands::gsx::GsxInstallReport`. `archiveKind` es "single"
+ *  (un .ini/.py suelto), "zip" o "rar". */
+export interface GsxInstallReport {
+  archiveKind: string;
+  installedFiles: string[];
+  skippedFiles: string[];
+}
+
+/** (v2.1.0) Item detectado dentro de un archivo dropeado. Espejo de
+ *  `drop_install::DropItem`. */
+export interface DropItem {
+  /** "gsx_profile" | "community_package" | "installer_exe" | "unknown" */
+  kind: string;
+  label: string;
+  icao: string | null;
+  /** (v2.1.1) Variantes detectadas (VDGS, noVDGS, handler, locale, etc). */
+  variants: string[];
+  sourcePath: string;
+  relativePath: string;
+  sizeBytes: number;
+  /** (v2.1.1) Primeras líneas del .ini, útil para distinguir items
+   *  con el mismo filename pero diferente contenido. */
+  description: string | null;
+}
+
+/** (v2.1.0) Resultado de la inspección de un archivo dropeado. */
+export interface DropInspection {
+  sessionId: string;
+  archivePath: string;
+  items: DropItem[];
+  /** True si el archivo era un .ini/.py suelto. Skip modal. */
+  isSingle: boolean;
+}
+
+/** (v2.1.0) Resultado de instalar los items seleccionados. */
+export interface DropCommitReport {
+  installedGsx: string[];
+  installedPackages: string[];
+  errors: string[];
+}
+
+/** (v2.0.0) Estado de la integración con Google Drive. Espejo de
+ *  `cloud_sync::CloudConfig`. */
+export interface CloudConfig {
+  connected: boolean;
+  hasCredentials: boolean;
+  userEmail: string | null;
+  lastSyncAt: string | null;
+}
+
+/** (v2.0.0) Inicio del flow OAuth — la URL que la UI abre en el
+ *  navegador del usuario y el puerto del listener loopback. */
+export interface CloudOauthStart {
+  authUrl: string;
+  redirectUri: string;
+  port: number;
+}
+
+/** (v2.0.0) Evento emitido al terminar el flow OAuth. */
+export interface CloudOauthCompletedEvent {
+  ok: boolean;
+  userEmail: string | null;
+  error: string | null;
+}
+
+/** (v2.0.0) Reporte tras un sync exitoso — cuenta uploads y
+ *  downloads por colección. */
+export interface CloudSyncReport {
+  uploadedFlights: number;
+  uploadedTracks: number;
+  uploadedSettings: number;
+  downloadedFlights: number;
+  downloadedTracks: number;
+  downloadedSettings: number;
+}
+
+/** (v2.0.2) Un paso del diagnóstico de Cloud Sync. Espejo de
+ *  `cloud_sync::CloudTestStep`. */
+export interface CloudTestStep {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** (v2.0.2) Reporte completo del diagnóstico. */
+export interface CloudTestReport {
+  overallOk: boolean;
+  steps: CloudTestStep[];
+  hint: string | null;
+}
+
+/** (v2.0.1) Estado del folder sync — alternativa simple a OAuth.
+ *  Espejo de `cloud_sync::FolderSyncConfig`. */
+export interface FolderSyncConfig {
+  folderPath: string | null;
+  lastSyncAt: string | null;
+  folderExists: boolean;
+  dataFileExists: boolean;
+}
+
+/** (v2.0.1) Reporte tras un save al folder. */
+export interface FolderSyncSaveReport {
+  outputPath: string;
+  bytesWritten: number;
+  flights: number;
+  tracks: number;
+  settings: number;
+}
+
+/** (v2.0.1) Reporte tras un load desde folder. */
+export interface FolderSyncLoadReport {
+  sourcePath: string;
+  bytesRead: number;
+  restoredFlights: number;
+  restoredTracks: number;
+  restoredSettings: number;
 }
 
 /** Fila del historial persistente. Espejo de `repo::InstalledAddonRow`. */

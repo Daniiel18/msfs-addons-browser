@@ -5,28 +5,33 @@
 //!   · **Desinstalar** — borra el folder del paquete en Community.
 //!   · **Abrir carpeta** — manejado por el frontend vía `openShell`.
 //!
-//! ¿Qué hay que borrar para una desinstalación "limpia"?
+//! # Desinstalación total (v0.1.19)
 //!
-//! MSFS guarda los paquetes Community **sólo** en el directorio
-//! `Community/<folder>/`. La rolling-cache, los oficiales y los
-//! caches de objetos viven aparte y no son por-paquete. Al borrar
-//! el folder Community, MSFS deja de cargarlo en el siguiente
-//! arranque y limpia las referencias automáticamente.
+//! Antes: borrábamos sólo `Community/<folder>/` del path guardado en
+//! `community_packages`. Eso funciona si el usuario tiene una sola
+//! versión de MSFS — pero si conviven Steam + MS Store, o MSFS 2020
+//! + MSFS 2024, el paquete podía quedar duplicado en la otra
+//! Community y "resucitar" al siguiente scan.
 //!
-//! Otros candidatos que evalué y descarté:
-//!   · `LocalState\packages\<pkg>` — sólo se popula en MS Store
-//!     para paquetes oficiales/marketplace, no Community.
-//!   · `LOCALAPPDATA\Microsoft Flight Simulator\Packages\` — no
-//!     existe para Community.
-//!   · `Documents\MSFS Sceneries\` — convención de algunos
-//!     instaladores .exe; lo notificamos al usuario en
-//!     `install/mod.rs` cuando el archivo no es un paquete válido.
+//! Ahora: detectamos **todas** las Community folders disponibles
+//! (4 variantes en Windows — MSFS 2020/2024 × Steam/MS Store) y
+//! borramos el folder en cada una donde exista. Además miramos las
+//! ubicaciones "extras" que algunos instaladores .exe usan:
+//!   · `Documents\MSFS Sceneries\<folder>` (Aerosoft, Drzewiecki…)
+//!   · `Documents\MSFS 2024 Sceneries\<folder>`
+//!
+//! No tocamos la rolling-cache: MSFS la regenera al arranque, y
+//! parsearla bien implica entender el formato binario propietario.
 //!
 //! Hacemos varios sanity checks antes del borrado para evitar
-//! desastres si el `install_path` viene corrupto.
+//! desastres si el `install_path` viene corrupto o si una entrada
+//! del registro apunta a una carpeta inesperada (ver `sanity_check`).
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
+use crate::community;
 use crate::db::repo;
 
 /// Errores propios del módulo. Mantenerlos tipados nos deja
@@ -34,93 +39,239 @@ use crate::db::repo;
 /// existe", "fuera de Community"…) en vez de un string opaco.
 #[derive(Debug, thiserror::Error)]
 pub enum PackageOpError {
-    #[error("la ruta '{0}' no existe")]
-    NotFound(String),
-    #[error("la ruta '{0}' no es un directorio")]
-    NotADirectory(String),
-    #[error("rechazado por seguridad: la ruta '{0}' parece sospechosa")]
-    UnsafePath(String),
-    #[error("no se pudo borrar '{path}': {source}")]
-    DeleteFailed {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
     #[error("paquete '{0}' no encontrado en la base de datos")]
     UnknownPackage(String),
+    #[error("no se encontró ninguna ubicación instalada para '{0}'")]
+    NothingToRemove(String),
     #[error(transparent)]
     Db(#[from] anyhow::Error),
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
 }
 
-/// Borra el folder de un paquete instalado en Community y limpia
-/// las filas de DB asociadas. La fila de `installed_addons` se
-/// borra también porque ya no representa nada en disco.
+/// Reporte del trabajo hecho — qué paths fueron borrados con éxito,
+/// cuáles fallaron, y cuántas filas de DB se limpiaron. El frontend
+/// usa esto para enseñar al usuario "se borró de N ubicaciones" en
+/// lugar del void anterior, que dejaba dudas sobre si la operación
+/// realmente había sido total.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallReport {
+    /// Folder name del paquete (el mismo que entró por parámetro).
+    pub folder_name: String,
+    /// Paths que se borraron correctamente. Cada entrada es la ruta
+    /// absoluta que se eliminó (`Community/<folder>` o
+    /// `Documents\MSFS Sceneries\<folder>`, etc.).
+    pub removed_paths: Vec<String>,
+    /// Paths que se intentaron borrar pero fallaron. Cada entrada es
+    /// `(path, error)` — el frontend los muestra para que el usuario
+    /// pueda intervenir manualmente si MSFS está corriendo y bloquea
+    /// el delete por handles abiertos.
+    pub failed_paths: Vec<RemovalFailure>,
+    /// Cuántas filas se borraron en `community_packages` +
+    /// `installed_addons`.
+    pub db_rows_cleared: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// Borra el folder de un paquete instalado en **todas** las
+/// ubicaciones donde aparezca + limpia DB. Idempotente: ejecutarlo
+/// dos veces no es error (la segunda vez no encontrará nada).
+///
+/// El folder name proviene de `community_packages` (la fila escaneada
+/// del FS) o, si no existe esa fila, se borra usando el folder name
+/// tal cual — útil para "fantasmas" donde la DB se desincronizó.
 pub async fn uninstall_by_folder(
     pool: &sqlx::SqlitePool,
     folder_name: &str,
-) -> Result<(), PackageOpError> {
-    let pkgs = repo::list_community_packages(pool).await?;
-    let target = pkgs
-        .iter()
-        .find(|p| p.folder_name == folder_name)
-        .ok_or_else(|| PackageOpError::UnknownPackage(folder_name.to_string()))?;
+) -> Result<UninstallReport, PackageOpError> {
+    let mut report = UninstallReport {
+        folder_name: folder_name.to_string(),
+        ..Default::default()
+    };
 
-    let path = PathBuf::from(&target.install_path);
-    sanity_check(&path)?;
-    delete_dir(&path)?;
-    cleanup_db(pool, folder_name).await?;
-    Ok(())
+    // Candidato 1: el `install_path` exacto de la DB. Es el más
+    // fiable porque fue el que escaneamos — si el usuario configuró
+    // una Community en un disco que `detect_all_community_folders`
+    // no descubre (raro pero posible), seguimos pudiendo borrarlo.
+    let pkgs = repo::list_community_packages(pool).await?;
+    let db_target = pkgs.iter().find(|p| p.folder_name == folder_name);
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(t) = db_target {
+        candidates.push(PathBuf::from(&t.install_path));
+    }
+
+    // Candidatos 2-N: una entrada por cada Community detectada
+    // automáticamente. Esto cubre el caso del usuario que tiene
+    // Steam + MS Store o MSFS 2020 + 2024 — el paquete puede vivir
+    // en varias y queremos eliminarlo de todas.
+    match community::detect_all_community_folders() {
+        Ok(folders) => {
+            for folder in folders {
+                if !folder.exists {
+                    continue;
+                }
+                let candidate = PathBuf::from(&folder.path).join(folder_name);
+                if !already_listed(&candidates, &candidate) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "install",
+                "uninstall: detect_all_community_folders falló ({:#}); sigo con candidatos de DB",
+                e
+            );
+        }
+    }
+
+    // Candidatos extras: `Documents\MSFS Sceneries\<folder>` y
+    // `Documents\MSFS 2024 Sceneries\<folder>`. Algunos instaladores
+    // .exe ponen ahí los assets — si están, hay que borrarlos también.
+    for (label, base) in community::extra_install_locations() {
+        let candidate = base.join(folder_name);
+        if !already_listed(&candidates, &candidate) {
+            tracing::debug!(
+                target: "install",
+                "uninstall: añadiendo candidato extra ({}): {}",
+                label,
+                candidate.display()
+            );
+            candidates.push(candidate);
+        }
+    }
+
+    // Intentar borrar cada candidato. Sanity check antes de cada
+    // delete — un path mal formado en DB no debe poder borrar `/`
+    // ni `Community/`. Los que no existen se omiten silenciosamente
+    // (eso es lo que queremos para idempotencia).
+    for candidate in &candidates {
+        // El nombre `display` choca con un token reservado por las
+        // macros de `tracing` (lo interpreta como helper formatter
+        // en vez de variable local), por eso usamos `path_str`.
+        let path_str = candidate.to_string_lossy().to_string();
+        if !candidate.exists() {
+            continue;
+        }
+        if let Err(reason) = sanity_check(candidate, folder_name) {
+            tracing::warn!(
+                target: "install",
+                path = %path_str,
+                reason = %reason,
+                "uninstall: sanity_check rechazó path"
+            );
+            report.failed_paths.push(RemovalFailure {
+                path: path_str.clone(),
+                error: reason,
+            });
+            continue;
+        }
+        match std::fs::remove_dir_all(candidate) {
+            Ok(()) => {
+                tracing::info!(
+                    target: "install",
+                    path = %path_str,
+                    "uninstall: borrado"
+                );
+                report.removed_paths.push(path_str);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "install",
+                    path = %path_str,
+                    error = %e,
+                    "uninstall: fallo borrando"
+                );
+                report.failed_paths.push(RemovalFailure {
+                    path: path_str,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    // Limpiamos DB siempre que algo se haya borrado, O cuando no
+    // existía nada en disco pero sí filas en DB (fantasma). Si
+    // todo falló, dejamos las filas para que el usuario pueda
+    // reintentar tras cerrar MSFS.
+    let any_success = !report.removed_paths.is_empty();
+    let all_missing = report.removed_paths.is_empty() && report.failed_paths.is_empty();
+    if any_success || all_missing {
+        report.db_rows_cleared = cleanup_db(pool, folder_name).await?;
+    }
+
+    if report.removed_paths.is_empty() && report.failed_paths.is_empty() && db_target.is_none() {
+        return Err(PackageOpError::NothingToRemove(folder_name.to_string()));
+    }
+
+    Ok(report)
 }
 
-fn sanity_check(path: &Path) -> Result<(), PackageOpError> {
-    let display = path.to_string_lossy().to_string();
-    if !path.exists() {
-        return Err(PackageOpError::NotFound(display));
-    }
-    if !path.is_dir() {
-        return Err(PackageOpError::NotADirectory(display));
-    }
-    // Negativa razonable: no permitir borrar la propia carpeta
-    // Community o algo encima de ella. El paquete real siempre es
-    // <community>/<paquete>; si el path tiene <2 componentes en
-    // su parent chain hasta "Community", es sospechoso.
-    let lower = display.to_lowercase();
-    if !lower.contains("community") {
-        return Err(PackageOpError::UnsafePath(display));
-    }
-    // Heurística adicional: el folder a borrar no debe ser el
-    // propio "Community" (chequeo nombre exacto, case-insensitive).
-    if path
+fn already_listed(list: &[PathBuf], candidate: &Path) -> bool {
+    list.iter().any(|p| paths_equal(p, candidate))
+}
+
+/// Comparación de paths case-insensitive en Windows (donde un mismo
+/// archivo puede escribirse como `C:\Foo` o `c:\foo`). En el resto
+/// de plataformas hacemos comparación literal — no aplicamos
+/// canonicalize porque eso requiere que el path exista físicamente y
+/// puede fallar para candidatos válidos no instalados.
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    let sa = a.to_string_lossy().to_lowercase();
+    let sb = b.to_string_lossy().to_lowercase();
+    sa.trim_end_matches(['/', '\\']) == sb.trim_end_matches(['/', '\\'])
+}
+
+/// Verifica que el path a borrar es razonable. Devuelve `Err(razón)`
+/// con un mensaje legible para logs si rechaza el path.
+///
+/// Reglas:
+///   · El nombre del último componente debe coincidir con
+///     `expected_folder` (case-insensitive). Esto bloquea cualquier
+///     manipulación que intente borrar la propia carpeta Community
+///     o un directorio padre.
+///   · El path debe contener "community" o "sceneries" en alguna
+///     parte (case-insensitive). Filtro defensivo contra valores
+///     corruptos en DB que apunten a `C:\Windows` o similares.
+fn sanity_check(path: &Path, expected_folder: &str) -> Result<(), String> {
+    let name = path
         .file_name()
         .and_then(|s| s.to_str())
-        .map(|s| s.eq_ignore_ascii_case("community"))
-        .unwrap_or(false)
-    {
-        return Err(PackageOpError::UnsafePath(display));
+        .unwrap_or_default();
+    if !name.eq_ignore_ascii_case(expected_folder) {
+        return Err(format!(
+            "el último componente '{}' no coincide con el folder esperado '{}'",
+            name, expected_folder
+        ));
+    }
+    let lower = path.to_string_lossy().to_lowercase();
+    if !(lower.contains("community") || lower.contains("sceneries")) {
+        return Err(
+            "el path no contiene 'community' ni 'sceneries' — sospechoso".to_string(),
+        );
     }
     Ok(())
 }
 
-fn delete_dir(path: &Path) -> Result<(), PackageOpError> {
-    std::fs::remove_dir_all(path).map_err(|e| PackageOpError::DeleteFailed {
-        path: path.to_string_lossy().into_owned(),
-        source: e,
-    })
-}
-
-async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<(), PackageOpError> {
+async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<u64, PackageOpError> {
     // Quitar de community_packages — el próximo scan lo confirmaría
     // de todas formas, pero hacerlo aquí mantiene la UI consistente
     // sin esperar al refresh.
-    sqlx::query("DELETE FROM community_packages WHERE folder_name = ?1")
+    let r1 = sqlx::query("DELETE FROM community_packages WHERE folder_name = ?1")
         .bind(folder_name)
         .execute(pool)
         .await?;
     // Quitar de installed_addons — buscamos por nombre. Manuales
     // tienen `name = folder` o el archivo, así que un LIKE razonable.
-    sqlx::query(
+    let r2 = sqlx::query(
         r#"
         DELETE FROM installed_addons
         WHERE name = ?1 OR install_path LIKE ?2
@@ -130,5 +281,5 @@ async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<(), Pa
     .bind(format!("%{}%", folder_name))
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(r1.rows_affected() + r2.rows_affected())
 }

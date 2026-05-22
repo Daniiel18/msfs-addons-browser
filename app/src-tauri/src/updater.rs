@@ -26,12 +26,13 @@ use serde::{Deserialize, Serialize};
 /// Si el repo se mueve, esta constante se actualiza y se compila.
 const OWNER_REPO: &str = "Daniiel18/msfs-addons-browser";
 
-const UA: &str = "MSFSAddonsBrowser/0.1 (+https://github.com/n0xful)";
+const UA: &str = "SimFleet/3.0 (+https://github.com/n0xful)";
 
 /// Tiempo máximo aceptable para que la consulta de versión bloquee la
-/// pantalla de inicio. Si GitHub está caído queremos seguir adelante
-/// con la app — un timeout corto y un error suave en consola.
-const TIMEOUT_SECS: u64 = 8;
+/// pantalla de inicio. Subido de 8s → 20s en v0.1.12 porque algunos
+/// usuarios reportaban que GitHub tardaba ~12s en responder desde su
+/// red y la app daba "no hay update" silenciosamente.
+const TIMEOUT_SECS: u64 = 20;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,8 +52,14 @@ pub struct UpdateInfo {
     pub published_at: Option<String>,
 }
 
+// Bug fix v0.1.13: NO usar `rename_all = "camelCase"` — la API REST
+// de GitHub devuelve sus campos en **snake_case** (tag_name,
+// html_url, browser_download_url, etc). El rename forzaba a serde a
+// buscar `browserDownloadUrl` (camelCase) que NUNCA aparece en la
+// respuesta, y el parse fallaba con "missing field
+// `browserDownloadUrl` at line 1 column 3244". Sin rename, los
+// nombres de campos Rust (ya snake_case) matchean directo el JSON.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct GhRelease {
     tag_name: String,
     html_url: String,
@@ -69,7 +76,6 @@ struct GhRelease {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct GhAsset {
     name: String,
     browser_download_url: String,
@@ -131,7 +137,18 @@ pub async fn check_latest(http: &reqwest::Client) -> anyhow::Result<Option<Updat
         }
     };
 
+    tracing::info!(
+        target: "updater",
+        "updater: current={} latest={} → update={}",
+        current,
+        latest_str,
+        latest_v > current_v
+    );
     if latest_v <= current_v {
+        tracing::info!(
+            target: "updater",
+            "updater: ya estás en la última versión, no se ofrece update"
+        );
         return Ok(None);
     }
 
@@ -151,6 +168,17 @@ pub async fn check_latest(http: &reqwest::Client) -> anyhow::Result<Option<Updat
     }))
 }
 
+/// Elige el asset Windows preferido. **Orden importa**:
+///
+///   1. `.exe` (NSIS) — preferido porque:
+///      · Soporta install per-user sin admin (Tauri default).
+///      · Reemplaza el `.exe` corriendo usando Restart Manager.
+///      · Tauri lo configura para relanzar la app post-install.
+///   2. `.msix` — usado raramente, MS Store apps.
+///   3. `.msi` — último recurso. **NO recomendado** porque
+///      `msiexec /quiet` instala bien pero NO relanza la app, y
+///      el usuario reportó (log v0.1.13→v0.1.14) que tras
+///      `exit(0)` la app desaparecía y no volvía a abrir.
 fn pick_windows_asset(assets: &[GhAsset]) -> Option<String> {
     let by_ext = |ext: &str| {
         assets
@@ -158,7 +186,7 @@ fn pick_windows_asset(assets: &[GhAsset]) -> Option<String> {
             .find(|a| a.name.to_lowercase().ends_with(ext))
             .map(|a| a.browser_download_url.clone())
     };
-    by_ext(".msix")
+    by_ext(".exe")
+        .or_else(|| by_ext(".msix"))
         .or_else(|| by_ext(".msi"))
-        .or_else(|| by_ext(".exe"))
 }

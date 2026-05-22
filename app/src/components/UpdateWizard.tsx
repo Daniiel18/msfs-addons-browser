@@ -13,6 +13,7 @@ import type { Addon, DownloadMethod } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
+import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
 
 /**
  * Wizard global que itera la cola `updateQueue` del community store
@@ -50,15 +51,24 @@ export function UpdateWizard() {
   const [busy, setBusy] = useState(false);
 
   // Lazy-load del catálogo cada vez que cambia el item actual.
+  //
+  // Bug v0.1.19 → fix v0.1.20: la rama AIRCRAFT del SQL emite
+  // `current.icao = ""` para paquetes no-SCENERY (aviones, liveries,
+  // sounds). Usar `current.icao` directamente como query producía
+  // dos `search("", source)` que devolvían 0 resultados, y el wizard
+  // se quedaba en "no hay métodos disponibles" para todo lo que no
+  // fuera escenario. Ahora derivamos un keyword del título cuando
+  // el icao no es plausible.
   useEffect(() => {
     if (!current) return;
     let cancelled = false;
     setMatches([]);
     setError(null);
     setSearching(true);
+    const query = deriveUpdateSearchQuery(current.icao, current.title);
     Promise.all([
-      api.search(current.icao, "sceneryaddons").catch(() => [] as Addon[]),
-      api.search(current.icao, "simplaza").catch(() => [] as Addon[]),
+      api.search(query, "sceneryaddons").catch(() => [] as Addon[]),
+      api.search(query, "simplaza").catch(() => [] as Addon[]),
     ])
       .then(([sa, sp]) => {
         if (!cancelled) setMatches([...sa, ...sp]);
@@ -198,7 +208,8 @@ export function UpdateWizard() {
               {searching ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-400">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Buscando {current.icao} en SceneryAddons y Simplaza…
+                  Buscando {deriveUpdateSearchQuery(current.icao, current.title)} en
+                  SceneryAddons y Simplaza…
                 </div>
               ) : grouped.length === 0 ? (
                 <p className="py-6 text-center text-xs text-slate-500">

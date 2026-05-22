@@ -1,4 +1,4 @@
-# MSFS Addons Browser
+# SimFleet (formerly MSFS Addons Browser)
 
 Aplicación de escritorio (Tauri v2 + React + Rust) para buscar, gestionar e instalar
 escenarios y addons de Microsoft Flight Simulator 2020 desde fuentes públicas

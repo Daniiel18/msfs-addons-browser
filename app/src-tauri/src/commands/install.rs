@@ -73,10 +73,9 @@ pub async fn install_archive(
     })?;
     tracing::info!(
         target: "install",
-        "install_archive: {} paquetes, {} bytes, ptp={}, installer={}",
+        "install_archive: {} paquetes, {} bytes, installer={}",
         result.packages.len(),
         result.total_bytes,
-        result.ptp_payload.is_some(),
         result.installer_payload.is_some()
     );
 
