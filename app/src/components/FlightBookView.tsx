@@ -17,6 +17,7 @@ import {
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useSimBriefStore } from "../stores/useSimBriefStore";
 import type { FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
@@ -157,25 +158,28 @@ export function FlightBookView() {
         </div>
       )}
 
-      {/* Layout split: mapa GRANDE a la izq, panel + lista a la der.
-          (v1.1.4) La columna derecha sube a 480px (era 400px) para
-          que el panel de detalle del vuelo no quede apretado y se lea
-          cómodamente — el usuario reportó que "no se logra ver con
-          tanta facilidad". */}
+      {/* Layout split: mapa a la izq + panel/lista a la der.
+          (v1.1.4) Columna derecha 480px para que el detalle del vuelo
+          se lea cómodamente.
+          (v3.1.2) Reducimos la escala del mapa: la columna derecha
+          sube a 540px (era 480) para que la distribución texto/mapa
+          quede más equilibrada. Altura cae a `100vh - 13rem` (era
+          11rem) — deja ~32px de margen inferior limpio, mejor estética
+          UI/UX según pedido del usuario. */}
       <div
-        className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_480px]"
-        style={{ minHeight: "calc(100vh - 11rem)" }}
+        className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_540px]"
+        style={{ minHeight: "calc(100vh - 13rem)" }}
       >
         <div className="lg:sticky lg:top-4 lg:self-start">
           <RoutesMapView
-            height="calc(100vh - 11rem)"
+            height="calc(100vh - 13rem)"
             selectedFlightId={selectedFlightId}
           />
         </div>
 
         <div
           className="flex min-h-0 flex-col gap-3"
-          style={{ maxHeight: "calc(100vh - 11rem)" }}
+          style={{ maxHeight: "calc(100vh - 13rem)" }}
         >
           {/* Panel superior — adapta su contenido al modo:
               · Detalle: ficha completa del vuelo seleccionado.
@@ -191,23 +195,23 @@ export function FlightBookView() {
                   icon={<Plane className="h-4 w-4 text-emerald-300" />}
                   label="Flights"
                   value={stats.count.toString()}
-                  hint="Block-to-block registrados"
+                  hint="Block-to-block recorded"
                 />
                 <StatCard
                   icon={<Clock className="h-4 w-4 text-sky-300" />}
                   label="Total time"
                   value={formatHM(stats.totalSec)}
-                  hint="Block-to-block sumado"
+                  hint="Block-to-block summed"
                 />
                 <StatCard
                   icon={<Ruler className="h-4 w-4 text-violet-300" />}
                   label="Distance"
-                  value={`${Math.round(stats.totalDistance).toLocaleString("es-ES")} nm`}
+                  value={`${Math.round(stats.totalDistance).toLocaleString("en-US")} nm`}
                   hint={`${Math.round(stats.totalDistance * 1.852).toLocaleString(
-                    "es-ES",
+                    "en-US",
                   )} km`}
                 />
-                {/* (v2.2.0) FPM removido — captura imprecisa.
+                {/* (v2.2.0) FPM removed — capture imprecise.
                     (v1.0.0) Totales de pasajeros, carga, combustible.
                     Cada uno con un hint "X de Y vuelos reportan" para
                     que el usuario sepa si la suma cubre el histórico
@@ -217,13 +221,13 @@ export function FlightBookView() {
                   label="Passengers"
                   value={
                     stats.passengersFlightCount > 0
-                      ? stats.totalPassengers.toLocaleString("es-ES")
+                      ? stats.totalPassengers.toLocaleString("en-US")
                       : "—"
                   }
                   hint={
                     stats.passengersFlightCount > 0
-                      ? `${stats.passengersFlightCount} de ${stats.count} vuelos`
-                      : "sin datos aún"
+                      ? `${stats.passengersFlightCount} of ${stats.count} flights`
+                      : "no data yet"
                   }
                 />
                 <StatCard
@@ -236,8 +240,8 @@ export function FlightBookView() {
                   }
                   hint={
                     stats.cargoFlightCount > 0
-                      ? `${(stats.totalCargoKg / 1000).toFixed(1)} t totales`
-                      : "sin datos aún"
+                      ? `${(stats.totalCargoKg / 1000).toFixed(1)} t total`
+                      : "no data yet"
                   }
                 />
                 <div className="col-span-2">
@@ -246,15 +250,15 @@ export function FlightBookView() {
                     label="Total fuel"
                     value={
                       stats.fuelFlightCount > 0
-                        ? `${stats.totalFuelKg.toLocaleString("es-ES")} kg`
+                        ? `${stats.totalFuelKg.toLocaleString("en-US")} kg`
                         : "—"
                     }
                     hint={
                       stats.fuelFlightCount > 0
                         ? `${(stats.totalFuelKg / 1000).toFixed(1)} t · ${
                             stats.fuelFlightCount
-                          } de ${stats.count} vuelos`
-                        : "captura automática durante el OUT/IN"
+                          } of ${stats.count} flights`
+                        : "auto-captured during OUT/IN"
                     }
                   />
                 </div>
@@ -265,31 +269,13 @@ export function FlightBookView() {
           {/* Active flight — sólo cuando NO estamos en detail mode
               de un completed (el inFlight es siempre distinto del
               selectedFlight porque el filtro de completed excluye
-              `endedAt === null`). */}
+              `endedAt === null`).
+              (v3.1.2) "Destination" ahora muestra el destino real
+              del OFP de SimBrief matching el origen actual — antes
+              hardcodeaba "en ruta…" que era el bug que el usuario
+              reportó con la screenshot SEGU. */}
           {inFlight && !selectedFlight && (
-            <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20">
-              <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-                </span>
-                En vuelo ahora
-              </div>
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-emerald-100">
-                <span>
-                  <PlaneTakeoff className="mr-1 inline h-3.5 w-3.5" />
-                  {inFlight.originIcao ?? "?"}
-                </span>
-                <span className="text-emerald-300">→</span>
-                <span>
-                  <PlaneLanding className="mr-1 inline h-3.5 w-3.5" />
-                  en ruta…
-                </span>
-              </div>
-              <div className="mt-0.5 text-[10px] text-emerald-300/80">
-                {inFlight.aircraftAtcType ?? inFlight.aircraftTitle ?? "?"}
-              </div>
-            </div>
+            <ActiveFlightCard entry={inFlight} />
           )}
 
           {/* Lista compacta de vuelos (cards verticales en lugar de
@@ -300,11 +286,11 @@ export function FlightBookView() {
             <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-center">
               <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
               <p className="text-sm font-medium text-slate-300">
-                Aún no hay vuelos registrados
+                No flights logged yet
               </p>
               <p className="mt-1 text-[11px] text-slate-500">
-                Cuando despegues en MSFS con SimConnect activo, el watcher
-                creará una entrada automáticamente.
+                When you take off in MSFS with SimConnect active, the
+                watcher will create an entry automatically.
               </p>
             </div>
           ) : (
@@ -323,7 +309,7 @@ export function FlightBookView() {
                     const orig = e.originIcao ?? "?";
                     if (
                       !window.confirm(
-                        `¿Eliminar este vuelo del FlightBook?\n\n${orig} → ${dest}\n${formatDate(e.startedAt)}\n\nEsta acción no se puede deshacer.`,
+                        `Delete this flight from FlightBook?\n\n${orig} → ${dest}\n${formatDate(e.startedAt)}\n\nThis action cannot be undone.`,
                       )
                     )
                       return;
@@ -377,16 +363,16 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
           <PlaneLanding className="h-3.5 w-3.5" />
-          Vuelo seleccionado
+          Selected flight
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setEditing(true)}
-            title="Editar pasajeros, carga, fuel y gates manualmente"
+            title="Edit passengers, cargo, fuel and gates manually"
             className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-200 hover:bg-amber-500/20"
           >
             <Pencil className="h-2.5 w-2.5" />
-            Editar
+            Edit
           </button>
           <span className="text-[11px] text-amber-300/70">
             {formatDate(entry.startedAt)}
@@ -467,6 +453,55 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
               }
             />
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** (v3.1.2) Card del vuelo activo. Cruza el `originIcao` del entry
+ *  con el OFP más reciente de SimBrief para mostrar el destino real
+ *  (antes hardcodeaba "en ruta…"). Si no hay match, mostramos "?"
+ *  hasta que el sync ocurra. */
+function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
+  const simbriefFlights = useSimBriefStore((s) => s.flights);
+  const matchedOfp = (() => {
+    if (!entry.originIcao || !simbriefFlights.length) return null;
+    const sorted = [...simbriefFlights].sort((a, b) => {
+      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
+      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
+      return bTs - aTs;
+    });
+    return sorted.find((f) => f.originIcao === entry.originIcao) ?? null;
+  })();
+  const destIcao =
+    entry.destinationIcao ?? matchedOfp?.destinationIcao ?? null;
+  return (
+    <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20">
+      <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+        </span>
+        Flying now
+      </div>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-emerald-100">
+        <span>
+          <PlaneTakeoff className="mr-1 inline h-3.5 w-3.5" />
+          {entry.originIcao ?? "?"}
+        </span>
+        <span className="text-emerald-300">→</span>
+        <span>
+          <PlaneLanding className="mr-1 inline h-3.5 w-3.5" />
+          {destIcao ?? "?"}
+        </span>
+      </div>
+      <div className="mt-0.5 text-[10px] text-emerald-300/80">
+        {entry.aircraftAtcType ?? entry.aircraftTitle ?? "?"}
+        {!entry.destinationIcao && matchedOfp && (
+          <span className="ml-1.5 italic text-emerald-300/60">
+            · destination from SimBrief OFP
+          </span>
         )}
       </div>
     </div>
@@ -564,8 +599,8 @@ function FlightCard({
       }`}
       title={
         selected
-          ? "Vuelo seleccionado — click para volver al globo"
-          : "Click para ver la ruta real de este vuelo en el mapa"
+          ? "Selected flight — click to return to globe view"
+          : "Click to view this flight's actual track on the map"
       }
     >
       <div className="flex items-start justify-between gap-2">
@@ -592,7 +627,7 @@ function FlightCard({
             ev.stopPropagation();
             onDelete();
           }}
-          title="Eliminar entrada"
+          title="Delete entry"
           className="rounded p-0.5 text-slate-600 opacity-0 hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
         >
           <Trash2 className="h-3 w-3" />
@@ -626,12 +661,12 @@ function FlightCard({
         <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
           <MapPin className="h-2.5 w-2.5" />
           {entry.departureGate && (
-            <span title="Gate salida">{shortGate(entry.departureGate)}</span>
+            <span title="Departure gate">{shortGate(entry.departureGate)}</span>
           )}
           {entry.arrivalGate && (
             <>
               <span>·</span>
-              <span title="Gate llegada">
+              <span title="Arrival gate">
                 {shortGate(entry.arrivalGate)}
               </span>
             </>
