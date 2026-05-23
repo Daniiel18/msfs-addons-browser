@@ -20,11 +20,10 @@ export function LiveUpdateBadge() {
   const [downloadPct, setDownloadPct] = useState<number | null>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
 
-  // (v2.2.0) Polling cada 1 hora — antes era 30 min y los logs del
-  // usuario se llenaban con requests constantes. La primera
-  // verificación se hace al montar (con 5s de delay para no chocar
-  // con el chequeo del bootstrap). La búsqueda manual desde la bell
-  // sigue siendo inmediata.
+  // (v2.2.0 / v3.3.0) Polling cada 15 min + check al montar (5s
+  // delay para no chocar con el bootstrap) + trigger inmediato en
+  // window.focus. El usuario reportó que con 1h el badge se demoraba
+  // en aparecer cuando volvía a la app tras un release reciente.
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
@@ -41,11 +40,16 @@ export function LiveUpdateBadge() {
       }
     };
     const t1 = setTimeout(check, 5_000);
-    const interval = setInterval(check, 60 * 60_000); // 1 h
+    const interval = setInterval(check, 15 * 60_000); // 15 min
+    const onFocus = () => {
+      if (!cancelled) void check();
+    };
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
       clearTimeout(t1);
       clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
     };
   }, [dismissed]);
 

@@ -207,18 +207,21 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let escaped = exe_path.replace('\'', "''");
-    // (v3.1.3 / v3.2.0) Path al `simfleet.log` unificado en la
-    // carpeta de la app para que el helper PowerShell escriba ahí
-    // cualquier fallo de lanzamiento. v3.2.0: la app es portable —
-    // los datos viven en `<exe_dir>/data/logs/simfleet.log`. Lo
-    // resolvemos relativo a `exe_path` (el actual current_exe que
-    // ya tenemos en `escaped`).
-    let app_log_path = std::path::Path::new(exe_path)
-        .parent()
-        .map(|p| p.join("data").join("logs").join("simfleet.log"))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let app_log_escaped = app_log_path.replace('\'', "''");
+    // (v3.1.3 / v3.2.0 / v3.3.0) Múltiples paths candidatos para el
+    // `simfleet.log` unificado. La ruta correcta se determina EN
+    // RUNTIME por el helper PS1 (no en compile time aquí) porque
+    // tras un update la carpeta de instalación puede haber cambiado
+    // o el data dir aún no estar creado. El PS1 intenta cada path
+    // hasta encontrar uno que pueda escribir.
+    //
+    // Listado de candidatos (PS1 los recorre en orden):
+    //   1. <exe_dir>/data/logs/simfleet.log (portable v3.2+)
+    //   2. <exe_dir>/../data/logs/simfleet.log (si install puso
+    //      el exe en bin/ o similar — defensivo)
+    //   3. %APPDATA%/org.n0xful.msfsaddonsbrowser/logs/simfleet.log
+    //      (instalaciones v3.1.x y previas)
+    //   4. %TEMP%/simfleet-relaunch.log (último recurso)
+    let _ = exe_path; // mantener referencia (PS1 lo computa solo)
     // (v3.0.0) Helper aún más robusto:
     //   · Poll cada 2s hasta 90s buscando el .exe reinstalado (NSIS
     //     puede tardar ~20-40s en escribir el binario).
@@ -231,21 +234,40 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     //     SimFleet cambia el path; intentamos también las rutas
     //     comunes del nuevo productName).
     //   · Log a `%TEMP%\simfleet-relaunch.log` para diagnóstico.
-    //   · (v3.1.3) DOBLE escritura: también escribe al `simfleet.log`
-    //     unificado de la app para que el log post-update quede en
-    //     el archivo principal y no en un .log separado en TEMP.
+    //   · (v3.1.3) DOBLE escritura al `simfleet.log` unificado.
+    //   · (v3.3.0) MULTI-PATH: el PS1 resuelve los candidatos al
+    //     runtime y escribe a CADA uno que sea escribible. Cubre el
+    //     caso "el data dir nuevo aún no existe" y "instalación
+    //     v3.1.x viejo en %APPDATA%".
     let ps_command = format!(
         r#"$origExe = '{esc}'
-$log = Join-Path $env:TEMP 'simfleet-relaunch.log'
-$appLog = '{app_log_esc}'
-function WriteBoth($msg) {{
+$tempLog = Join-Path $env:TEMP 'simfleet-relaunch.log'
+$origDir = Split-Path -Parent $origExe
+
+# (v3.3.0) Candidatos para el log unificado de la app. Se resuelven
+# al runtime — tras el update la carpeta nueva puede haberse creado
+# en cualquier momento. Escribimos a TODOS los que existan/sean
+# escribibles para maximizar chances de que el usuario encuentre el log.
+$appLogCandidates = @(
+  (Join-Path $origDir 'data\logs\simfleet.log'),
+  (Join-Path (Split-Path -Parent $origDir) 'data\logs\simfleet.log'),
+  (Join-Path $env:LOCALAPPDATA 'Programs\SimFleet\data\logs\simfleet.log'),
+  (Join-Path $env:APPDATA 'org.n0xful.msfsaddonsbrowser\logs\simfleet.log')
+) | Where-Object {{ $_ -ne $null -and $_ -ne '' }} | Select-Object -Unique
+
+function WriteAll($msg) {{
   $line = "$(Get-Date -Format o) [updater] $msg"
-  Add-Content -Path $log -Value $line
-  if ($appLog -ne '' -and (Test-Path -LiteralPath (Split-Path -Parent $appLog))) {{
-    try {{ Add-Content -Path $appLog -Value $line }} catch {{ }}
+  # Siempre al temp log (garantizado escribible).
+  try {{ Add-Content -Path $tempLog -Value $line }} catch {{ }}
+  # A cada candidato de simfleet.log que tenga un parent dir existente.
+  foreach ($p in $appLogCandidates) {{
+    $parent = Split-Path -Parent $p
+    if (Test-Path -LiteralPath $parent) {{
+      try {{ Add-Content -Path $p -Value $line }} catch {{ }}
+    }}
   }}
 }}
-WriteBoth ("=== relaunch helper start exe={0}" -f $origExe)
+WriteAll ("=== relaunch helper start exe={0}" -f $origExe)
 
 # (v3.0.0) Lista de candidatos: el path original + variantes con el
 # nuevo productName "SimFleet" en per-user y per-machine.
@@ -268,15 +290,15 @@ while ((Get-Date) -lt $deadline -and $launched -eq $null) {{
         $item = Get-Item -LiteralPath $exe -ErrorAction Stop
         $age = ((Get-Date) - $item.LastWriteTime).TotalSeconds
         if ($age -gt 3) {{
-          WriteBoth ("ready exe='{{0}}' age={{1:N1}}s — launching" -f $exe, $age)
+          WriteAll ("ready exe='{{0}}' age={{1:N1}}s — launching" -f $exe, $age)
           $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
           $launched = $proc
           break
         }} else {{
-          WriteBoth ("waiting exe='{{0}}' (age={{1:N1}}s)" -f $exe, $age)
+          WriteAll ("waiting exe='{{0}}' (age={{1:N1}}s)" -f $exe, $age)
         }}
       }} catch {{
-        WriteBoth ("error getting item '{{0}}': {{1}}" -f $exe, $_)
+        WriteAll ("error getting item '{{0}}': {{1}}" -f $exe, $_)
       }}
     }}
   }}
@@ -291,15 +313,14 @@ if ($launched -ne $null) {{
   try {{
     Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
     [Microsoft.VisualBasic.Interaction]::AppActivate($launched.Id) | Out-Null
-    WriteBoth ("foreground OK pid={{0}}" -f $launched.Id)
+    WriteAll ("foreground OK pid={{0}}" -f $launched.Id)
   }} catch {{
-    WriteBoth ("foreground falló pid={{0}}: {{1}}" -f $launched.Id, $_)
+    WriteAll ("foreground falló pid={{0}}: {{1}}" -f $launched.Id, $_)
   }}
 }} else {{
-  WriteBoth 'TIMEOUT — ningún candidato quedó disponible en 90s'
+  WriteAll 'TIMEOUT — ningún candidato quedó disponible en 90s'
 }}"#,
         esc = escaped,
-        app_log_esc = app_log_escaped,
     );
 
     std::process::Command::new("powershell")

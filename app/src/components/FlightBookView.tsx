@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { t } from "../lib/i18n";
 import {
   AlertCircle,
   ArrowLeft,
   Clock,
   Droplet,
-  Gauge,
   Globe,
   MapPin,
   Package,
@@ -423,135 +424,294 @@ function DeleteFlightModal({
  * propias métricas: duración block-to-block, distancia, max alt,
  * max GS, landing FPM coloreado.
  */
+/** (v3.3.0) Panel de detalle del vuelo seleccionado — rediseño
+ *  completo con bloques organizados estilo "aviation log" moderno.
+ *
+ *  Estructura:
+ *    · Header sticky: ruta XL + aerolínea/aeronave + acciones.
+ *    · Bloque 1 — Route: orig, dest, alterno (si hay), distance, gates.
+ *    · Bloque 2 — Times: OUT, IN, Block. (OFF/ON pendiente de captura
+ *      en el watcher; mostramos lo que tenemos honestamente.)
+ *    · Bloque 3 — Load (SimBrief): passengers, cargo, fuel.
+ *    · Bloque 4 — Aircraft: type, registration (placeholder),
+ *      airline (placeholder).
+ *
+ *  Cada bloque es una card independiente con borde redondeado, shadow
+ *  sutil y padding generoso. AnimatePresence + motion.div para
+ *  microanimaciones al cambiar de vuelo seleccionado. */
 function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
-  // (v2.0.0) Re-añadido el edit manual — el usuario reportó que algunos
-  // vuelos no muestran pasajeros/carga/fuel cuando no había OFP de
-  // SimBrief reciente. Edit le permite rellenar a mano. También sirve
-  // para corregir gates si la detección de SimConnect falla.
   const [editing, setEditing] = useState(false);
   const reload = useFlightLogStore((s) => s.reload);
-  const duration =
-    entry.flightTimeS !== null ? formatHM(entry.flightTimeS) : "—";
-  const distance =
-    entry.distanceNm !== null
-      ? `${Math.round(entry.distanceNm).toLocaleString("es-ES")} nm`
-      : "—";
-  const maxAlt =
-    entry.maxAltitudeFt !== null
-      ? `${entry.maxAltitudeFt.toLocaleString("es-ES")} ft`
-      : "—";
-  const maxSpeed =
-    entry.maxGroundSpeedKt !== null
-      ? `${entry.maxGroundSpeedKt} kt`
-      : entry.maxTrueAirspeedKt !== null
-        ? `${entry.maxTrueAirspeedKt} kt`
-        : "—";
-  // (v2.2.0) FPM removido — captura imprecisa.
 
+  // (v3.3.0) Re-renderiza con animación al cambiar de vuelo.
   return (
-    <div className="rounded-xl border border-amber-500/40 bg-amber-500/[0.07] p-4 ring-1 ring-amber-500/20">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
-          <PlaneLanding className="h-3.5 w-3.5" />
-          Selected flight
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setEditing(true)}
-            title="Edit passengers, cargo, fuel and gates manually"
-            className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-200 hover:bg-amber-500/20"
-          >
-            <Pencil className="h-2.5 w-2.5" />
-            Edit
-          </button>
-          <span className="text-[11px] text-amber-300/70">
-            {formatDate(entry.startedAt)}
-          </span>
-        </div>
-      </div>
-      {editing && (
-        <EditFlightModal
-          entry={entry}
-          onClose={() => setEditing(false)}
-          onSaved={() => {
-            setEditing(false);
-            void reload();
-          }}
-        />
-      )}
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={entry.id}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.2 }}
+        className="space-y-3"
+      >
+        {/* HEADER — Card prominente con ruta y aerolínea. */}
+        <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-br from-amber-500/[0.12] to-amber-500/[0.04] p-4 shadow-md shadow-amber-500/10 ring-1 ring-amber-500/20">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-amber-300/90">
+              <PlaneLanding className="h-3 w-3" />
+              {t("fb.selected_flight")}
+            </div>
+            <button
+              onClick={() => setEditing(true)}
+              title={t("fb.action.edit")}
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+            >
+              <Pencil className="h-2.5 w-2.5" />
+              {t("fb.action.edit")}
+            </button>
+          </div>
+          {editing && (
+            <EditFlightModal
+              entry={entry}
+              onClose={() => setEditing(false)}
+              onSaved={() => {
+                setEditing(false);
+                void reload();
+              }}
+            />
+          )}
 
-      <div className="mb-3 flex items-baseline gap-2 font-mono">
-        <span className="text-xl font-bold text-amber-100">
-          {entry.originIcao ?? "?"}
-        </span>
-        <span className="text-amber-400">→</span>
-        <span className="text-xl font-bold text-amber-100">
-          {entry.destinationIcao ?? "?"}
-        </span>
-        {entry.aircraftAtcType && (
-          <span className="ml-auto text-[11px] uppercase tracking-wide text-amber-300/80">
-            {entry.aircraftAtcType}
-          </span>
-        )}
-      </div>
+          {/* ROUTE BIG — bold extreme, font-mono, hierarchy. */}
+          <div className="flex items-baseline gap-3 font-mono">
+            <span className="text-2xl font-bold tracking-wide text-amber-50">
+              {entry.originIcao ?? "?"}
+            </span>
+            <span className="text-amber-400">→</span>
+            <span className="text-2xl font-bold tracking-wide text-amber-50">
+              {entry.destinationIcao ?? "?"}
+            </span>
+          </div>
+          {/* AIRCRAFT + DATE — medium peso, secundario. */}
+          <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            {(entry.aircraftAtcType || entry.aircraftTitle) && (
+              <span className="text-sm font-medium text-amber-100">
+                {entry.aircraftAtcType ?? entry.aircraftTitle}
+              </span>
+            )}
+            <span className="text-[11px] tracking-wide text-amber-300/70">
+              · {formatDate(entry.startedAt)}
+            </span>
+          </div>
+        </div>
 
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
-        <Metric icon={<Clock className="h-3.5 w-3.5" />} label="Block time" value={duration} />
-        <Metric
-          icon={<Ruler className="h-3.5 w-3.5" />}
-          label="Distance"
-          value={distance}
-        />
-        <Metric
-          icon={<TrendingDown className="h-3.5 w-3.5 rotate-180" />}
-          label="Max alt"
-          value={maxAlt}
-        />
-        <Metric icon={<Gauge className="h-3.5 w-3.5" />} label="Max kt" value={maxSpeed} />
-        <Metric
-          icon={<Users className="h-3.5 w-3.5" />}
-          label="Passengers"
-          value={entry.passengers != null ? entry.passengers.toString() : "—"}
-        />
-        <Metric
-          icon={<Package className="h-3.5 w-3.5" />}
-          label="Cargo"
-          value={
-            entry.cargoKg != null
-              ? `${entry.cargoKg.toLocaleString("es-ES")} kg`
+        {/* BLOQUE 1 — Route */}
+        <DetailBlock title={t("fb.block.route")} icon="route">
+          <BlockRow label={t("fb.route.origin")} value={
+            <span className="font-mono">
+              <span className="font-bold text-slate-100">
+                {entry.originIcao ?? "?"}
+              </span>
+              {entry.originName && (
+                <span className="ml-1.5 font-sans text-[11px] font-normal text-slate-400">
+                  {entry.originName}
+                </span>
+              )}
+            </span>
+          } />
+          <BlockRow label={t("fb.route.destination")} value={
+            <span className="font-mono">
+              <span className="font-bold text-slate-100">
+                {entry.destinationIcao ?? "?"}
+              </span>
+              {entry.destinationName && (
+                <span className="ml-1.5 font-sans text-[11px] font-normal text-slate-400">
+                  {entry.destinationName}
+                </span>
+              )}
+            </span>
+          } />
+          <BlockRow label={t("fb.route.distance")} value={
+            entry.distanceNm !== null
+              ? `${Math.round(entry.distanceNm).toLocaleString("en-US")} nm`
               : "—"
-          }
-        />
-        <Metric
-          icon={<Droplet className="h-3.5 w-3.5" />}
-          label="Fuel"
-          value={
-            entry.fuelUsedKg != null
-              ? `${entry.fuelUsedKg.toLocaleString("es-ES")} kg`
-              : "—"
-          }
-        />
-        {/* (v3.2.0) AMBOS gates visibles como métricas separadas —
-            antes mostraba sólo uno (arrival con fallback a departure).
-            El usuario pidió que los detalles de gates sean visibles
-            en el detalle del vuelo. */}
-        {entry.departureGate && (
-          <Metric
-            icon={<PlaneTakeoff className="h-3.5 w-3.5" />}
-            label="Dep gate"
-            value={shortGate(entry.departureGate)}
+          } />
+          {entry.departureGate && (
+            <BlockRow
+              label={t("fb.route.dep_gate")}
+              value={shortGate(entry.departureGate)}
+            />
+          )}
+          {entry.arrivalGate && (
+            <BlockRow
+              label={t("fb.route.arr_gate")}
+              value={shortGate(entry.arrivalGate)}
+            />
+          )}
+        </DetailBlock>
+
+        {/* BLOQUE 2 — Times (OUT/IN/Block; OFF/ON when available) */}
+        <DetailBlock title={t("fb.block.times")} icon="times">
+          <BlockRow
+            label={t("fb.times.out")}
+            value={
+              <span className="font-mono">{formatTime(entry.startedAt)}</span>
+            }
           />
-        )}
-        {entry.arrivalGate && (
-          <Metric
-            icon={<PlaneLanding className="h-3.5 w-3.5" />}
-            label="Arr gate"
-            value={shortGate(entry.arrivalGate)}
+          <BlockRow
+            label={t("fb.times.in")}
+            value={
+              entry.endedAt ? (
+                <span className="font-mono">{formatTime(entry.endedAt)}</span>
+              ) : (
+                "—"
+              )
+            }
           />
-        )}
+          <BlockRow
+            label={t("fb.times.block")}
+            value={
+              <span className="font-mono font-semibold text-slate-100">
+                {entry.flightTimeS !== null
+                  ? formatHM(entry.flightTimeS)
+                  : "—"}
+              </span>
+            }
+          />
+          {entry.pausedSeconds > 0 && (
+            <BlockRow
+              label={t("fb.times.paused")}
+              value={
+                <span className="font-mono text-[11px] text-slate-400">
+                  {formatHM(entry.pausedSeconds)}
+                </span>
+              }
+            />
+          )}
+        </DetailBlock>
+
+        {/* BLOQUE 3 — Load (SimBrief) */}
+        <DetailBlock title={t("fb.block.load")} icon="load">
+          <BlockRow
+            label={t("fb.load.passengers")}
+            value={
+              entry.passengers != null
+                ? entry.passengers.toLocaleString("en-US")
+                : "—"
+            }
+          />
+          <BlockRow
+            label={t("fb.load.cargo")}
+            value={
+              entry.cargoKg != null
+                ? `${entry.cargoKg.toLocaleString("en-US")} kg`
+                : "—"
+            }
+          />
+          <BlockRow
+            label={t("fb.load.fuel_used")}
+            value={
+              entry.fuelUsedKg != null
+                ? `${entry.fuelUsedKg.toLocaleString("en-US")} kg`
+                : "—"
+            }
+          />
+        </DetailBlock>
+
+        {/* BLOQUE 4 — Aircraft */}
+        <DetailBlock title={t("fb.block.aircraft")} icon="aircraft">
+          <BlockRow
+            label={t("fb.aircraft.type")}
+            value={entry.aircraftAtcType ?? "—"}
+          />
+          <BlockRow
+            label={t("fb.aircraft.title")}
+            value={entry.aircraftTitle ?? "—"}
+          />
+        </DetailBlock>
+
+        {/* Métricas extra del vuelo (max alt / max speed) — compactas
+            al final, ya no en grid prominente. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
+          <span className="text-slate-500">Peak metrics:</span>
+          {entry.maxAltitudeFt !== null && (
+            <span className="font-mono text-slate-200">
+              {entry.maxAltitudeFt.toLocaleString("en-US")} ft
+            </span>
+          )}
+          {(entry.maxGroundSpeedKt !== null ||
+            entry.maxTrueAirspeedKt !== null) && (
+            <span className="font-mono text-slate-200">
+              {entry.maxGroundSpeedKt ?? entry.maxTrueAirspeedKt} kt
+            </span>
+          )}
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+/** (v3.3.0) Card de bloque para el detalle del vuelo. Borde
+ *  redondeado, shadow sutil, padding generoso. Header con icono +
+ *  título en uppercase tracking. Children son las rows. */
+function DetailBlock({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon: "route" | "times" | "load" | "aircraft";
+  children: React.ReactNode;
+}) {
+  const Icon = ({}: Record<string, never>) => {
+    switch (icon) {
+      case "route":
+        return <MapPin className="h-3.5 w-3.5 text-sky-300" />;
+      case "times":
+        return <Clock className="h-3.5 w-3.5 text-emerald-300" />;
+      case "load":
+        return <Package className="h-3.5 w-3.5 text-violet-300" />;
+      case "aircraft":
+        return <Plane className="h-3.5 w-3.5 text-amber-300" />;
+    }
+  };
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm transition-shadow hover:shadow-md">
+      <div className="mb-2.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-400">
+        <Icon />
+        {title}
       </div>
+      <div className="space-y-1.5">{children}</div>
     </div>
   );
+}
+
+/** (v3.3.0) Row de un bloque — label izquierda en slate-500, value
+ *  derecha en slate-100. Padding vertical generoso para legibilidad. */
+function BlockRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 text-[12px]">
+      <span className="shrink-0 text-slate-500">{label}</span>
+      <span className="text-right text-slate-100">{value}</span>
+    </div>
+  );
+}
+
+/** Formatea HH:MM UTC desde un ISO timestamp. */
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const hh = d.getUTCHours().toString().padStart(2, "0");
+    const mm = d.getUTCMinutes().toString().padStart(2, "0");
+    return `${hh}:${mm}Z`;
+  } catch {
+    return "—";
+  }
 }
 
 /** (v3.1.2) Card del vuelo activo. Cruza el `originIcao` del entry
@@ -603,33 +763,8 @@ function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
   );
 }
 
-function Metric({
-  icon,
-  label,
-  value,
-  valueClass,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  valueClass?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-amber-500/15 bg-amber-500/[0.04] px-2 py-1.5">
-      <span className="shrink-0 text-amber-300/80">{icon}</span>
-      <span className="text-[11px] uppercase tracking-wide text-amber-300/70">
-        {label}
-      </span>
-      <span
-        className={`ml-auto font-mono text-sm font-semibold tabular-nums ${
-          valueClass ?? "text-amber-100"
-        }`}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
+// (v3.3.0) `Metric` legacy component eliminado — DetailBlock +
+// BlockRow lo reemplazan completamente.
 
 function StatCard({
   icon,
@@ -654,6 +789,13 @@ function StatCard({
   );
 }
 
+/** (v3.3.0) Card de vuelo rediseñada — premium look.
+ *  · Bordes redondeados generosos (xl), shadow sutil al hover.
+ *  · Jerarquía tipográfica:
+ *      · ICAOs origen→destino: bold, tamaño grande, mono.
+ *      · Aeronave / aerolínea: medium, slate-200.
+ *      · Fecha + métricas: regular, slate-500, tamaño pequeño.
+ *  · Selected: ring amber prominent + bg amber tenue. */
 function FlightCard({
   entry,
   selected,
@@ -670,51 +812,65 @@ function FlightCard({
     entry.flightTimeS !== null ? formatHM(entry.flightTimeS) : "—";
   const distance =
     entry.distanceNm !== null
-      ? `${Math.round(entry.distanceNm).toLocaleString("es-ES")} nm`
+      ? `${Math.round(entry.distanceNm).toLocaleString("en-US")} nm`
       : null;
-  const maxAlt =
-    entry.maxAltitudeFt !== null
-      ? `${entry.maxAltitudeFt.toLocaleString("es-ES")} ft`
-      : null;
-  const maxSpeed =
-    entry.maxGroundSpeedKt !== null
-      ? `${entry.maxGroundSpeedKt} kt`
-      : entry.maxTrueAirspeedKt !== null
-        ? `${entry.maxTrueAirspeedKt} kt`
-        : null;
-  // (v2.2.0) FPM removido — captura imprecisa.
+  const aircraftLabel =
+    entry.aircraftAtcType ?? entry.aircraftTitle ?? null;
 
   return (
-    <li
+    <motion.li
       onClick={onSelect}
-      className={`group cursor-pointer rounded-lg border p-2.5 transition-colors ${
+      whileHover={{ y: -1 }}
+      transition={{ duration: 0.12 }}
+      className={`group relative cursor-pointer overflow-hidden rounded-xl border p-3.5 transition-all ${
         selected
-          ? "border-amber-500/60 bg-amber-500/10 hover:border-amber-400"
-          : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
+          ? "border-amber-500/60 bg-amber-500/[0.08] shadow-md shadow-amber-500/10 ring-1 ring-amber-500/20"
+          : "border-slate-800 bg-slate-900/40 shadow-sm hover:border-slate-700 hover:bg-slate-900/60 hover:shadow-md"
       }`}
       title={
         selected
-          ? "Selected flight — click to return to globe view"
+          ? "Selected flight — click to deselect"
           : "Click to view this flight's actual track on the map"
       }
     >
-      <div className="flex items-start justify-between gap-2">
+      {/* Ribbon accent left side cuando seleccionado */}
+      {selected && (
+        <span className="absolute left-0 top-0 h-full w-0.5 bg-amber-400" />
+      )}
+
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 font-mono text-sm text-slate-100">
-            <span>{entry.originIcao ?? "?"}</span>
-            <span className={selected ? "text-amber-300" : "text-emerald-300"}>
+          {/* ROUTE — bold, mono, prominent. */}
+          <div className="flex items-baseline gap-2 font-mono">
+            <span
+              className={`text-base font-bold tracking-wide ${
+                selected ? "text-amber-100" : "text-slate-50"
+              }`}
+            >
+              {entry.originIcao ?? "?"}
+            </span>
+            <span
+              className={`text-sm ${selected ? "text-amber-400" : "text-emerald-400"}`}
+            >
               →
             </span>
-            <span>{entry.destinationIcao ?? "?"}</span>
+            <span
+              className={`text-base font-bold tracking-wide ${
+                selected ? "text-amber-100" : "text-slate-50"
+              }`}
+            >
+              {entry.destinationIcao ?? "?"}
+            </span>
           </div>
-          <div className="mt-0.5 text-[10px] text-slate-500">
+          {/* AIRCRAFT — medium peso, slate-200. */}
+          {aircraftLabel && (
+            <div className="mt-1 truncate text-[11px] font-medium text-slate-300">
+              {aircraftLabel}
+            </div>
+          )}
+          {/* DATE — regular, secundario. */}
+          <div className="mt-0.5 text-[10px] tracking-wide text-slate-500">
             {dateLabel}
-            {entry.aircraftAtcType && (
-              <>
-                {" · "}
-                {entry.aircraftAtcType}
-              </>
-            )}
           </div>
         </div>
         <button
@@ -723,52 +879,38 @@ function FlightCard({
             onDelete();
           }}
           title="Delete entry"
-          className="rounded p-0.5 text-slate-600 opacity-0 hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
+          className="rounded p-1 text-slate-600 opacity-0 transition-colors hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
         >
           <Trash2 className="h-3 w-3" />
         </button>
       </div>
-      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-slate-400">
-        <div className="flex items-center gap-1">
-          <Clock className="h-2.5 w-2.5 text-slate-500" />
-          <span className="tabular-nums text-slate-300">{duration}</span>
-        </div>
+
+      {/* MÉTRICAS COMPACTAS — fila horizontal en lugar de grid 2x2. */}
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+        <span className="inline-flex items-center gap-1 text-slate-400">
+          <Clock className="h-2.5 w-2.5" />
+          <span className="font-medium tabular-nums text-slate-200">
+            {duration}
+          </span>
+        </span>
         {distance && (
-          <div className="flex items-center gap-1">
-            <Ruler className="h-2.5 w-2.5 text-slate-500" />
-            <span className="tabular-nums text-slate-300">{distance}</span>
-          </div>
+          <span className="inline-flex items-center gap-1 text-slate-400">
+            <Ruler className="h-2.5 w-2.5" />
+            <span className="font-medium tabular-nums text-slate-200">
+              {distance}
+            </span>
+          </span>
         )}
-        {maxAlt && (
-          <div className="flex items-center gap-1">
-            <TrendingDown className="h-2.5 w-2.5 rotate-180 text-slate-500" />
-            <span className="tabular-nums text-slate-300">{maxAlt}</span>
-          </div>
-        )}
-        {maxSpeed && (
-          <div className="flex items-center gap-1">
-            <Gauge className="h-2.5 w-2.5 text-slate-500" />
-            <span className="tabular-nums text-slate-300">{maxSpeed}</span>
-          </div>
+        {entry.maxAltitudeFt !== null && (
+          <span className="inline-flex items-center gap-1 text-slate-400">
+            <TrendingDown className="h-2.5 w-2.5 rotate-180" />
+            <span className="font-medium tabular-nums text-slate-200">
+              {entry.maxAltitudeFt.toLocaleString("en-US")} ft
+            </span>
+          </span>
         )}
       </div>
-      {(entry.departureGate || entry.arrivalGate) && (
-        <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
-          <MapPin className="h-2.5 w-2.5" />
-          {entry.departureGate && (
-            <span title="Departure gate">{shortGate(entry.departureGate)}</span>
-          )}
-          {entry.arrivalGate && (
-            <>
-              <span>·</span>
-              <span title="Arrival gate">
-                {shortGate(entry.arrivalGate)}
-              </span>
-            </>
-          )}
-        </div>
-      )}
-    </li>
+    </motion.li>
   );
 }
 

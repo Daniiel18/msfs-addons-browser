@@ -41,12 +41,15 @@ export function UpdateBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    // (v3.1.3) Polling cada 1h ADEMÁS del check inicial. Antes era
-    // one-shot al montar — si el usuario dejaba la app abierta y
-    // salía una versión nueva, el banner nunca aparecía hasta que
-    // reiniciara. Ahora reconsulta GitHub Releases una vez por hora
-    // y dispara el banner en cuanto detecta `latestVersion` mayor
-    // distinto al `dismissed` guardado en localStorage.
+    // (v3.1.3 / v3.3.0) Polling cada 15 min + check inicial + check
+    // en `window.focus`. El usuario reportó que con polling 1h el
+    // banner se demoraba en aparecer cuando publicaba un release y
+    // volvía a la app. Ahora:
+    //   1. Check al montar (mismo).
+    //   2. Interval 15 min (bajado de 1h).
+    //   3. Trigger inmediato en window.focus — cuando el usuario
+    //      vuelve a la app tras estar en otro lugar (navegador,
+    //      Discord, etc.) se chequea contra GitHub al instante.
     const check = () => {
       api
         .checkForUpdate()
@@ -55,18 +58,21 @@ export function UpdateBanner() {
           const dismissed = localStorage.getItem(DISMISSED_KEY);
           if (dismissed === u.latestVersion) return;
           setInfo(u);
-          // El usuario podría haber descartado una versión vieja;
-          // si hay una NUEVA detectamos eso por comparar con dismissed.
-          // Reseteamos hidden=false para que el banner reaparezca.
           setHidden(false);
         })
         .catch((e) => console.warn("checkForUpdate failed:", e));
     };
     check();
-    const interval = setInterval(check, 60 * 60_000);
+    const interval = setInterval(check, 15 * 60_000);
+    const onFocus = () => {
+      if (cancelled) return;
+      check();
+    };
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
