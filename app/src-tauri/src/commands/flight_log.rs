@@ -407,6 +407,7 @@ pub async fn debug_seed_flight_log(
                 max_true_airspeed_kt: Some(f.max_tas_kt),
                 fuel_used_kg: Some(f.fuel_used_kg),
                 paused_seconds: 0,
+                fallback_arrival_gate: None,
             },
         )
         .await

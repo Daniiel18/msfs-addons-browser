@@ -339,6 +339,50 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     let watcher_state = simconnect_watcher::spawn(db.clone(), app.clone());
     app.manage(watcher_state);
 
+    // (v3.1.0) Auto-sync con la nube — silencioso, una vez al día.
+    // Sólo dispara si:
+    //   · Hay refresh_token guardado (usuario ya autorizó OAuth).
+    //   · Han pasado >24h desde el último sync (settings.google_last_sync_at).
+    // En cualquier caso es best-effort — si falla la conexión, no
+    // molestamos al usuario, sólo logueamos.
+    {
+        let bg_pool = db.clone();
+        let bg_http = http.clone();
+        tokio::spawn(async move {
+            // Pequeño delay para no competir con el splash/scan al
+            // arrancar — 15s da tiempo al usuario a ver el dashboard.
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            match should_auto_sync(&bg_pool).await {
+                Ok(true) => {
+                    tracing::info!(target: "cloud", "auto-sync diario: arrancando");
+                    match cloud_sync::sync_now(&bg_pool, &bg_http).await {
+                        Ok(report) => tracing::info!(
+                            target: "cloud",
+                            "auto-sync OK: ↑{}↓{} vuelos · ↑{}↓{} tracks · ↑{}↓{} settings",
+                            report.uploaded_flights, report.downloaded_flights,
+                            report.uploaded_tracks, report.downloaded_tracks,
+                            report.uploaded_settings, report.downloaded_settings,
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "cloud",
+                            "auto-sync falló (best-effort, app sigue): {e:#}"
+                        ),
+                    }
+                }
+                Ok(false) => {
+                    tracing::debug!(
+                        target: "cloud",
+                        "auto-sync: skip (último <24h o sin token)"
+                    );
+                }
+                Err(e) => tracing::debug!(
+                    target: "cloud",
+                    "auto-sync should-check falló: {e:#}"
+                ),
+            }
+        });
+    }
+
     // Lee el setting de minimize-to-tray para inicializar el flag
     // atómico que el handler de cierre de ventana consulta.
     let minimize_to_tray = Arc::new(AtomicBool::new(false));
@@ -370,6 +414,39 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         minimize_to_tray,
         drop_sessions: drop_install::DropSessions::default(),
     })
+}
+
+/// (v3.1.0) Decide si toca disparar el auto-sync diario:
+///   · Hay refresh_token (usuario autorizó OAuth).
+///   · No hay last_sync_at, o han pasado >=24h desde el último.
+async fn should_auto_sync(pool: &sqlx::SqlitePool) -> anyhow::Result<bool> {
+    let refresh: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'google_refresh_token'")
+            .fetch_optional(pool)
+            .await?;
+    if refresh.as_ref().map(|r| r.0.is_empty()).unwrap_or(true) {
+        return Ok(false);
+    }
+    let last: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'google_last_sync_at'")
+            .fetch_optional(pool)
+            .await?;
+    let last_at = match last {
+        Some((s,)) if !s.is_empty() => s,
+        _ => return Ok(true), // nunca sincronizado
+    };
+    // Formato guardado en sync_now: "%Y-%m-%dT%H:%M:%SZ"
+    let parsed = chrono::DateTime::parse_from_rfc3339(&last_at)
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&last_at, "%Y-%m-%dT%H:%M:%SZ")
+            .map(|n| n.and_utc().into()));
+    let last_dt = match parsed {
+        Ok(d) => d.with_timezone(&chrono::Utc),
+        Err(_) => return Ok(true), // parse falló → mejor sincronizar
+    };
+    let elapsed = chrono::Utc::now()
+        .signed_duration_since(last_dt)
+        .num_hours();
+    Ok(elapsed >= 24)
 }
 
 /// Construye el icono de bandeja con menú "Mostrar / Salir". En el

@@ -1,15 +1,16 @@
-//! Escáner de liveries de PMDG instaladas en la carpeta Community.
+//! Escáner de **liveries de aircraft addons** instaladas en Community.
 //!
-//! PMDG distribuye las liveries en paquetes separados con la
-//! convención `pmdg-aircraft-{model}-liveries`, por ejemplo:
-//!   · `pmdg-aircraft-77er-liveries`  → 777-200ER
-//!   · `pmdg-aircraft-77w-liveries`   → 777-300ER
-//!   · `pmdg-aircraft-738-liveries`   → 737-800
-//!   · `pmdg-aircraft-739-liveries`   → 737-900
+//! Originalmente sólo PMDG (v3.0.0). En v3.1.0 generalizado a cubrir
+//! cualquier vendor con la convención MSFS estándar:
+//!   · `{vendor}-aircraft-{model}` (base aircraft con todas las
+//!     variantes adentro — patrón Fenix, iniBuilds, FlyByWire…)
+//!   · `{vendor}-aircraft-{model}-liveries` (paquete dedicado de
+//!     liveries — patrón PMDG)
 //!
-//! Dentro de cada paquete:
+//! Estructura común dentro de cada paquete:
 //!   `{paquete}/SimObjects/Airplanes/{Aircraft Title}/aircraft.cfg`
-//! `aircraft.cfg` define una o más [fltsim.N] sections, una por
+//!
+//! El `aircraft.cfg` define una o más [fltsim.N] sections, una por
 //! variante. Campos relevantes que parseamos:
 //!   · title          → nombre canónico de la variante.
 //!   · ui_variation   → nombre amigable en el sim.
@@ -18,24 +19,30 @@
 //!   · texture        → subcarpeta del livery.
 //!   · ui_thumbnailfile → ruta relativa del thumbnail (DDS/PNG/JPG).
 //!
+//! Vendors reconocidos (extensible):
+//!   · pmdg, fnx (Fenix), inibuilds, fbw (FlyByWire), aerosoft,
+//!     leonardo, headwind, dc-designs, justflight…
+//!
 //! Esta operación es síncrona y bloqueante porque la carpeta vive
-//! en SSD local (los manifests pesan KB). En el comando lo
-//! envolvemos en `spawn_blocking` para no bloquear el reactor de
-//! Tokio.
+//! en SSD local. En el comando lo envolvemos en `spawn_blocking`.
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 /// Una livery individual instalada. Se mapea 1:1 a una sección
-/// `[fltsim.N]` del `aircraft.cfg` del paquete PMDG.
+/// `[fltsim.N]` del `aircraft.cfg`. (Mantengo el nombre `PmdgLivery`
+/// por retrocompat con el frontend — el campo `vendor` distingue
+/// PMDG / Fenix / etc.)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PmdgLivery {
-    /// Modelo PMDG normalizado: "77er", "77w", "738", "739", etc.
+    /// Vendor del addon: "pmdg" | "fnx" | "inibuilds" | "fbw" | …
+    pub vendor: String,
+    /// Modelo normalizado: "77er", "77w", "320", "a350", "320neo", etc.
     pub model: String,
     /// Nombre del paquete tal como aparece en Community
-    /// (ej. "pmdg-aircraft-77er-liveries").
+    /// (ej. "pmdg-aircraft-77er-liveries", "fnx-aircraft-320").
     pub package_folder: String,
     /// `title` de la sección — único dentro del aircraft.cfg.
     pub title: String,
@@ -53,8 +60,26 @@ pub struct PmdgLivery {
     pub thumbnail_data_url: Option<String>,
 }
 
-/// Recorre la carpeta Community y devuelve TODAS las liveries PMDG
-/// detectadas en cualquier paquete `pmdg-aircraft-{model}-liveries`.
+/// Lista de prefijos de vendor reconocidos. Cualquier carpeta de
+/// Community cuyo nombre matchea `{vendor}-aircraft-…` (case
+/// insensitive) entra al scanner. Extensible — añadir nuevos vendors
+/// es trivial.
+const KNOWN_VENDORS: &[&str] = &[
+    "pmdg",
+    "fnx",      // Fenix Simulations
+    "inibuilds",
+    "fbw",      // FlyByWire
+    "aerosoft",
+    "leonardo",
+    "headwind",
+    "dc-designs",
+    "justflight",
+    "asobo",    // shouldn't show — pero por si acaso
+];
+
+/// Recorre la carpeta Community y devuelve TODAS las liveries de
+/// aircraft addons detectadas en cualquier paquete con prefijo de
+/// vendor reconocido.
 ///
 /// **Robustez**:
 ///   · Si un paquete tiene varios subdirs `SimObjects/Airplanes/*`,
@@ -62,7 +87,7 @@ pub struct PmdgLivery {
 ///   · Si un aircraft.cfg está mal-formado / inválido UTF-8, lo
 ///     logueamos y pasamos al siguiente.
 ///   · Las thumbnails ausentes no rompen la entrada — devolvemos
-///     `thumbnail_path = None`.
+///     `thumbnail_data_url = None`.
 pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLivery>> {
     let mut liveries = Vec::new();
     if !community_path.is_dir() {
@@ -82,24 +107,21 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
             Some(s) => s.to_string(),
             None => continue,
         };
-        // Match `pmdg-aircraft-{model}-liveries` (case-insensitive).
         let lower = folder_name.to_lowercase();
-        if !lower.starts_with("pmdg-aircraft-") || !lower.ends_with("-liveries") {
+
+        // Detectamos vendor + modelo. Patterns soportados:
+        //   {vendor}-aircraft-{model}-liveries  (PMDG style)
+        //   {vendor}-aircraft-{model}           (Fenix/iniBuilds/FBW style)
+        let Some((vendor, model)) = detect_vendor_model(&lower) else {
             continue;
-        }
-        // Extrae el modelo entre los prefijos. ej:
-        // "pmdg-aircraft-77er-liveries" → "77er"
-        let model = lower
-            .trim_start_matches("pmdg-aircraft-")
-            .trim_end_matches("-liveries")
-            .to_string();
+        };
 
         // Cada paquete contiene SimObjects/Airplanes/* — uno o más
         // subdirs. Iteramos todos.
         let airplanes_dir = path.join("SimObjects").join("Airplanes");
         if !airplanes_dir.is_dir() {
             tracing::debug!(
-                target: "pmdg_liveries",
+                target: "aircraft_liveries",
                 "{}: sin SimObjects/Airplanes — skip",
                 folder_name
             );
@@ -109,7 +131,7 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
             Ok(e) => e,
             Err(e) => {
                 tracing::warn!(
-                    target: "pmdg_liveries",
+                    target: "aircraft_liveries",
                     "{}: no se pudo leer SimObjects/Airplanes: {}",
                     folder_name, e
                 );
@@ -128,6 +150,7 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
             match parse_aircraft_cfg(&cfg_path, &plane_dir) {
                 Ok(found) => {
                     for mut liv in found {
+                        liv.vendor = vendor.clone();
                         liv.model = model.clone();
                         liv.package_folder = folder_name.clone();
                         liveries.push(liv);
@@ -135,7 +158,7 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
                 }
                 Err(e) => {
                     tracing::warn!(
-                        target: "pmdg_liveries",
+                        target: "aircraft_liveries",
                         "{}: aircraft.cfg parse falló: {}",
                         plane_dir.display(),
                         e
@@ -146,12 +169,35 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
     }
 
     tracing::info!(
-        target: "pmdg_liveries",
-        "scan completo: {} liveries PMDG encontradas en {}",
+        target: "aircraft_liveries",
+        "scan completo: {} liveries de aircraft addons encontradas en {}",
         liveries.len(),
         community_path.display()
     );
     Ok(liveries)
+}
+
+/// Match `{vendor}-aircraft-{model}` con opcional `-liveries` al
+/// final. Devuelve `(vendor, model)` si matchea un vendor conocido.
+///
+/// Ejemplos:
+///   · "pmdg-aircraft-77er-liveries" → ("pmdg", "77er")
+///   · "fnx-aircraft-320"            → ("fnx", "320")
+///   · "inibuilds-aircraft-a350"     → ("inibuilds", "a350")
+///   · "fbw-aircraft-a32nx"          → ("fbw", "a32nx")
+fn detect_vendor_model(lower_folder: &str) -> Option<(String, String)> {
+    for vendor in KNOWN_VENDORS {
+        let prefix = format!("{}-aircraft-", vendor);
+        if let Some(rest) = lower_folder.strip_prefix(&prefix) {
+            // Strip `-liveries` opcional al final.
+            let model = rest.trim_end_matches("-liveries").to_string();
+            if model.is_empty() {
+                continue;
+            }
+            return Some((vendor.to_string(), model));
+        }
+    }
+    None
 }
 
 /// Parsea un `aircraft.cfg` en formato INI-like (no es INI puro:
@@ -165,8 +211,6 @@ fn parse_aircraft_cfg(
     cfg_path: &Path,
     plane_dir: &Path,
 ) -> anyhow::Result<Vec<PmdgLivery>> {
-    // El cfg puede venir en UTF-8 o UTF-8-BOM o, raramente, en
-    // Windows-1252. Leemos como bytes y normalizamos.
     let bytes = std::fs::read(cfg_path)?;
     let text = decode_aircraft_cfg(&bytes);
 
@@ -178,13 +222,11 @@ fn parse_aircraft_cfg(
         if line.is_empty() {
             continue;
         }
-        // Comentarios.
         if line.starts_with("//") || line.starts_with(';') || line.starts_with('#') {
             continue;
         }
 
         if line.starts_with('[') && line.ends_with(']') {
-            // Cierra la sección anterior si era fltsim.N.
             if let Some(draft) = current.take() {
                 if let Some(liv) = draft.finalize(plane_dir) {
                     out.push(liv);
@@ -223,7 +265,6 @@ fn parse_aircraft_cfg(
             _ => {}
         }
     }
-    // Cierra el último.
     if let Some(draft) = current.take() {
         if let Some(liv) = draft.finalize(plane_dir) {
             out.push(liv);
@@ -232,13 +273,7 @@ fn parse_aircraft_cfg(
     Ok(out)
 }
 
-/// Heurística de decoding del aircraft.cfg. PMDG mayoritariamente
-/// usa UTF-8 con BOM; algunos legacy/conversiones quedan en CP1252.
-/// `String::from_utf8_lossy` cubre ambos casos sin panic; perdemos
-/// algún acento exótico pero los nombres ASCII (los que importan
-/// para parseo de keys) siempre sobreviven.
 fn decode_aircraft_cfg(bytes: &[u8]) -> String {
-    // Strip BOM si está.
     let trimmed = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         &bytes[3..]
     } else {
@@ -247,9 +282,6 @@ fn decode_aircraft_cfg(bytes: &[u8]) -> String {
     String::from_utf8_lossy(trimmed).into_owned()
 }
 
-/// Buffer intermedio para acumular campos de una sección [fltsim.N]
-/// antes de finalizarla. Si no tiene `title`, no produce livery
-/// (`fltsim.N` sin title es inválido).
 #[derive(Debug, Default)]
 struct PmdgLiveryDraft {
     title: Option<String>,
@@ -257,18 +289,12 @@ struct PmdgLiveryDraft {
     tail_number: Option<String>,
     airline: Option<String>,
     texture: Option<String>,
-    /// Path relativo del thumbnail tal como aparece en el cfg.
     thumbnail: Option<String>,
 }
 
 impl PmdgLiveryDraft {
     fn finalize(self, plane_dir: &Path) -> Option<PmdgLivery> {
         let title = self.title?;
-        // Resolver thumbnail a path absoluto. PMDG suele poner
-        // `ui_thumbnailfile=textures.XXX/thumbnail.jpg` relativo al
-        // aircraft.cfg. Algunos liveries no traen thumbnail propio
-        // y heredan del base aircraft; en ese caso buscamos
-        // `texture.<texture>/thumbnail.jpg` como fallback.
         let thumbnail_path: Option<PathBuf> = self.thumbnail.as_ref().and_then(|rel| {
             let candidate = plane_dir.join(rel);
             if candidate.is_file() {
@@ -277,8 +303,6 @@ impl PmdgLiveryDraft {
                 None
             }
         });
-        // Fallback: `texture.<texture>/thumbnail.{jpg,png,jpeg}`.
-        // (No DDS — WebView2 no las renderiza.)
         let thumbnail_path = thumbnail_path.or_else(|| {
             let tex = self.texture.as_ref()?;
             let folder = plane_dir.join(format!("texture.{}", tex));
@@ -291,14 +315,11 @@ impl PmdgLiveryDraft {
             None
         });
 
-        // Encodear el archivo a base64 data URL si tenemos uno.
-        // El WebView no soporta DDS, así que filtramos por extensión
-        // antes de leer; los DDS llegan a este punto sólo por el path
-        // `ui_thumbnailfile` (no por nuestro fallback de textura).
         let thumbnail_data_url = thumbnail_path.and_then(|p| encode_thumbnail(&p));
 
         Some(PmdgLivery {
-            model: String::new(), // populado por el caller
+            vendor: String::new(), // populado por el caller
+            model: String::new(),
             package_folder: String::new(),
             title,
             variation: self.variation,
@@ -310,9 +331,6 @@ impl PmdgLiveryDraft {
     }
 }
 
-/// Lee la imagen y devuelve un data URL base64 si la extensión es
-/// soportada por el WebView (JPG/PNG/JPEG). DDS se descarta — el
-/// usuario verá el placeholder de avión.
 fn encode_thumbnail(path: &Path) -> Option<String> {
     let ext = path
         .extension()
@@ -324,7 +342,6 @@ fn encode_thumbnail(path: &Path) -> Option<String> {
         _ => return None,
     };
     let bytes = std::fs::read(path).ok()?;
-    // Limit a 1 MB para no inundar la UI con thumbnails enormes.
     if bytes.len() > 1024 * 1024 {
         return None;
     }

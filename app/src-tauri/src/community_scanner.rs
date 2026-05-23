@@ -225,11 +225,35 @@ fn folder_metadata(path: &Path) -> (Option<u64>, Option<String>) {
         Err(_) => return (None, None),
     };
     let size = directory_size(path).ok();
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+    // (v3.1.0) "Recientemente añadido" — antes usábamos sólo
+    // `modified()` que en Windows refleja la última escritura DENTRO
+    // de la carpeta. Si el usuario instala manualmente un addon viejo
+    // (descomprimiendo un .zip que preservaba mtimes originales) el
+    // valor reflejaba la fecha del .zip, no la del install — y por
+    // eso el dashboard sólo veía los drag-drop nuestros (que SÍ
+    // generan mtime fresco al copiar).
+    //
+    // Fix: tomamos el MÁXIMO entre `created()` (birth time, en Windows
+    // siempre presente y refleja la creación del folder en este disco
+    // = momento del install) y `modified()` (último update). El que
+    // sea más reciente gana, lo que cubre ambos casos: install nuevo
+    // (created reciente) y edit reciente (modified más nuevo que
+    // created).
+    let to_secs = |t: std::time::SystemTime| -> Option<i64> {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs() as i64)
+    };
+    let created_secs = meta.created().ok().and_then(to_secs);
+    let modified_secs = meta.modified().ok().and_then(to_secs);
+    let chosen = match (created_secs, modified_secs) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    let modified = chosen
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());
     (size, modified)
 }

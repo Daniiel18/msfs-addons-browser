@@ -80,17 +80,28 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
 
     // Filas crudas para categorización: necesitamos content_type,
     // dependencies_count, icao y size para clasificar.
+    // (v3.1.0) JOIN con airports para que `icao_resolvable` sólo sea
+    // true cuando el ICAO realmente existe en el dataset de OurAirports.
+    // Eso descarta librerías y "packs de aeropuerto" cuyo ICAO no es
+    // un aeropuerto real (típicos: librerías de objetos, packs de
+    // texturas con título sugestivo, etc.).
     #[derive(sqlx::FromRow)]
     struct RawRow {
         content_type: Option<String>,
         dependencies_count: i64,
         icao: Option<String>,
         size_bytes: Option<i64>,
+        icao_resolvable: bool,
     }
     let raws: Vec<RawRow> = sqlx::query_as(
         r#"
-        SELECT content_type, dependencies_count, icao, size_bytes
-        FROM community_packages
+        SELECT cp.content_type,
+               cp.dependencies_count,
+               cp.icao,
+               cp.size_bytes,
+               (a.icao IS NOT NULL) AS icao_resolvable
+        FROM community_packages cp
+        LEFT JOIN airports a ON a.icao = UPPER(cp.icao)
         "#,
     )
     .fetch_all(pool)
@@ -118,7 +129,7 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
             .map(|s| s.to_ascii_uppercase())
             .unwrap_or_default();
         let bytes = r.size_bytes.unwrap_or(0);
-        let icao_present = r
+        let _icao_present = r
             .icao
             .as_deref()
             .map(|s| !s.trim().is_empty())
@@ -126,7 +137,12 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
 
         let bucket_idx: usize = match ct.as_str() {
             "SCENERY" => {
-                if icao_present {
+                // (v3.1.0) airports_count = SCENERY + ICAO que match
+                // un aeropuerto REAL en OurAirports. Antes contábamos
+                // cualquier SCENERY con icao_present (172) — incluyendo
+                // librerías con título sugestivo. Ahora el counter (121)
+                // coincide con el mapa.
+                if r.icao_resolvable {
                     airports_count += 1;
                 }
                 0

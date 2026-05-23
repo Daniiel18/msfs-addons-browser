@@ -41,6 +41,8 @@ pub struct AppSettings {
     /// `dark` en `<html>` (Tailwind class-based) y el basemap del
     /// mapa de FlightBook.
     pub theme: String,
+    /// (v3.1.0) Idioma de la UI: "auto" | "es" | "en". Default "auto".
+    pub language: String,
     pub autostart_enabled: bool,
     pub simbrief_pilot_id: Option<String>,
     /// Carpeta Community detectada — la mostramos en read-only para
@@ -62,6 +64,7 @@ impl Default for AppSettings {
             onboarding_completed: false,
             default_view: "dashboard".to_string(),
             theme: "dark".to_string(),
+            language: "auto".to_string(),
             autostart_enabled: false,
             simbrief_pilot_id: None,
             community_path: None,
@@ -107,6 +110,10 @@ pub async fn get_app_settings(
             .get("pref_theme")
             .cloned()
             .unwrap_or_else(|| "dark".to_string()),
+        language: kv
+            .get("pref_language")
+            .cloned()
+            .unwrap_or_else(|| "auto".to_string()),
         autostart_enabled,
         simbrief_pilot_id: kv
             .get("simbrief_pilot_id")
@@ -210,6 +217,8 @@ fn is_valid_key(key: &str) -> bool {
             // `pref_theme`: "dark" | "light" — controla CSS class
             // en <html> (Tailwind class-based dark mode).
             | "pref_theme"
+            // (v3.1.0) Idioma de la UI: "auto" | "es" | "en".
+            | "pref_language"
     )
 }
 

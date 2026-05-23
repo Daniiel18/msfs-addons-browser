@@ -27,7 +27,17 @@ export function FlyingNowBadge() {
   if (!status || !status.simRunning) return null;
 
   const live = status.simconnectConnected;
-  const hasFlight = !!status.originIcao && !!status.destinationIcao;
+  // (v3.1.0) Tres niveles de "tener un vuelo":
+  //   · hasFullPlan — origen + destino conocidos (de SimBrief OFP).
+  //   · hasOriginOnly — origen sólo desde el watcher (nearest airport
+  //     del avión spawneado). Sin destino aún → la UI debe mostrar
+  //     "AT [ICAO] · Gate".
+  //   · nada — el avión NO está en tierra y no hay OFP → "Flying".
+  const hasFullPlan = !!status.originIcao && !!status.destinationIcao;
+  // Origen efectivo para display: prioridad OFP > nearest airport.
+  const effectiveOrigin =
+    status.originIcao ?? status.currentAirportIcao ?? null;
+  const hasFlight = hasFullPlan;
   const phase = phaseDisplay(status.phaseLabel);
 
   // Match el OFP más reciente con el vuelo en curso. Si el origen
@@ -124,11 +134,18 @@ export function FlyingNowBadge() {
       ) : (
         <Plane className="h-3.5 w-3.5" />
       )}
-      {hasFlight ? (
+      {hasFullPlan ? (
         <span className="font-mono">
           {status.originIcao}
           <span className={`mx-1.5 ${phase.arrowClass}`}>→</span>
           {status.destinationIcao}
+        </span>
+      ) : effectiveOrigin ? (
+        // (v3.1.0) Spawn detectado pero sin OFP completo —
+        // mostramos "AT [ICAO]" para que el usuario sepa que la app
+        // ya está rastreando aunque no haya plan SimBrief aún.
+        <span className="font-mono">
+          AT {effectiveOrigin}
         </span>
       ) : (
         <span>{live ? phase.short : "MSFS · no OFP"}</span>

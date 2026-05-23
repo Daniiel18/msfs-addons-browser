@@ -27,6 +27,7 @@ interface SettingsState {
     value: boolean,
   ) => Promise<void>;
   setDefaultView: (view: string) => Promise<void>;
+  setLanguage: (lang: "auto" | "es" | "en") => Promise<void>;
   setAutostart: (enabled: boolean) => Promise<void>;
   setMinimizeToTray: (enabled: boolean) => Promise<void>;
   setOnboardingCompleted: (done: boolean) => Promise<void>;
@@ -42,6 +43,7 @@ const DEFAULTS: AppSettings = {
   onboardingCompleted: false,
   defaultView: "dashboard",
   theme: "dark",
+  language: "auto",
   autostartEnabled: false,
   simbriefPilotId: null,
   communityPath: null,
@@ -56,6 +58,7 @@ const KEY_MAP: Record<string, string> = {
   minimizeToTray: "pref_minimize_to_tray",
   onboardingCompleted: "pref_onboarding_completed",
   defaultView: "pref_default_view",
+  language: "pref_language",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -92,6 +95,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ settings: { ...prev, defaultView: view } });
     try {
       await api.setAppSetting(KEY_MAP.defaultView, view);
+    } catch (e) {
+      set({ settings: prev, lastError: String(e) });
+    }
+  },
+
+  async setLanguage(lang) {
+    const prev = get().settings;
+    set({ settings: { ...prev, language: lang } });
+    try {
+      await api.setAppSetting(KEY_MAP.language, lang);
     } catch (e) {
       set({ settings: prev, lastError: String(e) });
     }

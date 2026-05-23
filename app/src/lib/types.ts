@@ -205,6 +205,9 @@ export interface AppSettings {
   defaultView: string;
   /** Tema visual: "dark" o "light". */
   theme: string;
+  /** (v3.1.0) Idioma de la UI: "auto" | "es" | "en". Auto resuelve
+   *  contra `navigator.language` al primer arranque. */
+  language: string;
   autostartEnabled: boolean;
   simbriefPilotId: string | null;
   communityPath: string | null;
@@ -339,11 +342,14 @@ export interface ScanReport {
   communityPath: string;
 }
 
-/** (v3.0.0) Livery de PMDG detectada en Community. Una entrada por
- *  cada `[fltsim.N]` dentro de los `aircraft.cfg` de los paquetes
- *  `pmdg-aircraft-{model}-liveries`. */
+/** (v3.0.0 / v3.1.0) Livery de aircraft addon detectada en Community.
+ *  Una entrada por cada `[fltsim.N]` dentro de los `aircraft.cfg` de
+ *  cualquier paquete `{vendor}-aircraft-{model}[-liveries]`. Cubre
+ *  PMDG, Fenix, iniBuilds, FlyByWire, etc. */
 export interface PmdgLivery {
-  /** "77er" | "77w" | "738" | "739" | ... */
+  /** Vendor: "pmdg" | "fnx" | "inibuilds" | "fbw" | ... */
+  vendor: string;
+  /** Modelo: "77er" | "77w" | "738" | "320" | "a350" | ... */
   model: string;
   /** Nombre del paquete tal como aparece en Community. */
   packageFolder: string;

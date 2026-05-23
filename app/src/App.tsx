@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { api, isTauri } from "./lib/tauri";
+import { setActiveLocale } from "./lib/i18n";
 import { useAppStore } from "./stores/useAppStore";
 import { useDownloadsStore } from "./stores/useDownloadsStore";
 import { useCommunityStore } from "./stores/useCommunityStore";
@@ -68,6 +69,16 @@ export default function App() {
   const simRunning = !!flightStatus?.simRunning;
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
   const theme = useSettingsStore((s) => s.settings.theme);
+  const language = useSettingsStore((s) => s.settings.language);
+
+  // (v3.1.0) Sincroniza el locale activo del módulo i18n con el
+  // setting persistido. Cuando el usuario cambia idioma, este efecto
+  // re-resuelve y todos los `t()` siguientes usan el nuevo dict (la
+  // app pide reload para que componentes con strings inline se
+  // actualicen también — controlado por el modal de restart).
+  useEffect(() => {
+    setActiveLocale((language ?? "auto") as "auto" | "es" | "en");
+  }, [language]);
 
   // Aplicar el tema al `<html>` cada vez que el setting cambie.
   // Tailwind tiene `darkMode: "class"`, así que añadir/quitar la

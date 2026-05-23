@@ -8,7 +8,7 @@ import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { greatCircleLine } from "../lib/greatCircle";
-import { smoothCatmullRom } from "../lib/smooth";
+import { smoothCatmullRom, sanitizeTrackCoords } from "../lib/smooth";
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 
@@ -271,6 +271,24 @@ export function RoutesMapView({
           "line-dasharray": [2, 1.5],
         },
       });
+      // (v3.1.0) Línea proyectada — great-circle desde la posición
+      // actual del avión hasta el destino del OFP. Color cyan apagado
+      // dashed para diferenciarla del track real (ámbar) y de los
+      // planes SimBrief históricos. Aparece sólo cuando hay vuelo en
+      // curso + destination conocido + posición SimConnect.
+      map.addSource("rt-projection", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-projection-line",
+        type: "line",
+        source: "rt-projection",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#67e8f9",
+          "line-width": 1.8,
+          "line-opacity": 0.75,
+          "line-dasharray": [3, 2],
+        },
+      });
       setMapReady(true);
     };
 
@@ -364,7 +382,7 @@ export function RoutesMapView({
     if (inFlightId == null) {
       return { type: "FeatureCollection", features: [] };
     }
-    const coords: [number, number][] = liveTrackPoints.map(
+    const rawCoords: [number, number][] = liveTrackPoints.map(
       (p) => [p.lon, p.lat] as [number, number],
     );
     // Append posición live si el watcher reporta coords.
@@ -373,8 +391,13 @@ export function RoutesMapView({
       flightStatus.currentLat != null &&
       flightStatus.currentLon != null
     ) {
-      coords.push([flightStatus.currentLon, flightStatus.currentLat]);
+      rawCoords.push([flightStatus.currentLon, flightStatus.currentLat]);
     }
+    // (v3.1.0) Sanitizamos coords ANTES del smoothing — descarta
+    // (0,0), NaN, fuera de rango y saltos físicamente imposibles
+    // (>5° entre samples consecutivos). Resuelve las "líneas raras
+    // cruzando el mapa" reportadas por el usuario.
+    const coords = sanitizeTrackCoords(rawCoords);
     if (coords.length < 2) {
       return { type: "FeatureCollection", features: [] };
     }
@@ -394,6 +417,65 @@ export function RoutesMapView({
     };
   }, [inFlightId, liveTrackPoints, flightStatus]);
 
+  // (v3.1.0) Geometría de la línea PROYECTADA — great-circle desde
+  // la posición actual del avión hasta el destino del vuelo activo.
+  // Sólo se renderiza cuando:
+  //   · SimConnect está vivo + currentLat/Lon conocidos.
+  //   · Hay un vuelo flight_log abierto (status.originIcao desde el
+  //     watcher) Y existe un OFP de SimBrief con ese origen + dest.
+  //
+  // Sin OFP no hay destinationLat/Lon → no se dibuja.
+  const projectionGeojson = useMemo<
+    GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
+  >(() => {
+    if (!flightStatus?.simconnectConnected) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    const curLat = flightStatus.currentLat;
+    const curLon = flightStatus.currentLon;
+    if (curLat == null || curLon == null) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    // Match SimBrief OFP por originIcao del watcher (que viene del
+    // simbrief_flights latest_recent_simbrief).
+    const origin = flightStatus.originIcao;
+    if (!origin) return { type: "FeatureCollection", features: [] };
+    const matchedOfp = simbriefFlights.find(
+      (f) => f.originIcao === origin,
+    );
+    if (!matchedOfp) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    // greatCircleLine devuelve [][]  — múltiples polylines cuando la
+    // ruta cruza la dateline. Usamos MultiLineString para renderizar
+    // todos los segmentos.
+    const segments = greatCircleLine(
+      curLon,
+      curLat,
+      matchedOfp.destinationLon,
+      matchedOfp.destinationLat,
+    );
+    if (segments.length === 0) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    return {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: { projection: true },
+          geometry: { type: "MultiLineString", coordinates: segments },
+        },
+      ],
+    };
+  }, [
+    flightStatus?.simconnectConnected,
+    flightStatus?.currentLat,
+    flightStatus?.currentLon,
+    flightStatus?.originIcao,
+    simbriefFlights,
+  ]);
+
   // Geometría del track real — sólo se popula cuando hay selección
   // con datos. LineString (no MultiLineString) porque es una traza
   // continua, no varios segmentos.
@@ -403,9 +485,14 @@ export function RoutesMapView({
     if (selectedFlightId == null || trackPoints.length < 2) {
       return { type: "FeatureCollection", features: [] };
     }
-    const coords = trackPoints.map(
+    const rawCoords = trackPoints.map(
       (p) => [p.lon, p.lat] as [number, number],
     );
+    // (v3.1.0) Filtramos coords inválidas ANTES del smoothing.
+    const coords = sanitizeTrackCoords(rawCoords);
+    if (coords.length < 2) {
+      return { type: "FeatureCollection", features: [] };
+    }
     // (v2.2.0) Suavizado Catmull-Rom — antes el trazo se veía a
     // poligonal en zonas de giro. Con la spline pasamos por los
     // mismos puntos pero con interpolación cúbica entre ellos.
@@ -599,8 +686,18 @@ export function RoutesMapView({
     trackSrc?.setData(trackGeojson);
     const liveSrc = map.getSource("rt-live") as GeoJSONSource | undefined;
     liveSrc?.setData(liveTrackGeojson);
+    const projSrc = map.getSource("rt-projection") as GeoJSONSource | undefined;
+    projSrc?.setData(projectionGeojson);
     map.triggerRepaint();
-  }, [mapReady, simbriefGeojson, flightLogGeojson, endpointsGeojson, trackGeojson, liveTrackGeojson]);
+  }, [
+    mapReady,
+    simbriefGeojson,
+    flightLogGeojson,
+    endpointsGeojson,
+    trackGeojson,
+    liveTrackGeojson,
+    projectionGeojson,
+  ]);
 
   // (v1.1.4) Marker del avión en vivo. Sólo visible cuando SimConnect
   // está conectado y reporta coords reales. Se rota por heading.

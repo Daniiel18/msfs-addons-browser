@@ -160,7 +160,7 @@ fn format_gate_fallback(lat: f64, lon: f64, nearest: Option<&NearestAirportFull>
 
 /// Métricas extra capturadas al cerrar el vuelo. Las pasamos en un
 /// struct para evitar arguments-explosion en la signatura.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FlightFinishMetrics {
     pub max_altitude_ft: Option<i64>,
     /// FPM en el touchdown — negativo = descenso (lo normal).
@@ -176,6 +176,13 @@ pub struct FlightFinishMetrics {
     /// Total de segundos con el sim pausado durante el vuelo.
     /// `finish_flight` resta esto del raw duration → block time real.
     pub paused_seconds: i64,
+    /// (v3.1.0) Fallback de arrival_gate — usado si SimConnect
+    /// Facility Data no devolvió un gate real durante el taxi-in.
+    /// Típicamente el `current_gate` del SharedState al momento del
+    /// IN (que viene del último request "preflight"/"arrival" o se
+    /// resolvió por proximidad). Si el query del watcher ya tenía
+    /// algo en la columna, COALESCE lo conserva.
+    pub fallback_arrival_gate: Option<String>,
 }
 
 /// Cierra un vuelo abierto: rellena destino, distancia, duración,
@@ -213,13 +220,49 @@ pub async fn finish_flight(
         .map(|dt| now.signed_duration_since(dt.with_timezone(&chrono::Utc)).num_seconds());
     let flight_time_s = raw_seconds.map(|s| (s - metrics.paused_seconds).max(0));
 
-    // (v3.0.0) `arrival_gate` con COALESCE — sólo escribe si la fila
-    // todavía no tiene gate real (la mayoría de las veces SimConnect
-    // Facility Data ya lo populó en `process_pending_gate`). Antes
-    // siempre sobreescribíamos con el fallback `Stand · X° Ym`, lo
-    // que pisoteaba el nombre real cuando llegaba ANTES del IN. Ahora
-    // dejamos el campo NULL si SimConnect no nos dio uno.
-    // (v2.2.0) `fuel_used_kg`: PRIORIZAR el valor existente (de
+    // (v3.1.0) destination_icao: si `nearest` falló (no airport en 3 nm)
+    // pero teníamos un OFP de SimBrief que matchea el origen, intentamos
+    // usar su destinationIcao como fallback. Mejor un destino "del plan"
+    // que un destino NULL ruidoso en la UI.
+    let dest_icao_resolved: Option<String> = match nearest.as_ref() {
+        Some(n) => Some(n.icao.clone()),
+        None => {
+            // Lookup OFP por origin_icao del flight para fallback.
+            let origin_icao_opt: Option<String> = sqlx::query_scalar(
+                "SELECT origin_icao FROM flight_log WHERE id = ?1"
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            if let Some(orig) = origin_icao_opt {
+                sqlx::query_scalar::<_, String>(
+                    r#"
+                    SELECT destination_icao FROM simbrief_flights
+                    WHERE origin_icao = ?1
+                    ORDER BY CAST(generated_at AS INTEGER) DESC
+                    LIMIT 1
+                    "#
+                )
+                .bind(&orig)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            }
+        }
+    };
+    let dest_name_resolved: Option<String> = nearest.as_ref().map(|n| n.name.clone());
+
+    // (v3.1.0) arrival_gate: COALESCE con el `fallback_arrival_gate`
+    // que pasa el watcher (típicamente current_gate del SharedState
+    // al momento del IN). Esto cubre el caso en que SimConnect
+    // Facility Data falla en el aeropuerto destino (scenery custom
+    // sin TAXI_PARKING definido).
+    // (v2.2.0) fuel_used_kg: PRIORIZAR el valor existente (de
     // SimBrief vía pre-populate al OUT). Sólo usar el cálculo de
     // SimConnect si la fila no tiene fuel todavía.
     sqlx::query(
@@ -228,31 +271,32 @@ pub async fn finish_flight(
         SET ended_at             = ?1,
             destination_lat      = ?2,
             destination_lon      = ?3,
-            destination_icao     = ?4,
-            destination_name     = ?5,
+            destination_icao     = COALESCE(destination_icao, ?4),
+            destination_name     = COALESCE(destination_name, ?5),
             distance_nm          = ?6,
             flight_time_s        = ?7,
             max_altitude_ft      = COALESCE(?8, max_altitude_ft),
             landing_fpm          = ?9,
             max_ground_speed_kt  = ?10,
             max_true_airspeed_kt = ?11,
-            arrival_gate         = COALESCE(arrival_gate, NULL),
-            fuel_used_kg         = COALESCE(fuel_used_kg, ?12),
-            paused_seconds       = ?13
-        WHERE id = ?14
+            arrival_gate         = COALESCE(arrival_gate, ?12),
+            fuel_used_kg         = COALESCE(fuel_used_kg, ?13),
+            paused_seconds       = ?14
+        WHERE id = ?15
         "#,
     )
     .bind(&ended_at)
     .bind(lat)
     .bind(lon)
-    .bind(nearest.as_ref().map(|n| n.icao.as_str()))
-    .bind(nearest.as_ref().map(|n| n.name.as_str()))
+    .bind(dest_icao_resolved.as_deref())
+    .bind(dest_name_resolved.as_deref())
     .bind(distance_nm)
     .bind(flight_time_s)
     .bind(metrics.max_altitude_ft)
     .bind(metrics.landing_fpm)
     .bind(metrics.max_ground_speed_kt)
     .bind(metrics.max_true_airspeed_kt)
+    .bind(metrics.fallback_arrival_gate.as_deref())
     .bind(metrics.fuel_used_kg)
     .bind(metrics.paused_seconds)
     .bind(id)

@@ -70,6 +70,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   // Versión real instalada — la lee Tauri desde tauri.conf.json en
   // runtime, así nunca queda hardcoded en el bundle JS.
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  // (v3.1.0) Modal de aviso de reinicio tras cambio de idioma.
+  const [showRestartHint, setShowRestartHint] = useState(false);
+  const setLanguage = useSettingsStore((s) => s.setLanguage);
 
   useEffect(() => {
     if (open) setPilotDraft(pilotId ?? "");
@@ -256,6 +259,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <ThemeRow
                   current={settings.theme}
                   onChange={(t) => void api.setAppSetting("pref_theme", t).then(() => useSettingsStore.getState().bootstrap())}
+                />
+                <LanguageRow
+                  current={settings.language}
+                  onChange={(l) => void setLanguage(l)}
+                  onRequestRestart={() => setShowRestartHint(true)}
                 />
                 <Toggle
                   label="Arrancar con Windows"
@@ -506,6 +514,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           </motion.div>
         </motion.div>
       )}
+      {showRestartHint && (
+        <RestartHintModal onClose={() => setShowRestartHint(false)} />
+      )}
     </AnimatePresence>
   );
 }
@@ -556,6 +567,108 @@ function ThemeRow({
         >
           Claro
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** (v3.1.0) Fila del selector de idioma. Dispara modal de aviso de
+ *  reinicio porque buena parte de la app sigue con strings inline
+ *  que no reaccionan al cambio en caliente. */
+export function LanguageRow({
+  current,
+  onChange,
+  onRequestRestart,
+}: {
+  current: string;
+  onChange: (l: "auto" | "es" | "en") => void;
+  onRequestRestart: () => void;
+}) {
+  const handle = (next: "auto" | "es" | "en") => {
+    if (next === current) return;
+    onChange(next);
+    onRequestRestart();
+  };
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-slate-200">Idioma · Language</div>
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          «Auto» usa el idioma del sistema operativo. Al cambiar manualmente
+          la app pedirá reiniciar para aplicar los textos en todos los
+          módulos. <em className="not-italic text-slate-600">/ "Auto" uses the
+          OS language. Manual changes need a restart.</em>
+        </p>
+      </div>
+      <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
+        <button
+          onClick={() => handle("auto")}
+          className={`rounded px-2.5 py-1 text-[11px] ${
+            current === "auto"
+              ? "bg-slate-700/80 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Auto
+        </button>
+        <button
+          onClick={() => handle("es")}
+          className={`rounded px-2.5 py-1 text-[11px] ${
+            current === "es"
+              ? "bg-slate-700/80 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          ES
+        </button>
+        <button
+          onClick={() => handle("en")}
+          className={`rounded px-2.5 py-1 text-[11px] ${
+            current === "en"
+              ? "bg-slate-700/80 text-slate-100"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          EN
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** (v3.1.0) Modal de aviso "reinicia SimFleet" tras cambio de
+ *  idioma. */
+export function RestartHintModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-slate-100">
+          Reinicia SimFleet
+        </h3>
+        <p className="mt-2 text-xs leading-relaxed text-slate-400">
+          El idioma se actualizó. Para que todos los textos cambien
+          (incluyendo los módulos cargados antes del cambio), cierra y
+          vuelve a abrir SimFleet.
+          <br />
+          <em className="not-italic text-slate-500">
+            Restart SimFleet for the language change to fully apply
+            across all modules.
+          </em>
+        </p>
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={onClose}
+            className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-600"
+          >
+            Entendido · Got it
+          </button>
+        </div>
       </div>
     </div>
   );

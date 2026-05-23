@@ -191,11 +191,12 @@ export function AddonsView() {
         </div>
       )}
 
-      {/* (v3.0.0) Sección PMDG Liveries — escaneo dedicado de
-          paquetes `pmdg-aircraft-*-liveries` con parsing del
-          aircraft.cfg. Se renderiza siempre, vacía si no hay liveries
-          PMDG detectadas. */}
-      <PmdgLiveriesSection />
+      {/* (v3.0.0 / v3.1.0) Sección Aircraft Liveries — escaneo
+          dedicado de paquetes `*-aircraft-*` (PMDG + Fenix +
+          iniBuilds + FlyByWire…) con parsing del aircraft.cfg.
+          Recibe el filtro de búsqueda global del header para que las
+          liveries también aparezcan/desaparezcan al buscar. */}
+      <AircraftLiveriesSection filter={filter} />
 
       {detailsPkg && (
         <PackageDetailModal
@@ -209,10 +210,57 @@ export function AddonsView() {
 }
 
 // ----------------------------------------------------------------------------
-// PMDG Liveries section (v3.0.0)
+// Aircraft Liveries section (v3.0.0 / v3.1.0)
 // ----------------------------------------------------------------------------
 
-function PmdgLiveriesSection() {
+/** Mapa de vendor → label amigable + accent color. */
+function vendorLabel(vendor: string): { name: string; tone: string } {
+  switch (vendor) {
+    case "pmdg":
+      return { name: "PMDG", tone: "text-amber-300" };
+    case "fnx":
+      return { name: "Fenix", tone: "text-sky-300" };
+    case "inibuilds":
+      return { name: "iniBuilds", tone: "text-emerald-300" };
+    case "fbw":
+      return { name: "FlyByWire", tone: "text-violet-300" };
+    case "aerosoft":
+      return { name: "Aerosoft", tone: "text-rose-300" };
+    case "headwind":
+      return { name: "Headwind", tone: "text-orange-300" };
+    case "leonardo":
+      return { name: "Leonardo", tone: "text-purple-300" };
+    case "dc-designs":
+      return { name: "DC Designs", tone: "text-cyan-300" };
+    case "justflight":
+      return { name: "JustFlight", tone: "text-lime-300" };
+    default:
+      return {
+        name: vendor.charAt(0).toUpperCase() + vendor.slice(1),
+        tone: "text-slate-300",
+      };
+  }
+}
+
+function modelLabel(vendor: string, m: string): string {
+  // PMDG conocidos.
+  const pmdgMap: Record<string, string> = {
+    "738": "737-800",
+    "739": "737-900",
+    "77er": "777-200ER",
+    "77w": "777-300ER",
+    "77f": "777F",
+    "744": "747-400",
+    "748": "747-8",
+  };
+  if (vendor === "pmdg" && pmdgMap[m]) return pmdgMap[m];
+  if (vendor === "fnx" && m === "320") return "A320";
+  if (vendor === "inibuilds" && m === "a350") return "A350";
+  if (vendor === "fbw" && m === "a32nx") return "A32NX";
+  return m.toUpperCase();
+}
+
+function AircraftLiveriesSection({ filter }: { filter: string }) {
   const [liveries, setLiveries] = useState<PmdgLivery[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -238,114 +286,157 @@ function PmdgLiveriesSection() {
     };
   }, []);
 
+  // (v3.1.0) Aplica el filtro global del header sobre los liveries
+  // — antes el buscador sólo indexaba la raíz y el usuario reportó
+  // "Ningún addon coincide con tu filtro" al buscar una librea PMDG
+  // específica. Ahora también matcheamos tail number, airline,
+  // variation, vendor y package folder.
+  const q = filter.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!liveries) return [] as PmdgLivery[];
+    if (!q) return liveries;
+    return liveries.filter((l) =>
+      [
+        l.title,
+        l.airline,
+        l.tailNumber,
+        l.variation,
+        l.texture,
+        l.packageFolder,
+        l.vendor,
+        l.model,
+        `${vendorLabel(l.vendor).name} ${modelLabel(l.vendor, l.model)}`,
+      ]
+        .filter(Boolean)
+        .some((s) => s!.toLowerCase().includes(q)),
+    );
+  }, [liveries, q]);
+
   if (loading) {
     return (
-      <section className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3 text-xs text-slate-500">
-        Escaneando liveries PMDG…
+      <section className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-xs text-slate-500">
+        Escaneando liveries de aircraft addons…
       </section>
     );
   }
   if (error) {
     return (
       <section className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
-        Error PMDG: {error}
+        Error escaneando liveries: {error}
       </section>
     );
   }
   if (!liveries || liveries.length === 0) {
     return null;
   }
-
-  // Group by model (77er, 77w, 738…).
-  const byModel = new Map<string, PmdgLivery[]>();
-  for (const l of liveries) {
-    const arr = byModel.get(l.model) ?? [];
-    arr.push(l);
-    byModel.set(l.model, arr);
+  // Si hay filtro activo y no matchea nada, no renderizamos la
+  // sección — la EmptyState global del addons view ya maneja eso.
+  if (q && filtered.length === 0) {
+    return null;
   }
-  const modelLabel = (m: string) => {
-    const map: Record<string, string> = {
-      "738": "737-800",
-      "739": "737-900",
-      "77er": "777-200ER",
-      "77w": "777-300ER",
-      "77f": "777F",
-      "744": "747-400",
-      "748": "747-8",
-    };
-    return map[m] ?? m.toUpperCase();
-  };
 
-  const totalCount = liveries.length;
+  // Group by vendor + model.
+  type Key = string; // "vendor::model"
+  const byKey = new Map<Key, PmdgLivery[]>();
+  for (const l of filtered) {
+    const key = `${l.vendor}::${l.model}`;
+    const arr = byKey.get(key) ?? [];
+    arr.push(l);
+    byKey.set(key, arr);
+  }
+
+  const totalCount = filtered.length;
 
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900/40">
       <header
-        className="flex cursor-pointer items-center gap-2 border-b border-slate-800 px-4 py-3"
+        className="flex cursor-pointer items-center gap-2 border-b border-slate-800 px-4 py-3 hover:bg-slate-900/60"
         onClick={() => setExpanded((v) => !v)}
       >
         <Plane className="h-4 w-4 text-amber-300" />
-        <h3 className="text-sm font-semibold text-slate-100">PMDG Liveries</h3>
+        <h3 className="text-sm font-semibold text-slate-100">
+          Aircraft Liveries
+        </h3>
         <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
           {totalCount}
         </span>
         <span className="ml-auto text-[11px] text-slate-500">
-          {expanded ? "Click para colapsar" : "Click para expandir"}
+          {expanded ? "↓ Colapsar" : "→ Expandir"}
         </span>
       </header>
       {expanded && (
-        <div className="space-y-4 p-4">
-          {Array.from(byModel.entries())
+        <div className="space-y-6 p-4">
+          {Array.from(byKey.entries())
             .sort(([a], [b]) => a.localeCompare(b))
-            .map(([model, items]) => (
-              <div key={model}>
-                <h4 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  PMDG {modelLabel(model)}
-                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
-                    {items.length}
-                  </span>
-                </h4>
-                <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {items.map((liv, idx) => (
-                    <PmdgLiveryCard key={`${liv.title}-${idx}`} liv={liv} />
-                  ))}
-                </ul>
-              </div>
-            ))}
+            .map(([key, items]) => {
+              const [vendor, model] = key.split("::");
+              const v = vendorLabel(vendor);
+              return (
+                <div key={key}>
+                  <h4 className="mb-3 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <span className={v.tone}>{v.name}</span>
+                    <span>{modelLabel(vendor, model)}</span>
+                    <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                      {items.length}
+                    </span>
+                  </h4>
+                  {/* (v3.1.0) Grid homogéneo con el resto de los
+                      paquetes de Addons: 1/2/3/4 columnas según
+                      ancho. Cards más altas con thumbnail rectangular
+                      arriba — mismo patrón que `PackageCard`. */}
+                  <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {items.map((liv, idx) => (
+                      <LiveryCard
+                        key={`${liv.title}-${idx}`}
+                        liv={liv}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
         </div>
       )}
     </section>
   );
 }
 
-function PmdgLiveryCard({ liv }: { liv: PmdgLivery }) {
+function LiveryCard({ liv }: { liv: PmdgLivery }) {
   return (
-    <li className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/60 p-2">
-      {liv.thumbnailDataUrl ? (
-        <img
-          src={liv.thumbnailDataUrl}
-          alt={liv.title}
-          className="h-12 w-20 flex-shrink-0 rounded object-cover ring-1 ring-slate-800"
-        />
-      ) : (
-        <div className="flex h-12 w-20 flex-shrink-0 items-center justify-center rounded bg-slate-900 ring-1 ring-slate-800">
-          <Plane className="h-5 w-5 text-slate-600" />
-        </div>
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-slate-100">
+    <li className="group flex h-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60 transition-colors hover:border-brand-500/40 hover:bg-slate-900">
+      {/* Thumbnail rectangular arriba (~16:9), igual que PackageCard. */}
+      <div className="relative h-28 w-full overflow-hidden bg-slate-900">
+        {liv.thumbnailDataUrl ? (
+          <img
+            src={liv.thumbnailDataUrl}
+            alt={liv.title}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <Plane className="h-10 w-10 text-slate-700" />
+          </div>
+        )}
+        {liv.tailNumber && (
+          <span className="absolute right-2 top-2 rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] font-medium text-slate-100 ring-1 ring-slate-700">
+            {liv.tailNumber}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col gap-1 p-3">
+        <p className="line-clamp-2 text-xs font-medium leading-tight text-slate-100">
           {liv.airline || liv.variation || liv.title}
         </p>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-500">
-          {liv.tailNumber && (
-            <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">
-              {liv.tailNumber}
-            </span>
-          )}
-          {liv.texture && (
-            <span className="truncate text-slate-500">{liv.texture}</span>
-          )}
-        </div>
+        {liv.variation && liv.airline && liv.variation !== liv.airline && (
+          <p className="line-clamp-1 text-[10px] text-slate-500">
+            {liv.variation}
+          </p>
+        )}
+        {liv.texture && (
+          <p className="mt-auto truncate text-[10px] font-mono text-slate-600">
+            {liv.texture}
+          </p>
+        )}
       </div>
     </li>
   );

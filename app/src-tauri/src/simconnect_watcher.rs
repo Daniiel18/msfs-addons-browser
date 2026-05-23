@@ -1787,6 +1787,16 @@ mod windows_simconnect {
                             }
                             _ => None,
                         };
+                        // (v3.1.0) Fallback arrival_gate desde SharedState.
+                        // Si la facility data request del IN no ha resuelto
+                        // todavía (o falló por scenery sin TAXI_PARKING),
+                        // usamos el current_gate como respaldo. Si Facility
+                        // Data ya populó arrival_gate en la fila, COALESCE
+                        // en finish_flight lo conserva.
+                        let fallback_gate = state
+                            .try_lock()
+                            .ok()
+                            .and_then(|g| g.status.current_gate.clone());
                         let metrics = crate::flight_log::FlightFinishMetrics {
                             max_altitude_ft: Some(*max_alt_ft),
                             landing_fpm: *captured_landing_fpm,
@@ -1802,6 +1812,7 @@ mod windows_simconnect {
                             },
                             fuel_used_kg: fuel_used,
                             paused_seconds: (*paused_seconds_total) as i64,
+                            fallback_arrival_gate: fallback_gate,
                         };
                         let reason = if all_engines_off {
                             "ENGINE SHUTDOWN"
@@ -1812,11 +1823,11 @@ mod windows_simconnect {
                         let lat_c = lat;
                         let lon_c = lon;
                         let app_c = app.clone();
-                        let metrics_c = metrics;
+                        let metrics_c = metrics.clone();
                         let reason_c = reason.to_string();
                         tokio::spawn(async move {
                             match crate::flight_log::finish_flight(
-                                &pool_c, id, lat_c, lon_c, metrics_c,
+                                &pool_c, id, lat_c, lon_c, metrics_c.clone(),
                             )
                             .await
                             {

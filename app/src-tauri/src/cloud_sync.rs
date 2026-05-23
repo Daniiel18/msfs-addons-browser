@@ -48,11 +48,71 @@ use tokio::net::TcpListener;
 const SYNC_FILE_NAME: &str = "msfs-addons-data.json";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email";
 
+// (v3.1.0) Credenciales embebidas en build — sólo dos usuarios (el
+// owner y un amigo). Si los valores quedan vacíos, la app cae al
+// flujo antiguo (settings.google_client_id/secret en DB) para devs.
+// En producción se compilan con valores reales pasados por env var:
+//   SIMFLEET_GOOGLE_CLIENT_ID=...
+//   SIMFLEET_GOOGLE_CLIENT_SECRET=...
+//
+// `option_env!` los inserta como string slice si están presentes en
+// build env; si no, devuelve None y caemos al fallback DB.
+const HARDCODED_CLIENT_ID: Option<&str> =
+    option_env!("SIMFLEET_GOOGLE_CLIENT_ID");
+const HARDCODED_CLIENT_SECRET: Option<&str> =
+    option_env!("SIMFLEET_GOOGLE_CLIENT_SECRET");
+
+/// (v3.1.0) Lista blanca de emails Gmail autorizados a hacer sync.
+/// La app rechaza el OAuth si el email del usuario no está aquí.
+/// Hardcodeado por diseño: ESTE NO ES SOFTWARE PÚBLICO — son dos
+/// usuarios. Cambiar la lista requiere recompilar.
+const WHITELIST_EMAILS: &[&str] = &[
+    // TODO: el owner debe rellenar con su email + el del amigo
+    // antes de hacer el release. Si la lista queda vacía, sólo se
+    // bloquea el sync cuando NO matchea nada (vacío = nada permitido).
+];
+
 const KEY_CLIENT_ID: &str = "google_client_id";
 const KEY_CLIENT_SECRET: &str = "google_client_secret";
 const KEY_REFRESH_TOKEN: &str = "google_refresh_token";
 const KEY_USER_EMAIL: &str = "google_user_email";
 const KEY_LAST_SYNC_AT: &str = "google_last_sync_at";
+
+/// (v3.1.0) Devuelve `(client_id, client_secret)` consultando primero
+/// los valores hardcoded de build, luego DB como fallback (compat con
+/// users en v2.x que configuraron via UI).
+async fn resolve_credentials(
+    pool: &SqlitePool,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    if let (Some(cid), Some(secret)) =
+        (HARDCODED_CLIENT_ID, HARDCODED_CLIENT_SECRET)
+    {
+        if !cid.is_empty() && !secret.is_empty() {
+            return Ok((Some(cid.to_string()), Some(secret.to_string())));
+        }
+    }
+    let cid = get_setting(pool, KEY_CLIENT_ID).await?;
+    let secret = get_setting(pool, KEY_CLIENT_SECRET).await?;
+    Ok((cid, secret))
+}
+
+/// (v3.1.0) Verifica que el email esté en la whitelist. Si la lista
+/// está vacía, lo loguea como warning y rechaza por seguridad
+/// (better safe than allowing all).
+fn is_whitelisted(email: &str) -> bool {
+    let lower = email.trim().to_lowercase();
+    if WHITELIST_EMAILS.is_empty() {
+        tracing::warn!(
+            target: "cloud",
+            "WHITELIST_EMAILS está vacía — rechazando '{}'. Recompila con la lista de emails autorizados.",
+            email
+        );
+        return false;
+    }
+    WHITELIST_EMAILS
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(&lower))
+}
 
 /// (v2.0.1) Folder sync — alternativa simple a OAuth. Apunta a una
 /// carpeta de OneDrive/Google Drive Desktop/Dropbox/iCloud y el
@@ -128,8 +188,7 @@ async fn delete_setting(pool: &SqlitePool, key: &str) -> anyhow::Result<()> {
 // =============================================================================
 
 pub async fn get_config(pool: &SqlitePool) -> anyhow::Result<CloudConfig> {
-    let client_id = get_setting(pool, KEY_CLIENT_ID).await?;
-    let client_secret = get_setting(pool, KEY_CLIENT_SECRET).await?;
+    let (client_id, client_secret) = resolve_credentials(pool).await?;
     let refresh_token = get_setting(pool, KEY_REFRESH_TOKEN).await?;
     let user_email = get_setting(pool, KEY_USER_EMAIL).await?;
     let last_sync_at = get_setting(pool, KEY_LAST_SYNC_AT).await?;
@@ -171,12 +230,20 @@ pub async fn start_oauth(
     http: reqwest::Client,
     app: AppHandle,
 ) -> anyhow::Result<OauthStart> {
-    let client_id = get_setting(&pool, KEY_CLIENT_ID)
-        .await?
-        .ok_or_else(|| anyhow!("Configura primero Client ID y Client Secret de Google"))?;
-    let client_secret = get_setting(&pool, KEY_CLIENT_SECRET)
-        .await?
-        .ok_or_else(|| anyhow!("Configura primero Client ID y Client Secret de Google"))?;
+    // (v3.1.0) Credenciales desde build env > DB fallback.
+    let (client_id_opt, client_secret_opt) = resolve_credentials(&pool).await?;
+    let client_id = client_id_opt
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!(
+            "Las credenciales de Google no están embebidas en esta build. \
+             Si ves este mensaje en producción, contacta al desarrollador — \
+             la app debió compilarse con SIMFLEET_GOOGLE_CLIENT_ID/SECRET."
+        ))?;
+    let client_secret = client_secret_opt
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!(
+            "Las credenciales de Google no están embebidas en esta build."
+        ))?;
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -318,6 +385,29 @@ async fn handle_callback(
     })?;
 
     let email = fetch_user_email(&http, &tokens.access_token).await.ok();
+
+    // (v3.1.0) Whitelist check — sólo emails aprobados pueden
+    // completar el OAuth. Si el email no está en la lista, descartamos
+    // refresh_token y devolvemos error claro al usuario.
+    if let Some(ref e) = email {
+        if !is_whitelisted(e) {
+            tracing::warn!(
+                target: "cloud",
+                "OAuth completado pero email '{}' no está en WHITELIST_EMAILS — rechazando",
+                e
+            );
+            return Err(anyhow!(
+                "El email '{}' no está autorizado para sincronizar. \
+                 Contacta al desarrollador para añadirlo a la whitelist.",
+                e
+            ));
+        }
+    } else {
+        return Err(anyhow!(
+            "No se pudo obtener el email del usuario para validar la whitelist."
+        ));
+    }
+
     set_setting(&pool, KEY_REFRESH_TOKEN, &refresh_token).await?;
     if let Some(e) = &email {
         set_setting(&pool, KEY_USER_EMAIL, e).await?;

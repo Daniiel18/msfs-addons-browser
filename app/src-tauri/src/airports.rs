@@ -336,6 +336,7 @@ pub struct AddonOnMap {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)]
 struct InstalledRow {
     id: String,
     title: String,
@@ -374,16 +375,30 @@ pub async fn list_addons_on_map(pool: &SqlitePool) -> anyhow::Result<Vec<AddonOn
         return Ok(Vec::new());
     }
 
-    // Paso 2 — instalaciones con ICAO opcional desde el catálogo.
-    let installed = sqlx::query_as::<_, InstalledRow>(
+    // Paso 2 — paquetes REALMENTE instalados en Community (v3.1.0).
+    // Antes leíamos `installed_addons` (la tabla del catálogo de
+    // SimFleet — sólo los que el usuario descargó a través de
+    // nuestra app). Eso dejaba fuera todo lo instalado manualmente o
+    // con gestores de terceros — incluyendo TNCM, LFPO y muchos otros
+    // que el usuario reportó como "desaparecidos del mapa".
+    //
+    // Ahora la fuente es `community_packages` (poblada por el scanner
+    // del FS). Filtra a SCENERY con ICAO presente, JOIN con airports
+    // para resolver coords. Esto sí cubre TODOS los aeropuertos de
+    // la carpeta Community, vinieran como vinieran.
+    #[derive(sqlx::FromRow)]
+    struct CommunityScenery {
+        folder_name: String,
+        title: String,
+        icao: Option<String>,
+    }
+    let installed = sqlx::query_as::<_, CommunityScenery>(
         r#"
-        SELECT ia.id           AS id,
-               ia.title        AS title,
-               ia.source       AS source,
-               a.icao          AS addon_icao
-        FROM installed_addons ia
-        LEFT JOIN addons a ON a.id = ia.addon_id
-        ORDER BY ia.installed_at DESC
+        SELECT folder_name, title, icao
+        FROM community_packages
+        WHERE UPPER(content_type) = 'SCENERY'
+          AND icao IS NOT NULL AND TRIM(icao) <> ''
+        ORDER BY title COLLATE NOCASE ASC
         "#,
     )
     .fetch_all(pool)
@@ -391,9 +406,11 @@ pub async fn list_addons_on_map(pool: &SqlitePool) -> anyhow::Result<Vec<AddonOn
 
     // Paso 3 — resolver ICAO + airport para cada uno.
     let mut out = Vec::with_capacity(installed.len());
+    let mut seen_icaos: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for row in installed {
         let icao_candidate = row
-            .addon_icao
+            .icao
             .as_deref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -401,12 +418,17 @@ pub async fn list_addons_on_map(pool: &SqlitePool) -> anyhow::Result<Vec<AddonOn
             .or_else(|| extract_icao_from_title(&row.title));
 
         let Some(icao) = icao_candidate else { continue };
+        // Deduplicar — si dos packs declaran el mismo ICAO (librería
+        // base + scenery detallada, por ejemplo) sólo mostramos uno.
+        if !seen_icaos.insert(icao.clone()) {
+            continue;
+        }
         let Some((airport_name, lat, lon)) = airports.get(&icao).cloned() else {
             continue;
         };
         out.push(AddonOnMap {
-            addon_id: row.id,
-            source: row.source.unwrap_or_default(),
+            addon_id: row.folder_name,
+            source: "community".to_string(),
             title: row.title,
             icao,
             airport_name,
@@ -414,6 +436,11 @@ pub async fn list_addons_on_map(pool: &SqlitePool) -> anyhow::Result<Vec<AddonOn
             longitude: lon,
         });
     }
+    tracing::info!(
+        target: "airports",
+        "list_addons_on_map: {} aeropuertos resolvibles desde community_packages",
+        out.len()
+    );
     Ok(out)
 }
 
