@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{Event, Subscriber};
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
@@ -82,7 +83,25 @@ where
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const LOG_FILE_NAME: &str = "simfleet.log";
 
+/// (v3.4.0) Guard contra doble init. Antes usábamos `try_init()` que
+/// es idempotente pero SILENCIOSO — si por error invocábamos
+/// `logger::init` dos veces (p.ej. plugin que también lo hace, hot
+/// reload de Tauri en dev), el segundo intento fallaba sin avisar y
+/// teníamos comportamiento confuso. Con este flag al menos
+/// reportamos por `eprintln!` (no podemos usar `tracing::warn!`
+/// porque eso es lo que estamos inicializando) y abortamos.
+static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
+    if LOGGER_INITIALIZED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        eprintln!(
+            "[logger] init() llamado dos veces — ignorando segundo intento. Esto sugiere un bug; reporta si lo ves."
+        );
+        return Ok(());
+    }
     let logs_dir = app_data_dir.join("logs");
     std::fs::create_dir_all(&logs_dir)?;
 
@@ -117,11 +136,21 @@ pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
         .event_format(CompactFormat)
         .with_writer(file_appender);
 
-    let _ = tracing_subscriber::registry()
+    // (v3.4.0) `try_init` antes era silencioso ante fallo. Ahora
+    // verificamos el `Result` y lo logueamos por stderr — si el global
+    // dispatcher ya estaba seteado (ej. otro plugin lo registró antes
+    // que nosotros), sabemos del conflicto. NO restablecemos el guard
+    // porque la subscripción no quedó "nuestra".
+    if let Err(e) = tracing_subscriber::registry()
         .with(filter)
         .with(stdout_layer)
         .with(file_layer)
-        .try_init();
+        .try_init()
+    {
+        eprintln!(
+            "[logger] try_init falló — global dispatcher ya seteado: {e:#}"
+        );
+    }
 
     tracing::info!(
         "logger inicializado — logs unificados en {}",

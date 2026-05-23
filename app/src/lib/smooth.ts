@@ -29,50 +29,113 @@
 
 export type LngLat = [number, number];
 
-/**
- * (v3.1.0) Filtra coordenadas inválidas o claramente corruptas que
- * causarían los artefactos visuales que el usuario reportó ("líneas
- * raras cruzando el mapa de lado a lado"):
+/** (v3.4.0) Punto con timestamp opcional — permite a sanitize()
+ *  detectar gaps temporales (sim pausado, reconexión SimConnect) que
+ *  visualmente generan líneas rectas largas aún cuando el delta
+ *  lat/lon es chico. */
+export interface LngLatTs {
+  lon: number;
+  lat: number;
+  /** ISO timestamp del muestreo. Si no está, sólo se validan
+   *  thresholds geométricos. */
+  ts?: string;
+}
+
+/** Threshold de salto geométrico permitido entre samples consecutivos
+ *  (en grados, máximo de |dlat| y |dlon-normalized-para-dateline|).
  *
- *   · `(0, 0)` ó coords cercanas al ecuador-meridiano-cero — el
+ *  Lógica: a 10s de sample interval y velocidad jet típica (Mach
+ *  0.85 = ~490 kt), un avión recorre ~85 nm = ~1.4°. Concorde a
+ *  Mach 2 = ~1300 kt = ~3.6°. Ponemos el límite en **1.5°** —
+ *  cubre cualquier jet civil + un margen, pero descarta los
+ *  teleports/slew/cambios de sesión que generaban las líneas
+ *  feas que el usuario reportó en v3.3.0.
+ *
+ *  Antes (v3.1.0–v3.3.x): 5° → permitía teleports cortos de
+ *  ~300 nm. */
+const MAX_DEG_PER_SAMPLE = 1.5;
+
+/** Threshold temporal entre samples (segundos). Si dos puntos están
+ *  separados >`MAX_TS_GAP_SECONDS`, asumimos pausa/reconexión y
+ *  cortamos la traza (no dibujamos línea uniendo los segmentos).
+ *  El sampling normal es cada 10s — un gap >120s significa que el
+ *  usuario pausó MSFS o SimConnect se desconectó. */
+const MAX_TS_GAP_SECONDS = 120;
+
+/**
+ * (v3.1.0 → v3.4.0) Filtra coordenadas inválidas o claramente
+ * corruptas que causarían las "líneas raras cruzando el mapa" que
+ * el usuario reportó:
+ *
+ *   · `(0, 0)` o coords cercanas al ecuador-meridiano-cero — el
  *     watcher de SimConnect ocasionalmente reportaba (0,0) durante el
  *     splash/menu y antes guardábamos esos puntos en flight_log_track.
  *   · NaN, Infinity, o números fuera del rango válido.
- *   · Saltos enormes (>500 nm en un solo tick de 10s = >180,000 kt,
- *     físicamente imposible) que sugieren teleport o coord corrupta.
+ *   · Saltos > `MAX_DEG_PER_SAMPLE` (1.5°) entre samples consecutivos
+ *     — descarta teleports de slew, "Recoloca avión", o resúmenes
+ *     tras crash de la sesión.
+ *   · (v3.4.0) Si se proporcionan timestamps, gap temporal
+ *     > `MAX_TS_GAP_SECONDS` (120s) corta la traza — el segmento
+ *     posterior se renderiza como una **traza separada**, no como
+ *     línea recta uniéndolos.
  *
- * Esta función se aplica ANTES del smoothing para que la spline no
- * extienda los puntos basura.
+ * Esta función se aplica ANTES del smoothing.
  */
 export function sanitizeTrackCoords(points: LngLat[]): LngLat[] {
-  const result: LngLat[] = [];
-  let prev: LngLat | null = null;
-  for (const [lon, lat] of points) {
+  return sanitizeTrackCoordsWithTs(
+    points.map(([lon, lat]) => ({ lon, lat })),
+  ).map((p) => [p.lon, p.lat] as LngLat);
+}
+
+/** Variante con timestamps — corta la traza en gaps temporales reales
+ *  (no sólo geométricos). Devuelve el mismo shape, omitiendo los
+ *  puntos descartados. Los gaps NO se "saltan" — se conservan como
+ *  cortes (el render decide si emitir múltiples LineStrings o
+ *  perforar con un NaN coordinate, según el caller). */
+export function sanitizeTrackCoordsWithTs(
+  points: LngLatTs[],
+): LngLatTs[] {
+  const result: LngLatTs[] = [];
+  let prev: { lon: number; lat: number; epoch: number | null } | null = null;
+  for (const p of points) {
     // 1. Validar finite + en rango.
-    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
-    if (lon < -180 || lon > 180) continue;
-    if (lat < -90 || lat > 90) continue;
+    if (!Number.isFinite(p.lon) || !Number.isFinite(p.lat)) continue;
+    if (p.lon < -180 || p.lon > 180) continue;
+    if (p.lat < -90 || p.lat > 90) continue;
     // 2. Descartar (0, 0) o muy cerca (Atlántico ecuatorial — sin
     //    aeropuertos reales en una circunferencia de 0.05° del cero).
-    if (Math.abs(lon) < 0.05 && Math.abs(lat) < 0.05) continue;
-    // 3. Saltos imposibles entre samples consecutivos. 5° de delta
-    //    en un sample (~10s) son ~300 nm — más del Mach 100 si fuese
-    //    real. Aceptamos hasta 5° por si el muestreo se saltó
-    //    timestamps (durante pausa larga, etc).
+    if (Math.abs(p.lon) < 0.05 && Math.abs(p.lat) < 0.05) continue;
+    // 3. Saltos imposibles entre samples consecutivos.
+    const epoch = p.ts ? Date.parse(p.ts) : NaN;
+    const epochOk = Number.isFinite(epoch);
     if (prev) {
-      const dlon = Math.abs(lon - prev[0]);
-      const dlat = Math.abs(lat - prev[1]);
+      const dlon = Math.abs(p.lon - prev.lon);
+      const dlat = Math.abs(p.lat - prev.lat);
       // Atajo dateline: si el delta lon es > 180, lo normalizamos.
       const dlonNorm = dlon > 180 ? 360 - dlon : dlon;
-      if (dlonNorm > 5 || dlat > 5) {
-        // Saltamos este punto pero NO actualizamos prev — esperamos
-        // al siguiente punto razonable. Esto evita crear una línea
-        // recta enorme entre dos sub-secuencias separadas.
+      if (dlonNorm > MAX_DEG_PER_SAMPLE || dlat > MAX_DEG_PER_SAMPLE) {
+        // Saltamos este punto. NO actualizamos `prev` — esperamos al
+        // siguiente sample para ver si fue un outlier puntual o si
+        // realmente cambió la traza (teleport).
         continue;
       }
+      // 4. Gap temporal — sólo si AMBOS puntos tienen ts.
+      if (epochOk && prev.epoch != null) {
+        const gapSec = (epoch - prev.epoch) / 1000;
+        if (gapSec > MAX_TS_GAP_SECONDS) {
+          // Sim pausado / reconexión SimConnect. NO uses los puntos
+          // anteriores como contexto — empieza una "subsecuencia" nueva
+          // reseteando prev. El resultado: el render verá un salto que
+          // puede cortar la línea (si quiere) o dejarla recta con
+          // smoothing leve (mejor que la línea poligonal larga).
+          prev = { lon: p.lon, lat: p.lat, epoch };
+          result.push(p);
+          continue;
+        }
+      }
     }
-    result.push([lon, lat]);
-    prev = [lon, lat];
+    result.push(p);
+    prev = { lon: p.lon, lat: p.lat, epoch: epochOk ? epoch : null };
   }
   return result;
 }

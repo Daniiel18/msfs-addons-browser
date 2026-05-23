@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { api, isTauri } from "./lib/tauri";
-import { setActiveLocale } from "./lib/i18n";
+import { setActiveLocale, t } from "./lib/i18n";
 import { useAppStore } from "./stores/useAppStore";
 import { useDownloadsStore } from "./stores/useDownloadsStore";
 import { useCommunityStore } from "./stores/useCommunityStore";
@@ -104,16 +104,19 @@ export default function App() {
   // tras dismiss). Resultado: el usuario abre la app y ve la
   // pestaña Buscar con resultados YA + el bell con notificaciones
   // YA, sin esperas adicionales tras el splash.
+  // (v3.4.0) Labels resueltos en render-time vía `t()` para que el
+  // idioma del SO o de la preferencia persistida se aplique al
+  // splash en el primer paint (no tras el bootstrap).
   const [splashTasks, setSplashTasks] = useState<SplashTask[]>([
-    { label: "Buscar actualización de la app", status: "pending" },
-    { label: "Cargar fuentes", status: "pending" },
-    { label: "Cargar configuración", status: "pending" },
-    { label: "Cargar SimBrief", status: "pending" },
-    { label: "Cargar Flight Log", status: "pending" },
-    { label: "Suscribir descargas", status: "pending" },
-    { label: "Escanear carpeta Community", status: "pending" },
-    { label: "Buscar actualizaciones de addons", status: "pending" },
-    { label: "Pre-cargar catálogos", status: "pending" },
+    { label: t("splash.task.update_check"), status: "pending" },
+    { label: t("splash.task.sources"), status: "pending" },
+    { label: t("splash.task.settings"), status: "pending" },
+    { label: t("splash.task.simbrief"), status: "pending" },
+    { label: t("splash.task.flightlog"), status: "pending" },
+    { label: t("splash.task.downloads"), status: "pending" },
+    { label: t("splash.task.scan_community"), status: "pending" },
+    { label: t("splash.task.refresh_updates"), status: "pending" },
+    { label: t("splash.task.preload_catalogs"), status: "pending" },
   ]);
 
   // Estado del flujo de actualización de la app (auto-update embebido
@@ -535,10 +538,25 @@ export default function App() {
       {!isTauri && (
         <div className="flex items-center justify-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-200">
           <FlaskConical className="h-3.5 w-3.5" />
+          {/* (v3.4.0) Texto i18n con un placeholder `{cmd}` que separamos
+              al render para inyectar el <code> con estilo Tailwind. Más
+              legible que concatenación + dangerouslySetInnerHTML. */}
           <span>
-            Modo demo (navegador). Instala Rust y ejecuta{" "}
-            <code className="rounded bg-amber-500/20 px-1 font-mono">npm run tauri dev</code>{" "}
-            para habilitar la búsqueda real.
+            {t("demo.title", { cmd: "__CMD__" })
+              .split("__CMD__")
+              .flatMap((chunk, i, arr) =>
+                i < arr.length - 1
+                  ? [
+                      <span key={`t${i}`}>{chunk}</span>,
+                      <code
+                        key={`c${i}`}
+                        className="rounded bg-amber-500/20 px-1 font-mono"
+                      >
+                        npm run tauri dev
+                      </code>,
+                    ]
+                  : [<span key={`t${i}`}>{chunk}</span>],
+              )}
           </span>
         </div>
       )}
@@ -556,7 +574,7 @@ export default function App() {
                 SimFleet
               </h1>
               <p className="text-[11px] text-slate-500">
-                FlightBook · SimBrief · SimConnect · GSX
+                {t("header.tagline")}
               </p>
             </div>
           </div>
@@ -572,7 +590,7 @@ export default function App() {
             <button
               data-tour-id="header-settings"
               onClick={() => setSettingsOpen(true)}
-              title="Configuración"
+              title={t("header.settings.tooltip")}
               className="rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-slate-400 hover:border-brand-500/40 hover:text-slate-100"
             >
               <Settings className="h-4 w-4" />
@@ -601,35 +619,35 @@ export default function App() {
             active={view === "dashboard"}
             onClick={() => setView("dashboard")}
             icon={<BarChart3 className="h-4 w-4" />}
-            label="Dashboard"
+            label={t("nav.dashboard")}
             tourId="nav-dashboard"
           />
           <ViewTab
             active={view === "search"}
             onClick={() => setView("search")}
             icon={<ListChecks className="h-4 w-4" />}
-            label="Buscar"
+            label={t("nav.search")}
             tourId="nav-search"
           />
           <ViewTab
             active={view === "map"}
             onClick={() => setView("map")}
             icon={<Globe2 className="h-4 w-4" />}
-            label="Mapa (escenarios)"
+            label={t("nav.map")}
             tourId="nav-map"
           />
           <ViewTab
             active={view === "addons"}
             onClick={() => setView("addons")}
             icon={<Boxes className="h-4 w-4" />}
-            label="Addons"
+            label={t("nav.addons")}
             tourId="nav-addons"
           />
           <ViewTab
             active={view === "flightbook"}
             onClick={() => setView("flightbook")}
             icon={<Plane className="h-4 w-4" />}
-            label="FlightBook"
+            label={t("nav.flightbook")}
             tourId="nav-flightbook"
           />
         </nav>
@@ -645,8 +663,8 @@ export default function App() {
               loading={status === "loading"}
               placeholder={
                 activeSourceId === "simplaza"
-                  ? "Busca por avión, livery, mod o autor…"
-                  : "Busca por aeropuerto, ICAO o desarrollador…"
+                  ? t("search.placeholder.simplaza")
+                  : t("search.placeholder.scenery")
               }
             />
             {activeSourceId === "sceneryaddons" && (
@@ -670,17 +688,17 @@ export default function App() {
                   disabled={status === "loading" || browsePage <= 1}
                   className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-40"
                 >
-                  ← Anterior
+                  {t("common.previous")}
                 </button>
                 <span className="text-xs text-slate-500">
-                  Página {browsePage}
+                  {t("common.page")} {browsePage}
                 </span>
                 <button
                   onClick={() => loadBrowsePage(browsePage + 1)}
                   disabled={status === "loading" || !browseHasMore}
                   className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-40"
                 >
-                  Siguiente →
+                  {t("common.next")}
                 </button>
               </div>
             )}

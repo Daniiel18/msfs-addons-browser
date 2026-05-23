@@ -8,7 +8,10 @@ import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { greatCircleLine } from "../lib/greatCircle";
-import { smoothCatmullRom, sanitizeTrackCoords } from "../lib/smooth";
+import {
+  smoothCatmullRom,
+  sanitizeTrackCoordsWithTs,
+} from "../lib/smooth";
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 
@@ -382,22 +385,34 @@ export function RoutesMapView({
     if (inFlightId == null) {
       return { type: "FeatureCollection", features: [] };
     }
-    const rawCoords: [number, number][] = liveTrackPoints.map(
-      (p) => [p.lon, p.lat] as [number, number],
-    );
-    // Append posición live si el watcher reporta coords.
+    // (v3.4.0) Llevamos timestamp al sanitizador para detectar gaps
+    // de tiempo reales (sim pausado, reconexión) además de los saltos
+    // geométricos. Esto resuelve la "línea recta fea" que el usuario
+    // reportó cuando el flight log tenía un segmento posterior a una
+    // pausa de varios minutos.
+    const rawPoints = liveTrackPoints.map((p) => ({
+      lon: p.lon,
+      lat: p.lat,
+      ts: p.ts,
+    }));
+    // Append posición live si el watcher reporta coords. Sin ts
+    // exacto, pero el sanitizador lo trata como "siempre cercano al
+    // anterior" — sólo aplica los thresholds geométricos.
     if (
       flightStatus?.simconnectConnected &&
       flightStatus.currentLat != null &&
       flightStatus.currentLon != null
     ) {
-      rawCoords.push([flightStatus.currentLon, flightStatus.currentLat]);
+      rawPoints.push({
+        lon: flightStatus.currentLon,
+        lat: flightStatus.currentLat,
+        ts: new Date().toISOString(),
+      });
     }
-    // (v3.1.0) Sanitizamos coords ANTES del smoothing — descarta
-    // (0,0), NaN, fuera de rango y saltos físicamente imposibles
-    // (>5° entre samples consecutivos). Resuelve las "líneas raras
-    // cruzando el mapa" reportadas por el usuario.
-    const coords = sanitizeTrackCoords(rawCoords);
+    const sanitized = sanitizeTrackCoordsWithTs(rawPoints);
+    const coords: [number, number][] = sanitized.map(
+      (p) => [p.lon, p.lat] as [number, number],
+    );
     if (coords.length < 2) {
       return { type: "FeatureCollection", features: [] };
     }
@@ -485,11 +500,16 @@ export function RoutesMapView({
     if (selectedFlightId == null || trackPoints.length < 2) {
       return { type: "FeatureCollection", features: [] };
     }
-    const rawCoords = trackPoints.map(
+    // (v3.4.0) Sanitizamos con timestamps para detectar pausas
+    // reales en el sampling, no sólo saltos geométricos. Sin esto
+    // un vuelo con sim pausado 5 min seguía mostrando línea recta
+    // entre los dos segmentos — ahora se corta.
+    const sanitized = sanitizeTrackCoordsWithTs(
+      trackPoints.map((p) => ({ lon: p.lon, lat: p.lat, ts: p.ts })),
+    );
+    const coords: [number, number][] = sanitized.map(
       (p) => [p.lon, p.lat] as [number, number],
     );
-    // (v3.1.0) Filtramos coords inválidas ANTES del smoothing.
-    const coords = sanitizeTrackCoords(rawCoords);
     if (coords.length < 2) {
       return { type: "FeatureCollection", features: [] };
     }

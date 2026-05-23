@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { t } from "../lib/i18n";
+import { getActiveLocale, t } from "../lib/i18n";
 import {
   AlertCircle,
   ArrowLeft,
@@ -136,8 +136,8 @@ export function FlightBookView() {
           </h1>
           <p className="text-xs text-slate-500">
             {selectedFlight
-              ? "Detalle del vuelo — ruta real grabada cada 10s."
-              : "Bitácora de vuelos reales."}
+              ? t("fb.subtitle.detail")
+              : t("fb.subtitle.list")}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -145,11 +145,11 @@ export function FlightBookView() {
             <button
               onClick={() => setSelectedFlightId(null)}
               className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-medium text-amber-200 hover:border-amber-400 hover:bg-amber-500/20"
-              title="Volver a la vista de globo con todos los vuelos"
+              title={t("fb.back_to_globe.tooltip")}
             >
               <ArrowLeft className="h-3 w-3" />
               <Globe className="h-3 w-3" />
-              Volver al globo
+              {t("fb.back_to_globe")}
             </button>
           ) : null}
           {/* (v1.1.4) Demo + Recargar removidos. El watcher emite
@@ -164,67 +164,92 @@ export function FlightBookView() {
         </div>
       )}
 
-      {/* Layout split: mapa a la izq + panel/lista a la der.
-          (v1.1.4) Columna derecha 480px para que el detalle del vuelo
-          se lea cómodamente.
-          (v3.1.2) Reducimos la escala del mapa: la columna derecha
-          sube a 540px (era 480) para que la distribución texto/mapa
-          quede más equilibrada. Altura cae a `100vh - 13rem` (era
-          11rem) — deja ~32px de margen inferior limpio, mejor estética
-          UI/UX según pedido del usuario. */}
-      <div
-        className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_540px]"
-        style={{ minHeight: "calc(100vh - 13rem)" }}
-      >
-        <div className="lg:sticky lg:top-4 lg:self-start">
-          <RoutesMapView
-            height="calc(100vh - 13rem)"
-            selectedFlightId={selectedFlightId}
-          />
-        </div>
+      {/* (v3.4.0) **Layout split adaptativo**:
+          · Modo lista (sin selección): GLOBO grande izquierda + sidebar
+            con stats + feed a la derecha. Permite ver TODOS los vuelos
+            a la vez en el globo (great-circles).
+          · Modo detalle (vuelo seleccionado): FEED de cards izquierda
+            (premium look, ICAOs grandes) + panel de detalle a la
+            derecha con mapa COMPACTO embebido al final, mostrando sólo
+            la ruta real del vuelo seleccionado.
 
+          Esto cumple el rediseño que pidió el usuario: el mapa pasa
+          a ser componente de soporte secundario en el detalle, y el
+          feed se vuelve protagonista con tipografía generosa. */}
+      {selectedFlight ? (
         <div
-          className="flex min-h-0 flex-col gap-3"
-          style={{ maxHeight: "calc(100vh - 13rem)" }}
+          className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]"
+          style={{ minHeight: "calc(100vh - 13rem)" }}
         >
-          {/* Panel superior — adapta su contenido al modo:
-              · Detalle: ficha completa del vuelo seleccionado.
-              · Globo: stats agregados del histórico.
-              Si no hay completados, ocultamos para no dejar
-              cards vacías. */}
-          {selectedFlight ? (
+          {/* COLUMNA IZQ — Feed de cards premium, scrolleable */}
+          <FlightFeed
+            entries={completed}
+            selectedFlightId={selectedFlightId}
+            onSelect={(id) =>
+              setSelectedFlightId((prev) => (prev === id ? null : id))
+            }
+            onDelete={(id) => setConfirmDeleteId(id)}
+            inFlight={inFlight}
+          />
+          {/* COLUMNA DER — Detalle scrolleable con mapa compacto al
+              final. */}
+          <div
+            className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1"
+            style={{ maxHeight: "calc(100vh - 13rem)" }}
+          >
             <SelectedFlightPanel entry={selectedFlight} />
-          ) : (
-            stats && (
+            {/* MAPA COMPACTO — alto fijo, simétrico, secundario. */}
+            <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-md">
+              <RoutesMapView
+                height="360px"
+                selectedFlightId={selectedFlightId}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_540px]"
+          style={{ minHeight: "calc(100vh - 13rem)" }}
+        >
+          {/* COLUMNA IZQ — Globo grande con todos los vuelos */}
+          <div className="lg:sticky lg:top-4 lg:self-start">
+            <RoutesMapView
+              height="calc(100vh - 13rem)"
+              selectedFlightId={selectedFlightId}
+            />
+          </div>
+
+          {/* COLUMNA DER — Stats + feed */}
+          <div
+            className="flex min-h-0 flex-col gap-3"
+            style={{ maxHeight: "calc(100vh - 13rem)" }}
+          >
+            {stats && (
               <div className="grid grid-cols-2 gap-2">
                 <StatCard
                   icon={<Plane className="h-4 w-4 text-emerald-300" />}
-                  label="Flights"
+                  label={t("fb.stat.flights")}
                   value={stats.count.toString()}
-                  hint="Block-to-block recorded"
+                  hint={t("fb.stat.flights.suffix")}
                 />
                 <StatCard
                   icon={<Clock className="h-4 w-4 text-sky-300" />}
-                  label="Total time"
+                  label={t("fb.stat.total_time")}
                   value={formatHM(stats.totalSec)}
-                  hint="Block-to-block summed"
+                  hint={t("fb.stat.time.suffix")}
                 />
                 <StatCard
                   icon={<Ruler className="h-4 w-4 text-violet-300" />}
-                  label="Distance"
+                  label={t("fb.stat.distance")}
                   value={`${Math.round(stats.totalDistance).toLocaleString("en-US")} nm`}
                   hint={`${Math.round(stats.totalDistance * 1.852).toLocaleString(
                     "en-US",
                   )} km`}
                 />
-                {/* (v2.2.0) FPM removed — capture imprecise.
-                    (v1.0.0) Totales de pasajeros, carga, combustible.
-                    Cada uno con un hint "X de Y vuelos reportan" para
-                    que el usuario sepa si la suma cubre el histórico
-                    completo o sólo los vuelos editados/con GSX. */}
                 <StatCard
                   icon={<Users className="h-4 w-4 text-emerald-300" />}
-                  label="Passengers"
+                  label={t("fb.stat.passengers")}
                   value={
                     stats.passengersFlightCount > 0
                       ? stats.totalPassengers.toLocaleString("en-US")
@@ -232,28 +257,28 @@ export function FlightBookView() {
                   }
                   hint={
                     stats.passengersFlightCount > 0
-                      ? `${stats.passengersFlightCount} of ${stats.count} flights`
-                      : "no data yet"
+                      ? `${stats.passengersFlightCount} / ${stats.count}`
+                      : "—"
                   }
                 />
                 <StatCard
                   icon={<Package className="h-4 w-4 text-violet-300" />}
-                  label="Cargo"
+                  label={t("fb.stat.cargo")}
                   value={
                     stats.cargoFlightCount > 0
-                      ? `${stats.totalCargoKg.toLocaleString("es-ES")} kg`
+                      ? `${stats.totalCargoKg.toLocaleString("en-US")} kg`
                       : "—"
                   }
                   hint={
                     stats.cargoFlightCount > 0
-                      ? `${(stats.totalCargoKg / 1000).toFixed(1)} t total`
-                      : "no data yet"
+                      ? `${(stats.totalCargoKg / 1000).toFixed(1)} t`
+                      : "—"
                   }
                 />
                 <div className="col-span-2">
                   <StatCard
                     icon={<Droplet className="h-4 w-4 text-sky-300" />}
-                    label="Total fuel"
+                    label={t("fb.stat.total_fuel")}
                     value={
                       stats.fuelFlightCount > 0
                         ? `${stats.totalFuelKg.toLocaleString("en-US")} kg`
@@ -263,64 +288,46 @@ export function FlightBookView() {
                       stats.fuelFlightCount > 0
                         ? `${(stats.totalFuelKg / 1000).toFixed(1)} t · ${
                             stats.fuelFlightCount
-                          } of ${stats.count} flights`
-                        : "auto-captured during OUT/IN"
+                          } / ${stats.count}`
+                        : "—"
                     }
                   />
                 </div>
               </div>
-            )
-          )}
+            )}
 
-          {/* Active flight — sólo cuando NO estamos en detail mode
-              de un completed (el inFlight es siempre distinto del
-              selectedFlight porque el filtro de completed excluye
-              `endedAt === null`).
-              (v3.1.2) "Destination" ahora muestra el destino real
-              del OFP de SimBrief matching el origen actual — antes
-              hardcodeaba "en ruta…" que era el bug que el usuario
-              reportó con la screenshot SEGU. */}
-          {inFlight && !selectedFlight && (
-            <ActiveFlightCard entry={inFlight} />
-          )}
+            {inFlight && <ActiveFlightCard entry={inFlight} />}
 
-          {/* Lista compacta de vuelos (cards verticales en lugar de
-              tabla) — más legible cuando vive en una columna de 440px
-              al lado del mapa. Scroll interno + max-height para que
-              no salga del viewport. */}
-          {completed.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-center">
-              <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
-              <p className="text-sm font-medium text-slate-300">
-                No flights logged yet
-              </p>
-              <p className="mt-1 text-[11px] text-slate-500">
-                When you take off in MSFS with SimConnect active, the
-                watcher will create an entry automatically.
-              </p>
-            </div>
-          ) : (
-            <ul className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
-              {completed.map((e) => (
-                <FlightCard
-                  key={e.id}
-                  entry={e}
-                  selected={e.id === selectedFlightId}
-                  onSelect={() =>
-                    setSelectedFlightId((prev) => (prev === e.id ? null : e.id))
-                  }
-                  onDelete={() => {
-                    // (v3.2.0) Abre modal estético en vez del feo
-                    // window.confirm nativo. El modal lee el id del
-                    // state y llama remove() al confirmar.
-                    setConfirmDeleteId(e.id);
-                  }}
-                />
-              ))}
-            </ul>
-          )}
+            {completed.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-center">
+                <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
+                <p className="text-sm font-medium text-slate-300">
+                  {t("fb.empty.title")}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {t("fb.empty.body")}
+                </p>
+              </div>
+            ) : (
+              <ul className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+                {completed.map((e) => (
+                  <FlightCard
+                    key={e.id}
+                    entry={e}
+                    selected={false}
+                    onSelect={() =>
+                      setSelectedFlightId((prev) =>
+                        prev === e.id ? null : e.id,
+                      )
+                    }
+                    onDelete={() => setConfirmDeleteId(e.id)}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* (v3.2.0) Modal de confirmación de borrado. Estético en vez
           del feo `window.confirm`. */}
@@ -375,7 +382,7 @@ function DeleteFlightModal({
             <Trash2 className="h-3.5 w-3.5 text-rose-300" />
           </div>
           <h3 className="text-sm font-semibold text-slate-100">
-            Delete flight?
+            {t("fb.delete.title")}
           </h3>
         </header>
         <div className="space-y-3 px-5 py-4">
@@ -391,9 +398,7 @@ function DeleteFlightModal({
             </div>
           </div>
           <p className="text-xs text-slate-400">
-            This action cannot be undone. The flight, its full track
-            (live position points) and any associated edits will be
-            permanently removed from the FlightBook.
+            {t("fb.delete.body")}
           </p>
         </div>
         <footer className="flex justify-end gap-2 border-t border-slate-800 bg-slate-950/30 px-5 py-3">
@@ -401,14 +406,14 @@ function DeleteFlightModal({
             onClick={onCancel}
             className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-600 hover:text-slate-100"
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             onClick={onConfirm}
             className="inline-flex items-center gap-1 rounded-md bg-rose-500/80 px-3 py-1.5 text-xs font-semibold text-rose-50 hover:bg-rose-500"
           >
             <Trash2 className="h-3 w-3" />
-            Delete
+            {t("fb.delete.confirm")}
           </button>
         </footer>
       </div>
@@ -481,13 +486,15 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
             />
           )}
 
-          {/* ROUTE BIG — bold extreme, font-mono, hierarchy. */}
+          {/* (v3.4.0) ROUTE BIG — text-4xl font-black, mono,
+              tracking-tight. Es el elemento más prominente del panel,
+              lo PRIMERO que el usuario ve al abrir un vuelo. */}
           <div className="flex items-baseline gap-3 font-mono">
-            <span className="text-2xl font-bold tracking-wide text-amber-50">
+            <span className="text-4xl font-black tracking-tight text-amber-50 drop-shadow">
               {entry.originIcao ?? "?"}
             </span>
-            <span className="text-amber-400">→</span>
-            <span className="text-2xl font-bold tracking-wide text-amber-50">
+            <span className="text-2xl text-amber-300">→</span>
+            <span className="text-4xl font-black tracking-tight text-amber-50 drop-shadow">
               {entry.destinationIcao ?? "?"}
             </span>
           </div>
@@ -535,18 +542,36 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
               ? `${Math.round(entry.distanceNm).toLocaleString("en-US")} nm`
               : "—"
           } />
-          {entry.departureGate && (
-            <BlockRow
-              label={t("fb.route.dep_gate")}
-              value={shortGate(entry.departureGate)}
-            />
-          )}
-          {entry.arrivalGate && (
-            <BlockRow
-              label={t("fb.route.arr_gate")}
-              value={shortGate(entry.arrivalGate)}
-            />
-          )}
+          {/* (v3.4.0) Gates SIEMPRE visibles aún sin datos —
+              el usuario pidió que el panel de detalle muestre los gates
+              de salida y llegada obligatoriamente. Cuando el watcher no
+              los capturó renderizamos "—" en lugar de ocultar la fila.
+              Eso preserva la simetría de bloques y deja claro qué
+              campos NO se capturaron. */}
+          <BlockRow
+            label={t("fb.route.dep_gate")}
+            value={
+              entry.departureGate ? (
+                <span className="font-mono text-sm font-semibold text-emerald-100">
+                  {shortGate(entry.departureGate)}
+                </span>
+              ) : (
+                <span className="text-slate-600">—</span>
+              )
+            }
+          />
+          <BlockRow
+            label={t("fb.route.arr_gate")}
+            value={
+              entry.arrivalGate ? (
+                <span className="font-mono text-sm font-semibold text-emerald-100">
+                  {shortGate(entry.arrivalGate)}
+                </span>
+              ) : (
+                <span className="text-slate-600">—</span>
+              )
+            }
+          />
         </DetailBlock>
 
         {/* BLOQUE 2 — Times (OUT/IN/Block; OFF/ON when available) */}
@@ -632,7 +657,7 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
         {/* Métricas extra del vuelo (max alt / max speed) — compactas
             al final, ya no en grid prominente. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
-          <span className="text-slate-500">Peak metrics:</span>
+          <span className="text-slate-500">{t("fb.block.peak")}:</span>
           {entry.maxAltitudeFt !== null && (
             <span className="font-mono text-slate-200">
               {entry.maxAltitudeFt.toLocaleString("en-US")} ft
@@ -738,7 +763,7 @@ function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
         </span>
-        Flying now
+        {t("fb.flying_now")}
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-emerald-100">
         <span>
@@ -789,13 +814,69 @@ function StatCard({
   );
 }
 
-/** (v3.3.0) Card de vuelo rediseñada — premium look.
- *  · Bordes redondeados generosos (xl), shadow sutil al hover.
+/** (v3.4.0) Feed de cards en modo detalle — columna izquierda
+ *  cuando hay un vuelo seleccionado. Header con el vuelo activo
+ *  (si existe) + lista premium scrolleable. */
+function FlightFeed({
+  entries,
+  selectedFlightId,
+  onSelect,
+  onDelete,
+  inFlight,
+}: {
+  entries: FlightLogEntry[];
+  selectedFlightId: number | null;
+  onSelect: (id: number) => void;
+  onDelete: (id: number) => void;
+  inFlight: FlightLogEntry | undefined;
+}) {
+  return (
+    <div
+      className="flex min-h-0 flex-col gap-2.5"
+      style={{ maxHeight: "calc(100vh - 13rem)" }}
+    >
+      <div className="inline-flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+        <Plane className="h-3 w-3" />
+        {t("fb.history")}
+        <span className="ml-1 font-mono text-slate-600">
+          · {entries.length}
+        </span>
+      </div>
+      {inFlight && <ActiveFlightCard entry={inFlight} />}
+      {entries.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/30 p-6 text-center">
+          <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
+          <p className="text-sm font-medium text-slate-300">
+            {t("fb.empty.title")}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {t("fb.empty.body")}
+          </p>
+        </div>
+      ) : (
+        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+          {entries.map((e) => (
+            <FlightCard
+              key={e.id}
+              entry={e}
+              selected={e.id === selectedFlightId}
+              onSelect={() => onSelect(e.id)}
+              onDelete={() => onDelete(e.id)}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** (v3.3.0 → v3.4.0) Card de vuelo rediseñada — premium look.
+ *  · Bordes redondeados generosos (2xl), shadow sutil con hover lift.
  *  · Jerarquía tipográfica:
- *      · ICAOs origen→destino: bold, tamaño grande, mono.
+ *      · ICAOs origen→destino: **black, text-2xl**, mono, tracking-tight.
  *      · Aeronave / aerolínea: medium, slate-200.
- *      · Fecha + métricas: regular, slate-500, tamaño pequeño.
- *  · Selected: ring amber prominent + bg amber tenue. */
+ *      · Fecha + métricas: regular, slate-500.
+ *  · Selected: ring amber prominent + bg amber tenue + accent bar. */
 function FlightCard({
   entry,
   selected,
@@ -820,43 +901,45 @@ function FlightCard({
   return (
     <motion.li
       onClick={onSelect}
-      whileHover={{ y: -1 }}
-      transition={{ duration: 0.12 }}
-      className={`group relative cursor-pointer overflow-hidden rounded-xl border p-3.5 transition-all ${
+      whileHover={{ y: -2 }}
+      transition={{ duration: 0.15 }}
+      className={`group relative cursor-pointer overflow-hidden rounded-2xl border p-4 transition-all ${
         selected
-          ? "border-amber-500/60 bg-amber-500/[0.08] shadow-md shadow-amber-500/10 ring-1 ring-amber-500/20"
-          : "border-slate-800 bg-slate-900/40 shadow-sm hover:border-slate-700 hover:bg-slate-900/60 hover:shadow-md"
+          ? "border-amber-500/60 bg-gradient-to-br from-amber-500/[0.12] to-amber-500/[0.03] shadow-lg shadow-amber-500/10 ring-1 ring-amber-500/30"
+          : "border-slate-800 bg-slate-900/40 shadow-sm hover:border-slate-700 hover:bg-slate-900/60 hover:shadow-lg hover:shadow-slate-950/40"
       }`}
       title={
         selected
-          ? "Selected flight — click to deselect"
-          : "Click to view this flight's actual track on the map"
+          ? t("fb.action.deselect")
+          : t("fb.card.select_tooltip")
       }
     >
       {/* Ribbon accent left side cuando seleccionado */}
       {selected && (
-        <span className="absolute left-0 top-0 h-full w-0.5 bg-amber-400" />
+        <span className="absolute left-0 top-0 h-full w-1 bg-gradient-to-b from-amber-300 to-amber-500" />
       )}
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          {/* ROUTE — bold, mono, prominent. */}
-          <div className="flex items-baseline gap-2 font-mono">
+          {/* ROUTE — bold extremo, mono, prominente. */}
+          <div className="flex items-baseline gap-2.5 font-mono">
             <span
-              className={`text-base font-bold tracking-wide ${
-                selected ? "text-amber-100" : "text-slate-50"
+              className={`text-2xl font-black tracking-tight ${
+                selected ? "text-amber-50" : "text-slate-50"
               }`}
             >
               {entry.originIcao ?? "?"}
             </span>
             <span
-              className={`text-sm ${selected ? "text-amber-400" : "text-emerald-400"}`}
+              className={`text-lg ${
+                selected ? "text-amber-300" : "text-emerald-400"
+              }`}
             >
               →
             </span>
             <span
-              className={`text-base font-bold tracking-wide ${
-                selected ? "text-amber-100" : "text-slate-50"
+              className={`text-2xl font-black tracking-tight ${
+                selected ? "text-amber-50" : "text-slate-50"
               }`}
             >
               {entry.destinationIcao ?? "?"}
@@ -878,7 +961,7 @@ function FlightCard({
             ev.stopPropagation();
             onDelete();
           }}
-          title="Delete entry"
+          title={t("fb.delete.confirm")}
           className="rounded p-1 text-slate-600 opacity-0 transition-colors hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
         >
           <Trash2 className="h-3 w-3" />
@@ -939,7 +1022,12 @@ function formatHM(seconds: number): string {
 function formatDate(iso: string): string {
   try {
     const d = new Date(iso);
-    return d.toLocaleString("es-ES", {
+    // (v3.4.0) Locale resuelto del módulo i18n — refleja la
+    // preferencia persistida del usuario (ES/EN). Antes hardcodeaba
+    // "es-ES" y los abreviados de mes salían en español aún si el
+    // usuario tenía la app en EN.
+    const intl = getActiveLocale() === "es" ? "es-ES" : "en-US";
+    return d.toLocaleString(intl, {
       day: "2-digit",
       month: "short",
       hour: "2-digit",

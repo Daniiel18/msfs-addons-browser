@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Download, Plane, Sparkles } from "lucide-react";
 import type { UpdateInfo } from "../lib/types";
+import { t } from "../lib/i18n";
 
 /**
  * Splash screen — pantalla de carga inicial.
@@ -168,11 +169,14 @@ export function SplashScreen({
               <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" />
               <div className="flex-1">
                 <div className="font-semibold text-emerald-100">
-                  Nueva versión disponible: v{appUpdate!.latestVersion}
+                  {t("update.banner.new_version", {
+                    version: appUpdate!.latestVersion,
+                  })}
                 </div>
                 <div className="text-[10px] text-emerald-200/70">
-                  Estás en v{appUpdate!.currentVersion}. Recomendamos
-                  actualizar antes de seguir.
+                  {t("update.banner.body", {
+                    current: appUpdate!.currentVersion,
+                  })}
                 </div>
               </div>
             </div>
@@ -185,7 +189,8 @@ export function SplashScreen({
                   onClick={() => setShowChangelog((v) => !v)}
                   className="inline-flex items-center gap-1 text-[10px] text-emerald-200/80 hover:text-emerald-100"
                 >
-                  {showChangelog ? "▲" : "▼"} Ver cambios de esta versión
+                  {showChangelog ? "▲" : "▼"}{" "}
+                  {t("update.banner.view_changes")}
                 </button>
                 {showChangelog && (
                   <div className="mt-1 max-h-32 overflow-y-auto rounded border border-emerald-500/20 bg-slate-950/50 px-2 py-1.5 text-left text-[10px] leading-relaxed text-emerald-100/85 whitespace-pre-wrap font-mono">
@@ -199,7 +204,7 @@ export function SplashScreen({
                           rel="noopener noreferrer"
                           className="text-emerald-300 underline"
                         >
-                          (ver release completo)
+                          {t("update.banner.see_full_release")}
                         </a>
                       </>
                     )}
@@ -216,7 +221,7 @@ export function SplashScreen({
                 onChange={(e) => setAutoRestart(e.target.checked)}
                 className="accent-emerald-500"
               />
-              Reiniciar la app automáticamente al terminar
+              {t("update.banner.auto_restart")}
             </label>
 
             <div className="mt-2 flex gap-2">
@@ -225,7 +230,8 @@ export function SplashScreen({
                 disabled={!appUpdate!.assetUrl}
                 className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-emerald-500/30 px-2 py-1 text-[11px] font-medium hover:bg-emerald-500/40 disabled:opacity-50"
               >
-                <Download className="h-3 w-3" /> Instalar ahora
+                <Download className="h-3 w-3" />{" "}
+                {t("update.banner.install_now")}
               </button>
               <button
                 onClick={() => {
@@ -234,7 +240,7 @@ export function SplashScreen({
                 }}
                 className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
               >
-                Saltar
+                {t("common.skip")}
               </button>
             </div>
           </motion.div>
@@ -251,8 +257,13 @@ export function SplashScreen({
             <div className="mb-1 flex items-center justify-between text-[10px] text-emerald-200">
               <span>
                 {downloadPct !== null
-                  ? `Descargando v${appUpdate?.latestVersion ?? ""} · ${downloadPct}%`
-                  : `Descargando v${appUpdate?.latestVersion ?? ""}`}
+                  ? t("update.progress.downloading_pct", {
+                      version: appUpdate?.latestVersion ?? "",
+                      pct: downloadPct,
+                    })
+                  : t("update.progress.downloading", {
+                      version: appUpdate?.latestVersion ?? "",
+                    })}
               </span>
               <span className="font-mono tabular-nums">
                 {mbDown ?? "0"} {mbTotal ? `/ ${mbTotal}` : ""} MB
@@ -266,8 +277,7 @@ export function SplashScreen({
             </div>
             {downloadPct === 100 && (
               <div className="mt-1 text-[10px] text-emerald-200/80">
-                Descarga completa — lanzando el instalador. La app se cerrará
-                en unos segundos.
+                {t("update.progress.complete")}
               </div>
             )}
           </motion.div>
@@ -299,8 +309,10 @@ export function SplashScreen({
               {errored.length > 0 ? (
                 <span className="text-rose-300">
                   {errored.length}{" "}
-                  {errored.length === 1 ? "error" : "errores"} ·{" "}
-                  {current?.label ?? "Finalizando"}
+                  {errored.length === 1
+                    ? t("common.error").toLowerCase()
+                    : t("common.errors")}{" "}
+                  · {current?.label ?? t("splash.finishing")}
                 </span>
               ) : current ? (
                 <motion.span
@@ -318,7 +330,7 @@ export function SplashScreen({
                   animate={{ opacity: 1 }}
                   className="text-emerald-300"
                 >
-                  Listo
+                  {t("common.ready")}
                 </motion.span>
               )}
             </div>
@@ -346,15 +358,12 @@ export interface SplashTask {
   error?: string;
 }
 
-const TAGLINES = [
-  "Preparando catálogo de addons…",
-  "Sincronizando carpeta Community…",
-  "Cargando aeropuertos del mundo…",
-  "Calentando motores…",
-  "Verificando últimas versiones…",
-  "Trazando rutas en el mapa…",
-];
-
+/** (v3.4.0) Taglines i18n. Las keys son `splash.tagline.0..5`; el dict
+ *  tiene 6 strings y el random las muestrea uniformemente. Cambiar el
+ *  número de taglines requiere ajustar `TAGLINE_COUNT` y añadir/quitar
+ *  keys en `i18n.ts`. */
+const TAGLINE_COUNT = 6;
 function pickTagline(): string {
-  return TAGLINES[Math.floor(Math.random() * TAGLINES.length)];
+  const idx = Math.floor(Math.random() * TAGLINE_COUNT);
+  return t(`splash.tagline.${idx}`);
 }

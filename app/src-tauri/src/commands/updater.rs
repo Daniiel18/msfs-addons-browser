@@ -3,6 +3,56 @@ use std::path::PathBuf;
 use crate::updater::{self, UpdateInfo};
 use crate::AppState;
 
+/// (v3.4.0) Resuelve un directorio cache para el instalador, garantizado
+/// FUERA de la carpeta de instalación.
+///
+/// **Por qué importa**: en `lib.rs:init_state` redirigimos `TEMP`/`TMP` al
+/// data dir portable (`<exe_dir>/data/temp/`) para que los archivos
+/// temporales de drag-drop / extracciones no contaminen `%TEMP%` del SO.
+/// PERO eso significa que `std::env::temp_dir()` ahora apunta DENTRO del
+/// install dir. NSIS al ejecutar el setup suele limpiar/sobrescribir
+/// archivos en el install dir → puede clobear al propio instalador
+/// mid-execution. Resultado observado por el usuario: "se queda
+/// congelado, nunca finaliza la instalación real" (log v3.3.0).
+///
+/// Estrategia (en orden de preferencia):
+///   1. `%LOCALAPPDATA%\SimFleet\updater-cache\` — user-scoped, fuera
+///      del install dir, escritible sin admin.
+///   2. `%USERPROFILE%\AppData\Local\SimFleet\updater-cache\` — fallback
+///      cuando `LOCALAPPDATA` no está expuesta (raro en Windows
+///      moderno pero defensivo).
+///   3. `%TEMP%` (la sobrescrita) — último recurso. Sigue funcionando
+///      en la mayoría de casos donde el install dir no se limpia
+///      agresivamente (ej. NSIS sólo reemplaza archivos cambiados).
+fn updater_cache_dir() -> PathBuf {
+    let candidates = [
+        std::env::var_os("LOCALAPPDATA")
+            .map(|s| PathBuf::from(s).join("SimFleet").join("updater-cache")),
+        std::env::var_os("USERPROFILE").map(|s| {
+            PathBuf::from(s)
+                .join("AppData")
+                .join("Local")
+                .join("SimFleet")
+                .join("updater-cache")
+        }),
+    ];
+    for opt in candidates.into_iter().flatten() {
+        if std::fs::create_dir_all(&opt).is_ok() {
+            // Test de escritura — si el dir existe pero no podemos
+            // escribir (perms raros), probamos el siguiente.
+            let probe = opt.join(".write-probe");
+            if std::fs::write(&probe, b"").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                return opt;
+            }
+        }
+    }
+    // Último recurso — la TEMP overrideada. Aunque tenga el bug del
+    // install dir, el sistema arranca el setup y muchas veces NSIS
+    // sí completa la instalación. Mejor que crashear.
+    std::env::temp_dir()
+}
+
 /// Llama al chequeo de GitHub Releases y devuelve `None` si no hay
 /// nada nuevo (o si la consulta falló en silencio). Diseñado para
 /// invocarse al arrancar la app — la UI muestra el banner sólo si
@@ -82,15 +132,23 @@ pub async fn install_update(
     }
     let total_bytes = resp.content_length();
 
-    // Path destino — preferimos %TEMP% por dos motivos:
-    //   1. El installer lo borra Windows tras un reboot si quedó
-    //      huérfano.
-    //   2. No necesitamos permisos extra de escritura.
+    // (v3.4.0) Path destino — **NO** usamos `std::env::temp_dir()`
+    // porque la TEMP del proceso está sobrescrita al data dir portable
+    // (lib.rs:init_state) que vive DENTRO del install dir. NSIS al
+    // ejecutar el setup desde ahí puede clobear el propio binario.
+    // En su lugar usamos `updater_cache_dir()` que devuelve
+    // `%LOCALAPPDATA%\SimFleet\updater-cache\` garantizado FUERA del
+    // install dir.
     let ext = pick_installer_extension(&asset_url);
-    let temp_dir = std::env::temp_dir();
-    let installer_path = temp_dir.join(format!("msfs-addons-browser-update.{ext}"));
+    let cache_dir = updater_cache_dir();
+    let installer_path = cache_dir.join(format!("SimFleet-update.{ext}"));
     // Borrar versión previa si quedó de un intento anterior.
     let _ = std::fs::remove_file(&installer_path);
+    tracing::debug!(
+        target: "updater",
+        "installer cache dir = {} (fuera del install dir)",
+        cache_dir.display()
+    );
 
     let mut file = tokio::fs::File::create(&installer_path).await.map_err(|e| {
         tracing::error!(target: "updater", "create temp falló: {e}");
@@ -207,64 +265,31 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let escaped = exe_path.replace('\'', "''");
-    // (v3.1.3 / v3.2.0 / v3.3.0) Múltiples paths candidatos para el
-    // `simfleet.log` unificado. La ruta correcta se determina EN
-    // RUNTIME por el helper PS1 (no en compile time aquí) porque
-    // tras un update la carpeta de instalación puede haber cambiado
-    // o el data dir aún no estar creado. El PS1 intenta cada path
-    // hasta encontrar uno que pueda escribir.
-    //
-    // Listado de candidatos (PS1 los recorre en orden):
-    //   1. <exe_dir>/data/logs/simfleet.log (portable v3.2+)
-    //   2. <exe_dir>/../data/logs/simfleet.log (si install puso
-    //      el exe en bin/ o similar — defensivo)
-    //   3. %APPDATA%/org.n0xful.msfsaddonsbrowser/logs/simfleet.log
-    //      (instalaciones v3.1.x y previas)
-    //   4. %TEMP%/simfleet-relaunch.log (último recurso)
-    let _ = exe_path; // mantener referencia (PS1 lo computa solo)
-    // (v3.0.0) Helper aún más robusto:
-    //   · Poll cada 2s hasta 90s buscando el .exe reinstalado (NSIS
-    //     puede tardar ~20-40s en escribir el binario).
-    //   · Cuando aparece + no está locked (último write > 3s ago),
-    //     lo lanzamos en foreground.
-    //   · Después del Start-Process, intenta hacer foreground el
-    //     handle de la ventana principal vía AppActivate — sin esto,
-    //     el usuario reportó "la app se queda colgada en el fondo".
-    //   · Fallbacks si el path original no existe (el rebrand a
-    //     SimFleet cambia el path; intentamos también las rutas
-    //     comunes del nuevo productName).
-    //   · Log a `%TEMP%\simfleet-relaunch.log` para diagnóstico.
-    //   · (v3.1.3) DOBLE escritura al `simfleet.log` unificado.
-    //   · (v3.3.0) MULTI-PATH: el PS1 resuelve los candidatos al
-    //     runtime y escribe a CADA uno que sea escribible. Cubre el
-    //     caso "el data dir nuevo aún no existe" y "instalación
-    //     v3.1.x viejo en %APPDATA%".
+    // (v3.4.0) **UN SOLO log path activo**. Antes (v3.3.0) el helper
+    // escribía a 4 candidatos a la vez para cubrir migraciones — pero
+    // si dos coincidían (ej. portable `<exe>\data\logs\` Y legacy
+    // `%APPDATA%\org.n0xful...\logs\` ambos existían), la MISMA línea
+    // entraba dos veces y el usuario reportó "cada línea se escribe
+    // exactamente dos veces". Como desde v3.2.0 la arquitectura es
+    // portable + estable, hardcodeamos a UN solo path: el resuelto
+    // de `<exe_dir>\data\logs\simfleet.log`. Si por alguna razón el
+    // dir no es escribible, caemos sólo al temp log (no a otros
+    // candidatos legacy).
     let ps_command = format!(
         r#"$origExe = '{esc}'
 $tempLog = Join-Path $env:TEMP 'simfleet-relaunch.log'
 $origDir = Split-Path -Parent $origExe
-
-# (v3.3.0) Candidatos para el log unificado de la app. Se resuelven
-# al runtime — tras el update la carpeta nueva puede haberse creado
-# en cualquier momento. Escribimos a TODOS los que existan/sean
-# escribibles para maximizar chances de que el usuario encuentre el log.
-$appLogCandidates = @(
-  (Join-Path $origDir 'data\logs\simfleet.log'),
-  (Join-Path (Split-Path -Parent $origDir) 'data\logs\simfleet.log'),
-  (Join-Path $env:LOCALAPPDATA 'Programs\SimFleet\data\logs\simfleet.log'),
-  (Join-Path $env:APPDATA 'org.n0xful.msfsaddonsbrowser\logs\simfleet.log')
-) | Where-Object {{ $_ -ne $null -and $_ -ne '' }} | Select-Object -Unique
+$appLog = Join-Path $origDir 'data\logs\simfleet.log'
 
 function WriteAll($msg) {{
   $line = "$(Get-Date -Format o) [updater] $msg"
   # Siempre al temp log (garantizado escribible).
   try {{ Add-Content -Path $tempLog -Value $line }} catch {{ }}
-  # A cada candidato de simfleet.log que tenga un parent dir existente.
-  foreach ($p in $appLogCandidates) {{
-    $parent = Split-Path -Parent $p
-    if (Test-Path -LiteralPath $parent) {{
-      try {{ Add-Content -Path $p -Value $line }} catch {{ }}
-    }}
+  # Sólo al simfleet.log activo si su parent dir existe. UN solo
+  # archivo — evita los duplicados de líneas reportados en v3.3.0.
+  $parent = Split-Path -Parent $appLog
+  if (Test-Path -LiteralPath $parent) {{
+    try {{ Add-Content -Path $appLog -Value $line }} catch {{ }}
   }}
 }}
 WriteAll ("=== relaunch helper start exe={0}" -f $origExe)

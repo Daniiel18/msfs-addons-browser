@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AppSettings } from "../lib/types";
 import { api } from "../lib/tauri";
+import { persistLocale, setActiveLocale } from "../lib/i18n";
 
 /**
  * Settings de la app — preferencias persistidas + autostart con
@@ -70,6 +71,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const s = await api.getAppSettings();
       set({ settings: s, loaded: true });
+      // (v3.4.0) Source of truth para el idioma es la DB. Tras
+      // bootstrappear espejamos el valor al localStorage y al módulo
+      // i18n — así un cold start de la app posterior arranca con el
+      // idioma correcto SIN esperar el bootstrap. Cubre también el
+      // caso "cloud sync bajó preferencias de otra PC con otro
+      // idioma" — la DB cambia, este espejo lo refleja.
+      const lang = (s.language ?? "auto") as "auto" | "es" | "en";
+      persistLocale(lang);
+      setActiveLocale(lang);
     } catch (e) {
       console.warn("settings bootstrap failed:", e);
       // Aun en error marcamos `loaded:true` para que la UI no se
@@ -106,8 +116,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // state lo veía como "es" pero el DB seguía con "auto".
     // Tras restart, bootstrap leía DB ("auto") y revertía. Bug
     // reportado: "vuelve al estado anterior".
+    //
+    // (v3.4.0) Tras persistir a DB espejamos al localStorage. Sin
+    // esto el siguiente cold start lee `preloadLocale()` con el
+    // valor viejo y el shell arrancaba en el idioma anterior por
+    // un frame (mismo bug que reportó el usuario "no traduce nada
+    // al cambiar"). También llamamos `setActiveLocale` para que los
+    // `t()` que se ejecuten antes del modal de restart ya devuelvan
+    // strings del nuevo idioma.
     try {
       await api.setAppSetting(KEY_MAP.language, lang);
+      persistLocale(lang);
+      setActiveLocale(lang);
       const prev = get().settings;
       set({ settings: { ...prev, language: lang } });
       console.info(`[settings] language persisted: ${lang}`);
