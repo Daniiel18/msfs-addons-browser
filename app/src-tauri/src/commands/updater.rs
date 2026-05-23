@@ -207,18 +207,16 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let escaped = exe_path.replace('\'', "''");
-    // (v3.1.3) Path al `simfleet.log` unificado en la carpeta de la
-    // app para que el helper PowerShell escriba también ahí cualquier
-    // fallo de lanzamiento (no sólo al log temporal). Lo construimos
-    // desde `%APPDATA%\org.n0xful.msfsaddonsbrowser\logs\simfleet.log`.
-    let app_log_path = std::env::var("APPDATA")
-        .ok()
-        .map(|p| {
-            format!(
-                "{}\\org.n0xful.msfsaddonsbrowser\\logs\\simfleet.log",
-                p
-            )
-        })
+    // (v3.1.3 / v3.2.0) Path al `simfleet.log` unificado en la
+    // carpeta de la app para que el helper PowerShell escriba ahí
+    // cualquier fallo de lanzamiento. v3.2.0: la app es portable —
+    // los datos viven en `<exe_dir>/data/logs/simfleet.log`. Lo
+    // resolvemos relativo a `exe_path` (el actual current_exe que
+    // ya tenemos en `escaped`).
+    let app_log_path = std::path::Path::new(exe_path)
+        .parent()
+        .map(|p| p.join("data").join("logs").join("simfleet.log"))
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let app_log_escaped = app_log_path.replace('\'', "''");
     // (v3.0.0) Helper aún más robusto:

@@ -20,6 +20,7 @@ pub mod sources;
 pub mod updater;
 pub mod updates;
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -184,12 +185,122 @@ pub fn run() {
         .expect("error running tauri app");
 }
 
+/// (v3.2.0) Resuelve el data dir PORTABLE. Estrategia:
+///   1. Carpeta `data/` al lado del ejecutable (`exe_parent/data/`).
+///      Si es escribible la usamos — toda la app vive dentro de la
+///      carpeta de instalación (Program Files/SimFleet o donde sea
+///      que el usuario instaló).
+///   2. Si el dir del ejecutable NO es escribible (Program Files sin
+///      admin), caemos a `%LOCALAPPDATA%\SimFleet\data` como fallback
+///      — sigue siendo "user-scoped" y no contamina Roaming/Temp.
+///
+/// Antes (v3.1.x y previo) usábamos `%APPDATA%\org.n0xful.msfsaddonsbrowser`
+/// que el usuario reportó como invasivo. La nueva arquitectura
+/// portable migra esos datos automáticamente al primer arranque.
+fn resolve_portable_data_dir() -> anyhow::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    let exe_dir = exe.parent()
+        .ok_or_else(|| anyhow::anyhow!("current_exe sin parent"))?
+        .to_path_buf();
+    let candidate = exe_dir.join("data");
+    // Test de escritura: intentamos crear el dir + un archivo temporal.
+    if std::fs::create_dir_all(&candidate).is_ok() {
+        let probe = candidate.join(".write-probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            return Ok(candidate);
+        }
+    }
+    // Fallback: %LOCALAPPDATA%\SimFleet\data
+    let local = std::env::var("LOCALAPPDATA")
+        .map_err(|_| anyhow::anyhow!("LOCALAPPDATA no disponible"))?;
+    let fallback = std::path::PathBuf::from(local)
+        .join("SimFleet")
+        .join("data");
+    std::fs::create_dir_all(&fallback)?;
+    Ok(fallback)
+}
+
+/// (v3.2.0) Migra datos del `%APPDATA%\org.n0xful.msfsaddonsbrowser`
+/// viejo al data dir portable nuevo. Sólo corre una vez — al detectar
+/// que el nuevo está vacío (sin DB) Y el viejo existe con datos.
+/// Best-effort: cualquier fallo se loguea y la app sigue.
+fn migrate_legacy_appdata(new_dir: &Path) -> anyhow::Result<()> {
+    let new_db = new_dir.join("msfs-addons.db");
+    if new_db.exists() {
+        // Ya tenemos datos en la nueva ubicación — no sobrescribir.
+        return Ok(());
+    }
+    let appdata = std::env::var("APPDATA").map_err(|_| anyhow::anyhow!("APPDATA?"))?;
+    let legacy = std::path::PathBuf::from(appdata)
+        .join("org.n0xful.msfsaddonsbrowser");
+    let legacy_db = legacy.join("msfs-addons.db");
+    if !legacy_db.exists() {
+        return Ok(()); // nada que migrar
+    }
+    eprintln!(
+        "[migration] copiando datos viejos desde {} → {}",
+        legacy.display(), new_dir.display()
+    );
+    copy_dir_recursive(&legacy, new_dir)?;
+    eprintln!("[migration] OK. El directorio viejo se conserva — puedes borrarlo a mano si quieres.");
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let src_p = entry.path();
+        let dst_p = dst.join(entry.file_name());
+        if kind.is_dir() {
+            copy_dir_recursive(&src_p, &dst_p)?;
+        } else if kind.is_file() {
+            // Si ya existe en destino (raro), saltamos para no
+            // pisotear cambios nuevos.
+            if !dst_p.exists() {
+                let _ = std::fs::copy(&src_p, &dst_p);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
-    let app_data_dir = app.path().app_data_dir()?;
+    // (v3.2.0) Data dir PORTABLE al lado del ejecutable. Todo lo que
+    // genere la app (DB, logs, OFPs, descargas, temp del drag-drop)
+    // vive aquí dentro. Si existe la instalación vieja en
+    // %APPDATA%\org.n0xful.msfsaddonsbrowser, migramos antes.
+    let app_data_dir = match resolve_portable_data_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            // Si todo falla, último fallback: app_data_dir del SO
+            // para que la app al menos arranque (no es ideal pero
+            // mejor que crashear).
+            eprintln!("[init] resolve_portable_data_dir falló: {e:#}; usando app_data_dir del SO");
+            app.path().app_data_dir()?
+        }
+    };
     std::fs::create_dir_all(&app_data_dir)?;
+    if let Err(e) = migrate_legacy_appdata(&app_data_dir) {
+        eprintln!("[init] migrate_legacy_appdata falló (no fatal): {e:#}");
+    }
+
+    // (v3.2.0) Redirigir el TEMP del proceso al data dir portable.
+    // Cubre TODOS los `tempfile::tempdir()` (drag-drop inspect,
+    // extracción de .zip/.rar/.7z, GSX install). El usuario pidió
+    // explícitamente que los temp del drag-drop NO contaminen
+    // `%TEMP%` del sistema operativo.
+    {
+        let temp_dir = app_data_dir.join("temp");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::env::set_var("TMP", &temp_dir);
+        std::env::set_var("TEMP", &temp_dir);
+    }
 
     logger::init(&app_data_dir)?;
-    tracing::info!("app starting; data dir = {}", app_data_dir.display());
+    tracing::info!("app starting; data dir = {} (portable)", app_data_dir.display());
 
     // (v3.0.0) Cleanup de instalación vieja "MSFS Addons Browser" tras
     // el rebrand a SimFleet. Best-effort: si la app actual está corriendo

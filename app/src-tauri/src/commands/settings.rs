@@ -85,10 +85,15 @@ pub async fn get_app_settings(
         Ok(Some(info)) if info.exists => Some(info.path),
         _ => None,
     };
-    let app_data_path = app
-        .path()
-        .app_data_dir()
+    // (v3.2.0) Data path PORTABLE — resolvemos relativo al exe igual
+    // que `init_state`. Si falla cae al `app_data_dir` del SO como
+    // último recurso. Esto refleja en UI dónde están realmente los
+    // datos (la carpeta de instalación, no `%APPDATA%`).
+    let app_data_path = std::env::current_exe()
         .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("data")))
+        .filter(|p| p.is_dir())
+        .or_else(|| app.path().app_data_dir().ok())
         .map(|p| p.to_string_lossy().into_owned());
     let logs_path = app_data_path.as_ref().map(|p| {
         std::path::Path::new(p)

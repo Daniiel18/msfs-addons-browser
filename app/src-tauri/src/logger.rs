@@ -1,7 +1,69 @@
 use std::path::Path;
 
+use tracing::{Event, Subscriber};
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::{FmtContext, FormattedFields};
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{fmt, EnvFilter};
+
+/// (v3.2.0) Formatter custom para logs legibles.
+///
+/// Output: `[INFO] 26/05/23 14:25:55 target:line message {fields}`
+///
+/// Reemplaza el RFC3339 con nanosegundos + offset TZ (`2026-05-23
+/// T11:27:15.486812800-04:00 INFO …`) que el usuario reportó como
+/// "feo, no se puede leer bien".
+struct CompactFormat;
+
+impl<S, N> FormatEvent<S, N> for CompactFormat
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> std::fmt::Result {
+        let meta = event.metadata();
+        // [LEVEL] con padding fijo para alinear columnas.
+        let level_str = match *meta.level() {
+            tracing::Level::ERROR => "[ERROR]",
+            tracing::Level::WARN => "[WARN] ",
+            tracing::Level::INFO => "[INFO] ",
+            tracing::Level::DEBUG => "[DEBUG]",
+            tracing::Level::TRACE => "[TRACE]",
+        };
+        write!(writer, "{} ", level_str)?;
+        // YY/MM/DD HH:MM:SS local.
+        let now = chrono::Local::now();
+        write!(writer, "{} ", now.format("%y/%m/%d %H:%M:%S"))?;
+        // target:line
+        let target = meta.target();
+        match meta.line() {
+            Some(line) => write!(writer, "{}:{} ", target, line)?,
+            None => write!(writer, "{} ", target)?,
+        }
+        // Mensaje + fields (los fields de tracing como `key=value`).
+        ctx.field_format()
+            .format_fields(writer.by_ref(), event)?;
+        // Spans si los hay (info!() dentro de un span getea el nombre).
+        if let Some(scope) = ctx.event_scope() {
+            for span in scope.from_root() {
+                let ext = span.extensions();
+                let fields = ext.get::<FormattedFields<N>>();
+                if let Some(f) = fields {
+                    if !f.fields.is_empty() {
+                        write!(writer, " {{{}}}", f.fields)?;
+                    }
+                }
+            }
+        }
+        writeln!(writer)
+    }
+}
 
 /// (v3.1.3) Logs unificados — un solo archivo `simfleet.log` en la
 /// carpeta de logs de la app, con rotación SIMPLE por tamaño.
@@ -47,22 +109,12 @@ pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
         )
     });
 
-    let stdout_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_line_number(true)
-        .with_file(false)
-        .with_timer(fmt::time::ChronoLocal::rfc_3339());
-
+    // (v3.2.0) Formato compacto custom: `[LEVEL] YY/MM/DD HH:MM:SS
+    // target:line message`. Aplicado a stdout y al archivo.
+    let stdout_layer = fmt::layer().event_format(CompactFormat);
     let file_layer = fmt::layer()
         .with_ansi(false)
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_line_number(true)
-        .with_file(false)
-        .with_timer(fmt::time::ChronoLocal::rfc_3339())
+        .event_format(CompactFormat)
         .with_writer(file_appender);
 
     let _ = tracing_subscriber::registry()

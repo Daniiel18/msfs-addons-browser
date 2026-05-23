@@ -46,6 +46,11 @@ export function FlightBookView() {
   // Selección de vuelo para mostrar su track real en el mapa.
   // null/undefined = modo globo (todos los vuelos a la vez).
   const [selectedFlightId, setSelectedFlightId] = useState<number | null>(null);
+  // (v3.2.0) Modal de confirmación de borrado — reemplaza window.confirm
+  // por una UI estética. `null` = oculto. Guardamos el entry completo
+  // para mostrar contexto (orig→dest + fecha) y el id para llamar
+  // remove() al confirmar.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const selectedFlight = useMemo(
     () =>
       selectedFlightId != null
@@ -304,16 +309,10 @@ export function FlightBookView() {
                     setSelectedFlightId((prev) => (prev === e.id ? null : e.id))
                   }
                   onDelete={() => {
-                    // (v2.2.0) Confirm modal antes de borrar.
-                    const dest = e.destinationIcao ?? "?";
-                    const orig = e.originIcao ?? "?";
-                    if (
-                      !window.confirm(
-                        `Delete this flight from FlightBook?\n\n${orig} → ${dest}\n${formatDate(e.startedAt)}\n\nThis action cannot be undone.`,
-                      )
-                    )
-                      return;
-                    void remove(e.id);
+                    // (v3.2.0) Abre modal estético en vez del feo
+                    // window.confirm nativo. El modal lee el id del
+                    // state y llama remove() al confirmar.
+                    setConfirmDeleteId(e.id);
                   }}
                 />
               ))}
@@ -321,7 +320,98 @@ export function FlightBookView() {
           )}
         </div>
       </div>
+
+      {/* (v3.2.0) Modal de confirmación de borrado. Estético en vez
+          del feo `window.confirm`. */}
+      {confirmDeleteId != null && (() => {
+        const target = entries.find((e) => e.id === confirmDeleteId);
+        if (!target) {
+          // Edge case: entry desapareció (refresh paralelo).
+          setConfirmDeleteId(null);
+          return null;
+        }
+        return (
+          <DeleteFlightModal
+            entry={target}
+            onConfirm={() => {
+              void remove(target.id);
+              setConfirmDeleteId(null);
+            }}
+            onCancel={() => setConfirmDeleteId(null)}
+          />
+        );
+      })()}
     </section>
+  );
+}
+
+/** (v3.2.0) Modal estético de confirmación al borrar un vuelo del
+ *  FlightBook. Reemplaza el `window.confirm` nativo (UI del SO) por
+ *  un overlay con AnimatePresence + Tailwind, manteniendo el theme
+ *  de la app. Botones rojos (Eliminar) y neutro (Cancelar). */
+function DeleteFlightModal({
+  entry,
+  onConfirm,
+  onCancel,
+}: {
+  entry: FlightLogEntry;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const orig = entry.originIcao ?? "?";
+  const dest = entry.destinationIcao ?? "?";
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-sm rounded-2xl border border-rose-500/30 bg-slate-900 shadow-2xl shadow-rose-500/10"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center gap-2 border-b border-slate-800 px-5 py-3">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/15 ring-1 ring-rose-500/30">
+            <Trash2 className="h-3.5 w-3.5 text-rose-300" />
+          </div>
+          <h3 className="text-sm font-semibold text-slate-100">
+            Delete flight?
+          </h3>
+        </header>
+        <div className="space-y-3 px-5 py-4">
+          <div className="rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2">
+            <div className="font-mono text-sm text-slate-100">
+              {orig}
+              <span className="mx-1.5 text-rose-300">→</span>
+              {dest}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              {formatDate(entry.startedAt)}
+              {entry.aircraftAtcType && ` · ${entry.aircraftAtcType}`}
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">
+            This action cannot be undone. The flight, its full track
+            (live position points) and any associated edits will be
+            permanently removed from the FlightBook.
+          </p>
+        </div>
+        <footer className="flex justify-end gap-2 border-t border-slate-800 bg-slate-950/30 px-5 py-3">
+          <button
+            onClick={onCancel}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-600 hover:text-slate-100"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="inline-flex items-center gap-1 rounded-md bg-rose-500/80 px-3 py-1.5 text-xs font-semibold text-rose-50 hover:bg-rose-500"
+          >
+            <Trash2 className="h-3 w-3" />
+            Delete
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
@@ -441,18 +531,23 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
               : "—"
           }
         />
-        {(entry.departureGate || entry.arrivalGate) && (
-          <div className="col-span-2">
-            <Metric
-              icon={<MapPin className="h-3.5 w-3.5" />}
-              label="Gate"
-              value={
-                entry.arrivalGate
-                  ? shortGate(entry.arrivalGate)
-                  : shortGate(entry.departureGate ?? "?")
-              }
-            />
-          </div>
+        {/* (v3.2.0) AMBOS gates visibles como métricas separadas —
+            antes mostraba sólo uno (arrival con fallback a departure).
+            El usuario pidió que los detalles de gates sean visibles
+            en el detalle del vuelo. */}
+        {entry.departureGate && (
+          <Metric
+            icon={<PlaneTakeoff className="h-3.5 w-3.5" />}
+            label="Dep gate"
+            value={shortGate(entry.departureGate)}
+          />
+        )}
+        {entry.arrivalGate && (
+          <Metric
+            icon={<PlaneLanding className="h-3.5 w-3.5" />}
+            label="Arr gate"
+            value={shortGate(entry.arrivalGate)}
+          />
         )}
       </div>
     </div>

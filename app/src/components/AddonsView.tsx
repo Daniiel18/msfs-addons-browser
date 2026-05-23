@@ -269,7 +269,11 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
   const [liveries, setLiveries] = useState<PmdgLivery[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(true);
+  // (v3.2.0) Estado expandido POR VENDOR — cada uno con su propio
+  // toggle. Default todos colapsados al cargar para no inundar la UI.
+  const [expandedVendors, setExpandedVendors] = useState<Set<string>>(
+    new Set(),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -279,6 +283,12 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
       .then((data) => {
         if (cancelled) return;
         setLiveries(data);
+        // Auto-expandir el primer vendor con liveries para que el
+        // usuario vea contenido al primer paint.
+        const firstVendor = data[0]?.vendor;
+        if (firstVendor) {
+          setExpandedVendors(new Set([firstVendor]));
+        }
         setLoading(false);
       })
       .catch((e) => {
@@ -291,11 +301,7 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
     };
   }, []);
 
-  // (v3.1.0) Aplica el filtro global del header sobre los liveries
-  // — antes el buscador sólo indexaba la raíz y el usuario reportó
-  // "Ningún addon coincide con tu filtro" al buscar una librea PMDG
-  // específica. Ahora también matcheamos tail number, airline,
-  // variation, vendor y package folder.
+  // Aplica el filtro global del header sobre los liveries.
   const q = filter.trim().toLowerCase();
   const filtered = useMemo(() => {
     if (!liveries) return [] as PmdgLivery[];
@@ -334,75 +340,93 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
   if (!liveries || liveries.length === 0) {
     return null;
   }
-  // Si hay filtro activo y no matchea nada, no renderizamos la
-  // sección — la EmptyState global del addons view ya maneja eso.
   if (q && filtered.length === 0) {
     return null;
   }
 
-  // Group by vendor + model.
-  type Key = string; // "vendor::model"
-  const byKey = new Map<Key, PmdgLivery[]>();
+  // (v3.2.0) Group by VENDOR — cada vendor su propio collapse. Antes
+  // todo en un único collapse "Aircraft Liveries". Ahora un collapse
+  // independiente por vendor (PMDG Liveries / Fenix Liveries / etc.)
+  // con los modelos del vendor adentro.
+  const byVendor = new Map<string, PmdgLivery[]>();
   for (const l of filtered) {
-    const key = `${l.vendor}::${l.model}`;
-    const arr = byKey.get(key) ?? [];
+    const arr = byVendor.get(l.vendor) ?? [];
     arr.push(l);
-    byKey.set(key, arr);
+    byVendor.set(l.vendor, arr);
   }
+  const vendorEntries = Array.from(byVendor.entries()).sort(([a], [b]) =>
+    vendorLabel(a).name.localeCompare(vendorLabel(b).name),
+  );
 
-  const totalCount = filtered.length;
+  const toggleVendor = (vendor: string) => {
+    setExpandedVendors((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendor)) next.delete(vendor);
+      else next.add(vendor);
+      return next;
+    });
+  };
 
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900/40">
-      <header
-        className="flex cursor-pointer items-center gap-2 border-b border-slate-800 px-4 py-3 hover:bg-slate-900/60"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <Plane className="h-4 w-4 text-amber-300" />
-        <h3 className="text-sm font-semibold text-slate-100">
-          Aircraft Liveries
-        </h3>
-        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
-          {totalCount}
-        </span>
-        <span className="ml-auto text-[11px] text-slate-500">
-          {expanded ? "↓ Colapsar" : "→ Expandir"}
-        </span>
-      </header>
-      {expanded && (
-        <div className="space-y-6 p-4">
-          {Array.from(byKey.entries())
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([key, items]) => {
-              const [vendor, model] = key.split("::");
-              const v = vendorLabel(vendor);
-              return (
-                <div key={key}>
-                  <h4 className="mb-3 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                    <span className={v.tone}>{v.name}</span>
-                    <span>{modelLabel(vendor, model)}</span>
-                    <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
-                      {items.length}
-                    </span>
-                  </h4>
-                  {/* (v3.1.0) Grid homogéneo con el resto de los
-                      paquetes de Addons: 1/2/3/4 columnas según
-                      ancho. Cards más altas con thumbnail rectangular
-                      arriba — mismo patrón que `PackageCard`. */}
-                  <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                    {items.map((liv, idx) => (
-                      <LiveryCard
-                        key={`${liv.title}-${idx}`}
-                        liv={liv}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              );
-            })}
-        </div>
-      )}
-    </section>
+    <div className="space-y-3">
+      {vendorEntries.map(([vendor, items]) => {
+        const v = vendorLabel(vendor);
+        const isOpen = expandedVendors.has(vendor);
+        // Subgrupos por modelo dentro de cada vendor.
+        const byModel = new Map<string, PmdgLivery[]>();
+        for (const l of items) {
+          const arr = byModel.get(l.model) ?? [];
+          arr.push(l);
+          byModel.set(l.model, arr);
+        }
+        return (
+          <section
+            key={vendor}
+            className="rounded-xl border border-slate-800 bg-slate-900/40"
+          >
+            <header
+              className="flex cursor-pointer items-center gap-2 border-b border-slate-800 px-4 py-3 hover:bg-slate-900/60"
+              onClick={() => toggleVendor(vendor)}
+            >
+              <Plane className={`h-4 w-4 ${v.tone}`} />
+              <h3 className={`text-sm font-semibold ${v.tone}`}>
+                {v.name} Liveries
+              </h3>
+              <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+                {items.length}
+              </span>
+              <span className="ml-auto text-[11px] text-slate-500">
+                {isOpen ? "↓ Colapsar" : "→ Expandir"}
+              </span>
+            </header>
+            {isOpen && (
+              <div className="space-y-5 p-4">
+                {Array.from(byModel.entries())
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([model, modelItems]) => (
+                    <div key={model}>
+                      <h4 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        {modelLabel(vendor, model)}
+                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                          {modelItems.length}
+                        </span>
+                      </h4>
+                      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {modelItems.map((liv, idx) => (
+                          <LiveryCard
+                            key={`${liv.title}-${idx}`}
+                            liv={liv}
+                          />
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
   );
 }
 
