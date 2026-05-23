@@ -41,19 +41,32 @@ export function UpdateBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .checkForUpdate()
-      .then((u) => {
-        if (cancelled || !u) return;
-        // Si el usuario ya descartó esta misma versión, no reabrimos
-        // el banner — sólo cuando salga una nueva mayor.
-        const dismissed = localStorage.getItem(DISMISSED_KEY);
-        if (dismissed === u.latestVersion) return;
-        setInfo(u);
-      })
-      .catch((e) => console.warn("checkForUpdate failed:", e));
+    // (v3.1.3) Polling cada 1h ADEMÁS del check inicial. Antes era
+    // one-shot al montar — si el usuario dejaba la app abierta y
+    // salía una versión nueva, el banner nunca aparecía hasta que
+    // reiniciara. Ahora reconsulta GitHub Releases una vez por hora
+    // y dispara el banner en cuanto detecta `latestVersion` mayor
+    // distinto al `dismissed` guardado en localStorage.
+    const check = () => {
+      api
+        .checkForUpdate()
+        .then((u) => {
+          if (cancelled || !u) return;
+          const dismissed = localStorage.getItem(DISMISSED_KEY);
+          if (dismissed === u.latestVersion) return;
+          setInfo(u);
+          // El usuario podría haber descartado una versión vieja;
+          // si hay una NUEVA detectamos eso por comparar con dismissed.
+          // Reseteamos hidden=false para que el banner reaparezca.
+          setHidden(false);
+        })
+        .catch((e) => console.warn("checkForUpdate failed:", e));
+    };
+    check();
+    const interval = setInterval(check, 60 * 60_000);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, []);
 

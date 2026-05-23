@@ -241,23 +241,36 @@ pub async fn refresh_for_installed(
         return Ok(summary);
     }
 
+    let total_tasks = tasks.len();
     tracing::info!(
-        "updates: {} queries por correr ({} ya en cache); concurrencia={}",
-        tasks.len(),
+        target: "updates",
+        "[Addon Update Scan] starting · {} queries por correr ({} ya en cache); concurrencia={}",
+        total_tasks,
         summary.queries_skipped_cached,
         MAX_CONCURRENT
     );
 
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut handles = Vec::with_capacity(tasks.len());
+    // (v3.1.3) Contador atómico para enumerar tareas N/total al
+    // procesar — el usuario pidió audibility para saber si el
+    // scanner se queda colgado en un addon específico.
+    let progress_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     for (icao, source) in tasks {
         let sem = sem.clone();
         let pool = pool.clone();
+        let counter = progress_counter.clone();
         handles.push(tokio::spawn(async move {
             // Permit liberado al salir del scope — limita la
             // ventana de in-flight requests al backend.
             let _permit = sem.acquire_owned().await.ok()?;
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            tracing::info!(
+                target: "updates",
+                "[Addon Update Scan] [{}/{}] {} en {} | Processing…",
+                n, total_tasks, icao, source.id()
+            );
             let res = source.search(&icao).await;
             let outcome = match res {
                 Ok(addons) => {

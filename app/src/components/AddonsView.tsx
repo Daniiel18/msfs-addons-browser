@@ -191,12 +191,17 @@ export function AddonsView() {
         </div>
       )}
 
-      {/* (v3.0.0 / v3.1.0) Sección Aircraft Liveries — escaneo
-          dedicado de paquetes `*-aircraft-*` (PMDG + Fenix +
+      {/* (v3.0.0 / v3.1.0 / v3.1.3) Sección Aircraft Liveries —
+          escaneo dedicado de paquetes `*-aircraft-*` (PMDG + Fenix +
           iniBuilds + FlyByWire…) con parsing del aircraft.cfg.
-          Recibe el filtro de búsqueda global del header para que las
-          liveries también aparezcan/desaparezcan al buscar. */}
-      <AircraftLiveriesSection filter={filter} />
+          Recibe el filtro de búsqueda global del header.
+          v3.1.3: SÓLO se muestra cuando typeFilter es "ALL" o
+          "LIVERY". Antes aparecía también con AIRCRAFT / MISC /
+          UNKNOWN seleccionados, lo que el usuario reportó como
+          "se cuela en todos los filtros". */}
+      {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
+        <AircraftLiveriesSection filter={filter} />
+      )}
 
       {detailsPkg && (
         <PackageDetailModal

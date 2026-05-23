@@ -572,22 +572,34 @@ function ThemeRow({
   );
 }
 
-/** (v3.1.0) Fila del selector de idioma. Dispara modal de aviso de
- *  reinicio porque buena parte de la app sigue con strings inline
- *  que no reaccionan al cambio en caliente. */
+/** (v3.1.0 / v3.1.3) Fila del selector de idioma. Dispara modal de
+ *  aviso de reinicio porque buena parte de la app sigue con strings
+ *  inline que no reaccionan al cambio en caliente.
+ *  AHORA awaiteamos el setLanguage antes de mostrar el modal — antes
+ *  era fire-and-forget y permitía que el usuario cerrase la app
+ *  ANTES de que el write a DB completara, perdiendo el valor. */
 export function LanguageRow({
   current,
   onChange,
   onRequestRestart,
 }: {
   current: string;
-  onChange: (l: "auto" | "es" | "en") => void;
+  onChange: (l: "auto" | "es" | "en") => Promise<void> | void;
   onRequestRestart: () => void;
 }) {
-  const handle = (next: "auto" | "es" | "en") => {
+  const handle = async (next: "auto" | "es" | "en") => {
     if (next === current) return;
-    onChange(next);
-    onRequestRestart();
+    try {
+      // Esperamos a que el setting se persista en DB antes de
+      // ofrecer el reinicio. Si falla, no mostramos el modal.
+      const result = onChange(next);
+      if (result instanceof Promise) {
+        await result;
+      }
+      onRequestRestart();
+    } catch (e) {
+      console.warn("language change failed:", e);
+    }
   };
   return (
     <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
@@ -602,7 +614,7 @@ export function LanguageRow({
       </div>
       <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
         <button
-          onClick={() => handle("auto")}
+          onClick={() => void handle("auto")}
           className={`rounded px-2.5 py-1 text-[11px] ${
             current === "auto"
               ? "bg-slate-700/80 text-slate-100"
@@ -612,7 +624,7 @@ export function LanguageRow({
           Auto
         </button>
         <button
-          onClick={() => handle("es")}
+          onClick={() => void handle("es")}
           className={`rounded px-2.5 py-1 text-[11px] ${
             current === "es"
               ? "bg-slate-700/80 text-slate-100"
@@ -622,7 +634,7 @@ export function LanguageRow({
           ES
         </button>
         <button
-          onClick={() => handle("en")}
+          onClick={() => void handle("en")}
           className={`rounded px-2.5 py-1 text-[11px] ${
             current === "en"
               ? "bg-slate-700/80 text-slate-100"

@@ -164,8 +164,17 @@ fn materialize(path: &Path, folder_name: &str, raw: RawManifest) -> ScannedPacka
     // dispara notificaciones de update que el usuario reporta como
     // "no tienen sentido". Para todo lo que no sea SCENERY el
     // ICAO se queda en None de forma estricta.
+    //
+    // (v3.1.3) ORDEN INVERTIDO: probamos folder name PRIMERO, title
+    // como fallback. Los folder names siguen convenciones rígidas
+    // (`{vendor}-airport[s]-{ICAO}-{nombre}`), los titles son
+    // free-form y dan falsos positivos:
+    //   · "Paris Orly LFPO" → `ORLY` se pillaba antes que `LFPO`
+    //   · "Saint Martin & Grand Case" → `CASE` se pillaba (y el
+    //     título no contiene TNCM en absoluto). El folder
+    //     `awdesigns-airports-tncm-tffg-saint-martin` SÍ lo tiene.
     let icao = if matches_scenery(&content_type) {
-        extract_icao(&title).or_else(|| extract_icao(folder_name))
+        extract_icao(folder_name).or_else(|| extract_icao(&title))
     } else {
         None
     };
@@ -341,19 +350,28 @@ fn extract_icao(text: &str) -> Option<String> {
     }
 
     // Prioridad 1: candidato precedido inmediatamente por "AIRPORT"
-    // + un separador (`-`, `_`, ` `). Los packs de scenery siguen
-    // la convención `developer-airport-ICAO-nombre`, así que un match
-    // tras "airport-" es muy probablemente el ICAO real.
+    // o "AIRPORTS" + un separador (`-`, `_`, ` `). Los packs de
+    // scenery siguen la convención `developer-airport-ICAO-nombre`,
+    // y algunos vendors usan plural `developer-airports-ICAO-…`
+    // (ej. `awdesigns-airports-tncm-tffg-saint-martin`).
     for (i, cand) in &candidates {
-        if *i < 8 {
-            continue; // necesitamos 7 chars "AIRPORT" + 1 separador detrás
+        // Match "AIRPORT-" / "AIRPORT_" / "AIRPORT " — 8 chars antes.
+        if *i >= 8 {
+            let prefix = &bytes[*i - 8..*i];
+            if prefix.starts_with(b"AIRPORT")
+                && matches!(prefix[7], b'-' | b'_' | b' ')
+            {
+                return Some(cand.clone());
+            }
         }
-        let prefix = &bytes[*i - 8..*i];
-        // "AIRPORT" + 1 separador no-alfanumérico
-        if prefix.starts_with(b"AIRPORT")
-            && matches!(prefix[7], b'-' | b'_' | b' ')
-        {
-            return Some(cand.clone());
+        // (v3.1.3) Match "AIRPORTS-" plural — 9 chars antes.
+        if *i >= 9 {
+            let prefix = &bytes[*i - 9..*i];
+            if prefix.starts_with(b"AIRPORTS")
+                && matches!(prefix[8], b'-' | b'_' | b' ')
+            {
+                return Some(cand.clone());
+            }
         }
     }
 

@@ -3,23 +3,44 @@ use std::path::Path;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 
+/// (v3.1.3) Logs unificados — un solo archivo `simfleet.log` en la
+/// carpeta de logs de la app, con rotación SIMPLE por tamaño.
+///
+/// Antes usábamos `tracing_appender::rolling::daily` que generaba un
+/// archivo por día (`app.log.2026-05-22`, `app.log.2026-05-23`, etc).
+/// El usuario pidió "un único archivo de log global" para auditar sin
+/// saltar entre archivos.
+///
+/// Estrategia:
+///   · Archivo principal: `simfleet.log` (todos los logs nuevos).
+///   · Al arrancar, si `simfleet.log` supera `MAX_LOG_BYTES` (5 MB),
+///     lo rotamos a `simfleet.log.1` (sobrescribiendo el anterior).
+///   · Sólo 1 backup — los logs históricos antiguos quedan en
+///     `app.log.YYYY-MM-DD` por compat con instalaciones previas.
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const LOG_FILE_NAME: &str = "simfleet.log";
+
 pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
     let logs_dir = app_data_dir.join("logs");
     std::fs::create_dir_all(&logs_dir)?;
 
-    let file_appender = tracing_appender::rolling::daily(&logs_dir, "app.log");
+    // Rotación por tamaño al arrancar — barato y suficiente para
+    // los volúmenes que generamos (~50 MB/día en debug, <5 MB/día
+    // en INFO production).
+    let log_path = logs_dir.join(LOG_FILE_NAME);
+    if let Ok(meta) = std::fs::metadata(&log_path) {
+        if meta.len() > MAX_LOG_BYTES {
+            let backup = logs_dir.join(format!("{}.1", LOG_FILE_NAME));
+            let _ = std::fs::remove_file(&backup); // ignora si no existe
+            let _ = std::fs::rename(&log_path, &backup);
+        }
+    }
 
-    // Filtro detallado por defecto:
-    //   · `cmd=trace` — cada comando Tauri loguea entrada+salida
-    //     con tiempo de ejecución (target "cmd").
-    //   · `msfs_addons_browser_lib=debug` — debug de la app entera.
-    //   · `info` para libs externas (sqlx, hyper, etc.) para que
-    //     no se ahoguen los logs en chatter de bajo nivel.
-    //
-    // Override: el usuario puede setear `RUST_LOG` para subir/bajar
-    // (ej. `RUST_LOG=trace` para verlo todo, o
-    // `RUST_LOG=msfs_addons_browser_lib=trace,sqlx=warn` para
-    // diagnosticar SQL específico).
+    // never daily — usamos un appender que escribe siempre al mismo
+    // archivo. `rolling::never` cumple esto y soporta WriteGuard
+    // implícito para flush ordenado.
+    let file_appender = tracing_appender::rolling::never(&logs_dir, LOG_FILE_NAME);
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
             "info,msfs_addons_browser_lib=debug,cmd=trace,scan=debug,download=debug,install=debug,updates=debug,airports=debug",
@@ -34,9 +55,6 @@ pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
         .with_file(false)
         .with_timer(fmt::time::ChronoLocal::rfc_3339());
 
-    // En el archivo guardamos también número de línea + módulo —
-    // útil para que cuando el usuario nos mande logs sepamos
-    // exactamente dónde se generó cada mensaje.
     let file_layer = fmt::layer()
         .with_ansi(false)
         .with_target(true)
@@ -53,7 +71,10 @@ pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
         .with(file_layer)
         .try_init();
 
-    tracing::info!("logger inicializado — logs en {}", logs_dir.display());
+    tracing::info!(
+        "logger inicializado — logs unificados en {}",
+        log_path.display()
+    );
     Ok(())
 }
 

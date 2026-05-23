@@ -101,12 +101,20 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   async setLanguage(lang) {
-    const prev = get().settings;
-    set({ settings: { ...prev, language: lang } });
+    // (v3.1.3) Write-first, then update store. Antes optimistic
+    // update + write — si el write tardaba, un componente leyendo
+    // state lo veía como "es" pero el DB seguía con "auto".
+    // Tras restart, bootstrap leía DB ("auto") y revertía. Bug
+    // reportado: "vuelve al estado anterior".
     try {
       await api.setAppSetting(KEY_MAP.language, lang);
+      const prev = get().settings;
+      set({ settings: { ...prev, language: lang } });
+      console.info(`[settings] language persisted: ${lang}`);
     } catch (e) {
-      set({ settings: prev, lastError: String(e) });
+      console.warn("setLanguage failed:", e);
+      set({ lastError: String(e) });
+      throw e;
     }
   },
 

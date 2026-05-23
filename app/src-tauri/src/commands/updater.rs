@@ -207,6 +207,20 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let escaped = exe_path.replace('\'', "''");
+    // (v3.1.3) Path al `simfleet.log` unificado en la carpeta de la
+    // app para que el helper PowerShell escriba también ahí cualquier
+    // fallo de lanzamiento (no sólo al log temporal). Lo construimos
+    // desde `%APPDATA%\org.n0xful.msfsaddonsbrowser\logs\simfleet.log`.
+    let app_log_path = std::env::var("APPDATA")
+        .ok()
+        .map(|p| {
+            format!(
+                "{}\\org.n0xful.msfsaddonsbrowser\\logs\\simfleet.log",
+                p
+            )
+        })
+        .unwrap_or_default();
+    let app_log_escaped = app_log_path.replace('\'', "''");
     // (v3.0.0) Helper aún más robusto:
     //   · Poll cada 2s hasta 90s buscando el .exe reinstalado (NSIS
     //     puede tardar ~20-40s en escribir el binario).
@@ -219,10 +233,21 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     //     SimFleet cambia el path; intentamos también las rutas
     //     comunes del nuevo productName).
     //   · Log a `%TEMP%\simfleet-relaunch.log` para diagnóstico.
+    //   · (v3.1.3) DOBLE escritura: también escribe al `simfleet.log`
+    //     unificado de la app para que el log post-update quede en
+    //     el archivo principal y no en un .log separado en TEMP.
     let ps_command = format!(
         r#"$origExe = '{esc}'
 $log = Join-Path $env:TEMP 'simfleet-relaunch.log'
-Add-Content -Path $log -Value ("=== {{0:O}} relaunch helper start exe={{1}}" -f (Get-Date), $origExe)
+$appLog = '{app_log_esc}'
+function WriteBoth($msg) {{
+  $line = "$(Get-Date -Format o) [updater] $msg"
+  Add-Content -Path $log -Value $line
+  if ($appLog -ne '' -and (Test-Path -LiteralPath (Split-Path -Parent $appLog))) {{
+    try {{ Add-Content -Path $appLog -Value $line }} catch {{ }}
+  }}
+}}
+WriteBoth ("=== relaunch helper start exe={0}" -f $origExe)
 
 # (v3.0.0) Lista de candidatos: el path original + variantes con el
 # nuevo productName "SimFleet" en per-user y per-machine.
@@ -245,15 +270,15 @@ while ((Get-Date) -lt $deadline -and $launched -eq $null) {{
         $item = Get-Item -LiteralPath $exe -ErrorAction Stop
         $age = ((Get-Date) - $item.LastWriteTime).TotalSeconds
         if ($age -gt 3) {{
-          Add-Content -Path $log -Value ("ready exe='{{0}}' age={{1:N1}}s — launching" -f $exe, $age)
+          WriteBoth ("ready exe='{{0}}' age={{1:N1}}s — launching" -f $exe, $age)
           $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
           $launched = $proc
           break
         }} else {{
-          Add-Content -Path $log -Value ("waiting exe='{{0}}' (age={{1:N1}}s)" -f $exe, $age)
+          WriteBoth ("waiting exe='{{0}}' (age={{1:N1}}s)" -f $exe, $age)
         }}
       }} catch {{
-        Add-Content -Path $log -Value ("error getting item '{{0}}': {{1}}" -f $exe, $_)
+        WriteBoth ("error getting item '{{0}}': {{1}}" -f $exe, $_)
       }}
     }}
   }}
@@ -268,14 +293,15 @@ if ($launched -ne $null) {{
   try {{
     Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
     [Microsoft.VisualBasic.Interaction]::AppActivate($launched.Id) | Out-Null
-    Add-Content -Path $log -Value ("foreground OK pid={{0}}" -f $launched.Id)
+    WriteBoth ("foreground OK pid={{0}}" -f $launched.Id)
   }} catch {{
-    Add-Content -Path $log -Value ("foreground falló pid={{0}}: {{1}}" -f $launched.Id, $_)
+    WriteBoth ("foreground falló pid={{0}}: {{1}}" -f $launched.Id, $_)
   }}
 }} else {{
-  Add-Content -Path $log -Value 'TIMEOUT — ningún candidato quedó disponible en 90s'
+  WriteBoth 'TIMEOUT — ningún candidato quedó disponible en 90s'
 }}"#,
-        esc = escaped
+        esc = escaped,
+        app_log_esc = app_log_escaped,
     );
 
     std::process::Command::new("powershell")
