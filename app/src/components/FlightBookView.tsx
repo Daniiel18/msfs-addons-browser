@@ -164,68 +164,45 @@ export function FlightBookView() {
         </div>
       )}
 
-      {/* (v3.4.0) **Layout split adaptativo**:
-          · Modo lista (sin selección): GLOBO grande izquierda + sidebar
-            con stats + feed a la derecha. Permite ver TODOS los vuelos
-            a la vez en el globo (great-circles).
-          · Modo detalle (vuelo seleccionado): FEED de cards izquierda
-            (premium look, ICAOs grandes) + panel de detalle a la
-            derecha con mapa COMPACTO embebido al final, mostrando sólo
-            la ruta real del vuelo seleccionado.
-
-          Esto cumple el rediseño que pidió el usuario: el mapa pasa
-          a ser componente de soporte secundario en el detalle, y el
-          feed se vuelve protagonista con tipografía generosa. */}
-      {selectedFlight ? (
-        <div
-          className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]"
-          style={{ minHeight: "calc(100vh - 13rem)" }}
-        >
-          {/* COLUMNA IZQ — Feed de cards premium, scrolleable */}
-          <FlightFeed
-            entries={completed}
+      {/* (v3.4.1) **Layout simétrico en ambos modos**:
+          · GLOBO siempre a la izquierda — `selectedFlightId` controla
+            si se ven todas las great-circles (modo lista) o sólo el
+            track real del vuelo seleccionado (modo detalle).
+          · Sidebar derecha siempre — adapta su contenido:
+            - Sin selección: stats grid + active flight + feed.
+            - Con selección: SelectedFlightPanel + feed (para poder
+              saltar a otro vuelo sin perder el globo).
+          Esto preserva la simetría que el usuario pidió: en ambos
+          modos ves el mapa grande, lo único que cambia es qué está
+          enfocado en él y qué muestra el sidebar. */}
+      <div
+        className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_540px]"
+        style={{ minHeight: "calc(100vh - 13rem)" }}
+      >
+        {/* COLUMNA IZQ — Globo siempre presente. El componente reacciona
+            a `selectedFlightId`: con valor zoomea al track real, sin
+            valor muestra todas las rutas como great-circles. */}
+        <div className="lg:sticky lg:top-4 lg:self-start">
+          <RoutesMapView
+            height="calc(100vh - 13rem)"
             selectedFlightId={selectedFlightId}
-            onSelect={(id) =>
-              setSelectedFlightId((prev) => (prev === id ? null : id))
-            }
-            onDelete={(id) => setConfirmDeleteId(id)}
-            inFlight={inFlight}
           />
-          {/* COLUMNA DER — Detalle scrolleable con mapa compacto al
-              final. */}
-          <div
-            className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1"
-            style={{ maxHeight: "calc(100vh - 13rem)" }}
-          >
-            <SelectedFlightPanel entry={selectedFlight} />
-            {/* MAPA COMPACTO — alto fijo, simétrico, secundario. */}
-            <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-md">
-              <RoutesMapView
-                height="360px"
-                selectedFlightId={selectedFlightId}
-              />
-            </div>
-          </div>
         </div>
-      ) : (
-        <div
-          className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_540px]"
-          style={{ minHeight: "calc(100vh - 13rem)" }}
-        >
-          {/* COLUMNA IZQ — Globo grande con todos los vuelos */}
-          <div className="lg:sticky lg:top-4 lg:self-start">
-            <RoutesMapView
-              height="calc(100vh - 13rem)"
-              selectedFlightId={selectedFlightId}
-            />
-          </div>
 
-          {/* COLUMNA DER — Stats + feed */}
-          <div
-            className="flex min-h-0 flex-col gap-3"
-            style={{ maxHeight: "calc(100vh - 13rem)" }}
-          >
-            {stats && (
+        {/* COLUMNA DER — Sidebar adaptativa. Scrollea como UNA unidad
+            (panel + feed) para no apilar barras y mantener el flujo
+            natural de lectura "primero el resumen, luego los demás
+            vuelos abajo". */}
+        <div
+          className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1"
+          style={{ maxHeight: "calc(100vh - 13rem)" }}
+        >
+          {selectedFlight ? (
+            // Modo detalle — panel premium del vuelo seleccionado.
+            <SelectedFlightPanel entry={selectedFlight} />
+          ) : (
+            // Modo lista — stats agregados.
+            stats && (
               <div className="grid grid-cols-2 gap-2">
                 <StatCard
                   icon={<Plane className="h-4 w-4 text-emerald-300" />}
@@ -294,40 +271,52 @@ export function FlightBookView() {
                   />
                 </div>
               </div>
-            )}
+            )
+          )}
 
-            {inFlight && <ActiveFlightCard entry={inFlight} />}
+          {/* Active flight — visible siempre que haya vuelo en curso,
+              excepto cuando ese vuelo es el seleccionado (no tiene
+              sentido duplicarlo). */}
+          {inFlight && inFlight.id !== selectedFlightId && (
+            <ActiveFlightCard entry={inFlight} />
+          )}
 
-            {completed.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-center">
-                <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
-                <p className="text-sm font-medium text-slate-300">
-                  {t("fb.empty.title")}
-                </p>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  {t("fb.empty.body")}
-                </p>
-              </div>
-            ) : (
-              <ul className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
-                {completed.map((e) => (
-                  <FlightCard
-                    key={e.id}
-                    entry={e}
-                    selected={false}
-                    onSelect={() =>
-                      setSelectedFlightId((prev) =>
-                        prev === e.id ? null : e.id,
-                      )
-                    }
-                    onDelete={() => setConfirmDeleteId(e.id)}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
+          {/* Feed de cards — siempre visible en ambos modos. La card
+              del vuelo seleccionado se resalta con `selected={true}`
+              para que el usuario lo identifique aún teniendo el panel
+              de detalle arriba. */}
+          {completed.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-center">
+              <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
+              <p className="text-sm font-medium text-slate-300">
+                {t("fb.empty.title")}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {t("fb.empty.body")}
+              </p>
+            </div>
+          ) : (
+            // El scroll lo maneja la columna padre — el `ul` aquí es
+            // sólo un flow vertical de cards con `space-y-2`. Sin
+            // overflow propio para evitar doble barra.
+            <ul className="space-y-2">
+              {completed.map((e) => (
+                <FlightCard
+                  key={e.id}
+                  entry={e}
+                  selected={e.id === selectedFlightId}
+                  onSelect={() =>
+                    setSelectedFlightId((prev) =>
+                      prev === e.id ? null : e.id,
+                    )
+                  }
+                  onDelete={() => setConfirmDeleteId(e.id)}
+                />
+              ))}
+            </ul>
+          )}
         </div>
-      )}
+      </div>
 
       {/* (v3.2.0) Modal de confirmación de borrado. Estético en vez
           del feo `window.confirm`. */}
@@ -814,63 +803,7 @@ function StatCard({
   );
 }
 
-/** (v3.4.0) Feed de cards en modo detalle — columna izquierda
- *  cuando hay un vuelo seleccionado. Header con el vuelo activo
- *  (si existe) + lista premium scrolleable. */
-function FlightFeed({
-  entries,
-  selectedFlightId,
-  onSelect,
-  onDelete,
-  inFlight,
-}: {
-  entries: FlightLogEntry[];
-  selectedFlightId: number | null;
-  onSelect: (id: number) => void;
-  onDelete: (id: number) => void;
-  inFlight: FlightLogEntry | undefined;
-}) {
-  return (
-    <div
-      className="flex min-h-0 flex-col gap-2.5"
-      style={{ maxHeight: "calc(100vh - 13rem)" }}
-    >
-      <div className="inline-flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-        <Plane className="h-3 w-3" />
-        {t("fb.history")}
-        <span className="ml-1 font-mono text-slate-600">
-          · {entries.length}
-        </span>
-      </div>
-      {inFlight && <ActiveFlightCard entry={inFlight} />}
-      {entries.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/30 p-6 text-center">
-          <Plane className="mx-auto mb-2 h-7 w-7 text-slate-600" />
-          <p className="text-sm font-medium text-slate-300">
-            {t("fb.empty.title")}
-          </p>
-          <p className="mt-1 text-[11px] text-slate-500">
-            {t("fb.empty.body")}
-          </p>
-        </div>
-      ) : (
-        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-          {entries.map((e) => (
-            <FlightCard
-              key={e.id}
-              entry={e}
-              selected={e.id === selectedFlightId}
-              onSelect={() => onSelect(e.id)}
-              onDelete={() => onDelete(e.id)}
-            />
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/** (v3.3.0 → v3.4.0) Card de vuelo rediseñada — premium look.
+/** (v3.3.0 → v3.4.1) Card de vuelo rediseñada — premium look.
  *  · Bordes redondeados generosos (2xl), shadow sutil con hover lift.
  *  · Jerarquía tipográfica:
  *      · ICAOs origen→destino: **black, text-2xl**, mono, tracking-tight.
