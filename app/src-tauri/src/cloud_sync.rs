@@ -48,28 +48,32 @@ use tokio::net::TcpListener;
 const SYNC_FILE_NAME: &str = "msfs-addons-data.json";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email";
 
-// (v3.1.0) Credenciales embebidas en build — sólo dos usuarios (el
-// owner y un amigo). Si los valores quedan vacíos, la app cae al
-// flujo antiguo (settings.google_client_id/secret en DB) para devs.
-// En producción se compilan con valores reales pasados por env var:
-//   SIMFLEET_GOOGLE_CLIENT_ID=...
-//   SIMFLEET_GOOGLE_CLIENT_SECRET=...
+// (v3.1.0 / v3.1.1) Credenciales OAuth embebidas en el binario al
+// compilar. NO van al git por dos razones:
+//   1. GitHub secret scanning bloquea el push si detecta un Google
+//      OAuth secret en plain text.
+//   2. Aunque el repo esté privado hoy, podría volverse público y
+//      filtrar el secret.
 //
-// `option_env!` los inserta como string slice si están presentes en
-// build env; si no, devuelve None y caemos al fallback DB.
+// El flujo es:
+//   · `build.rs` lee `secrets.local.toml` (gitignored) si existe y
+//     re-exporta los valores como `cargo:rustc-env=…`.
+//   · `option_env!` los inserta como `Some("...")` en el binario.
+//   · Si el archivo no existe (e.g. clonando fresh sin acceso al
+//     secret), las consts caen a `None` y el flujo OAuth se rechaza
+//     con un mensaje claro pidiendo configurar el archivo.
 const HARDCODED_CLIENT_ID: Option<&str> =
     option_env!("SIMFLEET_GOOGLE_CLIENT_ID");
 const HARDCODED_CLIENT_SECRET: Option<&str> =
     option_env!("SIMFLEET_GOOGLE_CLIENT_SECRET");
 
-/// (v3.1.0) Lista blanca de emails Gmail autorizados a hacer sync.
-/// La app rechaza el OAuth si el email del usuario no está aquí.
-/// Hardcodeado por diseño: ESTE NO ES SOFTWARE PÚBLICO — son dos
-/// usuarios. Cambiar la lista requiere recompilar.
+/// (v3.1.0 / v3.1.1) Lista blanca de emails Gmail autorizados a hacer
+/// sync. La app rechaza el OAuth si el email del usuario no está
+/// aquí. Hardcodeado por diseño: ESTE NO ES SOFTWARE PÚBLICO — son
+/// dos usuarios. Cambiar la lista requiere recompilar.
 const WHITELIST_EMAILS: &[&str] = &[
-    // TODO: el owner debe rellenar con su email + el del amigo
-    // antes de hacer el release. Si la lista queda vacía, sólo se
-    // bloquea el sync cuando NO matchea nada (vacío = nada permitido).
+    "hectorvelez1012@gmail.com",
+    "jose.daniel0318@gmail.com",
 ];
 
 const KEY_CLIENT_ID: &str = "google_client_id";

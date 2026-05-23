@@ -363,3 +363,9 @@ MigrationBackup/
 FodyWeavers.xsd
 # Claude Code worktrees and per-session state
 .claude/
+
+# (v3.1.1) Local OAuth secrets for SimFleet cloud sync. Read by
+# build.rs and embedded into the binary via option_env!. Never
+# commit — GitHub secret scanning will reject the push.
+app/src-tauri/secrets.local.toml
+
