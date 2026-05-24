@@ -972,20 +972,25 @@ mod windows_simconnect {
         //     SUFFIX     → DWORD letter (0=none, 1=A...)
         //     BIAS_X     → FLOAT64 (meters east of airport center)
         //     BIAS_Y     → FLOAT64 (meters north of airport center)
+        // (v3.4.6) **Pivot a GSX**: SimConnect Facility Data se reveló
+        // como buggy/incompleto en la DLL bundled de MSFS 2020 — 5
+        // hotfixes consecutivos fueron destapando bugs distintos
+        // (ATC MODEL inexistente, STRING256 type ID, RECV_ID_FACILITY
+        // constants, LATITUDE/LONGITUDE en TAXI_PARKING, BIAS_Y). Cada
+        // fix destapó el siguiente. La DLL claramente está incompleta
+        // para esta API.
+        //
+        // Decisión: deshabilitar TAXI_PARKING completamente. Mantenemos
+        // sólo AIRPORT (LATITUDE/LONGITUDE) como sanity check del
+        // request flow. El gate name viene ahora del módulo WASM de
+        // GSX vía Client Data Area `FSDT_GSX_AIRCRAFT_DATA` (set up
+        // más abajo).
         let mut facility_def_ok = false;
         if let Some(add_fac) = lib.AddToFacilityDefinition {
             let fields = &[
                 "OPEN AIRPORT",
                 "LATITUDE",
                 "LONGITUDE",
-                "OPEN TAXI_PARKING",
-                "TYPE",
-                "NAME",
-                "NUMBER",
-                "SUFFIX",
-                "BIAS_X",
-                "BIAS_Y",
-                "CLOSE TAXI_PARKING",
                 "CLOSE AIRPORT",
             ];
             let mut all_ok = true;
@@ -1017,6 +1022,93 @@ mod windows_simconnect {
             tracing::warn!(
                 target: "simconnect",
                 "SimConnect.dll no exporta AddToFacilityDefinition; gates reales deshabilitados"
+            );
+        }
+
+        // (v3.4.6) **GSX Client Data Area reader — discovery mode**.
+        //
+        // FSDreamTeam's GSX expone su estado vía SimConnect Client Data
+        // Areas escritas por su módulo WASM. El nombre canónico más
+        // documentado es `FSDT_GSX_AIRCRAFT_DATA`. El layout exacto no
+        // es publicado oficialmente, así que esta primera iteración
+        // suscribe el buffer raw (512 bytes) y vuelca hex+ASCII al
+        // log cada segundo. Con esa traza identificamos visualmente
+        // los offsets de strings (gate name, airport icao, etc.) y la
+        // próxima iteración mete un parser tipado.
+        //
+        // Los símbolos `MapClientDataNameToID`, `AddToClientDataDefinition`
+        // y `RequestClientData` son Option en la lib — degradan si la
+        // DLL no los exporta (MSFS pre-SU8 muy antiguo).
+        const CDA_ID_GSX_AIRCRAFT: u32 = 100;
+        const DEFINE_ID_GSX_AIRCRAFT: u32 = 300;
+        const REQUEST_ID_GSX_AIRCRAFT: u32 = 100;
+        const GSX_CDA_SIZE: u32 = 512;
+        if let (Some(map_cda), Some(add_cda_def), Some(req_cda)) = (
+            lib.MapClientDataNameToID,
+            lib.AddToClientDataDefinition,
+            lib.RequestClientData,
+        ) {
+            let gsx_name = sc::cstr("FSDT_GSX_AIRCRAFT_DATA");
+            let hr_map = unsafe { map_cda(handle, gsx_name.as_ptr(), CDA_ID_GSX_AIRCRAFT) };
+            if !sc::succeeded(hr_map) {
+                tracing::warn!(
+                    target: "simconnect",
+                    "MapClientDataNameToID('FSDT_GSX_AIRCRAFT_DATA') falló (0x{:08x}); GSX bridge deshabilitado",
+                    hr_map
+                );
+            } else {
+                // Definimos el buffer entero como un solo "campo" raw.
+                // dwSizeOrType para sizes > 8 bytes es directamente el
+                // size en bytes (no un enum de tipo).
+                let hr_def = unsafe {
+                    add_cda_def(
+                        handle,
+                        DEFINE_ID_GSX_AIRCRAFT,
+                        0,                // dwOffset
+                        GSX_CDA_SIZE,     // dwSizeOrType = raw bytes
+                        0.0,              // fEpsilon
+                        u32::MAX,         // SIMCONNECT_UNUSED
+                    )
+                };
+                if !sc::succeeded(hr_def) {
+                    tracing::warn!(
+                        target: "simconnect",
+                        "AddToClientDataDefinition GSX falló (0x{:08x})",
+                        hr_def
+                    );
+                } else {
+                    let hr_req = unsafe {
+                        req_cda(
+                            handle,
+                            CDA_ID_GSX_AIRCRAFT,
+                            REQUEST_ID_GSX_AIRCRAFT,
+                            DEFINE_ID_GSX_AIRCRAFT,
+                            SIMCONNECT_PERIOD_SECOND,
+                            sc::SIMCONNECT_DATA_REQUEST_FLAG_CHANGED,
+                            0,
+                            0,
+                            0,
+                        )
+                    };
+                    if !sc::succeeded(hr_req) {
+                        tracing::warn!(
+                            target: "simconnect",
+                            "RequestClientData GSX falló (0x{:08x})",
+                            hr_req
+                        );
+                    } else {
+                        tracing::info!(
+                            target: "simconnect",
+                            "GSX Client Data Area 'FSDT_GSX_AIRCRAFT_DATA' suscrito ({}B raw, emit on CHANGED)",
+                            GSX_CDA_SIZE
+                        );
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(
+                target: "simconnect",
+                "SimConnect.dll sin Client Data API; GSX bridge deshabilitado"
             );
         }
 
@@ -1664,6 +1756,49 @@ mod windows_simconnect {
                             target: "simconnect",
                             "RECV_FACILITY_DATA_END req={} pero no había entry en pending_gates (¿response orphan?)",
                             req_id
+                        );
+                    }
+                }
+                SIMCONNECT_RECV_ID_CLIENT_DATA => {
+                    // (v3.4.6) GSX Client Data Area dispatch — modo
+                    // discovery: dump hex+ASCII de los primeros 128
+                    // bytes al log para identificar el offset del
+                    // gate string. Una vez identificados los offsets,
+                    // próxima versión hace parser tipado y popula
+                    // `current_gate` en SharedState.
+                    let evt = unsafe {
+                        &*(p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA)
+                    };
+                    let request_id = evt.dwRequestID;
+                    if request_id == 100 /* REQUEST_ID_GSX_AIRCRAFT */ {
+                        let base = unsafe {
+                            (p_data as *const u8).add(
+                                std::mem::size_of::<sc::SIMCONNECT_RECV_CLIENT_DATA>() - 4,
+                            )
+                        };
+                        // Dump 128 bytes en 8 grupos de 16
+                        let mut all_hex = String::with_capacity(300);
+                        let mut all_ascii = String::with_capacity(140);
+                        for i in 0..128_usize {
+                            let b = unsafe { *base.add(i) };
+                            all_hex.push_str(&format!("{:02x}", b));
+                            if i % 16 == 15 { all_hex.push(' '); }
+                            all_ascii.push(if (0x20..0x7F).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            });
+                            if i % 16 == 15 { all_ascii.push(' '); }
+                        }
+                        tracing::info!(
+                            target: "simconnect",
+                            "GSX_CDA discover (128B) hex: {}",
+                            all_hex.trim()
+                        );
+                        tracing::info!(
+                            target: "simconnect",
+                            "GSX_CDA discover (128B) ascii: \"{}\"",
+                            all_ascii.trim()
                         );
                     }
                 }
