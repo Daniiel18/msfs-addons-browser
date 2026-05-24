@@ -464,15 +464,27 @@ mod windows_simconnect {
         player_lat: f64,
         player_lon: f64,
         airport_icao: String,
+        /// (v3.4.5) Centro del aeropuerto en coordenadas absolutas
+        /// (degrees). Se popula al recibir el primer
+        /// `SIMCONNECT_RECV_FACILITY_DATA` con type=AIRPORT.
+        /// Las coordenadas absolutas de cada parking se calculan
+        /// como airport_center + bias_offset.
+        airport_lat: Option<f64>,
+        airport_lon: Option<f64>,
         parkings: Vec<ParkingSpot>,
     }
 
     /// Una entrada de TAXI_PARKING parseada del buffer de
     /// SIMCONNECT_RECV_FACILITY_DATA. Layout esperado del buffer
-    /// (orden de AddToFacilityDefinition — v3.0.0 incluye TYPE):
+    /// (orden de AddToFacilityDefinition — v3.4.5):
     ///   [u32 TYPE enum] [u32 NAME enum] [u32 NUMBER] [u32 SUFFIX]
-    ///   [f64 LAT] [f64 LON]
+    ///   [f64 BIAS_X] [f64 BIAS_Y]
     /// Total 4×4 + 8×2 = 32 bytes.
+    ///
+    /// `BIAS_X` (east) y `BIAS_Y` (north) son offsets en METROS
+    /// desde el centro del aeropuerto — para convertirlos a degrees:
+    ///   d_lat = bias_y / 111_320
+    ///   d_lon = bias_x / (111_320 * cos(airport_lat_rad))
     #[derive(Debug, Clone)]
     struct ParkingSpot {
         /// SIMCONNECT_AIRPORT_PARKING_TYPE — categoría del parking
@@ -485,8 +497,13 @@ mod windows_simconnect {
         name_id: u32,
         number: u32,
         suffix: u32,
-        lat: f64,
-        lon: f64,
+        /// (v3.4.5) BIAS_X — offset este en metros desde el centro
+        /// del aeropuerto. NOTA: antes leíamos LATITUDE directo pero
+        /// SimConnect lo rechazaba con DATA_ERROR — TAXI_PARKING no
+        /// tiene esos campos en el SDK MSFS 2020.
+        bias_x: f64,
+        /// BIAS_Y — offset norte en metros desde el centro del aeropuerto.
+        bias_y: f64,
     }
 
     impl ParkingSpot {
@@ -932,31 +949,42 @@ mod windows_simconnect {
         // OPEN/CLOSE markers + fields del child. El orden es el orden
         // en que MSFS escribe los bytes en el buffer del evento.
         //
-        // Field types (de SimConnect.h):
-        //   TYPE      → DWORD enum SIMCONNECT_AIRPORT_PARKING_TYPE
-        //               (RAMP_GA, GATE_SMALL/MED/HEAVY, DOCK_GA, …).
-        //   NAME      → DWORD enum SIMCONNECT_AIRPORT_PARKING_NAME
-        //               (PARKING, N_PARKING…NW_PARKING, GATE, DOCK,
-        //                GATE_A…GATE_Z = 13..=38).
-        //   NUMBER    → DWORD
-        //   SUFFIX    → DWORD letter (0=none, 1=A...)
-        //   LATITUDE  → FLOAT64 (degrees)
-        //   LONGITUDE → FLOAT64 (degrees)
+        // Field types del SDK oficial. **v3.4.4 BUG FIX**: el TAXI_PARKING
+        // NO tiene LATITUDE/LONGITUDE directos como yo asumí — SimConnect
+        // los rechaza con DATA_ERROR (code=20, sendID=31/32 en el log
+        // del usuario). Las coordenadas absolutas se calculan así:
+        //   absolute_lat = airport.LATITUDE  + (parking.BIAS_Y / m_per_deg_lat)
+        //   absolute_lon = airport.LONGITUDE + (parking.BIAS_X / m_per_deg_lon)
+        // BIAS_X y BIAS_Y son offsets en METROS desde el centro del
+        // aeropuerto (X=este+, Y=norte+).
         //
-        // **v3.0.0** — añadimos TYPE delante de NAME. Sin TYPE el
-        // mapeo a "Gate A34" vs "Ramp 4" era ambiguo y veíamos
-        // "Stand · 341° 855m de ICAO" en el FlightBook.
+        //   AIRPORT level fields:
+        //     LATITUDE   → FLOAT64 (degrees) — centro del aeropuerto
+        //     LONGITUDE  → FLOAT64 (degrees) — centro del aeropuerto
+        //
+        //   TAXI_PARKING level fields:
+        //     TYPE       → DWORD enum SIMCONNECT_AIRPORT_PARKING_TYPE
+        //                  (RAMP_GA, GATE_SMALL/MED/HEAVY, DOCK_GA, …).
+        //     NAME       → DWORD enum SIMCONNECT_AIRPORT_PARKING_NAME
+        //                  (PARKING, N_PARKING…NW_PARKING, GATE, DOCK,
+        //                   GATE_A…GATE_Z = 13..=38).
+        //     NUMBER     → DWORD
+        //     SUFFIX     → DWORD letter (0=none, 1=A...)
+        //     BIAS_X     → FLOAT64 (meters east of airport center)
+        //     BIAS_Y     → FLOAT64 (meters north of airport center)
         let mut facility_def_ok = false;
         if let Some(add_fac) = lib.AddToFacilityDefinition {
             let fields = &[
                 "OPEN AIRPORT",
+                "LATITUDE",
+                "LONGITUDE",
                 "OPEN TAXI_PARKING",
                 "TYPE",
                 "NAME",
                 "NUMBER",
                 "SUFFIX",
-                "LATITUDE",
-                "LONGITUDE",
+                "BIAS_X",
+                "BIAS_Y",
                 "CLOSE TAXI_PARKING",
                 "CLOSE AIRPORT",
             ];
@@ -1554,16 +1582,35 @@ mod windows_simconnect {
                         "FACILITY_DATA req={} type={} is_list={} item={} list_size={}",
                         req_id, ntype, is_list, item_idx, list_size
                     );
-                    if ntype == sc::SIMCONNECT_FACILITY_DATA_TAXI_PARKING {
-                        // El layout de Data[] sigue el orden de
-                        // AddToFacilityDefinition (v3.0.0 con TYPE):
-                        //   [u32 TYPE] [u32 NAME] [u32 NUMBER] [u32 SUFFIX]
-                        //   [f64 LAT] [f64 LON]
-                        let base = unsafe {
-                            (p_data as *const u8).add(
-                                std::mem::size_of::<sc::SIMCONNECT_RECV_FACILITY_DATA>() - 4,
-                            )
+                    // (v3.4.5) Parsear separadamente AIRPORT (centro del
+                    // aeropuerto) y TAXI_PARKING (bias offsets en metros).
+                    let base = unsafe {
+                        (p_data as *const u8).add(
+                            std::mem::size_of::<sc::SIMCONNECT_RECV_FACILITY_DATA>() - 4,
+                        )
+                    };
+                    if ntype == sc::SIMCONNECT_FACILITY_DATA_AIRPORT {
+                        // Layout AIRPORT en nuestra def:
+                        //   [f64 LATITUDE] [f64 LONGITUDE]
+                        let lat = unsafe {
+                            std::ptr::read_unaligned(base as *const f64)
                         };
+                        let lon = unsafe {
+                            std::ptr::read_unaligned(base.add(8) as *const f64)
+                        };
+                        if let Some(p) = pending_gates.get_mut(&req_id) {
+                            p.airport_lat = Some(lat);
+                            p.airport_lon = Some(lon);
+                            tracing::debug!(
+                                target: "simconnect",
+                                "RECV_FACILITY_DATA req={} AIRPORT centro=({:.4},{:.4})",
+                                req_id, lat, lon
+                            );
+                        }
+                    } else if ntype == sc::SIMCONNECT_FACILITY_DATA_TAXI_PARKING {
+                        // Layout TAXI_PARKING en nuestra def (v3.4.5):
+                        //   [u32 TYPE] [u32 NAME] [u32 NUMBER] [u32 SUFFIX]
+                        //   [f64 BIAS_X] [f64 BIAS_Y]
                         // unaligned reads — los bytes son packed(4).
                         let type_id = unsafe {
                             std::ptr::read_unaligned(base as *const u32)
@@ -1577,10 +1624,10 @@ mod windows_simconnect {
                         let suffix = unsafe {
                             std::ptr::read_unaligned(base.add(12) as *const u32)
                         };
-                        let lat = unsafe {
+                        let bias_x = unsafe {
                             std::ptr::read_unaligned(base.add(16) as *const f64)
                         };
-                        let lon = unsafe {
+                        let bias_y = unsafe {
                             std::ptr::read_unaligned(base.add(24) as *const f64)
                         };
                         if let Some(p) = pending_gates.get_mut(&req_id) {
@@ -1589,8 +1636,8 @@ mod windows_simconnect {
                                 name_id,
                                 number,
                                 suffix,
-                                lat,
-                                lon,
+                                bias_x,
+                                bias_y,
                             });
                         }
                     }
@@ -2341,6 +2388,8 @@ mod windows_simconnect {
                 player_lat,
                 player_lon,
                 airport_icao: icao.clone(),
+                airport_lat: None,
+                airport_lon: None,
                 parkings: Vec::new(),
             },
         );
@@ -2447,13 +2496,32 @@ mod windows_simconnect {
             );
             return;
         }
-        // Distancia 2D simple en grados (suficiente para "más
-        // cercano" sin haversine — distancias entre parkings de un
-        // mismo airport son chicas).
+        // (v3.4.5) Calcular coordenadas absolutas de cada parking
+        // como airport_center + bias_offset (convertir metros a
+        // grados). Si no llegó el `AIRPORT` facility data (no
+        // debería pasar, pero por seguridad) caemos a `player_lat/lon`
+        // como aproximación del centro — los biases siguen siendo
+        // offsets relativos consistentes.
+        let airport_lat = pending.airport_lat.unwrap_or(pending.player_lat);
+        let airport_lon = pending.airport_lon.unwrap_or(pending.player_lon);
+        if pending.airport_lat.is_none() {
+            tracing::warn!(
+                target: "simconnect",
+                "gate request {} ({}) — AIRPORT facility data no llegó; usando player como centro",
+                pending.airport_icao, pending.role
+            );
+        }
+
+        // Conversión metros → grados, aproximación local.
+        let m_per_deg_lat = 111_320.0_f64;
+        let m_per_deg_lon = 111_320.0_f64 * airport_lat.to_radians().cos().abs().max(1e-6);
+
         let mut best: Option<(f64, &ParkingSpot)> = None;
         for p in &pending.parkings {
-            let dlat = p.lat - pending.player_lat;
-            let dlon = p.lon - pending.player_lon;
+            let p_lat = airport_lat + (p.bias_y / m_per_deg_lat);
+            let p_lon = airport_lon + (p.bias_x / m_per_deg_lon);
+            let dlat = p_lat - pending.player_lat;
+            let dlon = p_lon - pending.player_lon;
             let d = dlat * dlat + dlon * dlon;
             if best.map(|(b, _)| d < b).unwrap_or(true) {
                 best = Some((d, p));
