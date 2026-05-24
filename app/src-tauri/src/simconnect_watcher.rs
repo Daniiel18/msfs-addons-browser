@@ -1025,84 +1025,103 @@ mod windows_simconnect {
             );
         }
 
-        // (v3.4.6) **GSX Client Data Area reader — discovery mode**.
+        // (v3.4.7) **GSX Client Data Area reader — discovery v2**.
         //
-        // FSDreamTeam's GSX expone su estado vía SimConnect Client Data
-        // Areas escritas por su módulo WASM. El nombre canónico más
-        // documentado es `FSDT_GSX_AIRCRAFT_DATA`. El layout exacto no
-        // es publicado oficialmente, así que esta primera iteración
-        // suscribe el buffer raw (512 bytes) y vuelca hex+ASCII al
-        // log cada segundo. Con esa traza identificamos visualmente
-        // los offsets de strings (gate name, airport icao, etc.) y la
-        // próxima iteración mete un parser tipado.
+        // v3.4.6 suscribió solo a `FSDT_GSX_AIRCRAFT_DATA` con
+        // FLAG_CHANGED y nunca recibió un dispatch (aún con GSX
+        // boarding activo). Eso indica que ese nombre no es el
+        // canónico en esta versión de GSX, o que el CDA sólo emite
+        // bajo escritura específica de GSX.
         //
-        // Los símbolos `MapClientDataNameToID`, `AddToClientDataDefinition`
-        // y `RequestClientData` son Option en la lib — degradan si la
-        // DLL no los exporta (MSFS pre-SU8 muy antiguo).
-        const CDA_ID_GSX_AIRCRAFT: u32 = 100;
-        const DEFINE_ID_GSX_AIRCRAFT: u32 = 300;
-        const REQUEST_ID_GSX_AIRCRAFT: u32 = 100;
+        // Estrategia v3.4.7: suscribirse a MÚLTIPLES nombres
+        // candidatos en paralelo con request_ids distintos +
+        // `FLAG_DEFAULT` (emit cada segundo aunque no cambie). Si
+        // el CDA existe pero está vacío, vamos a ver buffer de ceros
+        // — confirma existencia. Si simplemente no emite, el nombre
+        // está mal.
+        //
+        // Candidatos basados en docs públicas / forks open source:
+        //   1. FSDT_GSX_AIRCRAFT_DATA  — el "estándar" supuesto
+        //   2. FSDT_GSX_MENU           — estado del menú GSX
+        //   3. FSDT_GSX_PIPE_TO_PLANE  — pipe bidireccional
+        //   4. FSDT_GSX_BYPASS_PIN     — bypass pin (chico pero
+        //                                confirma si GSX está vivo)
+        //
+        // Request IDs 100..103 (no chocan con AIRCRAFT=1 ni META=2).
+        const GSX_REQ_BASE: u32 = 100;
         const GSX_CDA_SIZE: u32 = 512;
+        let gsx_candidates: &[&str] = &[
+            "FSDT_GSX_AIRCRAFT_DATA",
+            "FSDT_GSX_MENU",
+            "FSDT_GSX_PIPE_TO_PLANE",
+            "FSDT_GSX_BYPASS_PIN",
+        ];
         if let (Some(map_cda), Some(add_cda_def), Some(req_cda)) = (
             lib.MapClientDataNameToID,
             lib.AddToClientDataDefinition,
             lib.RequestClientData,
         ) {
-            let gsx_name = sc::cstr("FSDT_GSX_AIRCRAFT_DATA");
-            let hr_map = unsafe { map_cda(handle, gsx_name.as_ptr(), CDA_ID_GSX_AIRCRAFT) };
-            if !sc::succeeded(hr_map) {
-                tracing::warn!(
-                    target: "simconnect",
-                    "MapClientDataNameToID('FSDT_GSX_AIRCRAFT_DATA') falló (0x{:08x}); GSX bridge deshabilitado",
-                    hr_map
-                );
-            } else {
-                // Definimos el buffer entero como un solo "campo" raw.
-                // dwSizeOrType para sizes > 8 bytes es directamente el
-                // size en bytes (no un enum de tipo).
+            for (idx, name) in gsx_candidates.iter().enumerate() {
+                let cda_id = GSX_REQ_BASE + idx as u32;
+                let def_id = 300 + idx as u32;
+                let req_id = GSX_REQ_BASE + idx as u32;
+                let cname = sc::cstr(name);
+                // Step 1: name → ID
+                let hr_map = unsafe { map_cda(handle, cname.as_ptr(), cda_id) };
+                if !sc::succeeded(hr_map) {
+                    tracing::warn!(
+                        target: "simconnect",
+                        "GSX CDA '{}' MapClientDataNameToID falló (0x{:08x}); skip",
+                        name, hr_map
+                    );
+                    continue;
+                }
+                // Step 2: definir buffer raw
                 let hr_def = unsafe {
                     add_cda_def(
                         handle,
-                        DEFINE_ID_GSX_AIRCRAFT,
-                        0,                // dwOffset
-                        GSX_CDA_SIZE,     // dwSizeOrType = raw bytes
-                        0.0,              // fEpsilon
-                        u32::MAX,         // SIMCONNECT_UNUSED
+                        def_id,
+                        0,
+                        GSX_CDA_SIZE,
+                        0.0,
+                        u32::MAX,
                     )
                 };
                 if !sc::succeeded(hr_def) {
                     tracing::warn!(
                         target: "simconnect",
-                        "AddToClientDataDefinition GSX falló (0x{:08x})",
-                        hr_def
+                        "GSX CDA '{}' AddToClientDataDefinition falló (0x{:08x})",
+                        name, hr_def
+                    );
+                    continue;
+                }
+                // Step 3: suscribir con FLAG_DEFAULT (emisión cada
+                // segundo, sin importar cambios)
+                let hr_req = unsafe {
+                    req_cda(
+                        handle,
+                        cda_id,
+                        req_id,
+                        def_id,
+                        SIMCONNECT_PERIOD_SECOND,
+                        SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
+                        0,
+                        0,
+                        0,
+                    )
+                };
+                if !sc::succeeded(hr_req) {
+                    tracing::warn!(
+                        target: "simconnect",
+                        "GSX CDA '{}' RequestClientData falló (0x{:08x})",
+                        name, hr_req
                     );
                 } else {
-                    let hr_req = unsafe {
-                        req_cda(
-                            handle,
-                            CDA_ID_GSX_AIRCRAFT,
-                            REQUEST_ID_GSX_AIRCRAFT,
-                            DEFINE_ID_GSX_AIRCRAFT,
-                            SIMCONNECT_PERIOD_SECOND,
-                            sc::SIMCONNECT_DATA_REQUEST_FLAG_CHANGED,
-                            0,
-                            0,
-                            0,
-                        )
-                    };
-                    if !sc::succeeded(hr_req) {
-                        tracing::warn!(
-                            target: "simconnect",
-                            "RequestClientData GSX falló (0x{:08x})",
-                            hr_req
-                        );
-                    } else {
-                        tracing::info!(
-                            target: "simconnect",
-                            "GSX Client Data Area 'FSDT_GSX_AIRCRAFT_DATA' suscrito ({}B raw, emit on CHANGED)",
-                            GSX_CDA_SIZE
-                        );
-                    }
+                    tracing::info!(
+                        target: "simconnect",
+                        "GSX CDA candidate '{}' suscrito req={} ({}B raw, emit each second)",
+                        name, req_id, GSX_CDA_SIZE
+                    );
                 }
             }
         } else {
@@ -1760,27 +1779,34 @@ mod windows_simconnect {
                     }
                 }
                 SIMCONNECT_RECV_ID_CLIENT_DATA => {
-                    // (v3.4.6) GSX Client Data Area dispatch — modo
-                    // discovery: dump hex+ASCII de los primeros 128
-                    // bytes al log para identificar el offset del
-                    // gate string. Una vez identificados los offsets,
-                    // próxima versión hace parser tipado y popula
-                    // `current_gate` en SharedState.
+                    // (v3.4.7) GSX Client Data Area dispatch — modo
+                    // discovery con MÚLTIPLES candidates. Cada uno
+                    // tiene un request_id distinto (100..103), así
+                    // sabemos cuál CDA fue el que emitió.
                     let evt = unsafe {
                         &*(p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA)
                     };
                     let request_id = evt.dwRequestID;
-                    if request_id == 100 /* REQUEST_ID_GSX_AIRCRAFT */ {
+                    let cda_name = match request_id {
+                        100 => Some("FSDT_GSX_AIRCRAFT_DATA"),
+                        101 => Some("FSDT_GSX_MENU"),
+                        102 => Some("FSDT_GSX_PIPE_TO_PLANE"),
+                        103 => Some("FSDT_GSX_BYPASS_PIN"),
+                        _ => None,
+                    };
+                    if let Some(name) = cda_name {
                         let base = unsafe {
                             (p_data as *const u8).add(
                                 std::mem::size_of::<sc::SIMCONNECT_RECV_CLIENT_DATA>() - 4,
                             )
                         };
-                        // Dump 128 bytes en 8 grupos de 16
+                        // Dump 128 bytes — hex en bloques de 16
                         let mut all_hex = String::with_capacity(300);
                         let mut all_ascii = String::with_capacity(140);
+                        let mut nonzero = 0_usize;
                         for i in 0..128_usize {
                             let b = unsafe { *base.add(i) };
+                            if b != 0 { nonzero += 1; }
                             all_hex.push_str(&format!("{:02x}", b));
                             if i % 16 == 15 { all_hex.push(' '); }
                             all_ascii.push(if (0x20..0x7F).contains(&b) {
@@ -1790,16 +1816,22 @@ mod windows_simconnect {
                             });
                             if i % 16 == 15 { all_ascii.push(' '); }
                         }
-                        tracing::info!(
-                            target: "simconnect",
-                            "GSX_CDA discover (128B) hex: {}",
-                            all_hex.trim()
-                        );
-                        tracing::info!(
-                            target: "simconnect",
-                            "GSX_CDA discover (128B) ascii: \"{}\"",
-                            all_ascii.trim()
-                        );
+                        // Sólo logueamos cuando hay bytes no-cero o
+                        // cada 30 emisiones de zeros — evita inundar
+                        // el log con "todos ceros" eternos.
+                        let should_log = nonzero > 0 || (ticks_since_emit % 30 == 0);
+                        if should_log {
+                            tracing::info!(
+                                target: "simconnect",
+                                "GSX_CDA[{}] req={} nonzero={}B hex: {}",
+                                name, request_id, nonzero, all_hex.trim()
+                            );
+                            tracing::info!(
+                                target: "simconnect",
+                                "GSX_CDA[{}] req={} ascii: \"{}\"",
+                                name, request_id, all_ascii.trim()
+                            );
+                        }
                     }
                 }
                 _ => {
