@@ -114,13 +114,30 @@ pub fn spawn(pool: SqlitePool, app: AppHandle) -> SharedState {
         // los campos relevantes; si no, este fallback es la única
         // fuente.
         let mut last_emitted = FlightStatus::default();
+        // (v3.4.10) Heartbeat — forzar emit cada N polls aunque el
+        // status no haya cambiado. Asegura que el frontend siempre
+        // tiene el estado actual aunque el listener se haya suscrito
+        // tarde y el emit inicial se haya perdido.
+        const FALLBACK_HEARTBEAT_EVERY: u32 = 6; // ~30s con FALLBACK_POLL_INTERVAL=5s
+        let mut polls_since_emit: u32 = 0;
         loop {
             let status = compute_fallback_status(&pool, &task_state).await;
-            if status_changed_for_fallback(&last_emitted, &status) {
+            let changed = status_changed_for_fallback(&last_emitted, &status);
+            let should_emit = changed || polls_since_emit >= FALLBACK_HEARTBEAT_EVERY;
+            if should_emit {
+                tracing::info!(
+                    target: "simconnect",
+                    "emit flight://current (fallback{}) sim_running={} sc_connected={} origin={:?}",
+                    if changed { ", changed" } else { ", heartbeat" },
+                    status.sim_running, status.simconnect_connected, status.origin_icao
+                );
                 if let Err(e) = app.emit("flight://current", &status) {
                     tracing::warn!(target: "simconnect", "emit flight://current falló: {e:#}");
                 }
                 last_emitted = status.clone();
+                polls_since_emit = 0;
+            } else {
+                polls_since_emit += 1;
             }
             {
                 let mut guard = task_state.lock().await;
@@ -2461,6 +2478,31 @@ mod windows_simconnect {
             if should_emit {
                 let snapshot = st.clone();
                 drop(guard);
+                // (v3.4.10) Log diagnóstico throttled — cada ~10s
+                // mostramos un summary del payload para confirmar
+                // que el emit está corriendo. Sin esto, si el badge
+                // no aparece en la UI no sabemos si es bug de
+                // backend (no emite) o frontend (no recibe).
+                static LAST_LOG_TS: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> =
+                    std::sync::OnceLock::new();
+                let last_log = LAST_LOG_TS.get_or_init(|| {
+                    std::sync::Mutex::new(
+                        std::time::Instant::now() - std::time::Duration::from_secs(60),
+                    )
+                });
+                if let Ok(mut t) = last_log.lock() {
+                    if t.elapsed() >= std::time::Duration::from_secs(10) {
+                        tracing::info!(
+                            target: "simconnect",
+                            "emit flight://current (tick) sim_running={} sc_connected={} gate={:?} phase={:?}",
+                            snapshot.sim_running,
+                            snapshot.simconnect_connected,
+                            snapshot.current_gate,
+                            snapshot.phase_label
+                        );
+                        *t = std::time::Instant::now();
+                    }
+                }
                 let _ = app.emit("flight://current", &snapshot);
                 *ticks_since_emit = 0;
             }
@@ -2973,6 +3015,11 @@ mod windows_simconnect {
                 guard.status.sim_running = guard.status.sim_running || connected;
                 let snapshot = guard.status.clone();
                 drop(guard);
+                tracing::info!(
+                    target: "simconnect",
+                    "emit flight://current (update_connected) sim_running={} sc_connected={} gate={:?}",
+                    snapshot.sim_running, snapshot.simconnect_connected, snapshot.current_gate
+                );
                 let _ = app.emit("flight://current", &snapshot);
                 return;
             }

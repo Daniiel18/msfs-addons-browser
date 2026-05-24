@@ -43,6 +43,10 @@ export function FlightBookView() {
   const lastError = useFlightLogStore((s) => s.lastError);
   const reload = useFlightLogStore((s) => s.reload);
   const remove = useFlightLogStore((s) => s.remove);
+  // (v3.4.10) Status del watcher para mostrar PreflightCard cuando
+  // hay SimConnect conectado pero aún no hay vuelo abierto en DB
+  // (cold & dark spawn at gate).
+  const status = useFlightLogStore((s) => s.status);
 
   // Selección de vuelo para mostrar su track real en el mapa.
   // null/undefined = modo globo (todos los vuelos a la vez).
@@ -279,6 +283,18 @@ export function FlightBookView() {
               sentido duplicarlo). */}
           {inFlight && inFlight.id !== selectedFlightId && (
             <ActiveFlightCard entry={inFlight} />
+          )}
+
+          {/* (v3.4.10) **Preflight card** — visible cuando hay
+              SimConnect conectado pero todavía no se disparó el OUT
+              (no hay flight row en DB). Muestra al usuario "estás
+              en el escenario, en este gate, con este avión" sin
+              necesidad de que ya haya pushback. Resuelve el UX gap
+              donde el usuario abría el FlightBook tras spawnear cold
+              & dark y veía solo el historial sin indicación de su
+              estado actual. */}
+          {!inFlight && status && status.simconnectConnected && (
+            <PreflightCard status={status} />
           )}
 
           {/* Feed de cards — siempre visible en ambos modos. La card
@@ -795,6 +811,52 @@ function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
 
 // (v3.3.0) `Metric` legacy component eliminado — DetailBlock +
 // BlockRow lo reemplazan completamente.
+
+/** (v3.4.10) **PreflightCard** — visible en el FlightBook cuando hay
+ *  SimConnect conectado pero todavía no se disparó el OUT. Muestra:
+ *  "Estás en KATL · Gate E26 · PMDG 737 Delta N928DU · pre-flight".
+ *  Resuelve el UX gap donde el usuario abre el FlightBook tras
+ *  spawnear y solo ve el historial — ahora ve su estado actual. */
+function PreflightCard({ status }: { status: import("../lib/types").FlightStatus }) {
+  const icao = status.currentAirportIcao ?? "?";
+  const gate = status.currentGate ?? "—";
+  const phase = phaseLabelForUi(status.phaseLabel);
+  return (
+    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 ring-1 ring-amber-500/15">
+      <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-300">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
+        </span>
+        {t("fb.preflight.at_gate")}
+      </div>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-amber-100">
+        <span>
+          <MapPin className="mr-1 inline h-3.5 w-3.5" />
+          {icao}
+        </span>
+        {gate !== "—" && (
+          <>
+            <span className="text-amber-400">·</span>
+            <span className="font-semibold">{gate}</span>
+          </>
+        )}
+        <span className="text-amber-400">·</span>
+        <span className="text-amber-200">{phase}</span>
+      </div>
+      <div className="mt-1 text-[11px] text-amber-200/80">
+        {t("fb.preflight.waiting_pushback")}
+      </div>
+    </div>
+  );
+}
+
+/** Mapea el phase_label canónico del watcher a la string i18n. */
+function phaseLabelForUi(phase: string | null): string {
+  if (!phase) return t("flying.preflight");
+  const key = `flying.${phase}`;
+  return t(key);
+}
 
 function StatCard({
   icon,

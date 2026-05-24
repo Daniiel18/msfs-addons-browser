@@ -168,6 +168,8 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
     "fb.empty.body":
       "Cuando despegues en MSFS con SimConnect activo, el watcher creará una entrada automáticamente.",
     "fb.flying_now": "Volando ahora",
+    "fb.preflight.at_gate": "En tierra · pre-vuelo",
+    "fb.preflight.waiting_pushback": "Esperando pushback / despegue.",
     "fb.selected_flight": "Vuelo seleccionado",
     "fb.real_route": "Ruta real (cada 10s)",
     "fb.history": "Historial",
@@ -358,6 +360,8 @@ const DICTIONARIES: Record<Locale, Record<string, string>> = {
     "fb.empty.body":
       "When you take off in MSFS with SimConnect active, the watcher will create an entry automatically.",
     "fb.flying_now": "Flying now",
+    "fb.preflight.at_gate": "On ground · pre-flight",
+    "fb.preflight.waiting_pushback": "Waiting for pushback / takeoff.",
     "fb.selected_flight": "Selected flight",
     "fb.real_route": "Real route (every 10s)",
     "fb.history": "History",
