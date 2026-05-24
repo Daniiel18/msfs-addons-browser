@@ -327,23 +327,31 @@ mod windows_simconnect {
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
     /// STRING256 que describen la aeronave (TITLE / ATC TYPE / ATC
-    /// MODEL / ATC AIRLINE / ATC ID).
+    /// AIRLINE / ATC ID).
     ///
-    /// SimConnect llena los 5 buffers contiguos en orden de
+    /// **BUG FIX post-rebuild**: la versión inicial incluía
+    /// `ATC MODEL` como 5° campo, pero esa simvar **no existe** en
+    /// el SimConnect SDK (la confundí con el campo `model=` del
+    /// `aircraft.cfg`). SimConnect rechazaba el AddToDataDefinition
+    /// con `DEFINITION_ERROR` y arrastraba al watcher a un estado
+    /// zombi donde seguía logueando pausas pero no procesaba más
+    /// Facility Data ni transiciones de phase. Sin `ATC MODEL`,
+    /// derivamos el modelo de `TITLE` (que típicamente incluye el
+    /// nombre del avión).
+    ///
+    /// SimConnect llena los 4 buffers contiguos en orden de
     /// AddToDataDefinition. Cada uno son **256 bytes de ASCII
     /// terminado en NUL** — no UTF-8 estricto pero `from_utf8_lossy`
     /// maneja addons rebeldes con caracteres extendidos.
     ///
-    /// Se requestea con `PERIOD_SECOND + FLAG_CHANGED`: SimConnect
-    /// sólo emite cuando algún string cambia, lo que típicamente
-    /// pasa una sola vez por sesión (al cargar el avión) — no añade
-    /// load notable al pipeline.
+    /// Se requestea con `PERIOD_SECOND + FLAG_DEFAULT`: emisión cada
+    /// segundo para que tras un `start_flight()` el siguiente
+    /// dispatch persista el meta en menos de 1s.
     #[repr(C, packed(4))]
     #[derive(Clone, Copy)]
     struct AircraftMeta {
         title: [u8; 256],
         atc_type: [u8; 256],
-        atc_model: [u8; 256],
         atc_airline: [u8; 256],
         atc_id: [u8; 256],
     }
@@ -353,7 +361,6 @@ mod windows_simconnect {
             Self {
                 title: [0; 256],
                 atc_type: [0; 256],
-                atc_model: [0; 256],
                 atc_airline: [0; 256],
                 atc_id: [0; 256],
             }
@@ -809,9 +816,8 @@ mod windows_simconnect {
         }
 
         // (v3.5.0) Meta strings de la aeronave — TITLE, ATC TYPE,
-        // ATC MODEL, ATC AIRLINE, ATC ID. STRING256 cada uno. Orden
-        // **debe coincidir** con la disposición de `AircraftMeta`
-        // arriba.
+        // ATC AIRLINE, ATC ID. STRING256 cada uno. Orden **debe
+        // coincidir** con la disposición de `AircraftMeta` arriba.
         //
         // El usuario explícitamente pidió que dejemos de depender de
         // APIs externas (SimBrief) o nombres de carpeta para
@@ -823,12 +829,18 @@ mod windows_simconnect {
         //   `ATC ID` es portable.
         // - `TITLE` es el path interno del livery (ej. "Asobo A320
         //   Neo Iberia"); útil cuando el usuario quiere distinguir
-        //   liveries.
-        let meta_units = sc::cstr("");
+        //   liveries. También sirve para derivar el "modelo" porque
+        //   la simvar `ATC MODEL` **no existe** en el SDK (rejected
+        //   con DEFINITION_ERROR + DATA_ERROR — la app cae en estado
+        //   zombi después).
+        //
+        // NOTA importante sobre `UnitsName`: el SDK documenta NULL
+        // para tipos string. Usamos `ptr::null()` directo en vez de
+        // un puntero a string vacío — SimConnect parecía aceptar
+        // "" pero el path seguro es null.
         let meta_names = &[
             "TITLE",
             "ATC TYPE",
-            "ATC MODEL",
             "ATC AIRLINE",
             "ATC ID",
         ];
@@ -840,7 +852,7 @@ mod windows_simconnect {
                     handle,
                     DEFINE_ID_AIRCRAFT_META,
                     n.as_ptr(),
-                    meta_units.as_ptr(),
+                    ptr::null(),
                     sc::SIMCONNECT_DATATYPE_STRING256,
                     0.0,
                     u32::MAX,
@@ -887,7 +899,7 @@ mod windows_simconnect {
             } else {
                 tracing::info!(
                     target: "simconnect",
-                    "AircraftMeta subscrito (TITLE, ATC TYPE, MODEL, AIRLINE, ID) — emit on CHANGED"
+                    "AircraftMeta subscrito (TITLE, ATC TYPE, AIRLINE, ID) — emit cada 1s (FLAG_DEFAULT)"
                 );
             }
         }
@@ -1324,9 +1336,17 @@ mod windows_simconnect {
                         let meta = unsafe { *data_ptr };
                         let title = read_cstr(&meta.title);
                         let atc_type = read_cstr(&meta.atc_type);
-                        let model = read_cstr(&meta.atc_model);
                         let airline = read_cstr(&meta.atc_airline);
                         let registration = read_cstr(&meta.atc_id);
+                        // Derivamos `model` del TITLE — la simvar
+                        // `ATC MODEL` no existe en el SDK. Heurística
+                        // simple: nos quedamos con la primera fragmento
+                        // antes del primer paréntesis o palabra de
+                        // separación de livery (no perfecto, pero útil
+                        // para agrupar). El usuario puede editar a mano.
+                        let model = title.as_ref().map(|t| {
+                            t.split(['(', '|', '-']).next().unwrap_or(t).trim().to_string()
+                        });
                         tracing::info!(
                             target: "simconnect",
                             "AircraftMeta recibido — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?}",
