@@ -33,7 +33,19 @@ pub type HANDLE = *mut c_void;
 // ----- Constantes SimConnect -------------------------------------------------
 
 pub const SIMCONNECT_DATATYPE_FLOAT64: DWORD = 4;
-pub const SIMCONNECT_DATATYPE_STRING256: DWORD = 11;
+// (v3.4.2 hotfix) ¡OJO! Los IDs del enum SimConnectDataType en
+// SimConnect.h del SDK oficial son:
+//   FLOAT64 = 4, STRING8 = 5, STRING32 = 6, STRING64 = 7,
+//   STRING128 = 8, STRING256 = 9, STRING260 = 10, STRINGV = 11.
+// La primera versión de este file tenía STRING256 = 11 (= STRINGV
+// variable-length, layout incompatible) — eso causaba que el sim
+// rechazara nuestro AddToDataDefinition con DEFINITION_ERROR
+// (code=28) en cuanto procesaba el primer string simvar tras
+// los FLOAT64. El bug se manifestaba como "el watcher arranca
+// pero los gates nunca aparecen" porque las EXCEPTIONS dejaban
+// el define corrupto y los siguientes RECV_FACILITY_DATA quedaban
+// silenciados. Valor correcto: 9.
+pub const SIMCONNECT_DATATYPE_STRING256: DWORD = 9;
 
 pub const SIMCONNECT_PERIOD_NEVER: DWORD = 0;
 pub const SIMCONNECT_PERIOD_ONCE: DWORD = 1;
