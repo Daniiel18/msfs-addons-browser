@@ -62,18 +62,36 @@ pub const SIMCONNECT_RECV_ID_QUIT: DWORD = 3;
 pub const SIMCONNECT_RECV_ID_EVENT: DWORD = 4;
 pub const SIMCONNECT_RECV_ID_SIMOBJECT_DATA: DWORD = 8;
 pub const SIMCONNECT_RECV_ID_SIMOBJECT_DATA_BYTYPE: DWORD = 9;
-/// `SIMCONNECT_RECV_ID_CLIENT_DATA = 20` — para Client Data Areas
-/// (lo usa el módulo WASM de GSX en v0.1.26).
-pub const SIMCONNECT_RECV_ID_CLIENT_DATA: DWORD = 20;
-/// `SIMCONNECT_RECV_ID_FACILITY_DATA = 33` en SimConnect SDK MSFS.
+/// (v3.4.4 hotfix) Los IDs de RECV están en el enum
+/// `SIMCONNECT_RECV_ID` del SDK oficial. La versión original de este
+/// file tenía valores incorrectos para CLIENT_DATA (=20), FACILITY_DATA
+/// (=33) y FACILITY_DATA_END (=34) — esos son los slots de
+/// JETWAY_DATA, CONTROLLERS_LIST y ACTION_CALLBACK respectivamente.
+/// SimConnect emite los eventos con los IDs reales (29/30), nuestro
+/// match no los captura y caen al branch `_ => ignorar`. Resultado:
+/// las requests de Facility Data se mandan correctamente pero la
+/// respuesta se descarta silenciosamente.
+///
+/// Valores correctos del enum SimConnectRecvId (MSFS 2020/2024 SDK):
+///   NULL=0, EXCEPTION=1, OPEN=2, QUIT=3, EVENT=4,
+///   EVENT_OBJECT_ADDREMOVE=5, EVENT_FILENAME=6, EVENT_FRAME=7,
+///   SIMOBJECT_DATA=8, SIMOBJECT_DATA_BYTYPE=9,
+///   WEATHER_OBSERVATION=10, CLOUD_STATE=11, ASSIGNED_OBJECT_ID=12,
+///   RESERVED_KEY=13, CUSTOM_ACTION=14, SYSTEM_STATE=15,
+///   CLIENT_DATA=16, EVENT_WEATHER_MODE=17, AIRPORT_LIST=18,
+///   VOR_LIST=19, NDB_LIST=20, WAYPOINT_LIST=21,
+///   EVENT_MULTIPLAYER_*=22..24, EVENT_RACE_*=25..26,
+///   OBSERVER_DATA=27, EVENT_EX1=28, FACILITY_DATA=29,
+///   FACILITY_DATA_END=30, FACILITY_MINIMAL_LIST=31,
+///   JETWAY_DATA=32, CONTROLLERS_LIST=33, ACTION_CALLBACK=34.
+pub const SIMCONNECT_RECV_ID_CLIENT_DATA: DWORD = 16;
 /// Emitido por cada nodo de la jerarquía AIRPORT (apertura, cada
 /// child como TAXI_PARKING, cierre).
-pub const SIMCONNECT_RECV_ID_FACILITY_DATA: DWORD = 33;
-/// `SIMCONNECT_RECV_ID_FACILITY_DATA_END = 34` — emitido cuando
-/// la jerarquía completa de una request termina de transmitirse.
-/// El watcher usa esta señal para procesar la lista de parkings
-/// recolectados y elegir el más cercano al player.
-pub const SIMCONNECT_RECV_ID_FACILITY_DATA_END: DWORD = 34;
+pub const SIMCONNECT_RECV_ID_FACILITY_DATA: DWORD = 29;
+/// Emitido cuando la jerarquía completa de una request termina de
+/// transmitirse. El watcher usa esta señal para procesar la lista
+/// de parkings recolectados y elegir el más cercano al player.
+pub const SIMCONNECT_RECV_ID_FACILITY_DATA_END: DWORD = 30;
 
 pub const SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT: DWORD = 0;
 pub const SIMCONNECT_DATA_REQUEST_FLAG_CHANGED: DWORD = 1;

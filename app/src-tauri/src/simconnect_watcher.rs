@@ -1600,8 +1600,24 @@ mod windows_simconnect {
                         &*(p_data as *const sc::SIMCONNECT_RECV_FACILITY_DATA_END)
                     };
                     let req_id = evt.RequestId;
+                    // (v3.4.4) Log de diagnóstico — si llegamos acá pero
+                    // pending_gates no tiene la entry, sabemos que el
+                    // RequestId no matchea. Antes este branch era
+                    // silencioso y nos dejaba ciegos cuando algo fallaba.
                     if let Some(pending) = pending_gates.remove(&req_id) {
+                        tracing::info!(
+                            target: "simconnect",
+                            "RECV_FACILITY_DATA_END req={} → procesando {} parkings",
+                            req_id,
+                            pending.parkings.len()
+                        );
                         process_pending_gate(pool, app, state, pending);
+                    } else {
+                        tracing::warn!(
+                            target: "simconnect",
+                            "RECV_FACILITY_DATA_END req={} pero no había entry en pending_gates (¿response orphan?)",
+                            req_id
+                        );
                     }
                 }
                 _ => {
