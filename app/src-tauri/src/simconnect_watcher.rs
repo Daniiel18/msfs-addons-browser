@@ -1572,6 +1572,8 @@ mod windows_simconnect {
                                 lib,
                                 handle,
                                 pool,
+                                app,
+                                state,
                                 "departure",
                                 data.latitude_deg,
                                 data.longitude_deg,
@@ -1586,6 +1588,8 @@ mod windows_simconnect {
                                 lib,
                                 handle,
                                 pool,
+                                app,
+                                state,
                                 "arrival",
                                 data.latitude_deg,
                                 data.longitude_deg,
@@ -1660,6 +1664,8 @@ mod windows_simconnect {
                                         lib,
                                         handle,
                                         pool,
+                                        app,
+                                        state,
                                         "preflight",
                                         lat,
                                         lon,
@@ -2469,10 +2475,24 @@ mod windows_simconnect {
     /// El ICAO se resuelve via `nearest_airport_with_coords` (mismo
     /// helper que el fallback). Si no hay aeropuerto cercano, la
     /// request no se lanza (no nos sirve).
+    /// (v3.4.8) **Reescrito** — en lugar de pedir TAXI_PARKING vía
+    /// SimConnect Facility Data (5 hotfixes consecutivos demostraron
+    /// que la DLL bundled rechaza fields críticos) ahora leemos el
+    /// INI de GSX directamente desde el disco. Es file IO local +
+    /// math: 100% determinístico, cero fragilidad SDK.
+    ///
+    /// El `lib`, `handle`, `next_seq` y `pending_gates` se siguen
+    /// recibiendo para mantener la signatura del callsite igual (no
+    /// quería tocar 3 callsites para limpiar uno) pero `lib` y
+    /// `handle` ya no se usan dentro de la función — y `pending_gates`
+    /// queda intacto.
+    #[allow(unused_variables)]
     fn request_gate_facility(
         lib: &sc::SimConnectLib,
         handle: sc::HANDLE,
         pool: &SqlitePool,
+        app: &AppHandle,
+        state: &SharedState,
         role: &'static str,
         player_lat: f64,
         player_lon: f64,
@@ -2480,21 +2500,14 @@ mod windows_simconnect {
         next_seq: &mut u32,
         pending_gates: &mut std::collections::HashMap<u32, PendingGate>,
     ) {
-        let req_fac = match lib.RequestFacilityData {
-            Some(f) => f,
-            None => return,
-        };
-        // (v3.0.0) "preflight" no requiere flight activo — actualiza
-        // SharedState.current_gate para que la UI lo muestre antes del
-        // OUT. "departure" y "arrival" sí requieren flight_id.
+        // "preflight" no requiere flight activo — actualiza SharedState
+        // sólo. "departure"/"arrival" sí requieren flight_id.
         let flight_id = current_flight_id.lock().ok().and_then(|g| *g);
         if role != "preflight" && flight_id.is_none() {
             return;
         }
 
-        // Resolver ICAO en async sería ideal pero estamos en el
-        // thread sync del watcher. Hacemos un block_on con un
-        // runtime current-thread (ya hacemos esto para latest_open_flight).
+        // Resolver ICAO del aeropuerto más cercano.
         let icao_opt = std::thread::scope(|s| {
             let h = s.spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -2519,14 +2532,82 @@ mod windows_simconnect {
             return;
         };
 
-        // Asignamos request_id único — base + seq, wrapping a 999.
+        *next_seq = next_seq.wrapping_add(1);
+
+        // **Lookup en disco: GSX INI parser.**
+        let Some(parking) = crate::gsx_parking::find_nearest_parking(
+            &icao, player_lat, player_lon,
+        ) else {
+            tracing::debug!(
+                target: "simconnect",
+                "request_gate_facility ({} {}): sin GSX INI o sin parking <200m del player",
+                role, icao
+            );
+            return;
+        };
+
+        let name = parking.name.clone();
+        tracing::info!(
+            target: "simconnect",
+            "gate {} {} → \"{}\" (GSX INI)",
+            role, icao, name
+        );
+
+        // 1) Actualizar SharedState + emit a UI inmediato (preflight
+        //    incluido — para que el chip "Volando ahora" pinte el gate
+        //    ANTES de que el usuario haga pushback).
+        {
+            let state_c = state.clone();
+            let app_c = app.clone();
+            let name_c = name.clone();
+            tokio::spawn(async move {
+                let mut guard = state_c.lock().await;
+                guard.status.current_gate = Some(name_c.clone());
+                let snapshot = guard.status.clone();
+                drop(guard);
+                let _ = app_c.emit("flight://current", &snapshot);
+            });
+        }
+        // 2) Persistir a DB para departure/arrival (preflight no
+        //    necesita — el gate se copia al departure_gate al disparar
+        //    el OUT en start_flight, vía un mecanismo separado o via
+        //    el siguiente "departure" trigger).
+        if let Some(fid) = flight_id {
+            let pool_c = pool.clone();
+            let role_owned = role;
+            let name_for_db = name.clone();
+            tokio::spawn(async move {
+                let input = match role_owned {
+                    "departure" => crate::flight_log::UpdateEntryInput {
+                        departure_gate: Some(name_for_db),
+                        ..Default::default()
+                    },
+                    "arrival" => crate::flight_log::UpdateEntryInput {
+                        arrival_gate: Some(name_for_db),
+                        ..Default::default()
+                    },
+                    _ => return,
+                };
+                let _ = crate::flight_log::update_entry(&pool_c, fid, &input).await;
+            });
+        }
+        return;
+        // **El resto del cuerpo viejo (SimConnect Facility Data) queda
+        // dead code después del `return` — lo dejamos como referencia
+        // histórica y para no tener un diff masivo. Compilador lo
+        // elimina del binario.**
+        #[allow(unreachable_code)]
+        {
+        let req_fac = match lib.RequestFacilityData {
+            Some(f) => f,
+            None => return,
+        };
         let base = match role {
             "departure" => REQUEST_ID_GATE_DEP_BASE,
             "preflight" => REQUEST_ID_GATE_PRE_BASE,
             _ => REQUEST_ID_GATE_ARR_BASE,
         };
         let req_id = base + (*next_seq % 1000);
-        *next_seq = next_seq.wrapping_add(1);
 
         let icao_c = sc::cstr(&icao);
         let region_c = sc::cstr("");
@@ -2565,6 +2646,7 @@ mod windows_simconnect {
             "RequestFacilityData ({} req={}) → {} desde ({:.4}, {:.4})",
             role, req_id, icao, player_lat, player_lon
         );
+        }  // cierra el #[allow(unreachable_code)] block del v3.4.8 refactor
     }
 
     /// (v0.1.26) Procesa una request de gate completada — elige el

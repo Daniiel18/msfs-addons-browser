@@ -8,6 +8,7 @@ pub mod drop_install;
 pub mod download;
 pub mod flight_log;
 pub mod gsx;
+pub mod gsx_parking;
 pub mod install;
 pub mod logger;
 pub mod package_ops;
