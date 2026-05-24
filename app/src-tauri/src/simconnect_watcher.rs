@@ -1252,6 +1252,15 @@ mod windows_simconnect {
         // está parado en el mismo gate sólo lo pedimos UNA vez.
         let mut preflight_gate_airport: Option<String> = None;
         let mut preflight_gate_at: Option<std::time::Instant> = None;
+        // (v3.4.11) Posición del player en la última request de gate
+        // (preflight + arrival). Permite re-disparar la detección
+        // cuando el avión se movió significativamente desde la última
+        // vez — ej. taxi de un gate inicial a otro gate del mismo
+        // aeropuerto, o taxi a gate destino tras el touchdown.
+        let mut last_gate_request_pos: Option<(f64, f64)> = None;
+        let mut last_arrival_check_at = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
         let mut last_known_airport_icao: Option<String> = None;
         // (v3.5.0) BUG FIX — antes inicializábamos a `Instant::now()`, lo
         // que dejaba la detección de gate MUTE durante los primeros 10s
@@ -1667,16 +1676,43 @@ mod windows_simconnect {
                                             Some(icao.clone());
                                     }
                                 }
-                                // Re-dispara si cambió el aeropuerto o
-                                // han pasado >15min sin actualizar el gate.
+                                // (v3.4.11) Re-dispara la detección si:
+                                //   · cambió el aeropuerto, O
+                                //   · pasaron >15min (fallback periódico
+                                //     por si la primera detección
+                                //     devolvió un gate equivocado), O
+                                //   · **el avión se movió >50m desde la
+                                //     última request** — esto resuelve
+                                //     el caso "spawneo en gate inicial
+                                //     y luego taxi a otro gate del mismo
+                                //     aeropuerto". Antes el watcher se
+                                //     quedaba en el gate viejo.
                                 let stale = preflight_gate_at
                                     .map(|t| t.elapsed() > Duration::from_secs(15 * 60))
                                     .unwrap_or(true);
                                 let new_airport = preflight_gate_airport.as_ref()
                                     != Some(icao);
-                                if new_airport || stale {
+                                let moved_significantly = last_gate_request_pos
+                                    .map(|(plat, plon)| {
+                                        let m_per_deg_lat = 111_320.0_f64;
+                                        let m_per_deg_lon = 111_320.0_f64
+                                            * (lat.to_radians().cos()).abs();
+                                        let dlat_m = (lat - plat) * m_per_deg_lat;
+                                        let dlon_m = (lon - plon) * m_per_deg_lon;
+                                        (dlat_m.powi(2) + dlon_m.powi(2)).sqrt() > 50.0
+                                    })
+                                    .unwrap_or(false);
+                                if new_airport || stale || moved_significantly {
                                     preflight_gate_airport = Some(icao.clone());
                                     preflight_gate_at = Some(std::time::Instant::now());
+                                    last_gate_request_pos = Some((lat, lon));
+                                    if moved_significantly {
+                                        tracing::info!(
+                                            target: "simconnect",
+                                            "preflight gate re-detect: avión se movió >50m → re-trigger en {}",
+                                            icao
+                                        );
+                                    }
                                     request_gate_facility(
                                         lib,
                                         handle,
@@ -1691,6 +1727,54 @@ mod windows_simconnect {
                                         &mut pending_gates,
                                     );
                                 }
+                            }
+                        }
+
+                        // (v3.4.11) **Arrival gate post-taxi**.
+                        // El trigger del touchdown (Airborne→Landed,
+                        // arriba en la match) se dispara en la pista
+                        // — lejos del gate, sin parking dentro de
+                        // 75m, → None. Ahora también disparamos
+                        // mientras `phase == Landed` cada vez que el
+                        // avión está parado (`gs<1`) y se movió >50m
+                        // desde la última detección. Eso captura el
+                        // momento "ya estoy en el gate destino".
+                        if matches!(phase, FlightPhase::Landed)
+                            && gs < 1.0
+                            && pos_real
+                            && last_arrival_check_at.elapsed()
+                                >= Duration::from_secs(10)
+                        {
+                            last_arrival_check_at = std::time::Instant::now();
+                            let moved_significantly = last_gate_request_pos
+                                .map(|(plat, plon)| {
+                                    let m_per_deg_lat = 111_320.0_f64;
+                                    let m_per_deg_lon = 111_320.0_f64
+                                        * (lat.to_radians().cos()).abs();
+                                    let dlat_m = (lat - plat) * m_per_deg_lat;
+                                    let dlon_m = (lon - plon) * m_per_deg_lon;
+                                    (dlat_m.powi(2) + dlon_m.powi(2)).sqrt() > 50.0
+                                })
+                                .unwrap_or(true); // first arrival check after touchdown
+                            if moved_significantly {
+                                last_gate_request_pos = Some((lat, lon));
+                                tracing::info!(
+                                    target: "simconnect",
+                                    "arrival gate re-detect post-taxi (gs<1, pos cambió) → trigger"
+                                );
+                                request_gate_facility(
+                                    lib,
+                                    handle,
+                                    pool,
+                                    app,
+                                    state,
+                                    "arrival",
+                                    lat,
+                                    lon,
+                                    &current_flight_id,
+                                    &mut next_gate_seq_arr,
+                                    &mut pending_gates,
+                                );
                             }
                         }
                     }
