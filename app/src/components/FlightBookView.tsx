@@ -631,11 +631,27 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
           />
         </DetailBlock>
 
-        {/* BLOQUE 4 — Aircraft */}
+        {/* BLOQUE 4 — Aircraft. (v3.5.0) Ampliado con los campos
+            nuevos que el watcher captura vía SimConnect:
+            · ATC MODEL → Modelo interno del addon
+            · ATC AIRLINE → Aerolínea (configurada en MSFS Hangar)
+            · ATC ID → Matrícula real (reemplaza ATC TAIL NUMBER) */}
         <DetailBlock title={t("fb.block.aircraft")} icon="aircraft">
           <BlockRow
             label={t("fb.aircraft.type")}
             value={entry.aircraftAtcType ?? "—"}
+          />
+          <BlockRow
+            label={t("fb.aircraft.model")}
+            value={entry.aircraftModel ?? "—"}
+          />
+          <BlockRow
+            label={t("fb.aircraft.airline")}
+            value={entry.aircraftAirline ?? "—"}
+          />
+          <BlockRow
+            label={t("fb.aircraft.registration")}
+            value={entry.aircraftRegistration ?? "—"}
           />
           <BlockRow
             label={t("fb.aircraft.title")}
