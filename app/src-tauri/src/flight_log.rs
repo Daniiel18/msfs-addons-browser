@@ -32,6 +32,17 @@ pub struct FlightLogEntry {
     pub destination_name: Option<String>,
     pub aircraft_title: Option<String>,
     pub aircraft_atc_type: Option<String>,
+    /// (v3.5.0) `ATC MODEL` — referencia interna del addon (ej.
+    /// `TT:ATCCOM.AC_MODEL_A20N.0.text`). Permite agrupar vuelos por
+    /// tipo de avión aunque la livery cambie.
+    pub aircraft_model: Option<String>,
+    /// (v3.5.0) `ATC AIRLINE` — aerolínea visible (configurada en el
+    /// MSFS Hangar / livery).
+    pub aircraft_airline: Option<String>,
+    /// (v3.5.0) `ATC ID` — matrícula real del avión ("EC-MXY"). En
+    /// MSFS 2024 `ATC TAIL NUMBER` está deprecada — esta es la
+    /// canónica.
+    pub aircraft_registration: Option<String>,
     pub distance_nm: Option<f64>,
     pub flight_time_s: Option<i64>,
     pub max_altitude_ft: Option<i64>,
@@ -415,6 +426,51 @@ pub async fn touch_landing(
     Ok(())
 }
 
+/// (v3.5.0) Persiste los simvars STRING256 de SimConnect en cuanto
+/// llega la primera respuesta del `DEFINE_ID_AIRCRAFT_META`. Se
+/// llama UNA vez por vuelo, al recibir el primer
+/// `RECV_ID_SIMOBJECT_DATA` del meta request. Usamos COALESCE para
+/// no pisar valores que ya hayan sido editados manualmente por el
+/// usuario vía `update_entry`.
+///
+/// Campos vacíos (`""`) se mapean a NULL para que la UI muestre "—"
+/// en vez de un string vacío visible. Algunos addons (CRJ Aerosoft,
+/// Asobo defaults) dejan `ATC ID` vacío si el usuario no configuró
+/// matrícula — preferimos NULL antes que un string vacío.
+pub async fn update_aircraft_meta(
+    pool: &SqlitePool,
+    id: i64,
+    title: Option<&str>,
+    atc_type: Option<&str>,
+    model: Option<&str>,
+    airline: Option<&str>,
+    registration: Option<&str>,
+) -> anyhow::Result<()> {
+    fn nz(s: Option<&str>) -> Option<&str> {
+        s.filter(|v| !v.trim().is_empty())
+    }
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET aircraft_title         = COALESCE(aircraft_title, ?1),
+            aircraft_atc_type      = COALESCE(aircraft_atc_type, ?2),
+            aircraft_model         = COALESCE(aircraft_model, ?3),
+            aircraft_airline       = COALESCE(aircraft_airline, ?4),
+            aircraft_registration  = COALESCE(aircraft_registration, ?5)
+        WHERE id = ?6
+        "#,
+    )
+    .bind(nz(title))
+    .bind(nz(atc_type))
+    .bind(nz(model))
+    .bind(nz(airline))
+    .bind(nz(registration))
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Actualiza el max_altitude_ft sin tocar el resto del vuelo. Lo
 /// llama el watcher en cada tick mientras la aeronave esté en
 /// vuelo, para tener un valor razonable aunque la app cierre antes
@@ -649,7 +705,9 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
         SELECT id, started_at, ended_at,
                origin_lat, origin_lon, origin_icao, origin_name,
                destination_lat, destination_lon, destination_icao, destination_name,
-               aircraft_title, aircraft_atc_type, distance_nm, flight_time_s,
+               aircraft_title, aircraft_atc_type,
+               aircraft_model, aircraft_airline, aircraft_registration,
+               distance_nm, flight_time_s,
                max_altitude_ft,
                landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
                departure_gate, arrival_gate,

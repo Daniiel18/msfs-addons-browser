@@ -325,8 +325,61 @@ mod windows_simconnect {
         pushback_state: f64,
     }
 
+    /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
+    /// STRING256 que describen la aeronave (TITLE / ATC TYPE / ATC
+    /// MODEL / ATC AIRLINE / ATC ID).
+    ///
+    /// SimConnect llena los 5 buffers contiguos en orden de
+    /// AddToDataDefinition. Cada uno son **256 bytes de ASCII
+    /// terminado en NUL** — no UTF-8 estricto pero `from_utf8_lossy`
+    /// maneja addons rebeldes con caracteres extendidos.
+    ///
+    /// Se requestea con `PERIOD_SECOND + FLAG_CHANGED`: SimConnect
+    /// sólo emite cuando algún string cambia, lo que típicamente
+    /// pasa una sola vez por sesión (al cargar el avión) — no añade
+    /// load notable al pipeline.
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy)]
+    struct AircraftMeta {
+        title: [u8; 256],
+        atc_type: [u8; 256],
+        atc_model: [u8; 256],
+        atc_airline: [u8; 256],
+        atc_id: [u8; 256],
+    }
+
+    impl Default for AircraftMeta {
+        fn default() -> Self {
+            Self {
+                title: [0; 256],
+                atc_type: [0; 256],
+                atc_model: [0; 256],
+                atc_airline: [0; 256],
+                atc_id: [0; 256],
+            }
+        }
+    }
+
+    /// Lee una cstring de un buffer de 256 bytes — corta en el
+    /// primer NUL, trim, retorna None si queda vacío. SimConnect
+    /// rellena el buffer con NULs después del string real.
+    fn read_cstr(buf: &[u8; 256]) -> Option<String> {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(256);
+        if end == 0 { return None; }
+        let s = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    }
+
     const DEFINE_ID_AIRCRAFT: u32 = 1;
     const REQUEST_ID_AIRCRAFT: u32 = 1;
+    /// (v3.5.0) Meta strings de la aeronave — TITLE, ATC TYPE, ATC
+    /// MODEL, ATC AIRLINE, ATC ID. Separamos del DEFINE_ID_AIRCRAFT
+    /// porque mezclar STRING256 (256 bytes) con FLOAT64 (8 bytes) en
+    /// un mismo `#[repr(C, packed(4))]` puede dar problemas de
+    /// alignment según el SDK exacto. Lo pedimos como request aparte
+    /// con periodo SECOND + FLAG_CHANGED (sólo emite cuando cambia).
+    const DEFINE_ID_AIRCRAFT_META: u32 = 2;
+    const REQUEST_ID_AIRCRAFT_META: u32 = 2;
     /// ID local arbitrario para el evento "Pause" — sólo nosotros
     /// usamos esta ID dentro del proceso, no choca con nada.
     const EVENT_ID_PAUSE: u32 = 100;
@@ -755,6 +808,90 @@ mod windows_simconnect {
             anyhow::bail!("RequestDataOnSimObject falló (0x{:08x})", hr);
         }
 
+        // (v3.5.0) Meta strings de la aeronave — TITLE, ATC TYPE,
+        // ATC MODEL, ATC AIRLINE, ATC ID. STRING256 cada uno. Orden
+        // **debe coincidir** con la disposición de `AircraftMeta`
+        // arriba.
+        //
+        // El usuario explícitamente pidió que dejemos de depender de
+        // APIs externas (SimBrief) o nombres de carpeta para
+        // identificar el avión: estas son las variables CANÓNICAS de
+        // SimConnect, las mismas que MSFS expone al pilot ATC.
+        //
+        // - `ATC ID` reemplaza a `ATC TAIL NUMBER` (deprecada en MSFS
+        //   2024); en MSFS 2020 ambas valen lo mismo así que usar
+        //   `ATC ID` es portable.
+        // - `TITLE` es el path interno del livery (ej. "Asobo A320
+        //   Neo Iberia"); útil cuando el usuario quiere distinguir
+        //   liveries.
+        let meta_units = sc::cstr("");
+        let meta_names = &[
+            "TITLE",
+            "ATC TYPE",
+            "ATC MODEL",
+            "ATC AIRLINE",
+            "ATC ID",
+        ];
+        let mut meta_defs_ok = true;
+        for name in meta_names {
+            let n = sc::cstr(name);
+            let hr = unsafe {
+                (lib.AddToDataDefinition)(
+                    handle,
+                    DEFINE_ID_AIRCRAFT_META,
+                    n.as_ptr(),
+                    meta_units.as_ptr(),
+                    sc::SIMCONNECT_DATATYPE_STRING256,
+                    0.0,
+                    u32::MAX,
+                )
+            };
+            if !sc::succeeded(hr) {
+                tracing::warn!(
+                    target: "simconnect",
+                    "AddToDataDefinition meta '{}' falló (0x{:08x}); aircraft meta deshabilitado",
+                    name, hr
+                );
+                meta_defs_ok = false;
+                break;
+            }
+        }
+        if meta_defs_ok {
+            // PERIOD_SECOND + FLAG_DEFAULT — emisión cada segundo
+            // independiente de cambios. Payload de 1280 bytes/s es
+            // despreciable comparado al bandwidth típico de SimConnect.
+            // Necesitamos emisión continua para garantizar que tras
+            // un `start_flight()` (creado con title=None por timing
+            // race entre el dispatch del meta y el callsite del OUT)
+            // el siguiente dispatch en <1s persista los strings vía
+            // `update_aircraft_meta`.
+            let hr = unsafe {
+                (lib.RequestDataOnSimObject)(
+                    handle,
+                    REQUEST_ID_AIRCRAFT_META,
+                    DEFINE_ID_AIRCRAFT_META,
+                    SIMCONNECT_OBJECT_ID_USER,
+                    SIMCONNECT_PERIOD_SECOND,
+                    SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
+                    0,
+                    0,
+                    0,
+                )
+            };
+            if !sc::succeeded(hr) {
+                tracing::warn!(
+                    target: "simconnect",
+                    "RequestDataOnSimObject meta falló (0x{:08x})",
+                    hr
+                );
+            } else {
+                tracing::info!(
+                    target: "simconnect",
+                    "AircraftMeta subscrito (TITLE, ATC TYPE, MODEL, AIRLINE, ID) — emit on CHANGED"
+                );
+            }
+        }
+
         // (v0.1.25) Subscribe al evento "Pause" para no contar el
         // tiempo pausado dentro del block-time del vuelo. El evento
         // dispara con dwData = 1 al pausar y 0 al despausar.
@@ -948,7 +1085,19 @@ mod windows_simconnect {
         let mut preflight_gate_airport: Option<String> = None;
         let mut preflight_gate_at: Option<std::time::Instant> = None;
         let mut last_known_airport_icao: Option<String> = None;
-        let mut last_airport_check_at = std::time::Instant::now();
+        // (v3.5.0) BUG FIX — antes inicializábamos a `Instant::now()`, lo
+        // que dejaba la detección de gate MUTE durante los primeros 10s
+        // tras conectar SimConnect. Si el usuario hacía spawn cold &
+        // dark y abría SimFleet justo después, el gate no aparecía
+        // hasta unos segundos más tarde y a veces se perdía si el
+        // usuario empezaba a moverse antes. Restamos 60s para garantizar
+        // que el PRIMER tick con `gs<1 + pos_real` dispare la request
+        // inmediatamente — la primera muestra de SimConnect ya trae al
+        // avión en su gate. El throttle de 10s sólo aplica entre
+        // requests sucesivas, no a la inicial.
+        let mut last_airport_check_at = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
         // (v0.1.22) Capturamos el landing_fpm en el touchdown
         // (Airborne → Landed) y lo conservamos aquí hasta el finish.
         // También lo persistimos en DB inmediatamente vía
@@ -968,6 +1117,15 @@ mod windows_simconnect {
         // o usuarios que se olvidan de apagar motores y dejan la
         // app abierta.
         let mut idle_ticks_in_landed: u32 = 0;
+
+        // (v3.5.0) Cache de meta strings de la aeronave — actualizado
+        // cuando llega un dispatch de REQUEST_ID_AIRCRAFT_META.
+        // Lo usamos al disparar `start_flight` (OUT/OFF) para
+        // poblar de entrada los campos aircraft_title / atc_type /
+        // model / airline / registration, y vuelve a persistirse vía
+        // `update_aircraft_meta` cuando cambia mid-flight (el usuario
+        // entró al Hangar y cambió livery).
+        let mut aircraft_meta_cache: Option<AircraftMeta> = None;
 
         // (v2.0.3) Datos del restore pendiente — los necesitamos para
         // hacer el "smart restore check" al recibir la primera muestra
@@ -1150,6 +1308,61 @@ mod windows_simconnect {
                     // marker `[DWORD; 1]`).
                     let header = p_data as *const sc::SIMCONNECT_RECV_SIMOBJECT_DATA;
                     let request_id = unsafe { (*header).dwRequestID };
+
+                    // (v3.5.0) Meta strings de la aeronave — caché +
+                    // persist a DB si hay vuelo abierto.
+                    if request_id == REQUEST_ID_AIRCRAFT_META {
+                        let data_ptr = unsafe {
+                            let header_size =
+                                std::mem::size_of::<sc::SIMCONNECT_RECV_SIMOBJECT_DATA>();
+                            let base = p_data as *const u8;
+                            base.add(header_size - 4) as *const AircraftMeta
+                        };
+                        if data_ptr.is_null() {
+                            continue;
+                        }
+                        let meta = unsafe { *data_ptr };
+                        let title = read_cstr(&meta.title);
+                        let atc_type = read_cstr(&meta.atc_type);
+                        let model = read_cstr(&meta.atc_model);
+                        let airline = read_cstr(&meta.atc_airline);
+                        let registration = read_cstr(&meta.atc_id);
+                        tracing::info!(
+                            target: "simconnect",
+                            "AircraftMeta recibido — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?}",
+                            title, atc_type, model, airline, registration
+                        );
+                        aircraft_meta_cache = Some(meta);
+
+                        // Si hay vuelo abierto, persistirlo. La
+                        // tarea async corre en su propio thread
+                        // porque este bloque es síncrono (spawn_blocking).
+                        if let Ok(g) = current_flight_id.lock() {
+                            if let Some(id) = *g {
+                                let pool_c = pool.clone();
+                                std::thread::spawn(move || {
+                                    let rt = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                        .ok();
+                                    if let Some(rt) = rt {
+                                        let _ = rt.block_on(
+                                            crate::flight_log::update_aircraft_meta(
+                                                &pool_c, id,
+                                                title.as_deref(),
+                                                atc_type.as_deref(),
+                                                model.as_deref(),
+                                                airline.as_deref(),
+                                                registration.as_deref(),
+                                            ),
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
                     if request_id != REQUEST_ID_AIRCRAFT {
                         continue;
                     }

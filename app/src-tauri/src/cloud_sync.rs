@@ -803,11 +803,13 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
             r#"INSERT INTO flight_log
                 (id, started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
                  destination_icao, destination_name, destination_lat, destination_lon,
-                 aircraft_atc_type, aircraft_title, distance_nm, flight_time_s,
+                 aircraft_atc_type, aircraft_title,
+                 aircraft_model, aircraft_airline, aircraft_registration,
+                 distance_nm, flight_time_s,
                  max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
                  departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
                  paused_seconds)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  started_at = excluded.started_at,
                  ended_at = excluded.ended_at,
@@ -821,6 +823,9 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
                  destination_lon = excluded.destination_lon,
                  aircraft_atc_type = excluded.aircraft_atc_type,
                  aircraft_title = excluded.aircraft_title,
+                 aircraft_model = excluded.aircraft_model,
+                 aircraft_airline = excluded.aircraft_airline,
+                 aircraft_registration = excluded.aircraft_registration,
                  distance_nm = excluded.distance_nm,
                  flight_time_s = excluded.flight_time_s,
                  max_altitude_ft = excluded.max_altitude_ft,
@@ -847,6 +852,9 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .bind(json_f64(row, "destinationLon"))
         .bind(json_str(row, "aircraftAtcType"))
         .bind(json_str(row, "aircraftTitle"))
+        .bind(json_str(row, "aircraftModel"))
+        .bind(json_str(row, "aircraftAirline"))
+        .bind(json_str(row, "aircraftRegistration"))
         .bind(json_f64(row, "distanceNm"))
         .bind(json_i64(row, "flightTimeS"))
         .bind(json_i64(row, "maxAltitudeFt"))

@@ -233,6 +233,15 @@ export interface FlightLogEntry {
   destinationName: string | null;
   aircraftTitle: string | null;
   aircraftAtcType: string | null;
+  /** (v3.5.0) `ATC MODEL` — referencia interna del addon. Permite
+   *  agrupar vuelos por tipo de avión aunque la livery cambie. */
+  aircraftModel: string | null;
+  /** (v3.5.0) `ATC AIRLINE` — aerolínea visible configurada en el
+   *  Hangar / livery del avión. */
+  aircraftAirline: string | null;
+  /** (v3.5.0) `ATC ID` — matrícula real ("EC-MXY"). En MSFS 2024
+   *  reemplaza a `ATC TAIL NUMBER` (deprecada). */
+  aircraftRegistration: string | null;
   distanceNm: number | null;
   /** Duración total entre `startedAt` y `endedAt` en segundos. */
   flightTimeS: number | null;
