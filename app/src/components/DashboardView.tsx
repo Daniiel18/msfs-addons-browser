@@ -273,9 +273,34 @@ function Card({
   );
 }
 
+/** (v3.4.x) Traduce las labels que vienen del backend Rust
+ *  (`stats.byType[].label`). El Rust las emite en español hardcoded
+ *  ("Aeropuertos", "Aviones"…); las mapeamos al i18n del frontend
+ *  para que la pantalla respete el idioma elegido. */
+function translateTypeLabel(label: string): string {
+  switch (label) {
+    case "Aeropuertos":
+      return t("addons.section.airports");
+    case "Aviones":
+      return t("addons.type.aircraft");
+    case "Liveries":
+      return t("addons.section.liveries");
+    case "Instrumentos":
+      return t("addons.type.instrument");
+    case "Sonido / Misc":
+      return t("addons.type.misc");
+    case "Otros":
+      return t("dashboard.type.others");
+    default:
+      return label;
+  }
+}
+
 /** Distribución por tipo: barra apilada arriba + grid de leyenda
  *  con cuatro columnas claras (color · etiqueta · count · tamaño · %).
  *  Colores fijos para que la leyenda y la barra siempre concuerden.
+ *  Las claves del map son las labels CRUDAS (en español) que vienen
+ *  del backend; el render usa `translateTypeLabel()` al mostrar.
  */
 function TypeBreakdown({ stats }: { stats: DashboardStats }) {
   const total = stats.byType.reduce((acc, t) => acc + t.count, 0) || 1;
@@ -298,7 +323,7 @@ function TypeBreakdown({ stats }: { stats: DashboardStats }) {
               key={t.label}
               className={`${colors[t.label] ?? "bg-slate-600"} h-full`}
               style={{ width: `${pct}%` }}
-              title={`${t.label}: ${t.count} (${pct.toFixed(1)}%)`}
+              title={`${translateTypeLabel(t.label)}: ${t.count} (${pct.toFixed(1)}%)`}
             />
           );
         })}
@@ -314,7 +339,7 @@ function TypeBreakdown({ stats }: { stats: DashboardStats }) {
               <span
                 className={`inline-block h-2.5 w-2.5 shrink-0 rounded-sm ${colors[t.label] ?? "bg-slate-600"}`}
               />
-              <span className="flex-1 truncate text-slate-200">{t.label}</span>
+              <span className="flex-1 truncate text-slate-200">{translateTypeLabel(t.label)}</span>
               <span className="shrink-0 font-mono text-[11px] text-slate-300">
                 {t.count}
               </span>
@@ -346,9 +371,9 @@ function CreatorsTable({
     <div className="overflow-hidden rounded-md border border-slate-800/60">
       <div className="grid grid-cols-[2rem_1fr_4rem_5.5rem] items-center gap-2 border-b border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         <span>#</span>
-        <span>Desarrollador</span>
-        <span className="text-right">Paquetes</span>
-        <span className="text-right">Tamaño</span>
+        <span>{t("dashboard.col.developer")}</span>
+        <span className="text-right">{t("dashboard.col.packages")}</span>
+        <span className="text-right">{t("dashboard.col.size")}</span>
       </div>
       <ul className="divide-y divide-slate-800/60">
         {creators.map((c, idx) => {
@@ -403,8 +428,8 @@ function LargestTable({
     <div className="overflow-hidden rounded-md border border-slate-800/60">
       <div className="grid grid-cols-[2rem_1fr_5.5rem] items-center gap-2 border-b border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         <span>#</span>
-        <span>Paquete</span>
-        <span className="text-right">Tamaño</span>
+        <span>{t("dashboard.col.package")}</span>
+        <span className="text-right">{t("dashboard.col.size")}</span>
       </div>
       <ul className="divide-y divide-slate-800/60">
         {rows.map((p, idx) => {

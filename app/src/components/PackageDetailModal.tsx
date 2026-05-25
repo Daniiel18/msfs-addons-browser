@@ -21,6 +21,7 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
+import { t } from "../lib/i18n";
 
 interface Props {
   pkg: CommunityPackage;
@@ -147,7 +148,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
         kind: removed > 0 ? "success" : "info",
         title:
           removed === 0
-            ? "Paquete no encontrado en disco"
+            ? t("pkg.not_on_disk")
             : removed === 1
               ? "Desinstalado de 1 ubicación"
               : `Desinstalado de ${removed} ubicaciones`,
@@ -274,21 +275,21 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
 
           <div className="overflow-y-auto px-5 py-4">
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-              <Detail label="Carpeta" value={pkg.folderName} mono />
-              <Detail label="Versión" value={pkg.packageVersion ?? "—"} />
+              <Detail label={t("pkg.folder")} value={pkg.folderName} mono />
+              <Detail label={t("pkg.version")} value={pkg.packageVersion ?? "—"} />
               <Detail
-                label="Tamaño"
+                label={t("pkg.size")}
                 value={pkg.sizeBytes != null ? formatBytes(pkg.sizeBytes) : "—"}
               />
               <Detail
-                label="MSFS mínimo"
+                label={t("pkg.min_msfs")}
                 value={pkg.minimumGameVersion ?? "—"}
               />
               {pkg.airportName && (
-                <Detail label="Aeropuerto" value={pkg.airportName} />
+                <Detail label={t("pkg.airport")} value={pkg.airportName} />
               )}
               <Detail
-                label="Última modificación"
+                label={t("pkg.last_modified")}
                 value={pkg.folderModifiedAt ?? "—"}
               />
               <GsxProfileRow icao={pkg.icao} />
@@ -304,19 +305,17 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
             {confirmingUninstall && (
               <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-100">
                 <p className="font-medium">
-                  ¿Borrar definitivamente <span className="font-mono">{pkg.folderName}</span>?
+                  {t("pkg.uninstall_confirm.q")} <span className="font-mono">{pkg.folderName}</span>?
                 </p>
                 <p className="mt-1 text-rose-200/80">
-                  Se eliminará la carpeta en TODAS las carpetas Community
-                  detectadas (Steam, MS Store, MSFS 2024 si aplica) más las
-                  filas asociadas en la base de datos. No se puede deshacer.
+                  {t("pkg.uninstall_confirm.body")}
                 </p>
                 <div className="mt-2 flex justify-end gap-2">
                   <button
                     onClick={() => setConfirmingUninstall(false)}
                     className="rounded-md border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800"
                   >
-                    Cancelar
+                    {t("common.cancel")}
                   </button>
                   <button
                     onClick={doUninstall}
@@ -328,7 +327,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                     ) : (
                       <Trash2 className="h-3 w-3" />
                     )}
-                    Confirmar
+                    {t("common.confirm")}
                   </button>
                 </div>
               </div>
@@ -343,7 +342,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-brand-500/40 hover:bg-slate-800 disabled:opacity-50"
             >
               <Folder className="h-3.5 w-3.5" />
-              Abrir carpeta
+              {t("pkg.open_folder")}
             </button>
             <button
               onClick={openRepairPicker}
@@ -351,11 +350,11 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               title={
                 canRepair
                   ? update
-                    ? `Actualizar a v${update.latestVersion}`
+                    ? t("pkg.update_to", { v: update.latestVersion })
                     : pkg.icao
-                      ? "Elegir método y reinstalar limpio"
-                      : "Buscaremos coincidencias en Simplaza por el nombre"
-                  : "El paquete no tiene ICAO ni nombre indexable — no podemos reinstalar automáticamente"
+                      ? t("pkg.reinstall_picker")
+                      : t("pkg.reinstall_by_name")
+                  : t("pkg.cannot_reinstall")
               }
               className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 update
@@ -368,7 +367,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               ) : (
                 <RefreshCcw className="h-3.5 w-3.5" />
               )}
-              {update ? `Actualizar (v${update.latestVersion})` : "Reinstalar"}
+              {update ? t("pkg.update_btn", { v: update.latestVersion }) : t("pkg.reinstall")}
             </button>
             <div className="ml-auto">
               <button
@@ -377,7 +376,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                 className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 hover:border-rose-400 hover:bg-rose-500/20 disabled:opacity-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Desinstalar
+                {t("pkg.uninstall")}
               </button>
             </div>
             {update && (
@@ -388,7 +387,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                   api.openExternal(update.pageUrl);
                 }}
                 className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200"
-                title="Ver la nueva versión en la fuente"
+                title={t("pkg.view_source")}
               >
                 <ExternalLink className="h-3 w-3" />
               </a>
@@ -601,14 +600,14 @@ function GsxProfileRow({ icao }: { icao: string | null }) {
   const has = installedIcaos.has(icao.toUpperCase());
   return (
     <>
-      <dt className="text-slate-500">Perfil GSX</dt>
+      <dt className="text-slate-500">{t("pkg.gsx_profile")}</dt>
       <dd className="truncate">
         {has ? (
           <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-200 ring-1 ring-violet-500/40">
-            ✓ Instalado
+            ✓ {t("pkg.gsx_installed")}
           </span>
         ) : (
-          <span className="text-[11px] text-slate-500">No detectado</span>
+          <span className="text-[11px] text-slate-500">{t("pkg.gsx_not_detected")}</span>
         )}
       </dd>
     </>

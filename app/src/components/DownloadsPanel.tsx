@@ -22,6 +22,7 @@ import type {
 } from "../lib/types";
 import { toJobsList, useDownloadsStore } from "../stores/useDownloadsStore";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 
 interface Props {
   open: boolean;
@@ -90,14 +91,14 @@ export function DownloadsPanel({ open, onClose }: Props) {
                 onClick={() => setTab("active")}
                 badge={jobs.length || undefined}
               >
-                Activas
+                {t("downloads.tab.active")}
               </TabButton>
               <TabButton
                 active={tab === "installed"}
                 onClick={() => setTab("installed")}
                 badge={installed.length || undefined}
               >
-                Instalados
+                {t("downloads.tab.installed")}
               </TabButton>
             </div>
 
@@ -165,9 +166,9 @@ function ActiveEmptyState() {
       <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-900 ring-1 ring-slate-800">
         <Download className="h-5 w-5 text-slate-500" />
       </div>
-      <p className="mt-3 text-sm text-slate-400">Aún no hay descargas</p>
+      <p className="mt-3 text-sm text-slate-400">{t("downloads.empty.title")}</p>
       <p className="mt-1 max-w-[260px] text-xs text-slate-500">
-        Toca un botón de descarga en cualquier resultado para empezar. El progreso aparecerá aquí.
+        {t("downloads.empty.hint")}
       </p>
     </div>
   );
@@ -299,7 +300,7 @@ function JobRow({ job }: { job: DownloadJob }) {
             <button
               onClick={() => resume(job.id)}
               className="rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-brand-300"
-              title="Reanudar"
+              title={t("downloads.resume")}
             >
               <Play className="h-3.5 w-3.5" />
             </button>
@@ -308,7 +309,7 @@ function JobRow({ job }: { job: DownloadJob }) {
             <button
               onClick={() => cancel(job.id)}
               className="rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-              title="Cancelar"
+              title={t("common.cancel")}
             >
               <XCircle className="h-3.5 w-3.5" />
             </button>
