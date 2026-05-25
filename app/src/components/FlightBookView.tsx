@@ -285,17 +285,22 @@ export function FlightBookView() {
             <ActiveFlightCard entry={inFlight} />
           )}
 
-          {/* (v3.4.10) **Preflight card** — visible cuando hay
-              SimConnect conectado pero todavía no se disparó el OUT
-              (no hay flight row en DB). Muestra al usuario "estás
-              en el escenario, en este gate, con este avión" sin
-              necesidad de que ya haya pushback. Resuelve el UX gap
-              donde el usuario abría el FlightBook tras spawnear cold
-              & dark y veía solo el historial sin indicación de su
-              estado actual. */}
-          {!inFlight && status && status.simconnectConnected && (
-            <PreflightCard status={status} />
-          )}
+          {/* (v3.4.10 → v3.4.13) **Preflight card** — visible cuando
+              hay SimConnect conectado, el avión SPAWNEÓ en un
+              escenario (currentAirportIcao poblado) y todavía no
+              hay vuelo abierto. v3.4.12 mostraba un falso positivo
+              "?  · Pre-vuelo" cuando MSFS estaba en menú o cargando
+              (sc_connected=true pero sin avión real). El guard
+              `currentAirportIcao` lo evita: hasta que el watcher
+              resuelva el aeropuerto más cercano (que requiere
+              coordenadas reales, no (0,0) del menú), la card
+              permanece oculta. */}
+          {!inFlight &&
+            status &&
+            status.simconnectConnected &&
+            status.currentAirportIcao && (
+              <PreflightCard status={status} />
+            )}
 
           {/* Feed de cards — siempre visible en ambos modos. La card
               del vuelo seleccionado se resalta con `selected={true}`
@@ -766,6 +771,10 @@ function formatTime(iso: string): string {
  *  hasta que el sync ocurra. */
 function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
   const simbriefFlights = useSimBriefStore((s) => s.flights);
+  // (v3.4.13) Status del watcher para derivar label contextual del
+  // título — "Volando ahora" solo cuando realmente está en el aire,
+  // sino "Pushback / Taxi / Llegada" según la fase real.
+  const status = useFlightLogStore((s) => s.status);
   const matchedOfp = (() => {
     if (!entry.originIcao || !simbriefFlights.length) return null;
     const sorted = [...simbriefFlights].sort((a, b) => {
@@ -777,6 +786,7 @@ function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
   })();
   const destIcao =
     entry.destinationIcao ?? matchedOfp?.destinationIcao ?? null;
+  const activeTitle = activeFlightTitleForPhase(status?.phaseLabel ?? null);
   return (
     <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20">
       <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
@@ -784,7 +794,7 @@ function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
         </span>
-        {t("fb.flying_now")}
+        {activeTitle}
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-emerald-100">
         <span>
@@ -836,6 +846,22 @@ function PreflightCard({ status }: { status: import("../lib/types").FlightStatus
   const phaseShown = phaseLabelForUi(phase);
   const meta = phaseCardMeta(phase);
 
+  // (v3.4.13) Destino — si hay un OFP de SimBrief cuyo origen
+  // matchee el aeropuerto actual del avión, mostramos el destino.
+  // Si no hay match, no inventamos nada (el chip "→ DEST" no
+  // aparece) y la UI sigue siendo coherente para vuelos ad-hoc.
+  const ofpFlights = useSimBriefStore((s) => s.flights);
+  const matchedOfp = useMemo(() => {
+    if (!icao || icao === "?") return null;
+    if (!ofpFlights.length) return null;
+    const sorted = [...ofpFlights].sort((a, b) => {
+      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
+      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
+      return bTs - aTs;
+    });
+    return sorted.find((f) => f.originIcao === icao) ?? null;
+  }, [icao, ofpFlights]);
+
   return (
     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 ring-1 ring-amber-500/15">
       <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-300">
@@ -850,6 +876,12 @@ function PreflightCard({ status }: { status: import("../lib/types").FlightStatus
           <MapPin className="mr-1 inline h-3.5 w-3.5" />
           {icao}
         </span>
+        {matchedOfp && (
+          <>
+            <span className="text-amber-400">→</span>
+            <span className="font-semibold">{matchedOfp.destinationIcao}</span>
+          </>
+        )}
         {gate !== "—" && (
           <>
             <span className="text-amber-400">·</span>
@@ -923,6 +955,42 @@ function phaseCardMeta(phase: string): { titleKey?: string; subKey?: string } {
         titleKey: "fb.preflight.title.at_gate",
         subKey: "fb.preflight.sub.waiting_pushback",
       };
+  }
+}
+
+/** (v3.4.13) Título del ActiveFlightCard según phase real. Antes
+ *  decía siempre "Volando ahora" (verde) aunque el avión estuviera
+ *  en pushback o taxi. Ahora refleja el estado:
+ *
+ *    pushback        → "Pushback"
+ *    taxi_out        → "Rodaje a pista"
+ *    takeoff         → "Despegue"
+ *    climbing..approach → "Volando ahora"
+ *    landed_rollout  → "Aterrizaje"
+ *    taxi_in         → "Rodaje a llegada"
+ *    parking/deboarding → "En gate destino" */
+function activeFlightTitleForPhase(phase: string | null): string {
+  switch (phase) {
+    case "pushback":
+      return t("fb.active.title.pushback");
+    case "taxi_out":
+      return t("fb.active.title.taxi_out");
+    case "takeoff":
+      return t("fb.active.title.takeoff");
+    case "landed_rollout":
+      return t("fb.active.title.landing");
+    case "taxi_in":
+      return t("fb.active.title.taxi_in");
+    case "parking":
+    case "deboarding":
+      return t("fb.active.title.at_destination");
+    case "climbing":
+    case "cruise":
+    case "descent":
+    case "approach":
+      return t("fb.flying_now");
+    default:
+      return t("fb.flying_now");
   }
 }
 

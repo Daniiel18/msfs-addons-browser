@@ -2501,7 +2501,15 @@ mod windows_simconnect {
         // Threshold a 3 kt → cambia el label rápido al taxi real.
         // Sticky: una vez cruzado, el label es "taxi_out" aunque
         // baje a 0 (esperando ATC, backtrack, etc.).
-        if matches!(*phase, FlightPhase::BlockOut) && gs > 3.0 {
+        // (v3.4.13) Threshold subido de 3 → 8 kt. Antes el truck de
+        // pushback excedía fácil los 3 kt y volvía sticky el
+        // `passed_taxi_threshold`, lo que hacía que el phase_label
+        // saltase a "taxi_out" durante el pushback. 8 kt es el límite
+        // típico real del taxi (los trucks de pushback raramente
+        // pasan de 5-6 kt) — eso mantiene "pushback" mientras estás
+        // siendo empujado y sólo cambia a "taxi_out" cuando vos
+        // empezás a rodar con tus propios motores.
+        if matches!(*phase, FlightPhase::BlockOut) && gs > 8.0 {
             *passed_taxi_threshold = true;
         }
         // Reset al cerrar el vuelo (Landed → OnGround se gestiona en

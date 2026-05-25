@@ -24,43 +24,44 @@ export function FlyingNowBadge() {
   const status = useFlightLogStore((s) => s.status);
   const flights = useSimBriefStore((s) => s.flights);
 
+  // (v3.4.13) Guard reforzado: además de simRunning, requerimos
+  // que el watcher ya haya resuelto la posición real del avión
+  // (currentAirportIcao). Antes el badge se renderizaba mientras
+  // MSFS estaba en menú principal → tooltip y label sin sentido.
   if (!status || !status.simRunning) return null;
-
   const live = status.simconnectConnected;
-  // (v3.1.0) Tres niveles de "tener un vuelo":
-  //   · hasFullPlan — origen + destino conocidos (de SimBrief OFP).
-  //   · hasOriginOnly — origen sólo desde el watcher (nearest airport
-  //     del avión spawneado). Sin destino aún → la UI debe mostrar
-  //     "AT [ICAO] · Gate".
-  //   · nada — el avión NO está en tierra y no hay OFP → "Flying".
-  const hasFullPlan = !!status.originIcao && !!status.destinationIcao;
-  // Origen efectivo para display: prioridad OFP > nearest airport.
-  const effectiveOrigin =
-    status.originIcao ?? status.currentAirportIcao ?? null;
-  const hasFlight = hasFullPlan;
-  const phase = phaseDisplay(status.phaseLabel);
-
-  // Match el OFP más reciente con el vuelo en curso. Si el origen
-  // del OFP coincide con `originIcao` (o `currentAirportIcao` en
-  // preflight), usamos sus destinationLat/Lon para calcular NM
-  // restantes y ETA. Si no, sólo mostramos el flight plan estático.
+  if (live && !status.currentAirportIcao && !status.originIcao) {
+    return null;
+  }
+  // (v3.4.13) Match SimBrief OFP — ahora aceptamos match contra
+  // `originIcao` del watcher (post-OUT) o `currentAirportIcao`
+  // (preflight). Esto hace que el destino aparezca en el header
+  // incluso antes de disparar el OUT.
   const matchedOfp = (() => {
     if (!flights.length) return null;
-    // El más reciente primero.
     const sorted = [...flights].sort((a, b) => {
       const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
       const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
       return bTs - aTs;
     });
-    const candidate = sorted[0];
-    if (!candidate) return null;
-    // Match si el origen del OFP === origen detectado por el watcher.
     const watcherOrigin = status.originIcao || status.currentAirportIcao;
-    if (watcherOrigin && candidate.originIcao === watcherOrigin) {
-      return candidate;
-    }
-    return null;
+    if (!watcherOrigin) return null;
+    return sorted.find((f) => f.originIcao === watcherOrigin) ?? null;
   })();
+  // (v3.4.13) Origen y destino efectivos.
+  //   · origen — prioridad: status.originIcao (watcher detectó OUT)
+  //     > currentAirportIcao (avión spawneado, aún sin OUT).
+  //   · destino — prioridad: status.destinationIcao (raro en preflight)
+  //     > matchedOfp.destinationIcao (lo más común). Si no hay OFP que
+  //     matchee y el avión no está en vuelo, el destino queda null y
+  //     mostramos sólo "AT KATL".
+  const effectiveOrigin =
+    status.originIcao ?? status.currentAirportIcao ?? null;
+  const effectiveDestination =
+    status.destinationIcao ?? matchedOfp?.destinationIcao ?? null;
+  const hasFullPlan = !!effectiveOrigin && !!effectiveDestination;
+  const hasFlight = hasFullPlan;
+  const phase = phaseDisplay(status.phaseLabel);
 
   // NM restantes desde la posición actual al destino del OFP.
   const nmRemaining = (() => {
@@ -108,13 +109,23 @@ export function FlyingNowBadge() {
   const onGround = !!status.onGround;
   const showGate = onGround && status.currentGate;
 
+  // (v3.4.13) Tooltip más informativo + usa effective* en vez de
+  // los campos crudos.
   const tooltip = live
-    ? `SimConnect · ${phase.long} · ${flText ?? "?"} · ${
-        gsFmt ?? "0"
+    ? `SimConnect · ${phase.long}${
+        effectiveOrigin && effectiveDestination
+          ? ` · ${effectiveOrigin} → ${effectiveDestination}`
+          : effectiveOrigin
+            ? ` · AT ${effectiveOrigin}`
+            : ""
+      }${flText ? ` · ${flText}` : ""}${
+        gsFmt ? ` · ${gsFmt}` : ""
       }${onGround ? " · on ground" : " · airborne"}`
-    : hasFlight
-      ? `MSFS detected (process) · SimBrief plan: ${status.originIcao} → ${status.destinationIcao}`
-      : "MSFS detected but no recent OFP and SimConnect is not connected";
+    : hasFullPlan
+      ? `MSFS detected (process) · SimBrief: ${effectiveOrigin} → ${effectiveDestination}`
+      : effectiveOrigin
+        ? `MSFS detected · AT ${effectiveOrigin}`
+        : "MSFS detected but no recent OFP and SimConnect is not connected";
 
   return (
     <motion.div
@@ -134,19 +145,16 @@ export function FlyingNowBadge() {
       ) : (
         <Plane className="h-3.5 w-3.5" />
       )}
-      {hasFullPlan ? (
+      {/* (v3.4.13) Mostramos efectivos: origen siempre que exista,
+          destino si el OFP matchee O si el watcher lo conoce. */}
+      {effectiveOrigin && effectiveDestination ? (
         <span className="font-mono">
-          {status.originIcao}
+          {effectiveOrigin}
           <span className={`mx-1.5 ${phase.arrowClass}`}>→</span>
-          {status.destinationIcao}
+          {effectiveDestination}
         </span>
       ) : effectiveOrigin ? (
-        // (v3.1.0) Spawn detectado pero sin OFP completo —
-        // mostramos "AT [ICAO]" para que el usuario sepa que la app
-        // ya está rastreando aunque no haya plan SimBrief aún.
-        <span className="font-mono">
-          AT {effectiveOrigin}
-        </span>
+        <span className="font-mono">AT {effectiveOrigin}</span>
       ) : (
         <span>{live ? phase.short : "MSFS · no OFP"}</span>
       )}
