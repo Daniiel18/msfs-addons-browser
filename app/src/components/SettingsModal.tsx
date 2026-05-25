@@ -36,6 +36,7 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 
 /**
  * Modal de configuración.
@@ -254,7 +255,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               )}
 
-              <Section title="General" icon={<Power className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.general")} icon={<Power className="h-3.5 w-3.5" />}>
                 <ThemeRow
                   current={settings.theme}
                   onChange={(t) => void api.setAppSetting("pref_theme", t).then(() => useSettingsStore.getState().bootstrap())}
@@ -265,26 +266,26 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   onRequestRestart={() => setShowRestartHint(true)}
                 />
                 <Toggle
-                  label="Arrancar con Windows"
-                  hint="La app se abre automáticamente al iniciar sesión."
+                  label={t("settings.autostart.title")}
+                  hint={t("settings.autostart.hint")}
                   checked={settings.autostartEnabled}
                   onChange={(v) => setAutostart(v)}
                 />
                 <Toggle
-                  label="Comprobar updates al arrancar"
-                  hint="Verifica nuevas versiones de la app en GitHub al iniciar."
+                  label={t("settings.updates.title")}
+                  hint={t("settings.updates.hint")}
                   checked={settings.checkUpdatesOnStart}
                   onChange={(v) => setBoolean("checkUpdatesOnStart", v)}
                 />
                 <Toggle
-                  label="Minimizar a la bandeja al cerrar"
-                  hint="Al pulsar la X, la app se oculta en la bandeja del sistema (junto al reloj). Para salir, click derecho en el icono → Salir."
+                  label={t("settings.tray.title")}
+                  hint={t("settings.tray.hint")}
                   checked={settings.minimizeToTray}
                   onChange={(v) => setMinimizeToTray(v)}
                 />
               </Section>
 
-              <Section title="Vuelos" icon={<Plane className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.flights")} icon={<Plane className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="text-xs text-slate-200">SimBrief Pilot ID</div>
                   <p className="mt-0.5 text-[11px] text-slate-500">
@@ -304,15 +305,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={savingPilot || pilotDraft.trim() === (pilotId ?? "")}
                       className="rounded-md bg-brand-500/80 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-brand-500 disabled:opacity-40"
                     >
-                      {savingPilot ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Guardar"}
+                      {savingPilot ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("common.save")}
                     </button>
                     <button
                       onClick={() => refreshSimBrief()}
                       disabled={!pilotId || savingPilot}
-                      title="Refrescar el último OFP"
+                      title={t("settings.simbrief.refresh_tooltip")}
                       className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 disabled:opacity-40"
                     >
-                      Refrescar
+                      {t("common.refresh")}
                     </button>
                   </div>
                 </div>
@@ -325,22 +326,22 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </Section>
 
-              <Section title="Mostrar en mapa (FlightBook)" icon={<Bell className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.map_display")} icon={<Bell className="h-3.5 w-3.5" />}>
                 <Toggle
-                  label="Líneas de SimBrief"
-                  hint="Vuelos planificados (cyan, dasheado) en el mapa de FlightBook."
+                  label={t("settings.map.simbrief_lines")}
+                  hint={t("settings.map.simbrief_lines.hint")}
                   checked={settings.showSimbriefLines}
                   onChange={(v) => setBoolean("showSimbriefLines", v)}
                 />
                 <Toggle
-                  label="Líneas de SimConnect"
-                  hint="Vuelos reales registrados (verde, sólido) en el mapa de FlightBook."
+                  label={t("settings.map.simconnect_lines")}
+                  hint={t("settings.map.simconnect_lines.hint")}
                   checked={settings.showSimconnectLines}
                   onChange={(v) => setBoolean("showSimconnectLines", v)}
                 />
               </Section>
 
-              <Section title="Carpetas" icon={<FolderOpen className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />}>
                 <PathRow
                   label="Carpeta Community"
                   hint="MSFS lee los addons desde aquí."
@@ -355,7 +356,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title="Backup" icon={<Archive className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.backup")} icon={<Archive className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="flex items-center gap-1.5 text-xs text-slate-200">
                     <Archive className="h-3 w-3 text-slate-500" />
@@ -394,11 +395,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <CloudSyncPanel onFeedback={setFeedback} />
               </Section>
 
-              <Section title="Importar inventario" icon={<Upload className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.import")} icon={<Upload className="h-3.5 w-3.5" />}>
                 <ImportInventoryRow onFeedback={setFeedback} />
               </Section>
 
-              <Section title="Exportar inventario" icon={<Download className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.export")} icon={<Download className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="text-xs text-slate-200">
                     Lista de addons instalados
@@ -430,12 +431,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </Section>
 
-              <Section title="Almacenamiento" icon={<HardDrive className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.storage")} icon={<HardDrive className="h-3.5 w-3.5" />}>
                 <ActionRow
                   icon={<Database className="h-3 w-3 text-slate-500" />}
-                  label="Limpiar cachés"
-                  hint="Borra resultados cacheados de GSX y de chequeos de versión. Útil cuando una update esperada no aparece."
-                  buttonLabel="Limpiar"
+                  label={t("settings.storage.clear_caches.label")}
+                  hint={t("settings.storage.clear_caches.hint")}
+                  buttonLabel={t("settings.storage.clear_caches.button")}
                   buttonIcon={<Trash2 className="h-3.5 w-3.5" />}
                   buttonTone="rose"
                   busy={clearing}
@@ -443,9 +444,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
                 <ActionRow
                   icon={<RotateCcw className="h-3 w-3 text-slate-500" />}
-                  label="Restablecer preferencias"
-                  hint="Devuelve los toggles a sus valores por defecto. No afecta tu Pilot ID, addons instalados, ni dataset de aeropuertos."
-                  buttonLabel="Reset"
+                  label={t("settings.storage.reset.label")}
+                  hint={t("settings.storage.reset.hint")}
+                  buttonLabel={t("settings.storage.reset.button")}
                   buttonIcon={<MinusSquare className="h-3.5 w-3.5" />}
                   buttonTone="amber"
                   busy={resetting}
@@ -453,12 +454,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title="Tour de bienvenida" icon={<Compass className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.tour")} icon={<Compass className="h-3.5 w-3.5" />}>
                 <ActionRow
                   icon={<Compass className="h-3 w-3 text-slate-500" />}
-                  label="Volver a ver el tour"
-                  hint="Te llevamos por Dashboard, Buscar, Mapa, Addons, FlightBook, Configuración y Notificaciones. 7 pasos, ~40 segundos."
-                  buttonLabel="Lanzar"
+                  label={t("settings.tour.label")}
+                  hint={t("settings.tour.hint")}
+                  buttonLabel={t("settings.tour.button")}
                   buttonIcon={<Compass className="h-3.5 w-3.5" />}
                   buttonTone="brand"
                   busy={false}
@@ -482,7 +483,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title="Acerca de" icon={<Info className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.about")} icon={<Info className="h-3.5 w-3.5" />}>
                 <div className="space-y-1 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-400">
                   <div>
                     <span className="text-slate-500">Versión:</span>{" "}
