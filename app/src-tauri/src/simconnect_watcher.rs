@@ -1042,111 +1042,20 @@ mod windows_simconnect {
             );
         }
 
-        // (v3.4.7) **GSX Client Data Area reader — discovery v2**.
+        // (v3.4.7 → eliminado en v3.4.15) **GSX Client Data Area
+        // discovery removido**. Probamos 4 CDA names candidatos
+        // (`FSDT_GSX_AIRCRAFT_DATA`, `FSDT_GSX_MENU`,
+        // `FSDT_GSX_PIPE_TO_PLANE`, `FSDT_GSX_BYPASS_PIN`) y los 4
+        // retornaban `ILLEGAL_OPERATION` async porque GSX no
+        // publica esos CDAs con esos nombres en la sesión actual.
+        // Eso spammeaba 4 EXCEPTIONs/segundo al log y nunca aportó
+        // valor — los gates funcionales vienen de `gsx_parking.rs`
+        // que lee los INIs del disco. Cleanup aquí.
         //
-        // v3.4.6 suscribió solo a `FSDT_GSX_AIRCRAFT_DATA` con
-        // FLAG_CHANGED y nunca recibió un dispatch (aún con GSX
-        // boarding activo). Eso indica que ese nombre no es el
-        // canónico en esta versión de GSX, o que el CDA sólo emite
-        // bajo escritura específica de GSX.
-        //
-        // Estrategia v3.4.7: suscribirse a MÚLTIPLES nombres
-        // candidatos en paralelo con request_ids distintos +
-        // `FLAG_DEFAULT` (emit cada segundo aunque no cambie). Si
-        // el CDA existe pero está vacío, vamos a ver buffer de ceros
-        // — confirma existencia. Si simplemente no emite, el nombre
-        // está mal.
-        //
-        // Candidatos basados en docs públicas / forks open source:
-        //   1. FSDT_GSX_AIRCRAFT_DATA  — el "estándar" supuesto
-        //   2. FSDT_GSX_MENU           — estado del menú GSX
-        //   3. FSDT_GSX_PIPE_TO_PLANE  — pipe bidireccional
-        //   4. FSDT_GSX_BYPASS_PIN     — bypass pin (chico pero
-        //                                confirma si GSX está vivo)
-        //
-        // Request IDs 100..103 (no chocan con AIRCRAFT=1 ni META=2).
-        const GSX_REQ_BASE: u32 = 100;
-        const GSX_CDA_SIZE: u32 = 512;
-        let gsx_candidates: &[&str] = &[
-            "FSDT_GSX_AIRCRAFT_DATA",
-            "FSDT_GSX_MENU",
-            "FSDT_GSX_PIPE_TO_PLANE",
-            "FSDT_GSX_BYPASS_PIN",
-        ];
-        if let (Some(map_cda), Some(add_cda_def), Some(req_cda)) = (
-            lib.MapClientDataNameToID,
-            lib.AddToClientDataDefinition,
-            lib.RequestClientData,
-        ) {
-            for (idx, name) in gsx_candidates.iter().enumerate() {
-                let cda_id = GSX_REQ_BASE + idx as u32;
-                let def_id = 300 + idx as u32;
-                let req_id = GSX_REQ_BASE + idx as u32;
-                let cname = sc::cstr(name);
-                // Step 1: name → ID
-                let hr_map = unsafe { map_cda(handle, cname.as_ptr(), cda_id) };
-                if !sc::succeeded(hr_map) {
-                    tracing::warn!(
-                        target: "simconnect",
-                        "GSX CDA '{}' MapClientDataNameToID falló (0x{:08x}); skip",
-                        name, hr_map
-                    );
-                    continue;
-                }
-                // Step 2: definir buffer raw
-                let hr_def = unsafe {
-                    add_cda_def(
-                        handle,
-                        def_id,
-                        0,
-                        GSX_CDA_SIZE,
-                        0.0,
-                        u32::MAX,
-                    )
-                };
-                if !sc::succeeded(hr_def) {
-                    tracing::warn!(
-                        target: "simconnect",
-                        "GSX CDA '{}' AddToClientDataDefinition falló (0x{:08x})",
-                        name, hr_def
-                    );
-                    continue;
-                }
-                // Step 3: suscribir con FLAG_DEFAULT (emisión cada
-                // segundo, sin importar cambios)
-                let hr_req = unsafe {
-                    req_cda(
-                        handle,
-                        cda_id,
-                        req_id,
-                        def_id,
-                        SIMCONNECT_PERIOD_SECOND,
-                        SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
-                        0,
-                        0,
-                        0,
-                    )
-                };
-                if !sc::succeeded(hr_req) {
-                    tracing::warn!(
-                        target: "simconnect",
-                        "GSX CDA '{}' RequestClientData falló (0x{:08x})",
-                        name, hr_req
-                    );
-                } else {
-                    tracing::info!(
-                        target: "simconnect",
-                        "GSX CDA candidate '{}' suscrito req={} ({}B raw, emit each second)",
-                        name, req_id, GSX_CDA_SIZE
-                    );
-                }
-            }
-        } else {
-            tracing::warn!(
-                target: "simconnect",
-                "SimConnect.dll sin Client Data API; GSX bridge deshabilitado"
-            );
-        }
+        // El dispatch handler para `SIMCONNECT_RECV_ID_CLIENT_DATA`
+        // se mantiene (no estorba) por si en una iteración futura
+        // queremos suscribirnos a algún CDA específico — pero por
+        // ahora no se llama nadie.
 
         // Marca conectado.
         update_connected(state, app, true);
@@ -1512,11 +1421,29 @@ mod windows_simconnect {
                         let model = title.as_ref().map(|t| {
                             t.split(['(', '|', '-']).next().unwrap_or(t).trim().to_string()
                         });
-                        tracing::info!(
-                            target: "simconnect",
-                            "AircraftMeta recibido — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?}",
-                            title, atc_type, model, airline, registration
-                        );
+                        // (v3.4.15) Throttle del log — antes loggeábamos
+                        // cada segundo (con FLAG_DEFAULT). Ahora sólo
+                        // loggeamos cuando el TITLE (o atc_type/reg)
+                        // cambia respecto del cache previo. Eso evita
+                        // 60+ líneas/min idénticas en el log sin perder
+                        // la traza del primer fetch ni de un cambio de
+                        // avión mid-session.
+                        let changed = match &aircraft_meta_cache {
+                            None => true,
+                            Some(prev) => {
+                                read_cstr(&prev.title) != title
+                                    || read_cstr(&prev.atc_type) != atc_type
+                                    || read_cstr(&prev.atc_airline) != airline
+                                    || read_cstr(&prev.atc_id) != registration
+                            }
+                        };
+                        if changed {
+                            tracing::info!(
+                                target: "simconnect",
+                                "AircraftMeta cambio — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?}",
+                                title, atc_type, model, airline, registration
+                            );
+                        }
                         aircraft_meta_cache = Some(meta);
 
                         // Si hay vuelo abierto, persistirlo. La

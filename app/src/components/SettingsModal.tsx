@@ -661,24 +661,17 @@ export function RestartHintModal({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-semibold text-slate-100">
-          Reinicia SimFleet
+          {t("restart.title")}
         </h3>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          El idioma se actualizó. Para que todos los textos cambien
-          (incluyendo los módulos cargados antes del cambio), cierra y
-          vuelve a abrir SimFleet.
-          <br />
-          <em className="not-italic text-slate-500">
-            Restart SimFleet for the language change to fully apply
-            across all modules.
-          </em>
+          {t("restart.body")}
         </p>
         <div className="mt-4 flex justify-end">
           <button
             onClick={onClose}
             className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-600"
           >
-            Entendido · Got it
+            {t("restart.button")}
           </button>
         </div>
       </div>
