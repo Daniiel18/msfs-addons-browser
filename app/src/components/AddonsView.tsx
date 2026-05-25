@@ -19,6 +19,7 @@ import {
   type DerivedType,
 } from "../lib/packageType";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 
 /**
  * Vista de addons no-escenario: aviones, liveries, instrumentos,
@@ -127,7 +128,7 @@ export function AddonsView() {
               type="text"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Buscar por título, autor, carpeta…"
+              placeholder={t("addons.search.placeholder")}
               className="w-full rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 md:w-72"
             />
           </div>
@@ -140,7 +141,7 @@ export function AddonsView() {
           active={typeFilter === "ALL"}
           onClick={() => setTypeFilter("ALL")}
           icon={<Package className="h-3.5 w-3.5" />}
-          label="Todos"
+          label={t("addons.chip.all")}
           count={addons.length}
         />
         {presentTypes.map((t) => (
@@ -675,7 +676,7 @@ function PackageCard({
             {pkg.title}
           </div>
           <div className="mt-1 truncate text-[11px] text-slate-500">
-            {pkg.creator ?? "Autor desconocido"}
+            {pkg.creator ?? t("dashboard.unknown_author")}
           </div>
           {/* Footer con metadata: versión + tamaño */}
           <div className="mt-auto flex items-center justify-between gap-2 pt-2 text-[10px] text-slate-500">
@@ -717,18 +718,18 @@ function typeIcon(t: DerivedType, className = "h-3.5 w-3.5"): React.ReactNode {
   }
 }
 
-function typeLabel(t: DerivedType): string {
-  switch (t) {
+function typeLabel(ty: DerivedType): string {
+  switch (ty) {
     case "AIRCRAFT":
-      return "Aviones";
+      return t("addons.type.aircraft");
     case "LIVERY":
-      return "Liveries";
+      return t("addons.type.livery");
     case "INSTRUMENT":
-      return "Instrumentos";
+      return t("addons.type.instrument");
     case "MISC":
-      return "Sonido / Misc";
+      return t("addons.type.misc");
     default:
-      return "Sin clasificar";
+      return t("addons.type.unknown");
   }
 }
 

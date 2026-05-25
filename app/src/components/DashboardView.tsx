@@ -14,6 +14,7 @@ import {
 import type { DashboardStats } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { t } from "../lib/i18n";
 
 /**
  * Dashboard — totales agregados de Community.
@@ -59,7 +60,7 @@ export function DashboardView() {
     <div className="space-y-4">
       <header>
         <h2 className="text-base font-semibold text-slate-100">
-          Dashboard de Community
+          {t("dashboard.title.community")}
         </h2>
       </header>
 
@@ -73,16 +74,16 @@ export function DashboardView() {
       {!stats && loading && (
         <div className="flex items-center justify-center rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-sm text-slate-500">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Calculando totales…
+          {t("dashboard.computing")}
         </div>
       )}
 
       {stats && stats.totalPackages === 0 && !loading && (
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center text-sm text-slate-500">
           <Package className="mx-auto mb-3 h-8 w-8 text-slate-700" />
-          <p>No hay paquetes detectados todavía.</p>
+          <p>{t("dashboard.empty.title")}</p>
           <p className="mt-1 text-xs text-slate-600">
-            Pulsa «Refrescar» o instala algo.
+            {t("dashboard.empty.hint")}
           </p>
         </div>
       )}
@@ -93,39 +94,39 @@ export function DashboardView() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <KpiCard
               icon={<Package className="h-4 w-4" />}
-              label="Paquetes totales"
+              label={t("dashboard.kpi.total_packages")}
               value={stats.totalPackages.toLocaleString("es-ES")}
-              hint="Total en Community"
+              hint={t("dashboard.kpi.total_packages.hint")}
               tone="brand"
             />
             <KpiCard
               icon={<HardDrive className="h-4 w-4" />}
-              label="Espacio en disco"
+              label={t("dashboard.kpi.disk_space")}
               value={formatBytes(stats.totalSizeBytes)}
-              hint="Suma de todos los paquetes"
+              hint={t("dashboard.kpi.disk_space.hint")}
               tone="cyan"
             />
             <KpiCard
               icon={<Landmark className="h-4 w-4" />}
-              label="Aeropuertos"
+              label={t("dashboard.kpi.airports")}
               value={stats.airportsCount.toLocaleString("es-ES")}
-              hint={`${stats.aircraftCount} aviones · ${stats.liveriesCount} liveries`}
+              hint={t("dashboard.kpi.airports.hint", { aircraft: stats.aircraftCount, liveries: stats.liveriesCount })}
               tone="emerald"
             />
             <KpiCard
               icon={<Sparkles className="h-4 w-4" />}
-              label="Updates pendientes"
+              label={t("dashboard.kpi.updates")}
               value={stats.updatesAvailable.toLocaleString("es-ES")}
               hint={
                 stats.updatesAvailable === 0
-                  ? "Todo al día"
-                  : "Revísalas en notificaciones"
+                  ? t("dashboard.kpi.updates.all_clear")
+                  : t("dashboard.kpi.updates.check_notifications")
               }
               tone={stats.updatesAvailable > 0 ? "amber" : "slate"}
             />
           </div>
 
-          <Card title="Distribución por tipo" icon={<Rocket className="h-3.5 w-3.5" />}>
+          <Card title={t("dashboard.card.by_type")} icon={<Rocket className="h-3.5 w-3.5" />}>
             <TypeBreakdown stats={stats} />
           </Card>
 
@@ -134,13 +135,13 @@ export function DashboardView() {
               y dentro las cards crecen con `h-full + flex-col`. */}
           <div className="grid items-stretch gap-3 lg:grid-cols-2">
             <Card
-              title="Top desarrolladores"
+              title={t("dashboard.card.top_devs")}
               icon={<Users className="h-3.5 w-3.5" />}
-              hint="Por número de paquetes instalados"
+              hint={t("dashboard.card.top_devs.hint")}
             >
               {stats.topCreators.length === 0 ? (
                 <p className="px-1 py-2 text-xs text-slate-500">
-                  No hay datos de creator suficientes.
+                  {t("dashboard.card.top_devs.empty")}
                 </p>
               ) : (
                 <CreatorsTable creators={stats.topCreators} />
@@ -148,13 +149,13 @@ export function DashboardView() {
             </Card>
 
             <Card
-              title="Más grandes en disco"
+              title={t("dashboard.card.largest")}
               icon={<Trophy className="h-3.5 w-3.5" />}
-              hint="Top 10 por tamaño total"
+              hint={t("dashboard.card.largest.hint")}
             >
               {stats.largestPackages.length === 0 ? (
                 <p className="px-1 py-2 text-xs text-slate-500">
-                  Ningún paquete tiene tamaño calculado.
+                  {t("dashboard.card.largest.empty")}
                 </p>
               ) : (
                 <LargestTable
@@ -166,7 +167,7 @@ export function DashboardView() {
           </div>
 
           {stats.recentlyAdded.length > 0 && (
-            <Card title="Añadidos recientemente" icon={<Plane className="h-3.5 w-3.5" />}>
+            <Card title={t("dashboard.card.recently_added")} icon={<Plane className="h-3.5 w-3.5" />}>
               <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
                 {stats.recentlyAdded.map((p) => (
                   <li
@@ -177,7 +178,7 @@ export function DashboardView() {
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-slate-200">{p.title}</div>
                       <div className="truncate text-[10px] text-slate-500">
-                        {p.creator ?? "Autor desconocido"}
+                        {p.creator ?? t("dashboard.unknown_author")}
                         {p.sizeBytes != null && ` · ${formatBytes(p.sizeBytes)}`}
                       </div>
                     </div>
@@ -420,7 +421,7 @@ function LargestTable({
               <div className="min-w-0">
                 <div className="truncate text-slate-200">{p.title}</div>
                 <div className="truncate text-[10px] text-slate-500">
-                  {p.creator ?? "Autor desconocido"}
+                  {p.creator ?? t("dashboard.unknown_author")}
                 </div>
                 <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-900">
                   <div

@@ -14,6 +14,7 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { api } from "../lib/tauri";
 import { PackageDetailModal } from "./PackageDetailModal";
+import { t } from "../lib/i18n";
 
 /**
  * Vista de mapa mundial con sidebar lateral.
@@ -252,7 +253,7 @@ export function MapView() {
         <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-2">
           <div className="pointer-events-auto inline-flex items-center gap-2 rounded-md bg-slate-950/80 px-3 py-1.5 text-xs text-slate-200 backdrop-blur ring-1 ring-slate-800">
             <MapPin className="h-3.5 w-3.5 text-emerald-300" />
-            {geolocated.length} aeropuerto{geolocated.length === 1 ? "" : "s"}
+            {geolocated.length} {geolocated.length === 1 ? t("map.airport_singular") : t("map.airport_plural")}
             {/* El contador del mapa muestra sólo updates de SCENERY
                 (los que sí están pintados como markers). Antes
                 contábamos `updates.length` total e incluía AIRCRAFT,
@@ -260,11 +261,11 @@ export function MapView() {
             {updatesByFolder.size > 0 && (
               <button
                 onClick={() => useCommunityStore.getState().startUpdateAll()}
-                title="Actualizar todos los aeropuertos con update"
+                title={t("map.update_all.tooltip")}
                 className="ml-2 inline-flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-300 ring-1 ring-amber-500/30 hover:bg-amber-500/30 hover:text-amber-200"
               >
                 <Sparkles className="h-3 w-3" />
-                {updatesByFolder.size} update{updatesByFolder.size === 1 ? "" : "s"}
+                {updatesByFolder.size} {updatesByFolder.size === 1 ? t("map.update_singular") : t("map.update_plural")}
               </button>
             )}
           </div>
@@ -335,7 +336,7 @@ function Sidebar({
       <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
         <div>
           <h3 className="text-sm font-semibold text-slate-100">
-            Instalados ({packages.length})
+            {t("map.installed")} ({packages.length})
           </h3>
         </div>
       </header>
@@ -347,7 +348,7 @@ function Sidebar({
             className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/20 hover:bg-amber-400"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            Actualizar todo ({updatesCount})
+            {t("map.update_all")} ({updatesCount})
           </button>
         </div>
       )}
@@ -359,7 +360,7 @@ function Sidebar({
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filtrar…"
+            placeholder={t("map.filter_placeholder")}
             className="w-full rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-7 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
           />
         </div>
@@ -369,8 +370,8 @@ function Sidebar({
         {visible.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-slate-500">
             {packages.length === 0
-              ? "Aún no hay paquetes detectados. La app re-escanea automáticamente cuando vuelves a abrirla — instala algo y vuelve."
-              : "Ningún paquete coincide con el filtro."}
+              ? t("map.empty.no_packages")
+              : t("map.empty.no_match")}
           </div>
         )}
         <ul className="divide-y divide-slate-800">
@@ -394,7 +395,7 @@ function Sidebar({
                 <button
                   onClick={() => onFocus(p.folderName)}
                   className="flex flex-1 items-start gap-2 text-left"
-                  title="Click para enfocar este aeropuerto en el mapa"
+                  title={t("map.focus_tooltip")}
                 >
                   <div className="mt-1 shrink-0">
                     <span
@@ -460,7 +461,7 @@ function Sidebar({
                     al hover, separado para no robar el click principal. */}
                 <button
                   onClick={() => onShowDetails(p.folderName)}
-                  title="Ver detalles, reparar o desinstalar"
+                  title={t("map.details_tooltip")}
                   className="shrink-0 self-center rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
                 >
                   <Info className="h-3.5 w-3.5" />
