@@ -812,15 +812,30 @@ function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
 // (v3.3.0) `Metric` legacy component eliminado — DetailBlock +
 // BlockRow lo reemplazan completamente.
 
-/** (v3.4.10) **PreflightCard** — visible en el FlightBook cuando hay
- *  SimConnect conectado pero todavía no se disparó el OUT. Muestra:
- *  "Estás en KATL · Gate E26 · PMDG 737 Delta N928DU · pre-flight".
- *  Resuelve el UX gap donde el usuario abre el FlightBook tras
- *  spawnear y solo ve el historial — ahora ve su estado actual. */
+/** (v3.4.10 → v3.4.12) **PreflightCard** — visible cuando hay
+ *  SimConnect conectado pero no hay vuelo abierto en DB.
+ *
+ *  v3.4.12: título y subtexto dinámicos según phase_label. Antes
+ *  decía siempre "En tierra · pre-vuelo · Esperando pushback"
+ *  aunque el usuario ya estuviera en pushback/taxi/takeoff. Ahora:
+ *
+ *    preflight / null      → "En tierra · Pre-vuelo" · "Esperando pushback / despegue."
+ *    engine_running        → "En tierra · Motores encendidos" · "Listo para pushback."
+ *    pushback              → "Pushback" · "Iniciando vuelo…"
+ *    taxi_out              → "Rodaje a pista" · "En camino a la pista."
+ *    takeoff               → "Despegue" · (sin subtexto)
+ *    climbing/cruise/...   → "En vuelo" · (sin subtexto — improbable
+ *                            que se llegue acá sin inFlight pero
+ *                            cubrimos por si el watcher detecta
+ *                            airborne antes de start_flight)
+ */
 function PreflightCard({ status }: { status: import("../lib/types").FlightStatus }) {
   const icao = status.currentAirportIcao ?? "?";
   const gate = status.currentGate ?? "—";
-  const phase = phaseLabelForUi(status.phaseLabel);
+  const phase = status.phaseLabel ?? "preflight";
+  const phaseShown = phaseLabelForUi(phase);
+  const meta = phaseCardMeta(phase);
+
   return (
     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 ring-1 ring-amber-500/15">
       <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-300">
@@ -828,7 +843,7 @@ function PreflightCard({ status }: { status: import("../lib/types").FlightStatus
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
         </span>
-        {t("fb.preflight.at_gate")}
+        {meta.titleKey ? t(meta.titleKey) : phaseShown}
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-amber-100">
         <span>
@@ -842,11 +857,13 @@ function PreflightCard({ status }: { status: import("../lib/types").FlightStatus
           </>
         )}
         <span className="text-amber-400">·</span>
-        <span className="text-amber-200">{phase}</span>
+        <span className="text-amber-200">{phaseShown}</span>
       </div>
-      <div className="mt-1 text-[11px] text-amber-200/80">
-        {t("fb.preflight.waiting_pushback")}
-      </div>
+      {meta.subKey && (
+        <div className="mt-1 text-[11px] text-amber-200/80">
+          {t(meta.subKey)}
+        </div>
+      )}
     </div>
   );
 }
@@ -856,6 +873,57 @@ function phaseLabelForUi(phase: string | null): string {
   if (!phase) return t("flying.preflight");
   const key = `flying.${phase}`;
   return t(key);
+}
+
+/** (v3.4.12) Header + subtexto de la PreflightCard según fase.
+ *  `titleKey` undefined ⇒ usar el phase_label crudo. `subKey`
+ *  undefined ⇒ no mostrar subtexto. */
+function phaseCardMeta(phase: string): { titleKey?: string; subKey?: string } {
+  switch (phase) {
+    case "preflight":
+      return {
+        titleKey: "fb.preflight.title.at_gate",
+        subKey: "fb.preflight.sub.waiting_pushback",
+      };
+    case "engine_running":
+      return {
+        titleKey: "fb.preflight.title.engines_on",
+        subKey: "fb.preflight.sub.ready_pushback",
+      };
+    case "pushback":
+      return {
+        titleKey: "fb.preflight.title.pushback",
+        subKey: "fb.preflight.sub.starting_flight",
+      };
+    case "taxi_out":
+      return {
+        titleKey: "fb.preflight.title.taxi_out",
+        subKey: "fb.preflight.sub.to_runway",
+      };
+    case "takeoff":
+      return {
+        titleKey: "fb.preflight.title.takeoff",
+      };
+    case "climbing":
+    case "cruise":
+    case "descent":
+    case "approach":
+      return {
+        titleKey: "fb.preflight.title.airborne",
+      };
+    case "landed_rollout":
+    case "taxi_in":
+    case "parking":
+    case "deboarding":
+      return {
+        titleKey: "fb.preflight.title.arrival",
+      };
+    default:
+      return {
+        titleKey: "fb.preflight.title.at_gate",
+        subKey: "fb.preflight.sub.waiting_pushback",
+      };
+  }
 }
 
 function StatCard({
