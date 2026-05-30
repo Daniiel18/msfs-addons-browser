@@ -8,6 +8,7 @@ import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { DropSelectModal } from "./DropSelectModal";
+import { t } from "../lib/i18n";
 
 /**
  * (v2.2.0) Overlay de Drag & Drop universal con modal multi-archivo.
@@ -94,7 +95,7 @@ export function DragDropOverlay() {
           return {
             path: r.path,
             state: "error",
-            error: "No se detectaron items instalables",
+            error: t("drop.no_installable"),
           };
         }
         // Inspeccionado, esperando decisión del modal.
@@ -200,11 +201,10 @@ export function DragDropOverlay() {
             <div className="rounded-2xl border-2 border-dashed border-brand-400 bg-slate-950/80 px-8 py-10 text-center shadow-2xl">
               <Upload className="mx-auto h-12 w-12 text-brand-300" />
               <p className="mt-3 text-base font-semibold text-slate-100">
-                Suelta para instalar
+                {t("drop.drop_to_install")}
               </p>
               <p className="mt-1 text-xs text-slate-400">
-                Escenarios MSFS, perfiles GSX, packs mixtos · .zip · .rar
-                · .7z · .ini · .py
+                {t("drop.formats_hint")}
               </p>
             </div>
           </motion.div>
@@ -252,14 +252,14 @@ function DropResultsToast({
       <header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
         <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
           <FileDown className="h-4 w-4 text-brand-300" />
-          {allDone ? "Resultados" : "Procesando archivos…"}
+          {allDone ? t("drop.results") : t("drop.processing")}
         </div>
         {allDone && (
           <button
             onClick={onClear}
             className="text-xs text-slate-400 hover:text-slate-200"
           >
-            Cerrar
+            {t("common.close")}
           </button>
         )}
       </header>
@@ -296,12 +296,12 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
           <div className="truncate font-mono text-slate-200">{fileName}</div>
           {result.state === "inspecting" && (
             <p className="text-[11px] text-slate-500">
-              Extrayendo y detectando contenido…
+              {t("drop.extracting")}
             </p>
           )}
           {result.state === "awaiting_modal" && (
             <p className="text-[11px] text-amber-300">
-              {result.items} items detectados — eligiendo en el modal…
+              {t("drop.items_detected", { count: String(result.items) })}
             </p>
           )}
           {result.state === "installed" && <Installed report={result.report} />}
@@ -309,7 +309,7 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
             <p className="text-[11px] text-rose-300">{result.error}</p>
           )}
           {result.state === "cancelled" && (
-            <p className="text-[11px] text-slate-500">Cancelado</p>
+            <p className="text-[11px] text-slate-500">{t("drop.cancelled")}</p>
           )}
         </div>
       </div>
@@ -321,21 +321,23 @@ function Installed({ report }: { report: DropCommitReport }) {
   const parts: string[] = [];
   if (report.installedGsx.length > 0) {
     parts.push(
-      `${report.installedGsx.length} perfil${report.installedGsx.length === 1 ? "" : "es"} GSX`,
+      t("drop.installed.gsx", { count: String(report.installedGsx.length) }),
     );
   }
   if (report.installedPackages.length > 0) {
     parts.push(
-      `${report.installedPackages.length} paquete${report.installedPackages.length === 1 ? "" : "s"} Community`,
+      t("drop.installed.packages", {
+        count: String(report.installedPackages.length),
+      }),
     );
   }
-  if (parts.length === 0) parts.push("Nada instalado");
+  if (parts.length === 0) parts.push(t("drop.installed.nothing"));
   return (
     <p className="text-[11px] text-emerald-300">
-      Instalado · {parts.join(" + ")}
+      {t("drop.installed.prefix")} · {parts.join(" + ")}
       {report.errors.length > 0 && (
         <span className="ml-1 text-rose-300">
-          · {report.errors.length} error{report.errors.length === 1 ? "" : "es"}
+          · {report.errors.length} {t("common.errors")}
         </span>
       )}
     </p>

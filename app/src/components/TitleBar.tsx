@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Minus, Square, X, Copy } from "lucide-react";
 import { Plane, Globe2 } from "lucide-react";
 import { LiveUpdateBadge } from "./LiveUpdateBadge";
+import { t } from "../lib/i18n";
 
 /**
  * Custom titlebar dark — reemplaza al titlebar nativo de Windows.
@@ -93,14 +94,14 @@ export function TitleBar() {
       <div className="flex items-center">
         <button
           onClick={() => callWin("minimize")}
-          title="Minimizar"
+          title={t("titlebar.minimize")}
           className="inline-flex h-9 w-10 items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-slate-100"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => callWin("toggleMaximize")}
-          title={maximized ? "Restaurar" : "Maximizar"}
+          title={maximized ? t("titlebar.restore") : t("titlebar.maximize")}
           className="inline-flex h-9 w-10 items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-slate-100"
         >
           {maximized ? (
@@ -111,7 +112,7 @@ export function TitleBar() {
         </button>
         <button
           onClick={() => callWin("close")}
-          title="Cerrar"
+          title={t("common.close")}
           className="inline-flex h-9 w-10 items-center justify-center text-slate-400 hover:bg-rose-500/90 hover:text-white"
         >
           <X className="h-4 w-4" />

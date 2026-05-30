@@ -356,10 +356,17 @@ export interface ScanReport {
  *  cualquier paquete `{vendor}-aircraft-{model}[-liveries]`. Cubre
  *  PMDG, Fenix, iniBuilds, FlyByWire, etc. */
 export interface PmdgLivery {
-  /** Vendor: "pmdg" | "fnx" | "inibuilds" | "fbw" | ... */
+  /** Vendor: "pmdg" | "fnx" | "inibuilds" | "fbw" | "aerosoft" | ... */
   vendor: string;
-  /** Modelo: "77er" | "77w" | "738" | "320" | "a350" | ... */
+  /** Modelo a nivel de paquete: "77er" | "77w" | "738" | "320" |
+   *  "a350" | "crj" | ... Cuando el paquete contiene múltiples
+   *  variantes (CRJ 550/700/900/1000), `variantFolder` distingue. */
   model: string;
+  /** Sub-modelo concreto: nombre del subdirectorio en
+   *  SimObjects/Airplanes/. Para Aerosoft CRJ aquí aparece
+   *  "Aerosoft_CRJ_700", "Aerosoft_CRJ_900", etc. Null cuando hay
+   *  un único variant en el paquete. */
+  variantFolder: string | null;
   /** Nombre del paquete tal como aparece en Community. */
   packageFolder: string;
   /** `title` de la sección [fltsim.N]. */
@@ -408,6 +415,16 @@ export interface UpdateFlightInput {
   fuelUsedKg?: number | null;
   departureGate?: string | null;
   arrivalGate?: string | null;
+  /** (v3.5.0 F2) Matrícula del avión. Necesaria para que el lookup
+   *  de foto en planespotters funcione cuando el livery no contenía
+   *  un tail real (ej. liveries Fenix con códigos internos). */
+  aircraftRegistration?: string | null;
+}
+
+/** (v3.5.0 F2) Reporte tras borrar todos los vuelos de una fuente. */
+export interface DeleteBySourceReport {
+  flightsDeleted: number;
+  tracksDeleted: number;
 }
 
 /** Punto individual de la traza de un vuelo (v0.1.23). Una fila
@@ -593,6 +610,23 @@ export interface CloudSyncReport {
   downloadedSettings: number;
 }
 
+/** (v3.5.0 F3) Reporte del upload-only — solo conteos enviados. */
+export interface CloudUploadReport {
+  uploadedFlights: number;
+  uploadedTracks: number;
+  uploadedSettings: number;
+}
+
+/** (v3.5.0 F3) Reporte del download-missing — los nuevos vuelos que
+ *  se trajeron del cloud y los que se omitieron por estar ya en local. */
+export interface CloudDownloadReport {
+  cloudFlights: number;
+  newFlights: number;
+  skippedExisting: number;
+  newTracks: number;
+  newSettings: number;
+}
+
 /** (v2.0.2) Un paso del diagnóstico de Cloud Sync. Espejo de
  *  `cloud_sync::CloudTestStep`. */
 export interface CloudTestStep {
@@ -606,6 +640,52 @@ export interface CloudTestReport {
   overallOk: boolean;
   steps: CloudTestStep[];
   hint: string | null;
+}
+
+/** (v3.5.0) Reporte de la purga del cloud. Conteos del snapshot
+ *  remoto antes de borrarlo + flag si el archivo existía. */
+export interface CloudPurgeReport {
+  deletedFlights: number;
+  deletedTracks: number;
+  deletedSettings: number;
+  /** True si encontramos y borramos el snapshot file de Drive.
+   *  False si no había snapshot (purga = no-op exitoso). */
+  fileDeleted: boolean;
+}
+
+/** (v3.5.0) Reporte de la importación del LOGBOOK.BIN de MSFS.
+ *  `sourcePath` y `sim` son `null` cuando no se encontró logbook. */
+export interface MsfsLogbookImportReport {
+  sourcePath: string | null;
+  /** "msfs-2020" | "msfs-2024" | null si no se encontró logbook. */
+  sim: string | null;
+  candidatesFound: number;
+  importedCount: number;
+  skippedDuplicates: number;
+}
+
+/** (v3.5.0 F2) Candidato VAS-ACARS detectado en disco — un archivo
+ *  `.bin` por vuelo. */
+export interface VasFlightCandidate {
+  uuid: string;
+  path: string;
+  sizeBytes: number;
+}
+
+/** (v3.5.0 F2) Reporte del import de VAS-ACARS. `sourceDir` null
+ *  significa que VAS-ACARS no está instalado (carpeta no existe). */
+export interface VasImportReport {
+  sourceDir: string | null;
+  candidatesFound: number;
+  importedCount: number;
+  /** Vuelos que ya existían (por external_id) y se actualizaron con
+   *  campos derivados nuevos (matrícula, airline, gate). Permite
+   *  re-import sin perder ediciones manuales de timestamps. */
+  updatedCount: number;
+  skippedDuplicates: number;
+  /** Archivos que no pudieron parsearse (corruptos, versión
+   *  incompatible, etc.). Para diagnóstico — no son errores fatales. */
+  skippedInvalid: number;
 }
 
 /** (v2.0.1) Estado del folder sync — alternativa simple a OAuth.

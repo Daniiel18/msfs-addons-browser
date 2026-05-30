@@ -18,6 +18,7 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { isNewer } from "../lib/version";
 import { ChangelogModal } from "./ChangelogModal";
+import { t } from "../lib/i18n";
 
 /**
  * Estado de instalación de un addon de búsqueda respecto a lo que
@@ -346,7 +347,7 @@ export function ResultCard({ addon }: Props) {
           <button
             onClick={() => api.openExternal(addon.pageUrl)}
             className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-            title="Abrir página de origen"
+            title={t("result.open_source")}
           >
             <ExternalLink className="h-4 w-4" />
           </button>
@@ -356,17 +357,17 @@ export function ResultCard({ addon }: Props) {
           {hasTorrent && <Chip label="Torrent" tone="brand" />}
           {hasMirror  && <Chip label="Mirror" tone="slate" />}
           {addon.downloadMethods.length === 0 && (
-            <span className="text-xs text-slate-500">Sin métodos de descarga detectados</span>
+            <span className="text-xs text-slate-500">{t("result.no_download_methods")}</span>
           )}
           <div className="ml-auto flex flex-wrap gap-2">
             {isSimplaza && (
               <button
                 onClick={() => setShowChangelog(true)}
-                title="Ver changelog scrapeado de la página de Simplaza"
+                title={t("result.view_simplaza_changelog")}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-brand-500/40 hover:bg-slate-800 hover:text-slate-100"
               >
                 <FileText className="h-3.5 w-3.5" />
-                Changelog
+                {t("result.changelog")}
               </button>
             )}
             {addon.downloadMethods.slice(0, 3).map((m, i) => (
@@ -378,7 +379,11 @@ export function ResultCard({ addon }: Props) {
                     ? "border-brand-500/50 bg-brand-500/10 text-brand-200 hover:border-brand-400 hover:bg-brand-500/20"
                     : "border-slate-700 bg-slate-800/80 text-slate-200 hover:border-brand-500/60 hover:bg-slate-800"
                 }`}
-                title={m.kind === "torrent" ? "Descarga con auto-instalación" : "Abrir en el navegador"}
+                title={
+                  m.kind === "torrent"
+                    ? t("result.torrent_tooltip")
+                    : t("result.mirror_tooltip")
+                }
               >
                 <Download className="h-3.5 w-3.5" />
                 {m.name}
@@ -451,7 +456,7 @@ function Banner({
           {hasGsxProfile && (
             <span
               className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-2 py-1 text-[11px] font-semibold text-violet-200 ring-1 ring-violet-500/40 backdrop-blur"
-              title="Tienes un perfil GSX instalado para este aeropuerto"
+              title={t("result.gsx_installed_tooltip")}
             >
               <CheckCircle2 className="h-3 w-3" />
               GSX

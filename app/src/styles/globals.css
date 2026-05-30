@@ -153,10 +153,15 @@ html.light input[type="number"] {
 }
 
 /* Selección de tabs activa (brand-500/15 sobre brand-500/30) — el
-   anillo brand sigue siendo visible, el bg queda sutil sobre claro. */
-html.light [class*="bg-brand-500/15"] {
-  background-color: rgba(99, 102, 241, 0.18) !important;
-  color: #312e81 !important;
+   anillo brand sigue siendo visible, el bg queda sutil sobre claro.
+   (v3.5.0) — antes mapeaba a indigo por accidente; el brand de la
+   app es verde (#1ea45d) así que aquí el tinte y el texto deben
+   alinearse con la paleta brand para que se sienta consistente. */
+html.light [class*="bg-brand-500/15"],
+html.light [class*="bg-brand-500/10"],
+html.light [class*="bg-brand-500/20"] {
+  background-color: rgba(30, 164, 93, 0.16) !important;
+  color: #0a432b !important;
 }
 
 /* (v2.0.0) Refuerzos adicionales del tema claro — el usuario reportó
@@ -188,16 +193,29 @@ html.light .divide-slate-800 > * + * {
   border-top-color: rgba(148, 163, 184, 0.4) !important;
 }
 
-/* Tab activa de la nav principal con border ring + tinte brand */
-html.light .ring-brand-500\/30 {
-  --tw-ring-color: rgba(99, 102, 241, 0.5) !important;
+/* Tab activa de la nav principal con border ring + tinte brand.
+   (v3.5.0) — antes referenciaba indigo; el brand de la app es verde. */
+html.light .ring-brand-500\/30,
+html.light [class*="ring-brand-500\/30"],
+html.light [class*="ring-brand-500\/40"],
+html.light [class*="border-brand-500\/30"],
+html.light [class*="border-brand-500\/40"],
+html.light [class*="border-brand-500\/50"] {
+  --tw-ring-color: rgba(30, 164, 93, 0.55) !important;
+  border-color: rgba(30, 164, 93, 0.55) !important;
 }
 
-/* Texto brand-* — los acentos azulados en cards. Mantenemos color
-   pero ajustamos contraste sobre claro. */
+/* Texto brand-* — los acentos verdes en cards/botones. Sobre claro
+   bajamos a un verde oscuro (brand-700) para contraste accesible. */
+html.light .text-brand-100,
 html.light .text-brand-200,
-html.light .text-brand-300 {
-  color: #4338ca !important;
+html.light .text-brand-300,
+html.light .text-brand-400 {
+  color: #0f693d !important;
+}
+html.light .hover\:text-brand-200:hover,
+html.light .hover\:text-brand-300:hover {
+  color: #0a432b !important;
 }
 
 /* Scrollbar a claro. */
@@ -223,14 +241,122 @@ html.light [class*="bg-slate-950/80"] {
 
 /* Banner de ResultCard usa from-slate-800 via-slate-900 to-slate-950
    en gradient — sobre claro queda negro. Invertimos a paleta gris
-   pálida. */
-html.light [class*="from-slate-800"][class*="to-slate-950"] {
+   pálida. v3.5.0 — cubrimos también las variantes from-slate-900
+   via-* to-slate-* que usan otros cards (header chips, sidebar
+   highlights, etc.). */
+html.light [class*="from-slate-800"][class*="to-slate-950"],
+html.light [class*="from-slate-900"][class*="to-slate-950"],
+html.light [class*="from-slate-800"][class*="via-slate-900"],
+html.light [class*="from-slate-900"][class*="via-slate-800"] {
   background-image: linear-gradient(
     to bottom right,
     #e2e8f0,
     #cbd5e1,
     #94a3b8
   ) !important;
+}
+
+/* (v3.5.0) Variantes slate-800 que no estaban cubiertas — bg-slate-800
+   sólido y sus opacidades, usados en tabs, chips, hover de botones. */
+html.light .bg-slate-800,
+html.light [class*="bg-slate-800/40"],
+html.light [class*="bg-slate-800/50"],
+html.light [class*="bg-slate-800/60"],
+html.light [class*="bg-slate-800/70"],
+html.light [class*="bg-slate-800/80"] {
+  background-color: rgba(226, 232, 240, 0.85) !important;
+  color: #0f172a !important;
+}
+
+/* (v3.5.0) Acentos de color sobre claro — mantenemos saturación pero
+   bajamos el `text-*-200/300` a -700 para que sea legible sobre
+   superficies blanquecinas. Mantenemos los -400/-500 que ya tienen
+   suficiente contraste por sí mismos. */
+html.light .text-emerald-100,
+html.light .text-emerald-200,
+html.light .text-emerald-300 {
+  color: #047857 !important;
+}
+html.light .text-amber-100,
+html.light .text-amber-200,
+html.light .text-amber-300 {
+  color: #b45309 !important;
+}
+html.light .text-rose-100,
+html.light .text-rose-200,
+html.light .text-rose-300 {
+  color: #be123c !important;
+}
+html.light .text-violet-100,
+html.light .text-violet-200,
+html.light .text-violet-300 {
+  color: #6d28d9 !important;
+}
+html.light .text-sky-100,
+html.light .text-sky-200,
+html.light .text-sky-300 {
+  color: #0369a1 !important;
+}
+html.light .text-red-300,
+html.light .text-red-400 {
+  color: #dc2626 !important;
+}
+
+/* (v3.5.0) Tintes de fondo con color de estado — los bg-emerald-500/10
+   sobre claro pierden visibilidad. Subimos opacidad y oscurecemos el
+   texto interno para que el contraste sea legible. */
+html.light [class*="bg-emerald-500/10"],
+html.light [class*="bg-emerald-500/15"],
+html.light [class*="bg-emerald-500/20"] {
+  background-color: rgba(16, 185, 129, 0.18) !important;
+}
+html.light [class*="bg-amber-500/10"],
+html.light [class*="bg-amber-500/15"],
+html.light [class*="bg-amber-500/20"] {
+  background-color: rgba(245, 158, 11, 0.18) !important;
+}
+html.light [class*="bg-rose-500/10"],
+html.light [class*="bg-rose-500/15"],
+html.light [class*="bg-rose-500/20"] {
+  background-color: rgba(244, 63, 94, 0.18) !important;
+}
+html.light [class*="bg-violet-500/10"],
+html.light [class*="bg-violet-500/15"],
+html.light [class*="bg-violet-500/20"] {
+  background-color: rgba(139, 92, 246, 0.18) !important;
+}
+html.light [class*="bg-sky-500/10"],
+html.light [class*="bg-sky-500/15"],
+html.light [class*="bg-sky-500/20"] {
+  background-color: rgba(56, 189, 248, 0.18) !important;
+}
+
+/* (v3.5.0) Botones con texto claro (text-slate-950 sobre fondo brand)
+   — el contraste se rompe si el bg-brand-500 cambia. Aseguramos que
+   el botón primario sólido siempre tenga texto blanco. */
+html.light .text-slate-950,
+html.light .text-emerald-950 {
+  color: #ffffff !important;
+}
+
+/* (v3.5.0) kbd indicators (Enter chip en SearchBar) — eran slate-700
+   sobre slate-800, sobre claro queda invisible. */
+html.light kbd {
+  background-color: rgba(226, 232, 240, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.6) !important;
+  color: #334155 !important;
+}
+
+/* (v3.5.0) Tablas de dashboard (text-slate-300/400 sobre rows) ya
+   cubierto, pero los hover row bg-slate-900/30 quedaban iguales. */
+html.light [class*="bg-slate-900/20"],
+html.light [class*="bg-slate-900/30"] {
+  background-color: rgba(255, 255, 255, 0.7) !important;
+}
+html.light [class*="hover:bg-slate-900/40"]:hover,
+html.light [class*="hover:bg-slate-900/50"]:hover,
+html.light [class*="hover:bg-slate-900/60"]:hover {
+  background-color: rgba(241, 245, 249, 0.95) !important;
 }
 
 /* SearchBar input — su placeholder texto necesita más contraste. */

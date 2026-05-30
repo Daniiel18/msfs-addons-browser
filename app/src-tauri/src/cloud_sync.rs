@@ -666,6 +666,82 @@ async fn download_sync_file(
     Ok(Some(resp.text().await?))
 }
 
+/// Borra el snapshot file de Drive y empuja un snapshot VACÍO en su
+/// lugar para que la próxima ronda de sync no resucite el historial
+/// desde un caché en otra máquina. Devuelve `(deleted_flights,
+/// deleted_tracks)` — los conteos vistos en el snapshot remoto antes
+/// de borrarlo, así el usuario sabe qué se perdió.
+///
+/// **Importante**: NO toca las tablas locales — los vuelos del usuario
+/// en este PC se preservan. Sólo limpia la copia cloud.
+async fn purge_cloud_snapshot(
+    http: &reqwest::Client,
+    access_token: &str,
+) -> anyhow::Result<PurgeReport> {
+    let mut report = PurgeReport::default();
+    // Leer el snapshot remoto para reportar lo que se borra.
+    if let Some(text) = download_sync_file(http, access_token).await? {
+        if let Ok(snap) = serde_json::from_str::<Snapshot>(&text) {
+            report.deleted_flights = snap.flight_log.len();
+            report.deleted_tracks = snap.flight_log_track.len();
+            report.deleted_settings = snap.settings.len();
+        }
+    }
+    // Borrar el archivo de Drive si existe.
+    if let Some(file_id) = find_sync_file(http, access_token).await? {
+        let resp = http
+            .delete(format!(
+                "https://www.googleapis.com/drive/v3/files/{}",
+                file_id
+            ))
+            .bearer_auth(access_token)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(drive_error_for_response(resp).await);
+        }
+        report.file_deleted = true;
+    }
+    Ok(report)
+}
+
+/// Reporte de la operación de purga cloud.
+#[derive(Debug, Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeReport {
+    pub deleted_flights: usize,
+    pub deleted_tracks: usize,
+    pub deleted_settings: usize,
+    /// True si encontramos y borramos el snapshot file de Drive.
+    /// False si no había snapshot (purga es no-op exitosa).
+    pub file_deleted: bool,
+}
+
+/// API pública de purga — wrap del helper interno con manejo de auth.
+/// (v3.5.0) Tras purgar, también resetea el setting `last_sync_at`
+/// para que la UI no muestre un timestamp viejo.
+pub async fn purge(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+) -> anyhow::Result<PurgeReport> {
+    let access_token = fresh_access_token(pool, http).await?;
+    let report = purge_cloud_snapshot(http, &access_token).await?;
+    // Reset del last_sync_at para que la UI refleje "nunca sincronizado".
+    sqlx::query("DELETE FROM app_settings WHERE key = ?1")
+        .bind(KEY_LAST_SYNC_AT)
+        .execute(pool)
+        .await?;
+    tracing::info!(
+        target: "cloud",
+        "cloud purged · {} flights · {} tracks · {} settings · file_deleted={}",
+        report.deleted_flights,
+        report.deleted_tracks,
+        report.deleted_settings,
+        report.file_deleted,
+    );
+    Ok(report)
+}
+
 // =============================================================================
 // Snapshot model
 // =============================================================================
@@ -914,6 +990,28 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         settings += 1;
     }
     tx.commit().await?;
+
+    // (v3.5.0 F3) Cierra cualquier vuelo con ended_at = NULL que NO
+    // tenga datos de posición en vivo. Estos son "phantom in-flight"
+    // imported desde otra máquina — si nunca tuvieron last_position
+    // local, no son vuelos que estemos volando AHORA. Sin este cleanup,
+    // el FlightBook los mostraba como "FLYING NOW".
+    let closed = sqlx::query(
+        r#"UPDATE flight_log
+           SET ended_at = started_at
+           WHERE ended_at IS NULL
+             AND last_position_at IS NULL"#,
+    )
+    .execute(pool)
+    .await?;
+    if closed.rows_affected() > 0 {
+        tracing::info!(
+            target: "cloud",
+            "restore cleanup: auto-cerrados {} vuelos phantom (sin last_position)",
+            closed.rows_affected()
+        );
+    }
+
     Ok(RestoreReport {
         flights,
         tracks,
@@ -1249,6 +1347,291 @@ pub async fn sync_now(
     )
     .await?;
     Ok(report)
+}
+
+// =============================================================================
+// (v3.5.0 F3) Split upload / download — el usuario reportó que el sync
+// "todo-en-uno" confunde: no se sabe si va a subir, bajar, o mergear.
+// Botones separados con semántica clara.
+// =============================================================================
+
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadReport {
+    pub uploaded_flights: usize,
+    pub uploaded_tracks: usize,
+    pub uploaded_settings: usize,
+}
+
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadReport {
+    pub cloud_flights: usize,
+    pub new_flights: usize,
+    pub skipped_existing: usize,
+    pub new_tracks: usize,
+    pub new_settings: usize,
+}
+
+/// **Subir** TODO el contenido local a la nube (sobrescribe el snapshot
+/// remoto). Incluye vuelos sim-flown + imports (VAS-ACARS) + tracks +
+/// settings con prefijo `pref_`. Operación idempotente: re-subir no
+/// duplica nada porque el cloud guarda un único snapshot.
+pub async fn upload_all(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+) -> anyhow::Result<UploadReport> {
+    let access_token = fresh_access_token(pool, http).await?;
+    let local = build_snapshot(pool).await?;
+    let payload = serde_json::to_string(&local)?;
+    let report = UploadReport {
+        uploaded_flights: local.flight_log.len(),
+        uploaded_tracks: local.flight_log_track.len(),
+        uploaded_settings: local.settings.len(),
+    };
+    if let Some(file_id) = find_sync_file(http, &access_token).await? {
+        update_sync_file(http, &access_token, &file_id, &payload).await?;
+    } else {
+        create_sync_file(http, &access_token, &payload).await?;
+    }
+    set_setting(
+        pool,
+        KEY_LAST_SYNC_AT,
+        &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .await?;
+    tracing::info!(
+        target: "cloud",
+        "upload OK · {} flights, {} tracks, {} settings",
+        report.uploaded_flights, report.uploaded_tracks, report.uploaded_settings,
+    );
+    Ok(report)
+}
+
+/// **Bajar** los vuelos faltantes de la nube. NO sobrescribe los vuelos
+/// que ya existen localmente — los detecta por:
+///   1. `(source, external_id)` cuando el vuelo es un import (VAS-ACARS).
+///   2. `(started_at, origin_icao || origin_lat::round_2)` cuando es
+///      sim-flown — sin external_id, la combinación timestamp+origen
+///      es estable.
+/// Los vuelos nuevos se insertan con ID auto-asignado (NO se usa el ID
+/// del cloud para evitar conflictos cross-machine). Los tracks
+/// asociados a vuelos nuevos también se importan, mapeando el ID viejo
+/// del cloud al nuevo local.
+///
+/// Auto-cierre: si un vuelo descargado tiene `ended_at = NULL` (estaba
+/// en curso en otra máquina al momento del upload), lo cerramos con
+/// `ended_at = started_at` para que no aparezca como "FLYING NOW"
+/// fantasma en esta máquina.
+pub async fn download_missing(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+) -> anyhow::Result<DownloadReport> {
+    let access_token = fresh_access_token(pool, http).await?;
+    let mut report = DownloadReport::default();
+
+    let Some(text) = download_sync_file(http, &access_token).await? else {
+        tracing::info!(target: "cloud", "download: no remote snapshot exists yet");
+        return Ok(report);
+    };
+    let remote: Snapshot = match serde_json::from_str(&text) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(anyhow!("snapshot remoto corrupto: {e:#}"));
+        }
+    };
+    report.cloud_flights = remote.flight_log.len();
+
+    // Construye índice de claves estables existentes en local para
+    // hacer dedup eficiente. Un vuelo coincide si:
+    //  - (source, external_id) matchea, o
+    //  - (started_at, origin_lat round 2) matchea (sim-flown sin
+    //    external_id)
+    let local_keys = build_local_dedup_keys(pool).await?;
+
+    // Mapa de cloud_flight_id → new_local_id (para tracks).
+    let mut cloud_to_local_id: std::collections::HashMap<i64, i64> =
+        std::collections::HashMap::new();
+
+    let mut tx = pool.begin().await?;
+
+    for row in &remote.flight_log {
+        let cloud_id = json_i64(row, "id");
+        let source = json_str(row, "source").unwrap_or_else(|| "simconnect".into());
+        let external_id = json_str(row, "externalId");
+        let started_at = json_str(row, "startedAt").unwrap_or_default();
+        let origin_lat = json_f64(row, "originLat").unwrap_or(0.0);
+        let origin_lon = json_f64(row, "originLon").unwrap_or(0.0);
+
+        // Dedup check
+        let import_key = external_id
+            .as_deref()
+            .map(|eid| format!("{}|{}", source, eid));
+        let sim_key = format!("{}|{:.2}|{:.2}", started_at, origin_lat, origin_lon);
+        let exists = import_key
+            .as_ref()
+            .map(|k| local_keys.contains(k))
+            .unwrap_or(false)
+            || local_keys.contains(&sim_key);
+
+        if exists {
+            report.skipped_existing += 1;
+            continue;
+        }
+
+        // Auto-cierre del ended_at si es NULL (vuelo "en curso" en
+        // otra máquina) — evita el bug de FLYING NOW phantom.
+        let ended_at_cloud = json_str(row, "endedAt");
+        let ended_at = match ended_at_cloud {
+            Some(e) if !e.is_empty() => Some(e),
+            _ => {
+                // Si el cloud no lo cerró, lo cerramos artificialmente
+                // con ended_at = started_at. Mejor que phantom.
+                Some(started_at.clone())
+            }
+        };
+
+        let result = sqlx::query(
+            r#"INSERT INTO flight_log
+                (started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
+                 destination_icao, destination_name, destination_lat, destination_lon,
+                 aircraft_atc_type, aircraft_title,
+                 aircraft_model, aircraft_airline, aircraft_registration,
+                 distance_nm, flight_time_s,
+                 max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
+                 departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
+                 paused_seconds, source, external_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+        )
+        .bind(&started_at)
+        .bind(ended_at.as_deref())
+        .bind(json_str(row, "originIcao"))
+        .bind(json_str(row, "originName"))
+        .bind(origin_lat)
+        .bind(origin_lon)
+        .bind(json_str(row, "destinationIcao"))
+        .bind(json_str(row, "destinationName"))
+        .bind(json_f64(row, "destinationLat"))
+        .bind(json_f64(row, "destinationLon"))
+        .bind(json_str(row, "aircraftAtcType"))
+        .bind(json_str(row, "aircraftTitle"))
+        .bind(json_str(row, "aircraftModel"))
+        .bind(json_str(row, "aircraftAirline"))
+        .bind(json_str(row, "aircraftRegistration"))
+        .bind(json_f64(row, "distanceNm"))
+        .bind(json_i64(row, "flightTimeS"))
+        .bind(json_i64(row, "maxAltitudeFt"))
+        .bind(json_i64(row, "landingFpm"))
+        .bind(json_i64(row, "maxGroundSpeedKt"))
+        .bind(json_i64(row, "maxTrueAirspeedKt"))
+        .bind(json_str(row, "departureGate"))
+        .bind(json_str(row, "arrivalGate"))
+        .bind(json_i64(row, "passengers"))
+        .bind(json_i64(row, "cargoKg"))
+        .bind(json_i64(row, "fuelUsedKg"))
+        .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
+        .bind(&source)
+        .bind(external_id.as_deref())
+        .execute(&mut *tx)
+        .await?;
+
+        let new_id = result.last_insert_rowid();
+        if let Some(cid) = cloud_id {
+            cloud_to_local_id.insert(cid, new_id);
+        }
+        report.new_flights += 1;
+    }
+
+    // Importa solo los tracks de los vuelos NUEVOS — usando el mapping
+    // cloud_id → local_id que armamos arriba.
+    for track in &remote.flight_log_track {
+        let cloud_flight_id = match json_i64(track, "flightId") {
+            Some(v) => v,
+            None => continue,
+        };
+        let local_flight_id = match cloud_to_local_id.get(&cloud_flight_id) {
+            Some(v) => *v,
+            None => continue, // este track corresponde a un vuelo que ya teníamos local
+        };
+        let ts = json_str(track, "ts").unwrap_or_default();
+        if ts.is_empty() {
+            continue;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO flight_log_track (flight_id, ts, lat, lon, alt_ft, gs_kt)
+             VALUES (?,?,?,?,?,?)",
+        )
+        .bind(local_flight_id)
+        .bind(&ts)
+        .bind(json_f64(track, "lat").unwrap_or(0.0))
+        .bind(json_f64(track, "lon").unwrap_or(0.0))
+        .bind(json_i64(track, "altFt").unwrap_or(0))
+        .bind(
+            json_i64(track, "gsKt")
+                .or_else(|| json_i64(track, "groundSpeedKt"))
+                .unwrap_or(0),
+        )
+        .execute(&mut *tx)
+        .await?;
+        report.new_tracks += 1;
+    }
+
+    // Settings: siempre se mergean (preserva preferencias del cloud).
+    for kv in &remote.settings {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?,?,datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+             updated_at = excluded.updated_at",
+        )
+        .bind(&kv.key)
+        .bind(&kv.value)
+        .execute(&mut *tx)
+        .await?;
+        report.new_settings += 1;
+    }
+
+    tx.commit().await?;
+
+    set_setting(
+        pool,
+        KEY_LAST_SYNC_AT,
+        &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .await?;
+
+    tracing::info!(
+        target: "cloud",
+        "download OK · cloud={} new={} skipped={} tracks={} settings={}",
+        report.cloud_flights,
+        report.new_flights,
+        report.skipped_existing,
+        report.new_tracks,
+        report.new_settings,
+    );
+    Ok(report)
+}
+
+/// Construye un set de claves estables para los vuelos LOCALES, para
+/// hacer dedup contra los del cloud durante `download_missing`. Cada
+/// vuelo aporta hasta DOS claves:
+///   - `source|external_id` (si tiene external_id — todos los imports)
+///   - `started_at|origin_lat:2|origin_lon:2` (sim-flown sin external_id)
+async fn build_local_dedup_keys(
+    pool: &SqlitePool,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let rows: Vec<(String, Option<String>, String, f64, f64)> = sqlx::query_as(
+        "SELECT source, external_id, started_at, origin_lat, origin_lon FROM flight_log",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut set = std::collections::HashSet::new();
+    for (source, ext, started, lat, lon) in rows {
+        if let Some(eid) = ext {
+            set.insert(format!("{}|{}", source, eid));
+        }
+        set.insert(format!("{}|{:.2}|{:.2}", started, lat, lon));
+    }
+    Ok(set)
 }
 
 // =============================================================================

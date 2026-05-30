@@ -23,7 +23,6 @@ import {
   MinusSquare,
   Plane,
   Power,
-  RefreshCw,
   RotateCcw,
   Settings as SettingsIcon,
   Trash2,
@@ -35,6 +34,7 @@ import type { ExportFormat } from "../lib/types";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 
@@ -130,7 +130,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setFeedback(null);
     try {
       const n = await clearCaches();
-      setFeedback(`Limpiadas ${n} entradas de caché.`);
+      setFeedback(t("settings.feedback.caches_cleared", { count: String(n) }));
     } catch (e) {
       setFeedback(`Error: ${String(e)}`);
     } finally {
@@ -139,19 +139,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   };
 
   const onReset = async () => {
-    if (
-      !window.confirm(
-        "¿Restablecer todas las preferencias a sus valores por defecto? El SimBrief Pilot ID y el dataset de aeropuertos no se tocan.",
-      )
-    )
-      return;
+    if (!window.confirm(t("settings.reset.confirm"))) return;
     setResetting(true);
     setFeedback(null);
     try {
       const n = await resetSettings();
-      setFeedback(`Restablecidas ${n} preferencias a sus valores por defecto.`);
+      setFeedback(t("settings.feedback.reset_done", { count: String(n) }));
     } catch (e) {
-      setFeedback(`Error: ${String(e)}`);
+      setFeedback(`${t("common.error")}: ${String(e)}`);
     } finally {
       setResetting(false);
     }
@@ -159,7 +154,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
   const openPath = (path: string | null) => {
     if (!path) return;
-    api.openLocalPath(path).catch((e) => setFeedback(`No se pudo abrir: ${String(e)}`));
+    api
+      .openLocalPath(path)
+      .catch((e) => setFeedback(`${t("settings.feedback.open_failed")}: ${String(e)}`));
   };
 
   const onBackup = async () => {
@@ -173,10 +170,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       }
       const r = await api.backupCommunity(folder);
       setFeedback(
-        `Backup creado: ${r.outputPath} · ${r.packageCount} paquetes (${(r.totalBytes / 1_000_000).toFixed(0)} MB) en ${(r.elapsedMs / 1000).toFixed(1)} s.`,
+        t("settings.feedback.backup_done", {
+          path: r.outputPath,
+          count: String(r.packageCount),
+          mb: (r.totalBytes / 1_000_000).toFixed(0),
+          secs: (r.elapsedMs / 1000).toFixed(1),
+        }),
       );
     } catch (e) {
-      setFeedback(`Error de backup: ${String(e)}`);
+      setFeedback(`${t("settings.feedback.backup_error")}: ${String(e)}`);
     } finally {
       setBacking(false);
     }
@@ -200,9 +202,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         return;
       }
       const r = await api.exportAddons(dest, format);
-      setFeedback(`Exportadas ${r.rowCount} filas a ${r.outputPath}`);
+      setFeedback(
+        t("settings.feedback.export_done", {
+          count: String(r.rowCount),
+          path: r.outputPath,
+        }),
+      );
     } catch (e) {
-      setFeedback(`Error de export: ${String(e)}`);
+      setFeedback(`${t("settings.feedback.export_error")}: ${String(e)}`);
     } finally {
       setExporting(null);
     }
@@ -230,7 +237,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <div className="flex items-center gap-2">
                 <SettingsIcon className="h-4 w-4 text-brand-300" />
                 <h2 className="text-sm font-semibold text-slate-100">
-                  Configuración
+                  {t("settings.title")}
                 </h2>
               </div>
               <button
@@ -287,10 +294,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
               <Section title={t("settings.section.flights")} icon={<Plane className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
-                  <div className="text-xs text-slate-200">SimBrief Pilot ID</div>
+                  <div className="text-xs text-slate-200">{t("settings.simbrief.pilot_id_title")}</div>
                   <p className="mt-0.5 text-[11px] text-slate-500">
-                    En SimBrief: <span className="font-mono">Account → Pilot ID</span>.
-                    Sin esto, los vuelos no se descargan.
+                    {t("settings.simbrief.pilot_id_hint")}
                   </p>
                   <div className="mt-2 flex items-center gap-2">
                     <input
@@ -319,10 +325,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
                 <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400">
                   <Activity className="mr-1 inline h-3 w-3 text-emerald-300" />
-                  SimConnect (vuelos reales): el watcher arranca con la app y
-                  se conecta automáticamente cuando MSFS está corriendo.
-                  Cada vuelo registrado aparece en{" "}
-                  <span className="font-medium text-emerald-200">FlightBook</span>.
+                  {t("settings.simbrief.simconnect_hint")}
                 </div>
               </Section>
 
@@ -343,14 +346,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
               <Section title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />}>
                 <PathRow
-                  label="Carpeta Community"
-                  hint="MSFS lee los addons desde aquí."
+                  label={t("settings.folders.community")}
+                  hint={t("settings.folders.community.hint")}
                   path={settings.communityPath}
                   onOpen={() => openPath(settings.communityPath)}
                 />
                 <PathRow
-                  label="Logs"
-                  hint="Logs rotados por día — útiles para diagnóstico."
+                  label={t("settings.folders.logs")}
+                  hint={t("settings.folders.logs.hint")}
                   path={settings.logsPath}
                   onOpen={() => openPath(settings.logsPath)}
                 />
@@ -360,12 +363,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="flex items-center gap-1.5 text-xs text-slate-200">
                     <Archive className="h-3 w-3 text-slate-500" />
-                    Comprimir carpeta Community
+                    {t("settings.backup.title")}
                   </div>
                   <p className="mt-0.5 text-[11px] text-slate-500">
-                    Crea un .zip con timestamp en la carpeta que elijas. Útil
-                    antes de actualizar MSFS o probar packs experimentales.
-                    El proceso puede tardar varios minutos en colecciones grandes.
+                    {t("settings.backup.hint")}
                   </p>
                   <div className="mt-2">
                     <button
@@ -378,21 +379,25 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       ) : (
                         <Archive className="h-3.5 w-3.5" />
                       )}
-                      Crear backup…
+                      {t("settings.backup.button")}…
                     </button>
                   </div>
                 </div>
               </Section>
 
-              <Section title="GSX Pro" icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.gsx")} icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
                 <GsxProfilesPanel onFeedback={setFeedback} />
               </Section>
 
               <Section
-                title="Sincronización con Google Drive"
+                title={t("settings.section.cloud")}
                 icon={<Cloud className="h-3.5 w-3.5" />}
               >
                 <CloudSyncPanel onFeedback={setFeedback} />
+              </Section>
+
+              <Section title={t("settings.section.msfs_logbook")} icon={<FileText className="h-3.5 w-3.5" />}>
+                <MsfsLogbookRow onFeedback={setFeedback} />
               </Section>
 
               <Section title={t("settings.section.import")} icon={<Upload className="h-3.5 w-3.5" />}>
@@ -402,11 +407,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <Section title={t("settings.section.export")} icon={<Download className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="text-xs text-slate-200">
-                    Lista de addons instalados
+                    {t("settings.export.title")}
                   </div>
                   <p className="mt-0.5 text-[11px] text-slate-500">
-                    Exporta título, autor, versión, ICAO, tamaño y fecha de
-                    cada paquete. Elige formato:
+                    {t("settings.export.hint")}
                   </p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     <ExportButton
@@ -486,7 +490,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <Section title={t("settings.section.about")} icon={<Info className="h-3.5 w-3.5" />}>
                 <div className="space-y-1 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-400">
                   <div>
-                    <span className="text-slate-500">Versión:</span>{" "}
+                    <span className="text-slate-500">{t("settings.about.version")}:</span>{" "}
                     <span className="font-mono text-slate-200">
                       {appVersion ?? "—"}
                     </span>
@@ -505,7 +509,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       }
                       className="text-brand-300 hover:underline"
                     >
-                      Daniiel18/msfs-addons-browser (última release →)
+                      {t("settings.about.github_link")}
                     </button>
                   </div>
                 </div>
@@ -538,12 +542,9 @@ function ThemeRow({
   return (
     <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <div className="min-w-0 flex-1">
-        <div className="text-xs text-slate-200">Tema visual</div>
+        <div className="text-xs text-slate-200">{t("settings.theme.title")}</div>
         <p className="mt-0.5 text-[11px] text-slate-500">
-          Oscuro u claro. El claro reemplaza fondos, cards y textos
-          conservando los acentos de color. El globo de FlightBook
-          siempre usa tiles satelitales (el contraste con el espacio
-          es parte del diseño).
+          {t("settings.theme.description")}
         </p>
       </div>
       <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
@@ -555,7 +556,7 @@ function ThemeRow({
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          Oscuro
+          {t("settings.theme.dark")}
         </button>
         <button
           onClick={() => onChange("light")}
@@ -565,7 +566,7 @@ function ThemeRow({
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          Claro
+          {t("settings.theme.light")}
         </button>
       </div>
     </div>
@@ -604,12 +605,9 @@ export function LanguageRow({
   return (
     <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <div className="min-w-0 flex-1">
-        <div className="text-xs text-slate-200">Idioma · Language</div>
+        <div className="text-xs text-slate-200">{t("settings.language.title")}</div>
         <p className="mt-0.5 text-[11px] text-slate-500">
-          «Auto» usa el idioma del sistema operativo. Al cambiar manualmente
-          la app pedirá reiniciar para aplicar los textos en todos los
-          módulos. <em className="not-italic text-slate-600">/ "Auto" uses the
-          OS language. Manual changes need a restart.</em>
+          {t("settings.language.description")}
         </p>
       </div>
       <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
@@ -756,7 +754,7 @@ function PathRow({
         {path ? (
           <div className="mt-1 truncate font-mono text-[10px] text-slate-600">{path}</div>
         ) : (
-          <div className="mt-1 text-[10px] italic text-slate-600">No detectada</div>
+          <div className="mt-1 text-[10px] italic text-slate-600">{t("settings.path.not_detected")}</div>
         )}
       </div>
       <button
@@ -765,7 +763,7 @@ function PathRow({
         className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-800 px-2.5 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <FolderOpen className="h-3.5 w-3.5" />
-        Abrir
+        {t("common.open")}
       </button>
     </div>
   );
@@ -873,7 +871,7 @@ function GsxProfilesPanel({
           totalInstalled += report.installedFiles.length;
           skippedAll.push(...report.skippedFiles);
         } catch (e) {
-          onFeedback(`Falló ${p}: ${String(e)}`);
+          onFeedback(t("settings.gsx.feedback.failed", { path: p, error: String(e) }));
           setInstalling(false);
           return;
         }
@@ -881,15 +879,16 @@ function GsxProfilesPanel({
       await refresh();
       const skippedMsg =
         skippedAll.length > 0
-          ? ` · ${skippedAll.length} archivos ignorados (no son .ini/.py)`
+          ? t("settings.gsx.feedback.skipped_suffix", { count: String(skippedAll.length) })
           : "";
       onFeedback(
-        `Instalados ${totalInstalled} perfil${
-          totalInstalled === 1 ? "" : "es"
-        } GSX${skippedMsg}.`,
+        t("settings.gsx.feedback.installed", {
+          count: String(totalInstalled),
+          skipped: skippedMsg,
+        }),
       );
     } catch (e) {
-      onFeedback(`Error: ${String(e)}`);
+      onFeedback(`${t("common.error")}: ${String(e)}`);
     } finally {
       setInstalling(false);
     }
@@ -900,34 +899,27 @@ function GsxProfilesPanel({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-xs text-slate-200">
-            Perfiles GSX instalados:{" "}
+            {t("settings.gsx.installed_count")}:{" "}
             <span className="font-mono text-violet-300">
               {installedIcaos.size}
             </span>
           </div>
           <p className="mt-0.5 text-[11px] text-slate-500">
-            Detectados en{" "}
-            <span className="font-mono">%APPDATA%\Virtuali\GSX\MSFS</span>.
-            Cada escenario muestra ✓/✗ según si tiene perfil para su
-            ICAO. Acepta <span className="font-mono">.ini</span>,{" "}
-            <span className="font-mono">.py</span>,{" "}
-            <span className="font-mono">.zip</span> y{" "}
-            <span className="font-mono">.rar</span> con varios perfiles
-            dentro.
+            {t("settings.gsx.installed_hint")}
           </p>
         </div>
         <button
           onClick={onPick}
           disabled={installing}
           className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-violet-500/40 hover:text-violet-200 disabled:opacity-50"
-          title="Selecciona uno o varios .ini/.py para instalarlos en la carpeta de GSX"
+          title={t("settings.gsx.install_tooltip")}
         >
           {installing ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
             <FilePlus className="h-3.5 w-3.5" />
           )}
-          Instalar perfil…
+          {t("settings.gsx.install_button")}…
         </button>
       </div>
     </div>
@@ -959,7 +951,13 @@ function CloudSyncPanel({
   // van embebidas en el binario. Sólo conservamos los flags de
   // operaciones activas.
   const [connecting, setConnecting] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  // (v3.5.0 F3) Estados separados para upload / download. Antes había
+  // un único "syncing" que confundía: no se sabía qué dirección iba.
+  const [uploading, setUploading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  // (v3.5.0) Estado del botón de purga — independiente para que no
+  // bloquee/se confunda con sync.
+  const [purging, setPurging] = useState(false);
   // (v2.0.2) Diagnóstico paso a paso — visible al pulsar el botón.
   const [testing, setTesting] = useState(false);
   const [testReport, setTestReport] = useState<{
@@ -974,7 +972,7 @@ function CloudSyncPanel({
       const c = await api.cloudGetConfig();
       setConfig(c);
     } catch (e) {
-      onFeedback(`Error: ${String(e)}`);
+      onFeedback(`${t("common.error")}: ${String(e)}`);
     }
   };
 
@@ -986,10 +984,16 @@ function CloudSyncPanel({
         setConnecting(false);
         if (evt.ok) {
           onFeedback(
-            `Conectado a Google como ${evt.userEmail ?? "(email no disponible)"}.`,
+            t("settings.cloud.feedback.connected", {
+              email: evt.userEmail ?? t("settings.cloud.no_email"),
+            }),
           );
         } else {
-          onFeedback(`Fallo OAuth: ${evt.error ?? "desconocido"}`);
+          onFeedback(
+            t("settings.cloud.feedback.oauth_failed", {
+              error: evt.error ?? t("common.unknown"),
+            }),
+          );
         }
         await refresh();
       })
@@ -1004,46 +1008,59 @@ function CloudSyncPanel({
 
   const onConnect = async () => {
     setConnecting(true);
-    onFeedback("Abriendo navegador para autorizar…");
+    onFeedback(t("settings.cloud.feedback.opening_browser"));
     try {
       const start = await api.cloudStartOauth();
       // Abrimos la URL en el navegador del sistema.
       await api.openExternal(start.authUrl);
     } catch (e) {
       setConnecting(false);
-      onFeedback(`Error al iniciar OAuth: ${String(e)}`);
+      onFeedback(`${t("settings.cloud.feedback.oauth_start_error")}: ${String(e)}`);
     }
   };
 
   const onDisconnect = async () => {
-    if (
-      !window.confirm(
-        "¿Desconectar la cuenta de Google? Los datos en la nube no se borrarán; sólo dejamos de sincronizar.",
-      )
-    )
-      return;
+    if (!window.confirm(t("settings.cloud.disconnect_confirm"))) return;
     try {
       await api.cloudDisconnect();
-      onFeedback("Desconectado.");
+      onFeedback(t("settings.cloud.feedback.disconnected"));
       await refresh();
     } catch (e) {
-      onFeedback(`Error: ${String(e)}`);
+      onFeedback(`${t("common.error")}: ${String(e)}`);
     }
   };
 
-  const onSyncNow = async () => {
-    setSyncing(true);
+  // (v3.5.0 F3/F4) Upload — push de TODO local → cloud. Mensaje neutro
+  // sin contadores: el usuario reportó que mostrar "131 vuelos, 270378
+  // puntos" era demasiada info y prefería un confirm simple.
+  const onUpload = async () => {
+    setUploading(true);
     onFeedback(null);
     try {
-      const r = await api.cloudSyncNow();
-      onFeedback(
-        `Sync completado · subidos ${r.uploadedFlights} vuelos / bajados ${r.downloadedFlights} vuelos.`,
-      );
+      await api.cloudUploadAll();
+      onFeedback(t("settings.cloud.feedback.upload_done"));
       await refresh();
     } catch (e) {
-      onFeedback(`Error de sync: ${String(e)}`);
+      onFeedback(`${t("settings.cloud.feedback.upload_error")}: ${String(e)}`);
     } finally {
-      setSyncing(false);
+      setUploading(false);
+    }
+  };
+
+  // (v3.5.0 F3/F4) Download — pull de cloud, skip los ya locales.
+  const reloadFlightLog = useFlightLogStore((s) => s.reload);
+  const onDownload = async () => {
+    setDownloading(true);
+    onFeedback(null);
+    try {
+      await api.cloudDownloadMissing();
+      onFeedback(t("settings.cloud.feedback.download_done"));
+      await refresh();
+      await reloadFlightLog();
+    } catch (e) {
+      onFeedback(`${t("settings.cloud.feedback.download_error")}: ${String(e)}`);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -1056,16 +1073,40 @@ function CloudSyncPanel({
       setTestReport(r);
       onFeedback(null);
     } catch (e) {
-      onFeedback(`Error ejecutando diagnóstico: ${String(e)}`);
+      onFeedback(`${t("settings.cloud.feedback.test_error")}: ${String(e)}`);
     } finally {
       setTesting(false);
+    }
+  };
+
+  // (v3.5.0) Purga del cloud — sólo accesible cuando el usuario está
+  // conectado a Google (sin auth no se puede borrar nada). El confirm
+  // usa los mismos textos i18n que ya existían como placeholders.
+  const onPurge = async () => {
+    if (!window.confirm(t("settings.cloud.purge.confirm.body"))) return;
+    setPurging(true);
+    onFeedback(null);
+    try {
+      const r = await api.cloudPurge();
+      onFeedback(
+        t("settings.cloud.purge.success", {
+          count: String(r.deletedFlights),
+        }),
+      );
+      await refresh();
+    } catch (e) {
+      onFeedback(
+        t("settings.cloud.purge.error", { message: String(e) }),
+      );
+    } finally {
+      setPurging(false);
     }
   };
 
   if (config === null) {
     return (
       <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-500">
-        Cargando estado…
+        {t("settings.cloud.loading_state")}
       </div>
     );
   }
@@ -1083,54 +1124,84 @@ function CloudSyncPanel({
                 <CloudOff className="h-3 w-3 text-slate-500" />
               )}
               {config.connected
-                ? `Conectado · ${config.userEmail ?? "(sin email)"}`
-                : "No conectado"}
+                ? t("settings.cloud.status.connected_as", {
+                    email: config.userEmail ?? t("settings.cloud.no_email_short"),
+                  })
+                : t("settings.cloud.status.not_connected")}
             </div>
             <p className="mt-0.5 text-[11px] text-slate-500">
               {config.connected
-                ? `Tus vuelos, tracks y preferencias se guardan en tu Google Drive (carpeta privada de la app, invisible para ti). Último sync: ${
-                    config.lastSyncAt
-                      ? new Date(config.lastSyncAt).toLocaleString("es-ES")
-                      : "nunca"
-                  }.`
-                : "Conecta una cuenta de Google para sincronizar tus vuelos y preferencias entre PCs."}
+                ? t("settings.cloud.status.connected_hint", {
+                    last_sync: config.lastSyncAt
+                      ? new Date(config.lastSyncAt).toLocaleString()
+                      : t("settings.cloud.never"),
+                  })
+                : t("settings.cloud.status.not_connected_hint")}
             </p>
           </div>
           <div className="flex shrink-0 flex-col gap-1.5">
             {config.connected && (
               <>
+                {/* (v3.5.0 F3) Botones separados Subir / Bajar para
+                    evitar la confusión del único "Sync now" anterior. */}
                 <button
-                  onClick={onSyncNow}
-                  disabled={syncing}
+                  onClick={onUpload}
+                  disabled={uploading || downloading}
                   className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-emerald-500/40 hover:text-emerald-200 disabled:opacity-50"
-                  title="Hacer pull + push inmediato contra Drive"
+                  title={t("settings.cloud.upload.tooltip")}
                 >
-                  {syncing ? (
+                  {uploading ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
+                    <Upload className="h-3.5 w-3.5" />
                   )}
-                  Sync ahora
+                  {t("settings.cloud.upload")}
+                </button>
+                <button
+                  onClick={onDownload}
+                  disabled={uploading || downloading}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-sky-500/40 hover:text-sky-200 disabled:opacity-50"
+                  title={t("settings.cloud.download.tooltip")}
+                >
+                  {downloading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  {t("settings.cloud.download")}
                 </button>
                 <button
                   onClick={onTestConnection}
                   disabled={testing}
                   className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-sky-500/40 hover:text-sky-200 disabled:opacity-50"
-                  title="Diagnostica paso a paso dónde se rompe el flow"
+                  title={t("settings.cloud.test_connection.tooltip")}
                 >
                   {testing ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <CheckCircle2 className="h-3.5 w-3.5" />
                   )}
-                  Probar conexión
+                  {t("settings.cloud.test_connection")}
+                </button>
+                <button
+                  onClick={onPurge}
+                  disabled={purging}
+                  className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-xs text-rose-300 hover:border-rose-500/60 hover:bg-rose-500/15 disabled:opacity-50"
+                  title={t("settings.cloud.purge.hint")}
+                >
+                  {purging ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                  {t("settings.cloud.purge.button")}
                 </button>
                 <button
                   onClick={onDisconnect}
                   className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-rose-500/40 hover:text-rose-300"
                 >
                   <Unlink className="h-3.5 w-3.5" />
-                  Desconectar
+                  {t("settings.cloud.disconnect")}
                 </button>
               </>
             )}
@@ -1146,20 +1217,20 @@ function CloudSyncPanel({
                   ) : (
                     <Link2 className="h-3.5 w-3.5" />
                   )}
-                  Conectar con Google
+                  {t("settings.cloud.connect")}
                 </button>
                 <button
                   onClick={onTestConnection}
                   disabled={testing}
                   className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-sky-500/40 hover:text-sky-200 disabled:opacity-50"
-                  title="Diagnostica las credenciales aunque no estés conectado"
+                  title={t("settings.cloud.test_creds.tooltip")}
                 >
                   {testing ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <CheckCircle2 className="h-3.5 w-3.5" />
                   )}
-                  Probar
+                  {t("settings.cloud.test")}
                 </button>
               </>
             )}
@@ -1187,12 +1258,14 @@ function CloudSyncPanel({
               ) : (
                 <AlertCircle className="h-3.5 w-3.5" />
               )}
-              Diagnóstico {testReport.overallOk ? "OK" : "con problemas"}
+              {testReport.overallOk
+                ? t("settings.cloud.diag.ok")
+                : t("settings.cloud.diag.problems")}
             </div>
             <button
               onClick={() => setTestReport(null)}
               className="rounded p-1 text-slate-500 hover:text-slate-300"
-              title="Cerrar"
+              title={t("common.close")}
             >
               <X className="h-3 w-3" />
             </button>
@@ -1245,7 +1318,7 @@ function CloudSyncPanel({
         >
           <span className="inline-flex items-center gap-1.5">
             <Info className="h-3.5 w-3.5 text-sky-300" />
-            Cómo configurar Google Drive paso a paso
+            {t("settings.cloud.help.toggle")}
           </span>
           <span className="text-slate-500">{showHelp ? "▲" : "▼"}</span>
         </button>
@@ -1423,6 +1496,140 @@ function CloudSyncPanel({
 
 /** (v1.1.4) Importa los 3 formatos de export (CSV/TXT/JSON) y
  *  abre un modal para que el usuario elija qué re-descargar. Caso
+/** (v3.5.0) Fila del importador de VAS-ACARS.
+ *
+ *  (v3.5.0 F2 v5) MSFS LOGBOOK.BIN removido — la carpeta
+ *  `%APPDATA%\Microsoft Flight Simulator\LOGBOOK.BIN` ya no existe en
+ *  MSFS 2024 (logbook movido al cloud) y el usuario reportó que el
+ *  botón Simulador nunca tenía datos para importar. Mantenemos solo
+ *  VAS-ACARS, que sí funciona consistentemente con tracking real. */
+function MsfsLogbookRow({
+  onFeedback,
+}: {
+  onFeedback: (msg: string | null) => void;
+}) {
+  const [importingVas, setImportingVas] = useState(false);
+  const reload = useFlightLogStore((s) => s.reload);
+
+  const onImportVas = async () => {
+    console.log("[logbook] VAS-ACARS import clicked");
+    setImportingVas(true);
+    onFeedback(t("settings.msfs_logbook.importing"));
+    try {
+      const vas = await api.vasAcarsImport();
+      console.log("[logbook] vas result:", vas);
+      if (!vas.sourceDir || vas.candidatesFound === 0) {
+        onFeedback(t("settings.msfs_logbook.no_logbook"));
+        return;
+      }
+      onFeedback(
+        t("settings.msfs_logbook.vas_success", {
+          count: String(vas.importedCount),
+          updated: String(vas.updatedCount),
+          invalid: String(vas.skippedInvalid),
+        }),
+      );
+      await reload();
+    } catch (e) {
+      console.error("[logbook] vas import error:", e);
+      onFeedback(t("settings.msfs_logbook.error", { message: String(e) }));
+    } finally {
+      setImportingVas(false);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs text-slate-200">
+            {t("settings.msfs_logbook.title")}
+          </div>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            {t("settings.msfs_logbook.hint")}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={onImportVas}
+            disabled={importingVas}
+            title={t("settings.msfs_logbook.button_vas_hint")}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-emerald-500/40 hover:text-emerald-200 disabled:opacity-50"
+          >
+            {importingVas ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileText className="h-3.5 w-3.5" />
+            )}
+            {t("settings.msfs_logbook.button_vas")}
+          </button>
+          <DeleteImportsButton onFeedback={onFeedback} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** (v3.5.0 F2) Botón "Borrar todos" para limpiar imports erróneos
+ *  durante el prueba-y-error de VAS-ACARS. Usa `confirm()` nativo del
+ *  browser (sin custom modal — es destructivo, queremos un blocker).
+ *  Solo borra `source IN ('vas-acars', 'msfs-logbook')` — NUNCA toca
+ *  los SimConnect captures (vuelos reales del usuario).
+ */
+function DeleteImportsButton({
+  onFeedback,
+}: {
+  onFeedback: (msg: string | null) => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const reload = useFlightLogStore((s) => s.reload);
+
+  const onDelete = async () => {
+    if (
+      !window.confirm(
+        t("settings.msfs_logbook.delete_confirm"),
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    onFeedback(null);
+    try {
+      const vas = await api.deleteFlightsBySource("vas-acars");
+      const msfs = await api.deleteFlightsBySource("msfs-logbook");
+      const total = vas.flightsDeleted + msfs.flightsDeleted;
+      onFeedback(
+        t("settings.msfs_logbook.delete_success", {
+          total: String(total),
+        }),
+      );
+      await reload();
+    } catch (e) {
+      onFeedback(`${t("common.error")}: ${String(e)}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={onDelete}
+      disabled={deleting}
+      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/5 px-2.5 py-1.5 text-xs text-rose-300 hover:border-rose-400/50 hover:bg-rose-500/10 hover:text-rose-200 disabled:opacity-50"
+      title={t("settings.msfs_logbook.delete_hint")}
+    >
+      {deleting ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Trash2 className="h-3.5 w-3.5" />
+      )}
+      {t("settings.msfs_logbook.delete_button")}
+    </button>
+  );
+}
+
+/** (v1.1.4) Importa los 3 formatos de export (CSV/TXT/JSON) y
+ *  abre un modal para que el usuario elija qué re-descargar. Caso
  *  de uso: formateo de PC, instalación nueva, vuelta a la rutina
  *  con su biblioteca anterior. Vive como modal lazy (`ImportInventoryModal`).
  */
@@ -1438,7 +1645,7 @@ function ImportInventoryRow({
     onFeedback(null);
     try {
       const path = await api.pickFilePath([
-        { name: "Inventarios MSFS Addons (CSV/TXT/JSON)", extensions: ["csv", "txt", "json"] },
+        { name: t("settings.import.file_filter"), extensions: ["csv", "txt", "json"] },
       ]);
       if (!path) {
         setPickingFile(false);
@@ -1449,7 +1656,7 @@ function ImportInventoryRow({
         new CustomEvent("msfs-addons:import-inventory", { detail: { path } }),
       );
     } catch (e) {
-      onFeedback(`Error: ${String(e)}`);
+      onFeedback(`${t("common.error")}: ${String(e)}`);
     } finally {
       setPickingFile(false);
     }
@@ -1459,10 +1666,9 @@ function ImportInventoryRow({
     <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="text-xs text-slate-200">Cargar inventario exportado</div>
+          <div className="text-xs text-slate-200">{t("settings.import.title")}</div>
           <p className="mt-0.5 text-[11px] text-slate-500">
-            Selecciona un export previo (CSV/TXT/JSON) y elige qué addons
-            re-descargar. Útil tras formatear el PC.
+            {t("settings.import.hint")}
           </p>
         </div>
         <button
@@ -1475,7 +1681,7 @@ function ImportInventoryRow({
           ) : (
             <Upload className="h-3.5 w-3.5" />
           )}
-          Importar…
+          {t("common.import")}…
         </button>
       </div>
     </div>

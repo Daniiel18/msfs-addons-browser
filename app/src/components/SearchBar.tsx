@@ -1,6 +1,7 @@
 import { Search, Loader2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { cn } from "../lib/cn";
+import { t } from "../lib/i18n";
 
 interface Props {
   value: string;
@@ -15,8 +16,9 @@ export function SearchBar({
   onChange,
   onSubmit,
   loading = false,
-  placeholder = "Busca por aeropuerto, ICAO o desarrollador…",
+  placeholder,
 }: Props) {
+  const effectivePlaceholder = placeholder ?? t("search.placeholder.scenery");
   const ref = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -55,7 +57,7 @@ export function SearchBar({
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={loading ? "Buscando…" : placeholder}
+          placeholder={loading ? t("search.searching") : effectivePlaceholder}
           disabled={loading}
           aria-disabled={loading}
           // `readOnly` on top of `disabled` keeps the element keyboard-

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, ExternalLink, FileText, Loader2, X } from "lucide-react";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 
 interface Props {
   /** URL de la página de detalle del addon (Simplaza/SceneryAddons).
@@ -114,7 +115,7 @@ export function ChangelogModal({
             <div className="flex shrink-0 items-center gap-1">
               <button
                 onClick={() => api.openExternal(pageUrl)}
-                title="Abrir página de origen"
+                title={t("changelog.open_source")}
                 className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
               >
                 <ExternalLink className="h-4 w-4" />
@@ -132,7 +133,7 @@ export function ChangelogModal({
             {loading && (
               <div className="inline-flex items-center gap-2 text-slate-400">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Leyendo página de detalle…
+                {t("changelog.loading")}
               </div>
             )}
             {!loading && error && (
@@ -143,8 +144,7 @@ export function ChangelogModal({
             )}
             {!loading && !error && lines && lines.length === 0 && (
               <p className="text-slate-500">
-                No se encontró un changelog en la página de detalle. Pulsa el
-                icono de enlace externo para abrir la página completa.
+                {t("changelog.not_found")}
               </p>
             )}
             {!loading && !error && lines && lines.length > 0 && (
@@ -156,7 +156,7 @@ export function ChangelogModal({
                 ))}
                 {lines.length > 80 && (
                   <li className="italic text-slate-500">
-                    … y {lines.length - 80} líneas más
+                    {t("changelog.more_lines", { count: String(lines.length - 80) })}
                   </li>
                 )}
               </ul>

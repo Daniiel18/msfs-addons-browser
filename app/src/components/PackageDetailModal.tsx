@@ -461,11 +461,12 @@ function RepairMethodPicker({
         <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-amber-200">
-              Reparar / Reinstalar
+              {t("pkg.repair.title")}
             </h3>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              Se desinstalará <span className="font-mono">{pkg.folderName}</span> y luego
-              se descargará con el método que elijas.
+              {t("pkg.repair.body.before")}{" "}
+              <span className="font-mono">{pkg.folderName}</span>{" "}
+              {t("pkg.repair.body.after")}
             </p>
           </div>
           <button
@@ -480,11 +481,11 @@ function RepairMethodPicker({
           {searching && grouped.length === 0 ? (
             <div className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-slate-400">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Buscando {pkg.icao} en SceneryAddons y Simplaza…
+              {t("pkg.repair.searching", { icao: pkg.icao ?? "" })}
             </div>
           ) : grouped.length === 0 ? (
             <p className="px-2 py-4 text-center text-xs text-slate-500">
-              No hay métodos de descarga disponibles en ninguna fuente.
+              {t("pkg.repair.no_methods")}
             </p>
           ) : (
             <ul className="space-y-3">
@@ -527,7 +528,7 @@ function RepairMethodPicker({
             onClick={onCancel}
             className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
           >
-            Cancelar
+            {t("common.cancel")}
           </button>
         </footer>
       </motion.div>

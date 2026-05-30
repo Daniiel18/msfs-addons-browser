@@ -49,6 +49,9 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
   );
   const [depGate, setDepGate] = useState(() => entry.departureGate ?? "");
   const [arrGate, setArrGate] = useState(() => entry.arrivalGate ?? "");
+  const [registration, setRegistration] = useState(
+    () => entry.aircraftRegistration ?? "",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,6 +103,10 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           depGate !== (entry.departureGate ?? "") ? depGate : undefined,
         arrivalGate:
           arrGate !== (entry.arrivalGate ?? "") ? arrGate : undefined,
+        aircraftRegistration:
+          registration !== (entry.aircraftRegistration ?? "")
+            ? registration
+            : undefined,
       };
       await api.updateFlightLogEntry(entry.id, input);
       onSaved();
@@ -210,22 +217,37 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
               </p>
             </Field>
 
+            <Field label="Matrícula del avión">
+              <input
+                type="text"
+                value={registration}
+                onChange={(e) => setRegistration(e.target.value.toUpperCase())}
+                placeholder="Ej. N404DX, D-AIZA, PK-GHG"
+                maxLength={10}
+                className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm uppercase text-slate-100 focus:border-amber-400 focus:outline-none"
+              />
+              <p className="mt-1 text-[10px] text-slate-500">
+                Tail number real. Usado por planespotters.net para mostrar la
+                foto del avión en el FlightBook.
+              </p>
+            </Field>
+
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Gate salida">
+              <Field label="Gate salida (parking)">
                 <input
                   type="text"
                   value={depGate}
                   onChange={(e) => setDepGate(e.target.value)}
-                  placeholder="Ej. A12"
+                  placeholder="Ej. A12, B23"
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
               </Field>
-              <Field label="Gate llegada">
+              <Field label="Gate llegada (parking)">
                 <input
                   type="text"
                   value={arrGate}
                   onChange={(e) => setArrGate(e.target.value)}
-                  placeholder="Ej. 9"
+                  placeholder="Ej. 9, D5"
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
               </Field>

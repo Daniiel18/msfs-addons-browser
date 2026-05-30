@@ -7,6 +7,8 @@
 use crate::flight_log::{
     self, FlightFinishMetrics, FlightLogEntry, FlightTrackPoint, UpdateEntryInput,
 };
+use crate::msfs_logbook::{self, ImportReport, LogbookCandidate};
+use crate::vas_acars::{self, VasFlightCandidate, VasImportReport};
 use crate::simconnect_watcher::FlightStatus;
 use crate::AppState;
 use serde::Deserialize;
@@ -76,6 +78,7 @@ pub struct UpdateEntryDto {
     pub fuel_used_kg: Option<i64>,
     pub departure_gate: Option<String>,
     pub arrival_gate: Option<String>,
+    pub aircraft_registration: Option<String>,
 }
 
 /// Edita campos manualmente — usado por el botón "Editar" del panel
@@ -95,6 +98,7 @@ pub async fn update_flight_log_entry(
         fuel_used_kg: input.fuel_used_kg,
         departure_gate: input.departure_gate,
         arrival_gate: input.arrival_gate,
+        aircraft_registration: input.aircraft_registration,
     };
     flight_log::update_entry(&state.db, id, &mapped)
         .await
@@ -428,4 +432,172 @@ pub async fn debug_seed_flight_log(
         last_id = id;
     }
     Ok(last_id)
+}
+
+// =============================================================================
+// (v3.5.0) MSFS Logbook import — auto-detect 2020/2024 × Steam/MS Store
+// =============================================================================
+
+/// Lista los candidatos LOGBOOK.BIN encontrados en disco. El frontend
+/// usa esto para informar al usuario qué versiones tiene instaladas
+/// antes de invocar el import — y para mostrar "no se encontró
+/// logbook" cuando la lista está vacía. Es síncrono y NO falla
+/// (devuelve lista vacía si no hay nada).
+#[tauri::command]
+pub async fn msfs_logbook_detect() -> Result<Vec<LogbookCandidate>, String> {
+    let candidates = msfs_logbook::detect_candidates();
+    tracing::info!(
+        target: "msfs_logbook",
+        "detect invoked — found {} candidate(s)",
+        candidates.len()
+    );
+    for c in &candidates {
+        tracing::info!(
+            target: "msfs_logbook",
+            "  · candidate: sim={:?} store={} path={} size={}B",
+            c.sim, c.store, c.path, c.size_bytes
+        );
+    }
+    Ok(candidates)
+}
+
+/// Importa el LOGBOOK.BIN más reciente (preferimos MSFS 2024 sobre
+/// 2020, MS Store sobre Steam — orden de `detect_candidates`).
+/// Inserta los vuelos en `flight_log` con `source='msfs-logbook'`,
+/// deduplicando por (origen, destino, source). Re-pulsar el botón
+/// no genera dupes.
+///
+/// Devuelve `ImportReport` con conteos para feedback al usuario.
+/// Si no hay candidatos, devuelve un reporte vacío (`source_path = None`)
+/// — el frontend muestra el mensaje "MSFS logbook no encontrado".
+#[tauri::command]
+pub async fn msfs_logbook_import(
+    state: tauri::State<'_, AppState>,
+) -> Result<ImportReport, String> {
+    // SIEMPRE loggea la invocación, incluso si no hay candidatos —
+    // así el usuario puede confirmar que el clic llegó al backend cuando
+    // reporta «no pasa nada» en la UI. Sin esto, una detección vacía
+    // sale silenciosa por la rama del `let-else`.
+    tracing::info!(target: "msfs_logbook", "import invoked");
+
+    let candidates = msfs_logbook::detect_candidates();
+    tracing::info!(
+        target: "msfs_logbook",
+        "detect returned {} candidate(s)",
+        candidates.len()
+    );
+    for c in &candidates {
+        tracing::info!(
+            target: "msfs_logbook",
+            "  · candidate: sim={:?} store={} path={} size={}B modified={:?}",
+            c.sim, c.store, c.path, c.size_bytes, c.modified_at
+        );
+    }
+
+    let Some(top) = candidates.into_iter().next() else {
+        // Lista los paths que SÍ chequeamos para que el usuario pueda
+        // ver dónde NO está su logbook — útil para debug.
+        tracing::warn!(
+            target: "msfs_logbook",
+            "no LOGBOOK.BIN found in any of the 4 known locations; checked paths:"
+        );
+        for path in msfs_logbook::candidate_paths_for_log() {
+            tracing::warn!(target: "msfs_logbook", "  · {}", path.display());
+        }
+        return Ok(ImportReport::default());
+    };
+
+    tracing::info!(
+        target: "msfs_logbook",
+        "importing from {} (sim={:?})",
+        top.path, top.sim
+    );
+
+    msfs_logbook::import_logbook(&state.db, std::path::Path::new(&top.path), top.sim)
+        .await
+        .map_err(|e| {
+            tracing::error!(target: "msfs_logbook", "import failed: {}", e);
+            e.to_string()
+        })
+}
+
+// =============================================================================
+// (v3.5.0 + F2) VAS-ACARS import — fallback when user has no MSFS logbook
+// =============================================================================
+
+/// Detecta los archivos `.bin` de VAS-ACARS sin importar nada. Útil
+/// para que el UI muestre "X vuelos detectados, ¿importar?" antes
+/// de invocar el comando pesado.
+#[tauri::command]
+pub async fn vas_acars_detect() -> Result<Vec<VasFlightCandidate>, String> {
+    let cands = vas_acars::detect_flights();
+    tracing::info!(
+        target: "vas_acars",
+        "detect invoked — found {} flight file(s)",
+        cands.len()
+    );
+    Ok(cands)
+}
+
+/// Borra TODOS los vuelos de una fuente específica (`source` field).
+/// Usado por el botón "Borrar todos los vuelos importados" en Settings
+/// para limpiar imports erróneos en fase de prueba y error sin tocar
+/// los SimConnect captures (source='simconnect').
+///
+/// Devuelve `(flights_deleted, tracks_deleted)` para feedback al UI.
+/// Tracks se borran por CASCADE en el esquema — los contamos antes
+/// para mostrar el total.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBySourceReport {
+    pub flights_deleted: u64,
+    pub tracks_deleted: u64,
+}
+
+#[tauri::command]
+pub async fn delete_flights_by_source(
+    source: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<DeleteBySourceReport, String> {
+    tracing::warn!(
+        target: "flight_log",
+        "delete_flights_by_source invoked: source={}",
+        source
+    );
+    let (flights, tracks) = flight_log::delete_by_source(&state.db, &source)
+        .await
+        .map_err(|e| {
+            tracing::error!(target: "flight_log", "delete_by_source failed: {}", e);
+            e.to_string()
+        })?;
+    tracing::info!(
+        target: "flight_log",
+        "deleted {} flights ({} tracks) from source={}",
+        flights, tracks, source
+    );
+    Ok(DeleteBySourceReport {
+        flights_deleted: flights,
+        tracks_deleted: tracks,
+    })
+}
+
+/// Importa todos los `.bin` de VAS-ACARS al `flight_log`. Deduplica por
+/// `external_id` (UUID = filename), así que re-pulsar no genera dupes.
+///
+/// V1 limitations:
+///   · Solo extraemos **origen** (resuelto via nearest-airport sobre
+///     la posición de spawn). El destino queda NULL — los ICAOs no
+///     viven en el `.bin` (ver doc del módulo `vas_acars`).
+///   · El aircraft se reconoce por patrones en el `aircraft.CFG` path
+///     (Fenix, PMDG, iniBuilds, FBW, Aerosoft, Headwind). Si no hay
+///     match, fallback al livery name.
+#[tauri::command]
+pub async fn vas_acars_import(
+    state: tauri::State<'_, AppState>,
+) -> Result<VasImportReport, String> {
+    tracing::info!(target: "vas_acars", "import invoked");
+    vas_acars::import_all(&state.db).await.map_err(|e| {
+        tracing::error!(target: "vas_acars", "import failed: {}", e);
+        e.to_string()
+    })
 }

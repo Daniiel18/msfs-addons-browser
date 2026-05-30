@@ -2,6 +2,16 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    // (v3.5.0 F2) Re-compilar cuando cambian las migraciones. `sqlx::migrate!`
+    // embebe los archivos `.sql` en el binario en tiempo de compilación, pero
+    // Cargo no sabe que tiene que invalidar el incremental cache cuando un
+    // archivo nuevo aparece en `migrations/`. Sin esto, agregar `019_*.sql`
+    // y reconstruir devuelve el binario con la lista de migraciones VIEJA
+    // (porque el .rlib cacheado todavía es válido desde el POV de Cargo) y
+    // la nueva columna nunca se crea en producción. El bug manifestó como
+    // «no such column: external_id» tras agregar la migración 019.
+    println!("cargo:rerun-if-changed=migrations");
+
     // (v3.1.1) Inyecta secretos OAuth desde `secrets.local.toml` al
     // entorno de compilación. El archivo está gitignored para que
     // GitHub secret scanning no bloquee el push. La build local lo

@@ -382,21 +382,34 @@ fn pick_installer_extension(url: &str) -> &'static str {
 fn launch_installer_detached(installer: &PathBuf, ext: &str) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
 
+    // (v3.5.0) Hardening: CREATE_NO_WINDOW añadido a los 3 paths.
+    // Antes el NSIS y el MSIX podían flashear brevemente una consola
+    // durante la fase de extracción/replace — esto la suprime
+    // completamente. El usuario reportó "flash de ventana negra al
+    // instalar".
+    //
     // CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS: el hijo sobrevive
-    // a nuestro exit(0). Si no usáramos esto, cerrar la app mataría
-    // también al installer.
+    // a nuestro exit(0). Sin esto, cerrar la app mataría también al
+    // installer.
+    // CREATE_NO_WINDOW: ningún console window asociado al proceso —
+    // suprime el flash en NSIS y oculta el shell de PowerShell del
+    // path MSIX (que antes era visible).
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    let flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW;
 
     match ext {
-        // NSIS (Tauri default) usa `/S` (uppercase) para silent.
+        // NSIS (Tauri default): `/S` silent + `/NCRC` skip CRC check
+        // (acelera; el archivo ya fue validado por sha256 al
+        // descargar) + sin ventana.
         "exe" => std::process::Command::new(installer)
-            .arg("/S")
+            .args(["/S", "/NCRC"])
             .creation_flags(flags)
             .spawn()
             .map(|_| ()),
-        // MSI se ejecuta vía msiexec con /quiet y /norestart.
+        // MSI vía msiexec con /quiet (sin UI) y /norestart (no
+        // forzar reboot). Sin ventana de consola.
         "msi" => std::process::Command::new("msiexec")
             .args(["/i"])
             .arg(installer)
@@ -404,10 +417,18 @@ fn launch_installer_detached(installer: &PathBuf, ext: &str) -> std::io::Result<
             .creation_flags(flags)
             .spawn()
             .map(|_| ()),
-        // MSIX/MSIXBUNDLE — Add-AppxPackage via PowerShell. No silent
-        // de facto pero al menos lo arranca sin abrir la GUI.
+        // MSIX/MSIXBUNDLE — Add-AppxPackage via PowerShell. (v3.5.0)
+        // Añadido `-WindowStyle Hidden` + `-NonInteractive` para que
+        // la consola de PowerShell no aparezca en pantalla mientras
+        // dura la instalación (segundos visibles antes).
         "msix" | "msixbundle" => std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command"])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+            ])
             .arg(format!(
                 "Add-AppxPackage -Path '{}' -ForceUpdateFromAnyVersion",
                 installer.display()

@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, Inbox, Loader2 } from "lucide-react";
 import type { Addon } from "../lib/types";
 import { ResultCard } from "./ResultCard";
+import { t } from "../lib/i18n";
 
 interface Props {
   results: Addon[];
@@ -27,8 +28,8 @@ export function ResultsList({
         <Loader2 className="h-8 w-8 animate-spin text-brand-400" />
         <p className="mt-3 text-sm text-slate-400">
           {browseMode === "browse"
-            ? "Cargando catálogo…"
-            : "Buscando en la fuente seleccionada…"}
+            ? t("results.loading_catalog")
+            : t("results.searching_source")}
         </p>
       </CenterState>
     );
@@ -38,8 +39,8 @@ export function ResultsList({
     return (
       <CenterState>
         <AlertCircle className="h-8 w-8 text-red-400" />
-        <p className="mt-3 text-sm font-medium text-slate-200">Algo salió mal</p>
-        <p className="text-xs text-slate-500">{error ?? "Error desconocido"}</p>
+        <p className="mt-3 text-sm font-medium text-slate-200">{t("results.error_title")}</p>
+        <p className="text-xs text-slate-500">{error ?? t("results.unknown_error")}</p>
       </CenterState>
     );
   }
@@ -48,7 +49,7 @@ export function ResultsList({
     return (
       <CenterState>
         <Loader2 className="h-8 w-8 animate-spin text-slate-600" />
-        <p className="mt-3 text-sm text-slate-400">Cargando catálogo…</p>
+        <p className="mt-3 text-sm text-slate-400">{t("results.loading_catalog")}</p>
       </CenterState>
     );
   }
@@ -59,11 +60,11 @@ export function ResultsList({
         <Inbox className="h-8 w-8 text-slate-600" />
         <p className="mt-3 text-sm text-slate-400">
           {browseMode === "browse"
-            ? "El catálogo no devolvió resultados en esta página."
+            ? t("results.empty_browse")
             : (
               <>
-                Sin resultados para{" "}
-                <span className="text-slate-200">“{query}”</span>.
+                {t("results.empty_search_prefix")}{" "}
+                <span className="text-slate-200">"{query}"</span>.
               </>
             )}
         </p>

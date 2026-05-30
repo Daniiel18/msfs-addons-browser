@@ -14,6 +14,7 @@ import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
+import { t } from "../lib/i18n";
 
 /**
  * Wizard global que itera la cola `updateQueue` del community store
@@ -171,7 +172,7 @@ export function UpdateWizard() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-amber-300">
                   <Sparkles className="h-3.5 w-3.5" />
-                  Asistente de actualización
+                  {t("wizard.title")}
                   <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
                     {initialTotal - total + 1} / {initialTotal}
                   </span>
@@ -191,7 +192,7 @@ export function UpdateWizard() {
                 onClick={cancel}
                 disabled={busy}
                 className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
-                title="Cancelar el asistente (las updates pendientes siguen en notificaciones)"
+                title={t("wizard.cancel_tooltip")}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -208,13 +209,11 @@ export function UpdateWizard() {
               {searching ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-400">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Buscando {deriveUpdateSearchQuery(current.icao, current.title)} en
-                  SceneryAddons y Simplaza…
+                  {t("wizard.searching", { query: deriveUpdateSearchQuery(current.icao, current.title) })}
                 </div>
               ) : grouped.length === 0 ? (
                 <p className="py-6 text-center text-xs text-slate-500">
-                  No hay métodos de descarga disponibles. Pulsa "Saltar" para
-                  pasar al siguiente.
+                  {t("wizard.no_methods")}
                 </p>
               ) : (
                 <ul className="space-y-3">
@@ -267,12 +266,12 @@ export function UpdateWizard() {
                 className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
               >
                 <SkipForward className="h-3.5 w-3.5" />
-                Saltar
+                {t("wizard.skip")}
               </button>
               <span className="text-slate-500">
                 {total - 1 > 0
-                  ? `${total - 1} más después de éste`
-                  : "Última actualización"}
+                  ? t("wizard.more_after", { n: total - 1 })
+                  : t("wizard.last")}
               </span>
               <button
                 onClick={cancel}
@@ -280,7 +279,7 @@ export function UpdateWizard() {
                 className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
               >
                 <Check className="h-3.5 w-3.5" />
-                Terminar
+                {t("wizard.finish")}
               </button>
             </footer>
           </motion.div>

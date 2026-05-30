@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, Download, X } from "lucide-react";
 import { useToastStore, type Toast } from "../stores/useToastStore";
+import { t as tr } from "../lib/i18n";
 
 /**
  * Renderizador global de toasts. Pinta una columna en la esquina
@@ -60,7 +61,7 @@ function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
       <button
         onClick={onClose}
         className="shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200"
-        title="Cerrar"
+        title={tr("common.close")}
       >
         <X className="h-3.5 w-3.5" />
       </button>

@@ -180,9 +180,9 @@ function InstalledEmptyState() {
       <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-900 ring-1 ring-slate-800">
         <Folder className="h-5 w-5 text-slate-500" />
       </div>
-      <p className="mt-3 text-sm text-slate-400">Sin paquetes instalados</p>
+      <p className="mt-3 text-sm text-slate-400">{t("downloads.installed.empty.title")}</p>
       <p className="mt-1 max-w-[260px] text-xs text-slate-500">
-        Cuando instales un addon (por torrent o desde un archivo local) aparecerá aquí.
+        {t("downloads.installed.empty.hint")}
       </p>
     </div>
   );
@@ -194,8 +194,7 @@ function CommunityBanner({ info }: { info: CommunityInfo | null }) {
       <div className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-5 py-2.5 text-xs text-amber-200">
         <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
-          No se detectó la carpeta Community de MSFS 2020 automáticamente. Configúrala desde
-          Ajustes (próximamente) para habilitar la auto-instalación.
+          {t("downloads.community.not_found")}
         </div>
       </div>
     );
@@ -207,7 +206,7 @@ function CommunityBanner({ info }: { info: CommunityInfo | null }) {
         <div className="text-slate-300">
           Community ({info.variant === "msstore" ? "MS Store" : "Steam"})
           {!info.exists && (
-            <span className="ml-1 text-amber-300">· no existe aún</span>
+            <span className="ml-1 text-amber-300">· {t("downloads.community.not_exists")}</span>
           )}
         </div>
         <div className="truncate font-mono text-[10px] text-slate-500">{info.path}</div>
@@ -262,7 +261,7 @@ function JobRow({ job }: { job: DownloadJob }) {
               </>
             )}
           {job.message && (
-            <p className="mt-1.5 text-xs text-slate-400">{job.message}</p>
+            <p className="mt-1.5 text-xs text-slate-400">{translateJobMessage(job.message)}</p>
           )}
           {job.error && (
             <p className="mt-1.5 text-xs text-red-300/90">{job.error}</p>
@@ -273,7 +272,7 @@ function JobRow({ job }: { job: DownloadJob }) {
               className="mt-2 inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
             >
               <FolderOpen className="h-3 w-3" />
-              Abrir carpeta instalada
+              {t("downloads.open_installed_folder")}
             </button>
           )}
           {job.phase === "completed" && job.methodKind !== "torrent" && (
@@ -282,7 +281,7 @@ function JobRow({ job }: { job: DownloadJob }) {
               className="mt-2 inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
             >
               <ExternalLink className="h-3 w-3" />
-              Reabrir enlace
+              {t("downloads.reopen_link")}
             </button>
           )}
         </div>
@@ -291,7 +290,7 @@ function JobRow({ job }: { job: DownloadJob }) {
             <button
               onClick={() => pause(job.id)}
               className="rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-amber-300"
-              title="Pausar"
+              title={t("downloads.pause")}
             >
               <Pause className="h-3.5 w-3.5" />
             </button>
@@ -389,7 +388,7 @@ function InstalledRow({ item }: { item: InstalledAddon }) {
               className="inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
             >
               <FolderOpen className="h-3 w-3" />
-              Abrir carpeta
+              {t("pkg.open_folder")}
             </button>
           </div>
         </div>
@@ -397,7 +396,7 @@ function InstalledRow({ item }: { item: InstalledAddon }) {
           <button
             onClick={() => forget(item.id)}
             className="rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300"
-            title="Quitar del historial (no borra el disco)"
+            title={t("downloads.forget_history.tooltip")}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -487,30 +486,45 @@ function formatDuration(seconds: number): string {
 }
 
 /**
- * Convierte el TEXT que llega de SQLite (`datetime('now')` produce
- * "YYYY-MM-DD HH:MM:SS" en UTC) en una etiqueta relativa amigable.
- *
- * Dejamos los saltos en español: «hace 5m», «hace 3h», «hace 2d».
+ * Converts the SQLite TEXT timestamp ("YYYY-MM-DD HH:MM:SS" in UTC)
+ * to a friendly relative label. Labels are i18n-driven so they switch
+ * with the active language (ES: «hace 5m» · EN: "5m ago").
  */
 function formatRelativeDate(iso: string): string {
-  // SQLite emite "YYYY-MM-DD HH:MM:SS" sin la 'T' ni el sufijo 'Z'.
-  // El constructor de Date lo trata como local en algunos navegadores,
-  // así que lo normalizamos a ISO-8601 UTC antes de parsear.
+  // SQLite emits "YYYY-MM-DD HH:MM:SS" without 'T' or trailing 'Z'.
+  // Some browsers parse it as local time — normalize to UTC ISO-8601.
   const normalized = iso.includes("T") ? iso : iso.replace(" ", "T") + "Z";
-  const t = Date.parse(normalized);
-  if (Number.isNaN(t)) return iso;
-  const diffMs = Date.now() - t;
-  if (diffMs < 0) return "ahora";
+  const ts = Date.parse(normalized);
+  if (Number.isNaN(ts)) return iso;
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return t("downloads.rel.now");
   const sec = Math.floor(diffMs / 1000);
-  if (sec < 60) return "hace unos segundos";
+  if (sec < 60) return t("downloads.rel.few_secs");
   const min = Math.floor(sec / 60);
-  if (min < 60) return `hace ${min}m`;
+  if (min < 60) return t("downloads.rel.minutes", { n: String(min) });
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `hace ${hr}h`;
+  if (hr < 24) return t("downloads.rel.hours", { n: String(hr) });
   const day = Math.floor(hr / 24);
-  if (day < 30) return `hace ${day}d`;
+  if (day < 30) return t("downloads.rel.days", { n: String(day) });
   const month = Math.floor(day / 30);
-  if (month < 12) return `hace ${month} mes${month === 1 ? "" : "es"}`;
+  if (month < 12) return t("downloads.rel.months", { n: String(month) });
   const year = Math.floor(day / 365);
-  return `hace ${year} año${year === 1 ? "" : "s"}`;
+  return t("downloads.rel.years", { n: String(year) });
+}
+
+/**
+ * Re-translate Rust-backend `job.message` strings to the active
+ * locale. The backend emits literal Spanish like "Se instalaron N
+ * paquete(s) (X.X MB)" — we pattern-match and reformat via i18n.
+ * Falls through unchanged for messages we don't recognize.
+ */
+function translateJobMessage(msg: string): string {
+  // "Se instalaron N paquete(s) (X.X MB)" → i18n
+  const installedMatch = msg.match(/^Se instalaron\s+(\d+)\s+paquetes?\s+\(([\d.]+)\s*MB\)/);
+  if (installedMatch) {
+    const count = installedMatch[1];
+    const key = count === "1" ? "downloads.msg.installed.one" : "downloads.msg.installed.many";
+    return t(key, { count, mb: installedMatch[2] });
+  }
+  return msg;
 }

@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronLeft, ChevronRight, Sparkles, X } from "lucide-react";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { t } from "../lib/i18n";
 
 /**
  * Tour de bienvenida — 6 pasos que muestran las áreas principales
@@ -34,50 +35,53 @@ interface TourStep {
   placement?: "bottom" | "top" | "left" | "right";
 }
 
-const STEPS: TourStep[] = [
-  {
-    target: "[data-tour-id='nav-dashboard']",
-    title: "Dashboard",
-    body: "Tu panel de inicio: total de paquetes instalados, espacio en disco, top desarrolladores y los más grandes. Se actualiza automáticamente cuando cambia algo en tu carpeta Community.",
-    placement: "bottom",
-  },
-  {
-    target: "[data-tour-id='nav-search']",
-    title: "Buscar en catálogos",
-    body: "Busca aeropuertos, aviones, liveries y mods en SceneryAddons y Simplaza. Cada card muestra si ya lo tienes instalado y si hay update disponible.",
-    placement: "bottom",
-  },
-  {
-    target: "[data-tour-id='nav-map']",
-    title: "Mapa mundial",
-    body: "Vista mundial con todos tus aeropuertos instalados como puntos verdes. Click en uno abre su detalle. El badge ámbar marca los que tienen update disponible.",
-    placement: "bottom",
-  },
-  {
-    target: "[data-tour-id='nav-addons']",
-    title: "Tus addons",
-    body: "Aviones, liveries, instrumentos y mods que tienes instalados. Filtra por tipo, busca por nombre, y abre cada uno para reinstalar o desinstalar.",
-    placement: "bottom",
-  },
-  {
-    target: "[data-tour-id='nav-flightbook']",
-    title: "FlightBook (vuelos reales)",
-    body: "Bitácora de tus vuelos en MSFS, capturada automáticamente con SimConnect. ICAOs, gates, FPM al aterrizar, fuel, pasajeros (vía SimBrief OFP). Click en un vuelo para ver su ruta real en el globo. Cuando estás volando, el avión naranja te marca dónde vas.",
-    placement: "bottom",
-  },
-  {
-    target: "[data-tour-id='header-settings']",
-    title: "Configuración",
-    body: "SimBrief Pilot ID, autostart con Windows, tema dark/light, backup de Community, exportar/importar inventario, perfiles GSX… Todo está aquí.",
-    placement: "bottom",
-  },
-  {
-    target: "[data-tour-id='header-notifications']",
-    title: "Notificaciones",
-    body: "Aquí aparecen las actualizaciones disponibles para tus paquetes y para la app. La app comprueba al arrancar y al ganar foco — sin botones manuales.",
-    placement: "bottom",
-  },
-];
+/** Returns the localized tour steps. Re-derive on language change. */
+function buildSteps(): TourStep[] {
+  return [
+    {
+      target: "[data-tour-id='nav-dashboard']",
+      title: t("tour.dashboard.title"),
+      body: t("tour.dashboard.body"),
+      placement: "bottom",
+    },
+    {
+      target: "[data-tour-id='nav-search']",
+      title: t("tour.search.title"),
+      body: t("tour.search.body"),
+      placement: "bottom",
+    },
+    {
+      target: "[data-tour-id='nav-map']",
+      title: t("tour.map.title"),
+      body: t("tour.map.body"),
+      placement: "bottom",
+    },
+    {
+      target: "[data-tour-id='nav-addons']",
+      title: t("tour.addons.title"),
+      body: t("tour.addons.body"),
+      placement: "bottom",
+    },
+    {
+      target: "[data-tour-id='nav-flightbook']",
+      title: t("tour.flightbook.title"),
+      body: t("tour.flightbook.body"),
+      placement: "bottom",
+    },
+    {
+      target: "[data-tour-id='header-settings']",
+      title: t("tour.settings.title"),
+      body: t("tour.settings.body"),
+      placement: "bottom",
+    },
+    {
+      target: "[data-tour-id='header-notifications']",
+      title: t("tour.notifications.title"),
+      body: t("tour.notifications.body"),
+      placement: "bottom",
+    },
+  ];
+}
 
 interface Props {
   onClose: () => void;
@@ -88,6 +92,9 @@ export function OnboardingTour({ onClose }: Props) {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const setOnboardingCompleted = useSettingsStore((s) => s.setOnboardingCompleted);
 
+  // Resolve translated steps once per mount — re-renders on language
+  // change don't matter here, the modal closes + reopens via tour.
+  const STEPS = useMemo(() => buildSteps(), []);
   const step = STEPS[stepIdx];
 
   // Recalcula la posición del target cuando el step cambia o la
@@ -206,7 +213,10 @@ export function OnboardingTour({ onClose }: Props) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-400">
-                  Paso {stepIdx + 1} de {STEPS.length}
+                  {t("tour.step_of", {
+                    current: String(stepIdx + 1),
+                    total: String(STEPS.length),
+                  })}
                 </span>
               </div>
               <h3 className="mt-1 text-sm font-semibold text-slate-100">
@@ -218,7 +228,7 @@ export function OnboardingTour({ onClose }: Props) {
             </div>
             <button
               onClick={() => finish(false)}
-              title="Saltar tour"
+              title={t("tour.skip")}
               className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-100"
             >
               <X className="h-3.5 w-3.5" />
@@ -242,7 +252,7 @@ export function OnboardingTour({ onClose }: Props) {
               onClick={() => finish(false)}
               className="text-[11px] text-slate-400 hover:text-slate-200"
             >
-              Saltar tour
+              {t("tour.skip")}
             </button>
             <div className="flex items-center gap-1.5">
               <button
@@ -251,13 +261,13 @@ export function OnboardingTour({ onClose }: Props) {
                 className="inline-flex items-center gap-1 rounded-md border border-slate-800 px-2.5 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
               >
                 <ChevronLeft className="h-3 w-3" />
-                Atrás
+                {t("common.back")}
               </button>
               <button
                 onClick={next}
                 className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1 text-[11px] font-medium text-emerald-950 hover:bg-emerald-400"
               >
-                {stepIdx === STEPS.length - 1 ? "Empezar" : "Siguiente"}
+                {stepIdx === STEPS.length - 1 ? t("tour.start") : t("common.next_step")}
                 {stepIdx < STEPS.length - 1 && <ChevronRight className="h-3 w-3" />}
               </button>
             </div>

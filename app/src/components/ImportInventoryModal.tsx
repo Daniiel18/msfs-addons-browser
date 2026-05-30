@@ -12,6 +12,7 @@ import {
 import { api } from "../lib/tauri";
 import type { Addon, SourceDescriptor } from "../lib/types";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
+import { t } from "../lib/i18n";
 
 /**
  * (v1.1.4) Modal para importar un inventario exportado y elegir
@@ -150,7 +151,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
     });
 
   const grouped = useMemo(() => {
-    const groups = new Map<string, number[]>();
+    const groups = new Map<CategoryKey, number[]>();
     for (let i = 0; i < items.length; i++) {
       const cat = categorize(items[i]);
       if (!groups.has(cat)) groups.set(cat, []);
@@ -192,7 +193,10 @@ export function ImportInventoryModal({ path, onClose }: Props) {
     if (queued > 0) {
       window.dispatchEvent(
         new CustomEvent("msfs-addons:toast", {
-          detail: { kind: "info", message: `${queued} descargas añadidas a la cola.` },
+          detail: {
+            kind: "info",
+            message: t("import.queued_toast", { count: String(queued) }),
+          },
         }),
       );
     }
@@ -220,7 +224,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
               <FileText className="h-4 w-4 text-brand-300" />
               <div>
                 <h2 className="text-sm font-semibold text-slate-100">
-                  Importar inventario
+                  {t("import.title")}
                 </h2>
                 <p className="text-[11px] text-slate-500 font-mono truncate max-w-[400px]" title={path}>
                   {path}
@@ -245,29 +249,35 @@ export function ImportInventoryModal({ path, onClose }: Props) {
           {!parseError && items.length === 0 && (
             <div className="flex items-center justify-center gap-2 py-12 text-xs text-slate-400">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Leyendo y parseando…
+              {t("import.reading")}
             </div>
           )}
 
           {items.length > 0 && (
             <>
               <div className="border-b border-slate-800 px-5 py-2 text-[11px] text-slate-500">
-                {items.length} entradas detectadas ·{" "}
+                {t("import.entries_detected", { count: String(items.length) })} ·{" "}
                 <span className="text-emerald-300">
-                  {items.filter((i) => i.status === "resolved").length} resueltas
+                  {t("import.resolved", {
+                    count: String(items.filter((i) => i.status === "resolved").length),
+                  })}
                 </span>{" "}
                 ·{" "}
                 <span className="text-amber-300">
-                  {items.filter((i) => i.status === "not_found").length} sin match
+                  {t("import.unmatched", {
+                    count: String(items.filter((i) => i.status === "not_found").length),
+                  })}
                 </span>
-                {resolving && <span className="ml-2 text-brand-300">resolviendo…</span>}
-                <span className="ml-3 text-slate-400">{sources.length} fuentes</span>
+                {resolving && <span className="ml-2 text-brand-300">{t("import.resolving")}</span>}
+                <span className="ml-3 text-slate-400">
+                  {t("import.sources", { count: String(sources.length) })}
+                </span>
               </div>
               <div className="max-h-[55vh] overflow-y-auto p-4">
                 {grouped.map(([cat, idxs]) => (
                   <section key={cat} className="mb-4 last:mb-0">
                     <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      {cat} ({idxs.length})
+                      {t(cat)} ({idxs.length})
                     </h3>
                     <ul className="space-y-1.5">
                       {idxs.map((i) => {
@@ -316,14 +326,17 @@ export function ImportInventoryModal({ path, onClose }: Props) {
               <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
                 <div className="text-[11px] text-slate-400">
                   <CheckCircle2 className="mr-1 inline h-3 w-3 text-emerald-300" />
-                  {selected.size} seleccionados de {items.length}
+                  {t("import.selected", {
+                    selected: String(selected.size),
+                    total: String(items.length),
+                  })}
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={onClose}
                     className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700"
                   >
-                    Cancelar
+                    {t("common.cancel")}
                   </button>
                   <button
                     onClick={enqueueAll}
@@ -331,7 +344,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                     className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-40"
                   >
                     <Download className="h-3.5 w-3.5" />
-                    Descargar seleccionados
+                    {t("import.download_selected")}
                   </button>
                 </div>
               </footer>
@@ -348,7 +361,7 @@ function statusLabel(it: ResolvedItem): React.ReactNode {
     case "resolving":
       return (
         <span className="inline-flex items-center gap-1 text-brand-300">
-          <Loader2 className="h-2.5 w-2.5 animate-spin" /> buscando…
+          <Loader2 className="h-2.5 w-2.5 animate-spin" /> {t("import.status.searching")}
         </span>
       );
     case "resolved":
@@ -359,24 +372,31 @@ function statusLabel(it: ResolvedItem): React.ReactNode {
         </span>
       );
     case "not_found":
-      return <span className="text-slate-500">Sin match en catálogos</span>;
+      return <span className="text-slate-500">{t("import.status.no_match")}</span>;
     case "error":
-      return <span className="text-rose-300">Error en la búsqueda</span>;
+      return <span className="text-rose-300">{t("import.status.error")}</span>;
     default:
       return null;
   }
 }
 
-const CATEGORY_ORDER = ["Aeropuertos", "Aviones", "Liveries", "Otros"];
+const CATEGORY_KEYS = [
+  "addons.section.airports",
+  "addons.section.aircraft",
+  "addons.section.liveries",
+  "addons.section.misc",
+] as const;
+type CategoryKey = (typeof CATEGORY_KEYS)[number];
+const CATEGORY_ORDER: CategoryKey[] = [...CATEGORY_KEYS];
 
-function categorize(it: ResolvedItem): string {
+function categorize(it: ResolvedItem): CategoryKey {
   const title = (it.match?.name || it.raw.rawTitle).toLowerCase();
-  if (it.raw.icao || it.match?.icao) return "Aeropuertos";
-  if (/livery|paint|repaint/.test(title)) return "Liveries";
+  if (it.raw.icao || it.match?.icao) return "addons.section.airports";
+  if (/livery|paint|repaint/.test(title)) return "addons.section.liveries";
   if (/[ab]\d{3}|73[6-9]|74[478]|77\d|78\d|crj|atr|md-|tbm|c\d{3}/.test(title)) {
-    return "Aviones";
+    return "addons.section.aircraft";
   }
-  return "Otros";
+  return "addons.section.misc";
 }
 
 async function readFile(path: string): Promise<string> {

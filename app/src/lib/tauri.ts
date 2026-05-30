@@ -27,7 +27,14 @@ import type {
   CloudOauthCompletedEvent,
   CloudOauthStart,
   CloudSyncReport,
+  CloudUploadReport,
+  CloudDownloadReport,
   CloudTestReport,
+  CloudPurgeReport,
+  MsfsLogbookImportReport,
+  VasFlightCandidate,
+  VasImportReport,
+  DeleteBySourceReport,
   DropCommitReport,
   DropInspection,
   FolderSyncConfig,
@@ -127,9 +134,36 @@ interface Api {
   cloudDisconnect: () => Promise<void>;
   /** Ejecuta un sync bidireccional ahora — pull → merge → push. */
   cloudSyncNow: () => Promise<CloudSyncReport>;
+  /** (v3.5.0 F3) Sube TODO el contenido local a la nube — sobreescribe
+   *  el snapshot remoto con el estado actual. */
+  cloudUploadAll: () => Promise<CloudUploadReport>;
+  /** (v3.5.0 F3) Baja SOLO los vuelos que no existan localmente. Los
+   *  existentes NO se sobreescriben. Auto-cierra ended_at=null. */
+  cloudDownloadMissing: () => Promise<CloudDownloadReport>;
   /** (v2.0.2) Diagnóstico paso a paso. Prueba credenciales locales,
    *  refresh token, identidad, Drive API alcanzable, scope correcta. */
   cloudTestConnection: () => Promise<CloudTestReport>;
+  /** (v3.5.0) Purga el snapshot del cloud. Borra el archivo de Drive
+   *  y resetea `last_sync_at`. Los vuelos locales NO se tocan. */
+  cloudPurge: () => Promise<CloudPurgeReport>;
+  /** (v3.5.0) Importa el LOGBOOK.BIN de MSFS (2020 o 2024 auto-detect).
+   *  Inserta vuelos en `flight_log` con `source='msfs-logbook'` y
+   *  dedup por (origin, dest, source). Si no hay logbook, devuelve un
+   *  reporte vacío con `sourcePath = null` para que el UI muestre
+   *  "logbook no encontrado". */
+  msfsLogbookImport: () => Promise<MsfsLogbookImportReport>;
+  /** (F2) Importa el logbook de VAS-ACARS (Virtual Airlines System).
+   *  Recorre `%LOCALAPPDATA%\VASystem\VAS-ACARS\flights\*.bin` y agrega
+   *  cada vuelo nuevo (dedup por UUID = filename) al `flight_log`.
+   *  V1 incluye origen + aircraft + fechas; destino queda NULL. */
+  vasAcarsImport: () => Promise<VasImportReport>;
+  /** (F2) Lista los `.bin` detectados sin importar — útil para
+   *  mostrar "X vuelos encontrados" en UI sin invocar el import. */
+  vasAcarsDetect: () => Promise<VasFlightCandidate[]>;
+  /** (F2) Borra todos los vuelos de una fuente específica
+   *  (ej. "vas-acars", "msfs-logbook"). NO toca SimConnect captures
+   *  a menos que se le pase explícitamente. */
+  deleteFlightsBySource: (source: string) => Promise<DeleteBySourceReport>;
   /** Subscribe al evento de fin de OAuth. */
   onCloudOauthCompleted: (
     cb: (event: CloudOauthCompletedEvent) => void,
@@ -357,8 +391,18 @@ const realApi: Api = {
   cloudStartOauth: () => invoke<CloudOauthStart>("cloud_start_oauth"),
   cloudDisconnect: () => invoke<void>("cloud_disconnect"),
   cloudSyncNow: () => invoke<CloudSyncReport>("cloud_sync_now"),
+  cloudUploadAll: () => invoke<CloudUploadReport>("cloud_upload_all"),
+  cloudDownloadMissing: () =>
+    invoke<CloudDownloadReport>("cloud_download_missing"),
   cloudTestConnection: () =>
     invoke<CloudTestReport>("cloud_test_connection"),
+  cloudPurge: () => invoke<CloudPurgeReport>("cloud_purge"),
+  msfsLogbookImport: () =>
+    invoke<MsfsLogbookImportReport>("msfs_logbook_import"),
+  vasAcarsImport: () => invoke<VasImportReport>("vas_acars_import"),
+  vasAcarsDetect: () => invoke<VasFlightCandidate[]>("vas_acars_detect"),
+  deleteFlightsBySource: (source) =>
+    invoke<DeleteBySourceReport>("delete_flights_by_source", { source }),
   async onCloudOauthCompleted(cb) {
     const { listen } = await import("@tauri-apps/api/event");
     return await listen<CloudOauthCompletedEvent>(
@@ -809,6 +853,18 @@ const demoApi: Api = {
       downloadedSettings: 0,
     };
   },
+  async cloudUploadAll() {
+    return { uploadedFlights: 0, uploadedTracks: 0, uploadedSettings: 0 };
+  },
+  async cloudDownloadMissing() {
+    return {
+      cloudFlights: 0,
+      newFlights: 0,
+      skippedExisting: 0,
+      newTracks: 0,
+      newSettings: 0,
+    };
+  },
   async cloudTestConnection() {
     return {
       overallOk: false,
@@ -821,6 +877,39 @@ const demoApi: Api = {
       ],
       hint: null,
     };
+  },
+  async cloudPurge() {
+    return {
+      deletedFlights: 0,
+      deletedTracks: 0,
+      deletedSettings: 0,
+      fileDeleted: false,
+    };
+  },
+  async msfsLogbookImport() {
+    return {
+      sourcePath: null,
+      sim: null,
+      candidatesFound: 0,
+      importedCount: 0,
+      skippedDuplicates: 0,
+    };
+  },
+  async vasAcarsImport() {
+    return {
+      sourceDir: null,
+      candidatesFound: 0,
+      importedCount: 0,
+      updatedCount: 0,
+      skippedDuplicates: 0,
+      skippedInvalid: 0,
+    };
+  },
+  async vasAcarsDetect() {
+    return [];
+  },
+  async deleteFlightsBySource() {
+    return { flightsDeleted: 0, tracksDeleted: 0 };
   },
   async onCloudOauthCompleted() {
     return () => {

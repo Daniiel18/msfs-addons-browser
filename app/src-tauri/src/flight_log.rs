@@ -342,6 +342,11 @@ pub struct UpdateEntryInput {
     pub fuel_used_kg: Option<i64>,
     pub departure_gate: Option<String>,
     pub arrival_gate: Option<String>,
+    /// Matrícula del avión (ej. "N404DX", "D-AIZA"). El usuario la
+    /// edita cuando el watcher no la capturó (vuelos imported desde
+    /// VAS-ACARS donde el livery no contenía un tail real, o vuelos
+    /// viejos pre-v3.5.0 sin captura SimConnect de `ATC ID`).
+    pub aircraft_registration: Option<String>,
 }
 
 pub async fn update_entry(
@@ -372,6 +377,9 @@ pub async fn update_entry(
     if input.arrival_gate.is_some() {
         sets.push("arrival_gate = ?");
     }
+    if input.aircraft_registration.is_some() {
+        sets.push("aircraft_registration = ?");
+    }
     if sets.is_empty() {
         return Ok(());
     }
@@ -398,9 +406,40 @@ pub async fn update_entry(
     if let Some(v) = input.arrival_gate.as_ref() {
         q = q.bind(v);
     }
+    if let Some(v) = input.aircraft_registration.as_ref() {
+        q = q.bind(v);
+    }
     q = q.bind(id);
     q.execute(pool).await?;
     Ok(())
+}
+
+/// Borra todos los vuelos de una fuente específica (ej. `"vas-acars"`,
+/// `"msfs-logbook"`). Usado por el botón "Borrar todos" del UI tras
+/// import erróneos durante prueba y error. NO toca los SimConnect
+/// captures (source='simconnect') a menos que se le pase explícitamente.
+///
+/// Devuelve `(deleted_flights, deleted_tracks)` — los tracks se
+/// borran por CASCADE en la migración 015 (FK con ON DELETE CASCADE),
+/// pero contamos antes del DELETE para feedback al usuario.
+pub async fn delete_by_source(
+    pool: &SqlitePool,
+    source: &str,
+) -> anyhow::Result<(u64, u64)> {
+    let track_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM flight_log_track
+         WHERE flight_id IN (SELECT id FROM flight_log WHERE source = ?1)",
+    )
+    .bind(source)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let result = sqlx::query("DELETE FROM flight_log WHERE source = ?1")
+        .bind(source)
+        .execute(pool)
+        .await?;
+    Ok((result.rows_affected(), track_count as u64))
 }
 
 /// Persiste el landing_fpm en el momento exacto del touchdown

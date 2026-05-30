@@ -44,16 +44,19 @@ export interface LngLatTs {
 /** Threshold de salto geométrico permitido entre samples consecutivos
  *  (en grados, máximo de |dlat| y |dlon-normalized-para-dateline|).
  *
- *  Lógica: a 10s de sample interval y velocidad jet típica (Mach
- *  0.85 = ~490 kt), un avión recorre ~85 nm = ~1.4°. Concorde a
- *  Mach 2 = ~1300 kt = ~3.6°. Ponemos el límite en **1.5°** —
- *  cubre cualquier jet civil + un margen, pero descarta los
- *  teleports/slew/cambios de sesión que generaban las líneas
- *  feas que el usuario reportó en v3.3.0.
+ *  (v3.5.0 F3) Bumpeado a 3.0° — el threshold anterior de 1.5° era
+ *  demasiado estricto para imports VAS-ACARS con tailwind fuerte en
+ *  cruise (GS 600+ kt × 5s = 50 nm = 0.83°, pero gaps de sampling
+ *  pueden hacer que un par de samples consecutivos vayan a 15-20s →
+ *  150 nm = 2.5°). El usuario reportaba "la ruta falla en ciertos
+ *  puntos" — eran samples legítimos siendo dropped por el sanitizer.
  *
- *  Antes (v3.1.0–v3.3.x): 5° → permitía teleports cortos de
- *  ~300 nm. */
-const MAX_DEG_PER_SAMPLE = 1.5;
+ *  3.0° = ~180 nm. Cubre cualquier jet civil + tailwind + gaps cortos
+ *  de sampling, pero descarta teleports/slew (que típicamente saltan
+ *  >500 nm en un solo sample).
+ *
+ *  Antes (v3.4.0–v3.5.0 F2): 1.5° → caía bajo cruise con tailwind. */
+const MAX_DEG_PER_SAMPLE = 3.0;
 
 /** Threshold temporal entre samples (segundos). Si dos puntos están
  *  separados >`MAX_TS_GAP_SECONDS`, asumimos pausa/reconexión y

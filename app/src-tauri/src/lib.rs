@@ -11,6 +11,7 @@ pub mod gsx;
 pub mod gsx_parking;
 pub mod install;
 pub mod logger;
+pub mod msfs_logbook;
 pub mod package_ops;
 pub mod parser;
 pub mod pmdg_liveries;
@@ -20,6 +21,8 @@ pub mod simconnect_watcher;
 pub mod sources;
 pub mod updater;
 pub mod updates;
+pub mod vas_acars;
+pub mod vas_summary;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -161,6 +164,11 @@ pub fn run() {
             commands::flight_log::get_flight_status,
             commands::flight_log::get_flight_track,
             commands::flight_log::update_flight_log_entry,
+            commands::flight_log::msfs_logbook_detect,
+            commands::flight_log::msfs_logbook_import,
+            commands::flight_log::vas_acars_detect,
+            commands::flight_log::vas_acars_import,
+            commands::flight_log::delete_flights_by_source,
             commands::settings::get_app_settings,
             commands::settings::set_app_setting,
             commands::settings::set_autostart,
@@ -173,7 +181,10 @@ pub fn run() {
             commands::cloud::cloud_start_oauth,
             commands::cloud::cloud_disconnect,
             commands::cloud::cloud_sync_now,
+            commands::cloud::cloud_upload_all,
+            commands::cloud::cloud_download_missing,
             commands::cloud::cloud_test_connection,
+            commands::cloud::cloud_purge,
             commands::cloud::folder_sync_get_config,
             commands::cloud::folder_sync_save,
             commands::cloud::folder_sync_load,

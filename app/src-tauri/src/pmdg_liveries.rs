@@ -37,12 +37,23 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PmdgLivery {
-    /// Vendor del addon: "pmdg" | "fnx" | "inibuilds" | "fbw" | …
+    /// Vendor del addon: "pmdg" | "fnx" | "inibuilds" | "fbw" |
+    /// "aerosoft" | …
     pub vendor: String,
-    /// Modelo normalizado: "77er", "77w", "320", "a350", "320neo", etc.
+    /// Modelo normalizado a NIVEL DE PAQUETE: "77er", "77w", "320",
+    /// "a350", "320neo", "crj", etc. Cuando el paquete contiene
+    /// múltiples sub-modelos (Aerosoft CRJ trae 550/700/900/1000),
+    /// el sub-modelo concreto vive en `variant_folder`.
     pub model: String,
+    /// (v3.5.0) Sub-modelo concreto: nombre del subdirectorio en
+    /// `SimObjects/Airplanes/`. Para Aerosoft CRJ aquí aparece
+    /// "Aerosoft_CRJ_700", "Aerosoft_CRJ_900", etc. El UI puede
+    /// agrupar por este campo para distinguir variantes dentro del
+    /// mismo paquete. Vacío cuando hay un único variant.
+    pub variant_folder: Option<String>,
     /// Nombre del paquete tal como aparece en Community
-    /// (ej. "pmdg-aircraft-77er-liveries", "fnx-aircraft-320").
+    /// (ej. "pmdg-aircraft-77er-liveries", "fnx-aircraft-320",
+    /// "aerosoft-crj").
     pub package_folder: String,
     /// `title` de la sección — único dentro del aircraft.cfg.
     pub title: String,
@@ -147,12 +158,21 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
             if !cfg_path.is_file() {
                 continue;
             }
+            // Sub-modelo concreto: nombre del subdir bajo
+            // SimObjects/Airplanes/. Para Aerosoft CRJ aquí aparece
+            // "Aerosoft_CRJ_700" etc. — lo guardamos en la livery
+            // para que el UI agrupe variantes del mismo paquete.
+            let variant_folder = plane_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
             match parse_aircraft_cfg(&cfg_path, &plane_dir) {
                 Ok(found) => {
                     for mut liv in found {
                         liv.vendor = vendor.clone();
                         liv.model = model.clone();
                         liv.package_folder = folder_name.clone();
+                        liv.variant_folder = variant_folder.clone();
                         liveries.push(liv);
                     }
                 }
@@ -180,12 +200,22 @@ pub fn scan_pmdg_liveries(community_path: &Path) -> anyhow::Result<Vec<PmdgLiver
 /// Match `{vendor}-aircraft-{model}` con opcional `-liveries` al
 /// final. Devuelve `(vendor, model)` si matchea un vendor conocido.
 ///
+/// (v3.5.0) Ampliado para cubrir patrones NO canónicos usados por
+/// algunos vendors históricos que no siguen el infix `-aircraft-`:
+///   · `aerosoft-crj`, `aerosoft-crj-pro`, `aerosoft-crj-bundle`
+///     → ("aerosoft", "crj")
+/// La lista es estrictamente whitelisteada por seguridad — sin esto
+/// confundiríamos `aerosoft-airport-xyz` con un aircraft pack.
+///
 /// Ejemplos:
 ///   · "pmdg-aircraft-77er-liveries" → ("pmdg", "77er")
 ///   · "fnx-aircraft-320"            → ("fnx", "320")
 ///   · "inibuilds-aircraft-a350"     → ("inibuilds", "a350")
 ///   · "fbw-aircraft-a32nx"          → ("fbw", "a32nx")
+///   · "aerosoft-crj"                → ("aerosoft", "crj")
+///   · "aerosoft-crj-pro"            → ("aerosoft", "crj")
 fn detect_vendor_model(lower_folder: &str) -> Option<(String, String)> {
+    // 1. Patrón canónico {vendor}-aircraft-{model}[-liveries].
     for vendor in KNOWN_VENDORS {
         let prefix = format!("{}-aircraft-", vendor);
         if let Some(rest) = lower_folder.strip_prefix(&prefix) {
@@ -197,7 +227,65 @@ fn detect_vendor_model(lower_folder: &str) -> Option<(String, String)> {
             return Some((vendor.to_string(), model));
         }
     }
+
+    // 2. Whitelist de patrones NO canónicos (vendor-model[-suffix]).
+    //    Cada entry: (prefix, vendor, normalized_model). El prefix se
+    //    chequea con `starts_with` para tolerar suffixes (`-pro`,
+    //    `-bundle`, `-700`, etc.) — el modelo normalizado es el mismo.
+    const NON_CANONICAL: &[(&str, &str, &str)] = &[
+        ("aerosoft-crj", "aerosoft", "crj"),
+        // Más entries pueden añadirse aquí cuando el usuario reporta
+        // otro pack que no sigue la convención. Ej.:
+        // ("flightfactor-757", "flightfactor", "757"),
+    ];
+    for (prefix, vendor, model) in NON_CANONICAL {
+        if lower_folder == *prefix || lower_folder.starts_with(&format!("{}-", prefix)) {
+            return Some((vendor.to_string(), model.to_string()));
+        }
+    }
+
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_canonical_pmdg_pattern() {
+        let result = detect_vendor_model("pmdg-aircraft-77er-liveries");
+        assert_eq!(result, Some(("pmdg".to_string(), "77er".to_string())));
+    }
+
+    #[test]
+    fn detects_canonical_fenix_pattern() {
+        let result = detect_vendor_model("fnx-aircraft-320");
+        assert_eq!(result, Some(("fnx".to_string(), "320".to_string())));
+    }
+
+    #[test]
+    fn detects_aerosoft_crj_no_aircraft_infix() {
+        let result = detect_vendor_model("aerosoft-crj");
+        assert_eq!(result, Some(("aerosoft".to_string(), "crj".to_string())));
+    }
+
+    #[test]
+    fn detects_aerosoft_crj_pro_suffix() {
+        let result = detect_vendor_model("aerosoft-crj-pro");
+        assert_eq!(result, Some(("aerosoft".to_string(), "crj".to_string())));
+    }
+
+    #[test]
+    fn ignores_aerosoft_airport_packages() {
+        assert_eq!(detect_vendor_model("aerosoft-airport-eddm"), None);
+        assert_eq!(detect_vendor_model("aerosoft-eddl-professional"), None);
+    }
+
+    #[test]
+    fn ignores_unknown_vendors() {
+        assert_eq!(detect_vendor_model("random-aircraft-737"), None);
+        assert_eq!(detect_vendor_model("foo-bar"), None);
+    }
 }
 
 /// Parsea un `aircraft.cfg` en formato INI-like (no es INI puro:
@@ -320,6 +408,7 @@ impl PmdgLiveryDraft {
         Some(PmdgLivery {
             vendor: String::new(), // populado por el caller
             model: String::new(),
+            variant_folder: None, // populado por el caller
             package_folder: String::new(),
             title,
             variation: self.variation,

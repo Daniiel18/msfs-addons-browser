@@ -76,18 +76,19 @@ export function FlyingNowBadge() {
     );
   })();
 
-  // ETA al destino en formato HH:MM (UTC). Usa GS actual y NM
-  // restantes. Si gs < 30kt o estamos en tierra, no muestra ETA.
-  const etaUtc = (() => {
+  // ETA al destino en formato HH:MM (hora LOCAL del PC del usuario).
+  // Usa GS actual y NM restantes. Si gs < 30kt o estamos en tierra,
+  // no muestra ETA. Cambio v3.5.0 — antes era UTC con sufijo "Z".
+  const etaLocal = (() => {
     if (nmRemaining == null) return null;
     if (status.currentGroundSpeedKt == null) return null;
     if (status.currentGroundSpeedKt < 30) return null;
     const hours = nmRemaining / status.currentGroundSpeedKt;
     const arrivalMs = Date.now() + hours * 3_600_000;
     const date = new Date(arrivalMs);
-    const hh = date.getUTCHours().toString().padStart(2, "0");
-    const mm = date.getUTCMinutes().toString().padStart(2, "0");
-    return `${hh}:${mm}Z`;
+    const hh = date.getHours().toString().padStart(2, "0");
+    const mm = date.getMinutes().toString().padStart(2, "0");
+    return `${hh}:${mm}`;
   })();
 
   // FL (flight level): altitud en hundreds of feet, redondeada.
@@ -177,9 +178,9 @@ export function FlyingNowBadge() {
           · {Math.round(nmRemaining)}nm
         </span>
       )}
-      {live && etaUtc && !onGround && (
+      {live && etaLocal && !onGround && (
         <span className={`font-mono text-[10px] ${phase.subClass}`}>
-          · ETA {etaUtc}
+          · ETA {etaLocal}
         </span>
       )}
 

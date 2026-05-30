@@ -150,7 +150,10 @@ export function RoutesMapView({
       zoom: 1.2,
       attributionControl: false,
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+    // (v3.5.0) NavigationControl removido — el usuario reportó que
+    // los cuadritos del zoom interferían visualmente con la card de
+    // detalle del FlightBook. Zoom via scroll-wheel + pan via drag
+    // siguen funcionando nativamente sin necesidad del control.
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
 
     // Aplicar projection globe en cada style.load. MapLibre 5 lo
@@ -245,6 +248,37 @@ export function RoutesMapView({
         source: "rt-track",
         layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": "#fbbf24", "line-width": 2.8 },
+      });
+      // (v3.5.0 F2) Great-circle del vuelo SELECCIONADO cuando NO hay
+      // track real (típico de imports de VAS-ACARS / MSFS logbook que
+      // no traen sampling de posición). Dibujamos la línea gran-circular
+      // origen→destino en ámbar dasheado para que el usuario "vea" la
+      // ruta aproximada del vuelo aunque no haya track real. Se renderiza
+      // por encima de las great-circles del flightlog (verde) para que
+      // destaque visualmente al seleccionar.
+      map.addSource("rt-selected-gc", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-selected-gc-glow",
+        type: "line",
+        source: "rt-selected-gc",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#fbbf24",
+          "line-width": 7,
+          "line-opacity": 0.25,
+        },
+      });
+      map.addLayer({
+        id: "rt-selected-gc-line",
+        type: "line",
+        source: "rt-selected-gc",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#fbbf24",
+          "line-width": 2.4,
+          "line-dasharray": [3, 1.5],
+          "line-opacity": 0.95,
+        },
       });
       // (v1.1.4) Live track — naranja/rojo dasheado para el vuelo
       // EN CURSO. Distinto color del flightlog (verde) y track real
@@ -529,11 +563,79 @@ export function RoutesMapView({
     };
   }, [selectedFlightId, trackPoints]);
 
-  // Modo detalle: cuando hay selección con track válido, ocultamos
-  // las great-circles del resto de vuelos y dejamos sólo el track
-  // real. Si la selección no tiene track aún (vuelo viejo sin
-  // muestreos), caemos al modo globo para no dejar el mapa vacío.
-  const detailMode = selectedFlightId != null && trackPoints.length >= 2;
+  // (v3.5.0 F2) Great-circle del vuelo seleccionado cuando NO hay
+  // track real (imports MSFS logbook sin sampling de posición, o
+  // vuelos viejos pre-v0.1.23 sin flight_log_track).
+  //
+  // (v3.5.0 F2 v4) Guard adicional: NO se renderiza mientras está
+  // cargando el track — evitaba el "flash" de línea recta durante el
+  // fetch que el usuario reportó como bug ("linea recta que pasa
+  // encima de la ruta real").
+  const selectedGreatCircleGeojson = useMemo<
+    GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
+  >(() => {
+    if (selectedFlightId == null || trackPoints.length >= 2 || loadingTrack) {
+      // Hay track real (≥2 pts) o aún cargando → no dibujar la
+      // aproximación; el track real lo reemplazará en milisegundos.
+      return { type: "FeatureCollection", features: [] };
+    }
+    const sel = flightLogEntries.find((e) => e.id === selectedFlightId);
+    if (
+      !sel ||
+      sel.destinationLat == null ||
+      sel.destinationLon == null ||
+      sel.originLat == null ||
+      sel.originLon == null
+    ) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    // Skip si las coords son artifacts (0,0) en origen O destino.
+    // Un vuelo real en el ecuador tiene lat≈0 pero lon distinto, o
+    // viceversa; (0,0) literal es solo el placeholder de "sin coords".
+    const isZero = (la: number, lo: number) =>
+      Math.abs(la) < 0.01 && Math.abs(lo) < 0.01;
+    if (
+      isZero(sel.originLat, sel.originLon) ||
+      isZero(sel.destinationLat, sel.destinationLon)
+    ) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    const segments = greatCircleLine(
+      sel.originLon,
+      sel.originLat,
+      sel.destinationLon,
+      sel.destinationLat,
+    );
+    if (segments.length === 0) {
+      return { type: "FeatureCollection", features: [] };
+    }
+    return {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: { id: sel.id, fallback: true },
+          geometry: { type: "MultiLineString", coordinates: segments },
+        },
+      ],
+    };
+  }, [selectedFlightId, trackPoints, flightLogEntries, loadingTrack]);
+
+  // Modo detalle: hay selección — sea con track real, con great-circle
+  // de fallback, o cargando el track. En cualquier caso ocultamos las
+  // great-circles del resto de vuelos para que el foco sea el vuelo
+  // seleccionado.
+  //
+  // (v3.5.0 F2 v4) Incluimos `loadingTrack` para que el detail-mode
+  // se active INMEDIATAMENTE al seleccionar — sin esperar al fetch.
+  // Antes esperaba a tener trackPoints o great-circle, lo que dejaba
+  // las great-circles del flightLog visibles durante el load → con
+  // 78 vuelos eso era un lío de líneas amontonadas.
+  const detailMode =
+    selectedFlightId != null &&
+    (trackPoints.length >= 2 ||
+      selectedGreatCircleGeojson.features.length > 0 ||
+      loadingTrack);
 
   // SimBrief: cyan tenue (planes son aspiracionales, no reales).
   // Se oculta en modo detalle para que sólo se vea la traza real.
@@ -704,6 +806,8 @@ export function RoutesMapView({
     epSrc?.setData(endpointsGeojson);
     const trackSrc = map.getSource("rt-track") as GeoJSONSource | undefined;
     trackSrc?.setData(trackGeojson);
+    const selGcSrc = map.getSource("rt-selected-gc") as GeoJSONSource | undefined;
+    selGcSrc?.setData(selectedGreatCircleGeojson);
     const liveSrc = map.getSource("rt-live") as GeoJSONSource | undefined;
     liveSrc?.setData(liveTrackGeojson);
     const projSrc = map.getSource("rt-projection") as GeoJSONSource | undefined;
@@ -715,6 +819,7 @@ export function RoutesMapView({
     flightLogGeojson,
     endpointsGeojson,
     trackGeojson,
+    selectedGreatCircleGeojson,
     liveTrackGeojson,
     projectionGeojson,
   ]);
@@ -788,9 +893,19 @@ export function RoutesMapView({
     if (!map || !mapReady) return;
     const bounds = new maplibregl.LngLatBounds();
     if (detailMode) {
+      // Fit a track real si lo hay, sino a la great-circle de fallback.
       for (const feat of trackGeojson.features) {
         for (const [lng, lat] of feat.geometry.coordinates) {
           bounds.extend([lng, lat]);
+        }
+      }
+      if (bounds.isEmpty()) {
+        for (const feat of selectedGreatCircleGeojson.features) {
+          for (const segment of feat.geometry.coordinates) {
+            for (const [lng, lat] of segment) {
+              bounds.extend([lng, lat]);
+            }
+          }
         }
       }
       if (!bounds.isEmpty()) {
@@ -824,7 +939,14 @@ export function RoutesMapView({
       });
       didAutoFitRef.current = true;
     }
-  }, [mapReady, simbriefGeojson, flightLogGeojson, trackGeojson, detailMode]);
+  }, [
+    mapReady,
+    simbriefGeojson,
+    flightLogGeojson,
+    trackGeojson,
+    selectedGreatCircleGeojson,
+    detailMode,
+  ]);
 
   const totalReal = flightLogGeojson.features.length;
   const totalPlan = simbriefGeojson.features.length;
@@ -839,8 +961,10 @@ export function RoutesMapView({
     >
       <div ref={containerRef} className="absolute inset-0" />
       {/* Leyenda flotante. En modo globo muestra los conteos; en
-          modo detalle, sólo el badge ámbar del track real. */}
-      <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2 text-[10px] font-medium uppercase tracking-wide text-slate-300">
+          modo detalle, sólo el badge ámbar del track real.
+          (v3.5.0) Movida a top-RIGHT — la card de detalle vive en
+          el top-left, así que los chips antes quedaban tapados. */}
+      <div className="pointer-events-none absolute right-3 top-3 flex flex-wrap justify-end gap-2 text-[10px] font-medium uppercase tracking-wide text-slate-300">
         {detailMode ? (
           <span className="rounded-md bg-slate-950/80 px-2 py-1 ring-1 ring-amber-500/30">
             <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-amber-400 align-middle" />

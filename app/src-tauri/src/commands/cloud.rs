@@ -6,8 +6,8 @@
 //!   · Loguear via `CmdTimer` para diagnóstico.
 
 use crate::cloud_sync::{
-    self, CloudConfig, CloudTestReport, FolderSyncConfig, FolderSyncLoadReport,
-    FolderSyncSaveReport, OauthStart, SyncReport,
+    self, CloudConfig, CloudTestReport, DownloadReport, FolderSyncConfig,
+    FolderSyncLoadReport, FolderSyncSaveReport, OauthStart, SyncReport, UploadReport,
 };
 use crate::logger::CmdTimer;
 use crate::{cmd_log, AppState};
@@ -64,6 +64,32 @@ pub async fn cloud_sync_now(
         .map_err(|e| e.to_string())
 }
 
+/// (v3.5.0 F3) Subir TODO el contenido local a la nube. Sobreescribe
+/// el snapshot remoto con el estado actual (todos los vuelos, todos
+/// los tracks, todos los settings con `pref_*`).
+#[tauri::command]
+pub async fn cloud_upload_all(
+    state: tauri::State<'_, AppState>,
+) -> Result<UploadReport, String> {
+    let _t = CmdTimer::start("cloud_upload_all");
+    cloud_sync::upload_all(&state.db, &state.http)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v3.5.0 F3) Bajar SOLO los vuelos faltantes del cloud. Los locales
+/// existentes NO se sobreescriben. Auto-cierra cualquier vuelo bajado
+/// con `ended_at = NULL` para evitar el bug del "FLYING NOW phantom".
+#[tauri::command]
+pub async fn cloud_download_missing(
+    state: tauri::State<'_, AppState>,
+) -> Result<DownloadReport, String> {
+    let _t = CmdTimer::start("cloud_download_missing");
+    cloud_sync::download_missing(&state.db, &state.http)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// (v2.0.2) Diagnóstico paso a paso. No falla nunca — devuelve el
 /// reporte con los pasos completados/fallidos para que el frontend
 /// los muestre al usuario.
@@ -73,6 +99,20 @@ pub async fn cloud_test_connection(
 ) -> Result<CloudTestReport, String> {
     let _t = CmdTimer::start("cloud_test_connection");
     Ok(cloud_sync::test_connection(&state.db, &state.http).await)
+}
+
+/// (v3.5.0) Purga el snapshot del cloud — borra el archivo de Drive
+/// y resetea `last_sync_at`. Los vuelos locales NO se tocan. Devuelve
+/// los conteos del snapshot remoto antes de borrarlo para feedback
+/// honesto al usuario.
+#[tauri::command]
+pub async fn cloud_purge(
+    state: tauri::State<'_, AppState>,
+) -> Result<cloud_sync::PurgeReport, String> {
+    let _t = CmdTimer::start("cloud_purge");
+    cloud_sync::purge(&state.db, &state.http)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ─── (v2.0.1) Folder sync — alternativa simple a OAuth ────────────────────────
