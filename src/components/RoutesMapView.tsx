@@ -962,6 +962,33 @@ export function RoutesMapView({
     detailMode,
   ]);
 
+  // (v3.6.6 fix M2) Re-fit del mapa cuando cambia el filtro de aerolínea.
+  // Sin esto, el filter se aplicaba pero la cámara no se movía y daba
+  // sensación de que "no pasa nada" — sólo se veía el cambio al cambiar
+  // de pantalla y volver. Ahora hace un zoom suave a las rutas filtradas.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || detailMode) return;
+    // Sólo re-fit si hay un filtro ACTIVO. Si selectedAirline = null,
+    // dejamos la vista actual.
+    if (!selectedAirline) return;
+    const bounds = new maplibregl.LngLatBounds();
+    for (const feat of flightLogGeojson.features) {
+      for (const segment of feat.geometry.coordinates) {
+        for (const [lng, lat] of segment) {
+          bounds.extend([lng, lat]);
+        }
+      }
+    }
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, {
+        padding: 80,
+        maxZoom: 7,
+        duration: 600,
+      });
+    }
+  }, [mapReady, selectedAirline, flightLogGeojson, detailMode]);
+
   const totalReal = flightLogGeojson.features.length;
   const totalPlan = simbriefGeojson.features.length;
   const empty = !detailMode && totalReal === 0 && totalPlan === 0;
