@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { FlightLogEntry, FlightStatus } from "../lib/types";
+import type { AirlineTag, FlightLogEntry, FlightStatus } from "../lib/types";
 import { api } from "../lib/tauri";
 
 /**
@@ -20,8 +20,21 @@ interface FlightLogState {
   loading: boolean;
   lastError: string | null;
 
+  /** (v3.6.0 Phase H — Epic D) Aerolíneas detectadas en el historial.
+   *  Cargadas en el bootstrap + tras cada reload de entries. */
+  airlines: AirlineTag[];
+  /** (v3.6.0) Tag de aerolínea seleccionada. `null` = sin filtro (todos
+   *  los vuelos). Cuando se setea, RoutesMapView atenúa rutas que no
+   *  matchean y StatsWidget muestra KPIs específicos. La key es ICAO
+   *  cuando está disponible (preferido), sino el `name` para fallback. */
+  selectedAirline: { icao: string | null; name: string } | null;
+  setSelectedAirline: (
+    tag: { icao: string | null; name: string } | null,
+  ) => void;
+
   bootstrap: () => Promise<void>;
   reload: () => Promise<void>;
+  reloadAirlines: () => Promise<void>;
   remove: (id: number) => Promise<void>;
   /** Helper de testing — inserta un vuelo demo EBBR→LEMD. Disponible
    *  desde la consola para validar la UI sin MSFS corriendo. */
@@ -33,9 +46,16 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
   status: null,
   loading: false,
   lastError: null,
+  airlines: [],
+  selectedAirline: null,
+
+  setSelectedAirline(tag) {
+    set({ selectedAirline: tag });
+  },
 
   async bootstrap() {
     await get().reload();
+    await get().reloadAirlines();
     // Cargamos el estado de vuelo actual del watcher.
     api
       .getFlightStatus()
@@ -47,6 +67,7 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
       .onFlightLogChange(() => {
         get()
           .reload()
+          .then(() => get().reloadAirlines())
           .catch((e) =>
             console.warn("flightlog reload after change failed:", e),
           );
@@ -64,6 +85,15 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
       set({ entries, loading: false });
     } catch (e) {
       set({ lastError: String(e), loading: false });
+    }
+  },
+
+  async reloadAirlines() {
+    try {
+      const tags = await api.listAirlines();
+      set({ airlines: tags });
+    } catch (e) {
+      console.warn("listAirlines failed:", e);
     }
   },
 

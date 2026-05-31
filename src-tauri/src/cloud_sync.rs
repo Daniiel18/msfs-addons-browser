@@ -754,6 +754,15 @@ struct Snapshot {
     flight_log: Vec<serde_json::Value>,
     flight_log_track: Vec<serde_json::Value>,
     settings: Vec<SettingKV>,
+    /// (v3.6.0 Phase H — Epic E) Breakdown del scoring rule-by-rule.
+    /// Se sincroniza con el cloud para que el usuario pueda ver el
+    /// checklist desde otra máquina sin recomputar.
+    #[serde(default)]
+    flight_log_score_item: Vec<serde_json::Value>,
+    /// (v3.6.0) Registro de transiciones de fase por vuelo. Necesario
+    /// para que el re-scoring funcione desde cualquier máquina.
+    #[serde(default)]
+    flight_log_phase: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -780,19 +789,32 @@ async fn build_snapshot(pool: &SqlitePool) -> anyhow::Result<Snapshot> {
         sqlx::query("SELECT * FROM flight_log_track ORDER BY flight_id, ts")
             .fetch_all(pool)
             .await?;
+    // (v3.6.0 Phase H) Snapshots de scoring (rule breakdown + phase
+    // transitions). El ORDER BY mantiene snapshots determinísticos —
+    // útil para diff/auditoria de la nube.
+    let score_rows =
+        sqlx::query("SELECT * FROM flight_log_score_item ORDER BY flight_id, phase, rule_id")
+            .fetch_all(pool)
+            .await?;
+    let phase_rows =
+        sqlx::query("SELECT * FROM flight_log_phase ORDER BY flight_id, entered_at")
+            .fetch_all(pool)
+            .await?;
     let settings_rows: Vec<SettingKV> = sqlx::query_as(
         "SELECT key, value FROM settings WHERE key LIKE 'pref_%'",
     )
     .fetch_all(pool)
     .await?;
     Ok(Snapshot {
-        version: 1,
+        version: 2,
         exported_at: chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string(),
         flight_log: flight_rows.iter().map(row_to_json).collect(),
         flight_log_track: track_rows.iter().map(row_to_json).collect(),
         settings: settings_rows,
+        flight_log_score_item: score_rows.iter().map(row_to_json).collect(),
+        flight_log_phase: phase_rows.iter().map(row_to_json).collect(),
     })
 }
 
@@ -875,6 +897,11 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
             None => continue,
         };
         let started_at = json_str(row, "startedAt").unwrap_or_default();
+        // (v3.6.0 Phase H) Extendido para incluir flight_number,
+        // callsign, airline_icao, status y los score_* del scoring
+        // engine. Los campos del scoring SE sincronizan al cloud porque
+        // el usuario los puede consultar desde cualquier máquina sin
+        // tener que recomputar (decisión Q15 del kickoff).
         sqlx::query(
             r#"INSERT INTO flight_log
                 (id, started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
@@ -884,8 +911,10 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
                  distance_nm, flight_time_s,
                  max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
                  departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
-                 paused_seconds)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 paused_seconds,
+                 flight_number, callsign, airline_icao, status,
+                 score_total, score_max, score_grade)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  started_at = excluded.started_at,
                  ended_at = excluded.ended_at,
@@ -913,7 +942,14 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
                  passengers = excluded.passengers,
                  cargo_kg = excluded.cargo_kg,
                  fuel_used_kg = excluded.fuel_used_kg,
-                 paused_seconds = excluded.paused_seconds"#,
+                 paused_seconds = excluded.paused_seconds,
+                 flight_number = excluded.flight_number,
+                 callsign = excluded.callsign,
+                 airline_icao = excluded.airline_icao,
+                 status = excluded.status,
+                 score_total = excluded.score_total,
+                 score_max = excluded.score_max,
+                 score_grade = excluded.score_grade"#,
         )
         .bind(id)
         .bind(&started_at)
@@ -943,6 +979,13 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .bind(json_i64(row, "cargoKg"))
         .bind(json_i64(row, "fuelUsedKg"))
         .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
+        .bind(json_str(row, "flightNumber"))
+        .bind(json_str(row, "callsign"))
+        .bind(json_str(row, "airlineIcao"))
+        .bind(json_str(row, "status").unwrap_or_else(|| "completed".to_string()))
+        .bind(json_i64(row, "scoreTotal"))
+        .bind(json_i64(row, "scoreMax"))
+        .bind(json_str(row, "scoreGrade"))
         .execute(&mut *tx)
         .await?;
         flights += 1;
@@ -989,6 +1032,62 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .await?;
         settings += 1;
     }
+
+    // (v3.6.0 Phase H) Restore de score items y phase transitions.
+    // INSERT OR REPLACE para que un re-restore con datos actualizados
+    // (re-scoring desde otra máquina) pise el local. La FK con CASCADE
+    // garantiza que estos quedaron limpios si el vuelo padre se borró.
+    for row in &snap.flight_log_score_item {
+        let Some(flight_id) = json_i64(row, "flightId") else { continue };
+        let Some(phase) = json_str(row, "phase") else { continue };
+        let Some(rule_id) = json_str(row, "ruleId") else { continue };
+        sqlx::query(
+            r#"INSERT INTO flight_log_score_item
+                (flight_id, phase, rule_id, label, points_earned, points_max,
+                 passed, severity, evidence, ts)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(flight_id, phase, rule_id) DO UPDATE SET
+                 label         = excluded.label,
+                 points_earned = excluded.points_earned,
+                 points_max    = excluded.points_max,
+                 passed        = excluded.passed,
+                 severity      = excluded.severity,
+                 evidence      = excluded.evidence,
+                 ts            = excluded.ts"#,
+        )
+        .bind(flight_id)
+        .bind(&phase)
+        .bind(&rule_id)
+        .bind(json_str(row, "label").unwrap_or_default())
+        .bind(json_i64(row, "pointsEarned").unwrap_or(0))
+        .bind(json_i64(row, "pointsMax").unwrap_or(0))
+        .bind(json_i64(row, "passed").unwrap_or(0))
+        .bind(json_str(row, "severity"))
+        .bind(json_str(row, "evidence"))
+        .bind(json_str(row, "ts"))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    for row in &snap.flight_log_phase {
+        let Some(flight_id) = json_i64(row, "flightId") else { continue };
+        let Some(phase) = json_str(row, "phase") else { continue };
+        let Some(entered_at) = json_str(row, "enteredAt") else { continue };
+        sqlx::query(
+            r#"INSERT INTO flight_log_phase
+                (flight_id, phase, entered_at, exited_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(flight_id, phase, entered_at) DO UPDATE SET
+                 exited_at = excluded.exited_at"#,
+        )
+        .bind(flight_id)
+        .bind(&phase)
+        .bind(&entered_at)
+        .bind(json_str(row, "exitedAt"))
+        .execute(&mut *tx)
+        .await?;
+    }
+
     tx.commit().await?;
 
     // (v3.5.0 F3) Cierra cualquier vuelo con ended_at = NULL que NO
@@ -1491,6 +1590,9 @@ pub async fn download_missing(
             }
         };
 
+        // (v3.6.0 Phase H) Incluye flight_number/callsign/airline_icao
+        // /status/score_* en el INSERT para que un download-missing
+        // preserve toda la metadata VA sin tener que recomputar.
         let result = sqlx::query(
             r#"INSERT INTO flight_log
                 (started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
@@ -1500,8 +1602,10 @@ pub async fn download_missing(
                  distance_nm, flight_time_s,
                  max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
                  departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
-                 paused_seconds, source, external_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+                 paused_seconds, source, external_id,
+                 flight_number, callsign, airline_icao, status,
+                 score_total, score_max, score_grade)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
         )
         .bind(&started_at)
         .bind(ended_at.as_deref())
@@ -1532,6 +1636,13 @@ pub async fn download_missing(
         .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
         .bind(&source)
         .bind(external_id.as_deref())
+        .bind(json_str(row, "flightNumber"))
+        .bind(json_str(row, "callsign"))
+        .bind(json_str(row, "airlineIcao"))
+        .bind(json_str(row, "status").unwrap_or_else(|| "completed".to_string()))
+        .bind(json_i64(row, "scoreTotal"))
+        .bind(json_i64(row, "scoreMax"))
+        .bind(json_str(row, "scoreGrade"))
         .execute(&mut *tx)
         .await?;
 
@@ -1588,6 +1699,63 @@ pub async fn download_missing(
         .execute(&mut *tx)
         .await?;
         report.new_settings += 1;
+    }
+
+    // (v3.6.0 Phase H) Importa score items y phase transitions sólo
+    // para los vuelos NUEVOS — mismo mapping cloud_id → local_id que
+    // armamos arriba para los tracks.
+    for item in &remote.flight_log_score_item {
+        let cloud_flight_id = match json_i64(item, "flightId") {
+            Some(v) => v,
+            None => continue,
+        };
+        let local_flight_id = match cloud_to_local_id.get(&cloud_flight_id) {
+            Some(v) => *v,
+            None => continue,
+        };
+        let Some(phase) = json_str(item, "phase") else { continue };
+        let Some(rule_id) = json_str(item, "ruleId") else { continue };
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO flight_log_score_item
+                (flight_id, phase, rule_id, label, points_earned, points_max,
+                 passed, severity, evidence, ts)
+               VALUES (?,?,?,?,?,?,?,?,?,?)"#,
+        )
+        .bind(local_flight_id)
+        .bind(&phase)
+        .bind(&rule_id)
+        .bind(json_str(item, "label").unwrap_or_default())
+        .bind(json_i64(item, "pointsEarned").unwrap_or(0))
+        .bind(json_i64(item, "pointsMax").unwrap_or(0))
+        .bind(json_i64(item, "passed").unwrap_or(0))
+        .bind(json_str(item, "severity"))
+        .bind(json_str(item, "evidence"))
+        .bind(json_str(item, "ts"))
+        .execute(&mut *tx)
+        .await?;
+    }
+    for ph in &remote.flight_log_phase {
+        let cloud_flight_id = match json_i64(ph, "flightId") {
+            Some(v) => v,
+            None => continue,
+        };
+        let local_flight_id = match cloud_to_local_id.get(&cloud_flight_id) {
+            Some(v) => *v,
+            None => continue,
+        };
+        let Some(phase) = json_str(ph, "phase") else { continue };
+        let Some(entered_at) = json_str(ph, "enteredAt") else { continue };
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO flight_log_phase
+                (flight_id, phase, entered_at, exited_at)
+               VALUES (?,?,?,?)"#,
+        )
+        .bind(local_flight_id)
+        .bind(&phase)
+        .bind(&entered_at)
+        .bind(json_str(ph, "exitedAt"))
+        .execute(&mut *tx)
+        .await?;
     }
 
     tx.commit().await?;

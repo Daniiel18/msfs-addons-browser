@@ -80,6 +80,43 @@ export default function App() {
     setActiveLocale((language ?? "auto") as "auto" | "es" | "en");
   }, [language]);
 
+  // (v3.6.0 Phase H — H16) Suscripciones a los eventos de score
+  // auto-upload. Cada vuelo que termina dispara `score:done` +
+  // `score:upload:success`/`error`. Mostramos toast con el resultado
+  // (Q15: "debe mostrarse los logs de que se hizo o si fallo").
+  useEffect(() => {
+    const unsubs: (() => void)[] = [];
+    let cancelled = false;
+    void (async () => {
+      try {
+        const toast = (await import("./stores/useToastStore")).useToastStore;
+        const u1 = await api.onScoreUploadSuccess(() => {
+          if (cancelled) return;
+          toast.getState().push({
+            kind: "success",
+            title: t("fb.sync.auto_upload_success"),
+            ttlMs: 4000,
+          });
+        });
+        const u2 = await api.onScoreUploadError((err) => {
+          if (cancelled) return;
+          toast.getState().push({
+            kind: "error",
+            title: t("fb.sync.auto_upload_error", { error: err.error }),
+            ttlMs: 10000,
+          });
+        });
+        unsubs.push(u1, u2);
+      } catch (e) {
+        console.warn("score event subscribe failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unsubs.forEach((u) => u());
+    };
+  }, []);
+
   // Aplicar el tema al `<html>` cada vez que el setting cambie.
   // Tailwind tiene `darkMode: "class"`, así que añadir/quitar la
   // clase `dark` activa/desactiva todos los `dark:` modifiers.

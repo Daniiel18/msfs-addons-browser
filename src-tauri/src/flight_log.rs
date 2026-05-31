@@ -76,6 +76,29 @@ pub struct FlightLogEntry {
     /// time REAL (sin contar pausas).
     pub paused_seconds: i64,
     pub source: String,
+    /// (v3.6.0 Phase H) Número de vuelo VA-style ("DL115", "IB2741").
+    /// Origen: parser de VAS-ACARS `data.db` (campo f10 de FlightInfo),
+    /// o cross-match de SimBrief OFP al iniciar un vuelo SimConnect.
+    pub flight_number: Option<String>,
+    /// (v3.6.0) Callsign ATC ("DAL115"). Complementa flight_number —
+    /// flight_number usa código IATA (2 letras), callsign usa ICAO (3 letras).
+    pub callsign: Option<String>,
+    /// (v3.6.0) Código ICAO de aerolínea (3 letras: "DAL", "IBE").
+    /// Usado para agrupar por aerolínea en el dashboard. Más robusto
+    /// que `aircraft_airline` (string libre con variantes).
+    pub airline_icao: Option<String>,
+    /// (v3.6.0) Estado del vuelo. `completed` = visible en UI. `partial`
+    /// = importado pero falta data OOOI o duplicado descartado;
+    /// se preserva en DB pero la UI lo oculta por defecto.
+    pub status: String,
+    /// (v3.6.0 Epic E) Puntaje total alcanzado.
+    pub score_total: Option<i64>,
+    /// (v3.6.0) Puntaje máximo posible (la suma de `points_max` de
+    /// todas las reglas evaluadas para este vuelo).
+    pub score_max: Option<i64>,
+    /// (v3.6.0) Grade derivada — 'A' (95-100%), 'B' (85-95%),
+    /// 'C' (70-85%), 'D' (50-70%), 'F' (<50%).
+    pub score_grade: Option<String>,
 }
 
 /// Resultado del lookup de aeropuerto más cercano. Incluye
@@ -125,13 +148,48 @@ pub async fn start_flight(
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
 
+    // (v3.6.0 Phase H — Epic A/C) Cross-match con SimBrief OFP por
+    // origen para popular flight_number / callsign / airline_icao en el
+    // momento del start. El OFP típicamente se descarga ANTES del
+    // pushback (el piloto lo descarga mientras hace el cold&dark setup),
+    // así que cuando llegamos acá el OFP ya está en DB.
+    //
+    // Ventana 48h — cubre vuelos planificados varias horas antes y
+    // descarta OFPs viejos del mismo aeropuerto que no son este vuelo.
+    let (flight_number, callsign, airline_icao) = match nearest.as_ref() {
+        Some(n) => match crate::simbrief::find_recent_for_origin(pool, &n.icao, 48).await {
+            Ok(Some(ofp)) => {
+                let fn_ = ofp.flight_number.clone();
+                let cs = ofp.callsign.clone();
+                let icao = derive_airline_icao(cs.as_deref());
+                tracing::info!(
+                    target: "flight_log",
+                    "start_flight: matched SimBrief OFP for {} → fn={:?} cs={:?} icao={:?}",
+                    n.icao, fn_, cs, icao,
+                );
+                (fn_, cs, icao)
+            }
+            Ok(None) => (None, None, None),
+            Err(e) => {
+                tracing::warn!(
+                    target: "flight_log",
+                    "start_flight: SimBrief lookup failed for {}: {} — continuing sin VA meta",
+                    n.icao, e,
+                );
+                (None, None, None)
+            }
+        },
+        None => (None, None, None),
+    };
+
     let result = sqlx::query(
         r#"
         INSERT INTO flight_log (
             started_at, origin_lat, origin_lon, origin_icao, origin_name,
-            aircraft_title, aircraft_atc_type, departure_gate, source
+            aircraft_title, aircraft_atc_type, departure_gate, source,
+            flight_number, callsign, airline_icao
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'simconnect')
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'simconnect', ?8, ?9, ?10)
         "#,
     )
     .bind(&started_at)
@@ -141,10 +199,49 @@ pub async fn start_flight(
     .bind(nearest.as_ref().map(|n| n.name.as_str()))
     .bind(aircraft_title)
     .bind(aircraft_atc)
+    .bind(flight_number.as_deref())
+    .bind(callsign.as_deref())
+    .bind(airline_icao.as_deref())
     .execute(pool)
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+/// (v3.6.0 Phase H) Deriva el código ICAO de aerolínea (3 letras)
+/// del callsign. Convenciones que reconocemos:
+///
+/// · `"DAL115"` → `"DAL"` — formato estándar (3 letras + número).
+/// · `"DLH4U"` → `"DLH"` — número alfanumérico no rompe el match.
+/// · `"N123AB"` → `None` — registration personal, no es callsign de
+///   aerolínea (no empieza con 3 letras del alfabeto seguidas de un
+///   dígito o letra que NO sea letra inicial de registration).
+///
+/// Heurística: 3 primeros chars deben ser letras A-Z, el 4to debe
+/// existir y ser dígito O letra (algunos códigos tienen sufijos). Si
+/// el callsign empieza con un dígito o tiene < 4 chars, devolvemos
+/// None — no parece un callsign comercial.
+pub fn derive_airline_icao(callsign: Option<&str>) -> Option<String> {
+    let cs = callsign?.trim();
+    if cs.len() < 4 {
+        return None;
+    }
+    let bytes = cs.as_bytes();
+    let first3_letters = bytes
+        .iter()
+        .take(3)
+        .all(|c| c.is_ascii_alphabetic());
+    let fourth_is_alnum = bytes
+        .get(3)
+        .is_some_and(|c| c.is_ascii_alphanumeric());
+    if !first3_letters || !fourth_is_alnum {
+        return None;
+    }
+    // Registraciones tipo N123AB / D-ABCD también empiezan con letras
+    // pero suelen tener un guion o pocos chars; el `find_recent_for_origin`
+    // viene de SimBrief y filename `callsign` siempre es de aerolínea,
+    // así que aceptamos.
+    Some(cs[..3].to_ascii_uppercase())
 }
 
 /// (v3.0.0 — deprecado) Formateo del gate fallback estilo
@@ -739,6 +836,9 @@ pub async fn list_track_for_flight(
 }
 
 pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntry>> {
+    // (v3.6.0 Phase H) Filtramos `status = 'completed'` por defecto.
+    // Los `partial` se conservan en DB para auditoria/recompute pero
+    // no aparecen en el FlightBook (decisión Q1=b del usuario).
     let rows = sqlx::query_as::<_, FlightLogEntry>(
         r#"
         SELECT id, started_at, ended_at,
@@ -751,8 +851,11 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
                departure_gate, arrival_gate,
                passengers, cargo_kg, fuel_used_kg, paused_seconds,
-               source
+               source,
+               flight_number, callsign, airline_icao, status,
+               score_total, score_max, score_grade
         FROM flight_log
+        WHERE status = 'completed'
         ORDER BY started_at DESC
         "#,
     )

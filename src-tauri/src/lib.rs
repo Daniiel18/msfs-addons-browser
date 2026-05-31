@@ -15,6 +15,7 @@ pub mod msfs_logbook;
 pub mod package_ops;
 pub mod parser;
 pub mod pmdg_liveries;
+pub mod scoring;
 pub mod simbrief;
 pub mod simconnect_ffi;
 pub mod simconnect_watcher;
@@ -192,6 +193,11 @@ pub fn run() {
             commands::drop::drop_inspect,
             commands::drop::drop_commit,
             commands::drop::drop_cancel,
+            // (v3.6.0 Phase H) Scoring + Airlines
+            commands::scoring::score_flight,
+            commands::scoring::score_get_report,
+            commands::scoring::list_airlines,
+            commands::scoring::airline_kpis,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri app");

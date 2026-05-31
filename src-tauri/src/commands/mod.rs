@@ -9,6 +9,7 @@ pub mod drop;
 pub mod flight_log;
 pub mod gsx;
 pub mod install;
+pub mod scoring;
 pub mod search;
 pub mod settings;
 pub mod simbrief;

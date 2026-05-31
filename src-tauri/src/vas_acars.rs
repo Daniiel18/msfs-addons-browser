@@ -1506,6 +1506,17 @@ async fn import_one(
         .ok_or_else(|| anyhow::anyhow!("no ended_at available"))?;
 
     // 6. Aircraft metadata.
+    // (v3.6.0 Phase H — Epic B):
+    //   · `aircraft_title`       = nombre largo del summary (sub-variant)
+    //                              o livery del track como fallback.
+    //   · `aircraft_atc_type`    = **ICAO type code** ("A339", "B738").
+    //                              Lo que la UI etiqueta como "Tipo". Antes
+    //                              quedaba NULL en imports VAS; Q5 del kickoff
+    //                              confirma mapear `aircraft_icao_type` → aquí.
+    //   · `aircraft_model`       = **nombre comercial** ("Airbus A330-900neo").
+    //                              Lo que la UI etiqueta como "Modelo". Q6:
+    //                              en lugar del antiguo ATC MODEL feo,
+    //                              tomamos `aircraft_short_name` del summary.
     let aircraft_title = summary
         .and_then(|s| s.aircraft_long_name.clone())
         .or_else(|| track.livery.clone());
@@ -1515,8 +1526,10 @@ async fn import_one(
         aircraft_cfg_path: track.aircraft_cfg_path.clone(),
         ..Default::default()
     };
+    let aircraft_atc_type = summary.and_then(|s| s.aircraft_icao_type.clone());
     let aircraft_model = summary
-        .and_then(|s| s.aircraft_icao_type.clone())
+        .and_then(|s| s.aircraft_short_name.clone())
+        .or_else(|| summary.and_then(|s| s.aircraft_long_name.clone()))
         .or_else(|| meta_for_extracts.aircraft_label());
     let aircraft_airline = summary
         .and_then(|s| s.airline_name.clone())
@@ -1525,6 +1538,102 @@ async fn import_one(
         .and_then(|s| s.registration.clone())
         .or_else(|| meta_for_extracts.registration())
         .or_else(|| aircraft_title.as_deref().and_then(extract_registration));
+
+    // (v3.6.0 Phase H — Epic A/D) Metadata Virtual Airline.
+    //   · `flight_number`  = "DL115"            (summary.f10 del FlightInfo)
+    //   · `callsign`       = "DAL115"           (summary.f2)
+    //   · `airline_icao`   = "DAL"              (summary.f9.f2 o derivado del callsign)
+    let flight_number = summary.and_then(|s| s.flight_number.clone());
+    let callsign = summary.and_then(|s| s.callsign.clone());
+    let airline_icao = summary
+        .and_then(|s| s.airline_icao.clone())
+        .or_else(|| crate::flight_log::derive_airline_icao(callsign.as_deref()));
+
+    // (v3.6.0 Phase H — Epic A) Status del vuelo. `completed` si el
+    // summary tiene OOOI completo (block-out/touchdown/block-in con
+    // diff ≥10 min). Si NO hay summary en data.db pero el track es
+    // suficiente (ya pasamos MIN_TRACK_SAMPLES + MIN_FLIGHT_DISTANCE),
+    // tratamos como completed — el track sólo es la evidencia más
+    // fuerte de un vuelo "que ocurrió". El usuario reportó vuelos sin
+    // summary que querían capturar (F2.3 anterior aflojó el gate).
+    //
+    // Si el summary EXISTE y NO está completo → 'partial'. Lo ocultamos
+    // en la UI (Q1=b) pero queda en DB para audit/diagnóstico.
+    let summary_present = summary.is_some();
+    let summary_completed = summary.map(|s| s.is_completed()).unwrap_or(false);
+    let initial_status: &str = if summary_completed {
+        "completed"
+    } else if !summary_present {
+        // Fallback heurístico: track-only, sin summary.
+        let dur = track.duration_seconds().unwrap_or(0);
+        let last_on_ground = track
+            .samples
+            .last()
+            .and_then(|s| s.on_ground)
+            .unwrap_or(false);
+        if dur >= 600 && last_on_ground {
+            "completed"
+        } else {
+            "partial"
+        }
+    } else {
+        "partial"
+    };
+
+    // (v3.6.0 Phase H — Epic A) Pre-check de dedup VA. Cuando hay
+    // un completed pre-existente con la misma triple (airline+fn+día)
+    // y el external_id es distinto (otro archivo, no re-import), el
+    // nuevo entra como 'partial' para no chocar con el UNIQUE index
+    // y para preservar la regla "Solo prevalece el completado".
+    let started_day = if started_at.len() >= 10 {
+        &started_at[..10]
+    } else {
+        ""
+    };
+    let final_status: &str = if initial_status == "completed"
+        && airline_icao.is_some()
+        && flight_number.is_some()
+        && !started_day.is_empty()
+    {
+        let conflict: Option<(i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT id, external_id FROM flight_log
+            WHERE airline_icao = ?1
+              AND flight_number = ?2
+              AND date(started_at) = ?3
+              AND status = 'completed'
+            LIMIT 1
+            "#,
+        )
+        .bind(airline_icao.as_deref().unwrap())
+        .bind(flight_number.as_deref().unwrap())
+        .bind(started_day)
+        .fetch_optional(pool)
+        .await?;
+        match conflict {
+            Some((existing_id, existing_ext)) => {
+                if existing_ext.as_deref() == Some(cand.uuid.as_str()) {
+                    // Mismo archivo, re-import. El UPDATE de abajo
+                    // mantiene status='completed' — no degradamos.
+                    initial_status
+                } else {
+                    tracing::info!(
+                        target: "vas_acars",
+                        "VA dedup: {} {} day={} already has completed id={} — marking {} as 'partial'",
+                        airline_icao.as_deref().unwrap(),
+                        flight_number.as_deref().unwrap(),
+                        started_day,
+                        existing_id,
+                        cand.uuid,
+                    );
+                    "partial"
+                }
+            }
+            None => initial_status,
+        }
+    } else {
+        initial_status
+    };
 
     // 7. Payload estimates por aircraft type — el .bin no embebe pax/cargo
     //    como campos extractables, así que aproximamos.
@@ -1582,6 +1691,11 @@ async fn import_one(
     .await?;
 
     let flight_id: i64 = if let Some(id) = exists {
+        // (v3.6.0 Phase H) UPDATE extendido con aircraft_atc_type,
+        // flight_number, callsign, airline_icao, status. Usamos
+        // COALESCE para no pisar edits manuales del usuario, EXCEPTO
+        // `status` que se actualiza always — porque un re-import puede
+        // promover partial → completed si el data.db ahora trae OOOI.
         sqlx::query(
             "UPDATE flight_log SET
                 origin_lat = ?2,
@@ -1594,6 +1708,7 @@ async fn import_one(
                 aircraft_model = COALESCE(?9, aircraft_model),
                 aircraft_airline = COALESCE(?10, aircraft_airline),
                 aircraft_registration = COALESCE(?11, aircraft_registration),
+                aircraft_atc_type = COALESCE(?23, aircraft_atc_type),
                 departure_gate = COALESCE(?12, departure_gate),
                 arrival_gate = COALESCE(?13, arrival_gate),
                 passengers = COALESCE(passengers, ?14),
@@ -1604,7 +1719,11 @@ async fn import_one(
                 max_true_airspeed_kt = COALESCE(?19, max_true_airspeed_kt),
                 max_altitude_ft = COALESCE(?22, max_altitude_ft),
                 flight_time_s = COALESCE(flight_time_s, ?20),
-                distance_nm = COALESCE(distance_nm, ?21)
+                distance_nm = COALESCE(distance_nm, ?21),
+                flight_number = COALESCE(?24, flight_number),
+                callsign = COALESCE(?25, callsign),
+                airline_icao = COALESCE(?26, airline_icao),
+                status = ?27
              WHERE id = ?1",
         )
         .bind(id)
@@ -1629,6 +1748,11 @@ async fn import_one(
         .bind(flight_time_s)
         .bind(distance_nm)
         .bind(max_altitude_ft)
+        .bind(&aircraft_atc_type)
+        .bind(&flight_number)
+        .bind(&callsign)
+        .bind(&airline_icao)
+        .bind(final_status)
         .execute(pool)
         .await?;
 
@@ -1639,24 +1763,30 @@ async fn import_one(
             .await?;
         id
     } else {
+        // (v3.6.0 Phase H) INSERT extendido con aircraft_atc_type +
+        // metadata VA + status.
         let row = sqlx::query(
             "INSERT INTO flight_log (
                 started_at, ended_at,
                 origin_lat, origin_lon, origin_icao,
                 destination_lat, destination_lon, destination_icao,
                 aircraft_title, aircraft_model, aircraft_airline, aircraft_registration,
+                aircraft_atc_type,
                 departure_gate, arrival_gate,
                 passengers, cargo_kg, fuel_used_kg,
                 landing_fpm, max_ground_speed_kt, max_true_airspeed_kt, max_altitude_ft,
                 flight_time_s, distance_nm,
-                source, external_id
+                source, external_id,
+                flight_number, callsign, airline_icao, status
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                       ?9, ?10, ?11, ?12,
-                      ?13, ?14,
-                      ?15, ?16, ?17,
-                      ?18, ?19, ?20, ?21,
-                      ?22, ?23,
-                      ?24, ?25)",
+                      ?13,
+                      ?14, ?15,
+                      ?16, ?17, ?18,
+                      ?19, ?20, ?21, ?22,
+                      ?23, ?24,
+                      ?25, ?26,
+                      ?27, ?28, ?29, ?30)",
         )
         .bind(&started_at)
         .bind(&ended_at)
@@ -1670,6 +1800,7 @@ async fn import_one(
         .bind(&aircraft_model)
         .bind(&aircraft_airline)
         .bind(&aircraft_registration)
+        .bind(&aircraft_atc_type)
         .bind(&departure_gate)
         .bind(&arrival_gate)
         .bind(est_pax)
@@ -1683,6 +1814,10 @@ async fn import_one(
         .bind(distance_nm)
         .bind(SOURCE_LABEL)
         .bind(&cand.uuid)
+        .bind(&flight_number)
+        .bind(&callsign)
+        .bind(&airline_icao)
+        .bind(final_status)
         .execute(pool)
         .await?;
         row.last_insert_rowid()
@@ -1691,10 +1826,144 @@ async fn import_one(
     // 12. Persiste el track downsampleado (1 de cada N samples → ~10s).
     insert_track_points(pool, flight_id, &track).await?;
 
+    // 13. (v3.6.0 Phase H — H12) Deriva phases del track y persiste a
+    //     `flight_log_phase`. Esto permite que el scoring engine corra
+    //     sobre imports VAS, no sólo sobre vuelos volados en vivo con
+    //     SimConnect (Q13=a del kickoff).
+    derive_and_persist_phases(pool, flight_id, &track).await?;
+
     if exists.is_some() {
         Ok(ImportOutcome::Updated)
     } else {
         Ok(ImportOutcome::Inserted)
+    }
+}
+
+/// (v3.6.0 Phase H) Recorre el track muestra-a-muestra aplicando una
+/// heurística simplificada de `derive_phase_label` y persiste las
+/// transiciones a `flight_log_phase`.
+///
+/// La heurística usa: `on_ground` (campo f21 del .bin), `gs_kt` (f53)
+/// y `alt_ft` derivado de f16. No tenemos parking_brake ni
+/// engine_running en el .bin — el match se hace por dinámica.
+async fn derive_and_persist_phases(
+    pool: &SqlitePool,
+    flight_id: i64,
+    track: &VasFlightTrack,
+) -> anyhow::Result<()> {
+    if track.samples.is_empty() {
+        return Ok(());
+    }
+
+    // Borrar phases previas para idempotencia en re-imports.
+    sqlx::query("DELETE FROM flight_log_phase WHERE flight_id = ?1")
+        .bind(flight_id)
+        .execute(pool)
+        .await?;
+
+    // Calcular max_alt para distinguir cruise vs climb/descent.
+    let max_alt_ft = track
+        .samples
+        .iter()
+        .filter_map(|s| s.altitude_ft())
+        .max()
+        .unwrap_or(0);
+
+    let mut transitions: Vec<(String, String)> = Vec::new(); // (phase, ts_iso)
+    let mut last_phase: Option<String> = None;
+    let mut passed_taxi_threshold = false;
+
+    for s in &track.samples {
+        let on_ground = s.on_ground.unwrap_or(false);
+        let gs_kt = s.ground_speed_kt.unwrap_or(0.0) as f64;
+        let alt_ft = s.altitude_ft().unwrap_or(0);
+        if gs_kt > 10.0 {
+            passed_taxi_threshold = true;
+        }
+        let phase = classify_phase(on_ground, gs_kt, alt_ft, max_alt_ft, passed_taxi_threshold);
+        let phase_str = phase.to_string();
+        if last_phase.as_ref() != Some(&phase_str) {
+            if let Some(ts_iso) = epoch_to_iso(s.ts_epoch) {
+                transitions.push((phase_str.clone(), ts_iso));
+                last_phase = Some(phase_str);
+            }
+        }
+    }
+
+    // Persistir cada transition con su exited_at = entered_at de la siguiente.
+    let mut tx = pool.begin().await?;
+    for i in 0..transitions.len() {
+        let (phase, entered_at) = &transitions[i];
+        let exited_at: Option<&str> = transitions.get(i + 1).map(|(_, ts)| ts.as_str());
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO flight_log_phase
+                (flight_id, phase, entered_at, exited_at)
+               VALUES (?1, ?2, ?3, ?4)"#,
+        )
+        .bind(flight_id)
+        .bind(phase)
+        .bind(entered_at)
+        .bind(exited_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Mapea (on_ground, gs, alt, max_alt, passed_taxi_threshold) a una
+/// phase. Simplificación de `derive_phase_label` del watcher — sin
+/// parking_brake / engine_running (no están en el .bin).
+fn classify_phase(
+    on_ground: bool,
+    gs_kt: f64,
+    alt_ft: i64,
+    max_alt_ft: i64,
+    passed_taxi_threshold: bool,
+) -> &'static str {
+    if on_ground {
+        if gs_kt < 1.0 {
+            return "preflight"; // o "arrived" — el primer/último ramo lo decidirá el orden
+        }
+        if gs_kt < 8.0 {
+            return "pushback";
+        }
+        if !passed_taxi_threshold {
+            return "pushback";
+        }
+        if gs_kt < 60.0 {
+            return "taxi_out"; // se renombrará a taxi_in en el segmento post-touchdown
+        }
+        return "takeoff";
+    }
+    // Airborne
+    if alt_ft < 500 {
+        return "takeoff";
+    }
+    // Definimos cruise como la ventana cerca del max_alt (±1500 ft).
+    if max_alt_ft > 0 && (max_alt_ft - alt_ft).abs() <= 1500 {
+        return "cruise";
+    }
+    // Si la altitud todavía está aumentando con respecto al inicio,
+    // climb. Si está bajando, descent/approach.
+    if alt_ft < max_alt_ft {
+        if alt_ft < 3000 {
+            "approach"
+        } else if alt_ft < 10000 {
+            "descent"
+        } else {
+            // Sin VS firmado en estas muestras, la heurística decide
+            // por posición relativa al max. Lo tratamos como climb si
+            // el sample es de la primera mitad temporal, descent si de
+            // la segunda — pero acá no tenemos el índice del sample.
+            // Simplemente: si alt está más cerca del 0 que del max,
+            // probablemente climb (subiendo desde abajo); si está más
+            // cerca del max, descent. Ambivalente — preferir climb.
+            "climb"
+        }
+    } else {
+        // alt_ft >= max_alt_ft, casi crucero
+        "cruise"
     }
 }
 

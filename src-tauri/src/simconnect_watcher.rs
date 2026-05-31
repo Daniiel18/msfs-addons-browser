@@ -2350,6 +2350,33 @@ mod windows_simconnect {
                                     // sólo escribe los nuevos.
                                     populate_simbrief_async(&pool_c, id, lat_c, lon_c).await;
                                     let _ = app_c.emit("flightlog://changed", ());
+
+                                    // (v3.6.0 Phase H — H13) Cierra el
+                                    // último flight_log_phase pendiente
+                                    // (exited_at = NULL), luego corre
+                                    // scoring + auto-upload al cloud
+                                    // (Q15 del kickoff). NO bloquea —
+                                    // si el cloud falla, el vuelo queda
+                                    // local OK y los eventos emiten el
+                                    // detalle al frontend.
+                                    let _ = sqlx::query(
+                                        r#"
+                                        UPDATE flight_log_phase
+                                        SET exited_at = ?1
+                                        WHERE flight_id = ?2 AND exited_at IS NULL
+                                        "#,
+                                    )
+                                    .bind(chrono::Utc::now()
+                                        .format("%Y-%m-%dT%H:%M:%SZ")
+                                        .to_string())
+                                    .bind(id)
+                                    .execute(&pool_c)
+                                    .await;
+
+                                    crate::scoring::finalize_after_finish(
+                                        &pool_c, &app_c, id,
+                                    )
+                                    .await;
                                 }
                                 Err(e) => {
                                     tracing::error!(
@@ -2416,6 +2443,76 @@ mod windows_simconnect {
                         tracing::warn!(
                             target: "simconnect",
                             "insert_track_point falló: {e:#}"
+                        );
+                    }
+                });
+            }
+        }
+
+        // (v3.6.0 Phase H — H11) Persist phase transitions a
+        // `flight_log_phase` para que el scoring engine tenga ventanas
+        // temporales por phase. La query es idempotente: cierra el
+        // phase anterior abierto si difiere del nuevo, y crea el nuevo
+        // sólo si no existe ya un row abierto con el mismo phase.
+        //
+        // Se ejecuta junto al persist del track (cada ~10s) — esa
+        // resolución cubre el caso "phase cambia y dura segundos"
+        // (pushback → taxi → takeoff suelen tomar varios segundos cada
+        // uno, así que el muestreo es suficiente).
+        if *ticks_since_persist == 0 {
+            let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+            if let (Some(id), Some(label)) = (
+                id_opt,
+                state.try_lock().ok().and_then(|g| g.status.phase_label.clone()),
+            ) {
+                let pool_c = pool.clone();
+                let label_c = label.clone();
+                tokio::spawn(async move {
+                    let now = chrono::Utc::now()
+                        .format("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string();
+                    if let Err(e) = sqlx::query(
+                        r#"
+                        UPDATE flight_log_phase
+                        SET exited_at = ?1
+                        WHERE flight_id = ?2
+                          AND exited_at IS NULL
+                          AND phase != ?3
+                        "#,
+                    )
+                    .bind(&now)
+                    .bind(id)
+                    .bind(&label_c)
+                    .execute(&pool_c)
+                    .await
+                    {
+                        tracing::warn!(
+                            target: "simconnect",
+                            "flight_log_phase close failed: {e:#}"
+                        );
+                    }
+                    if let Err(e) = sqlx::query(
+                        r#"
+                        INSERT INTO flight_log_phase
+                            (flight_id, phase, entered_at)
+                        SELECT ?2, ?3, ?1
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM flight_log_phase
+                            WHERE flight_id = ?2
+                              AND phase = ?3
+                              AND exited_at IS NULL
+                        )
+                        "#,
+                    )
+                    .bind(&now)
+                    .bind(id)
+                    .bind(&label_c)
+                    .execute(&pool_c)
+                    .await
+                    {
+                        tracing::warn!(
+                            target: "simconnect",
+                            "flight_log_phase insert failed: {e:#}"
                         );
                     }
                 });

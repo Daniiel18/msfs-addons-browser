@@ -63,6 +63,8 @@ export function FlightBookView() {
   // (v3.5.0) Filtro de búsqueda del sidebar — matchea ICAO origen,
   // destino, aerolínea, registration, ATC type. Vacío = todos.
   const [sidebarQuery, setSidebarQuery] = useState("");
+  // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
+  const [checklistOpen, setChecklistOpen] = useState(false);
   const selectedFlight = useMemo(
     () =>
       selectedFlightId != null
@@ -85,6 +87,13 @@ export function FlightBookView() {
     }
   }, [entries, selectedFlightId]);
 
+  // (v3.6.0 Phase H) Cierra el ChecklistWidget al volver al globo.
+  useEffect(() => {
+    if (selectedFlightId == null && checklistOpen) {
+      setChecklistOpen(false);
+    }
+  }, [selectedFlightId, checklistOpen]);
+
   // (v3.5.0 F3) `inFlight` solo cuenta cuando el watcher de SimConnect
   // está REALMENTE conectado y reportando posición. Sin esto, un vuelo
   // descargado del cloud con `endedAt = null` (estaba en curso en otra
@@ -97,15 +106,31 @@ export function FlightBookView() {
       : undefined;
   const completed = entries.filter((e) => e.endedAt !== null);
 
+  // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
+  // Lo declaramos arriba para que statsPool + filteredCompleted lo
+  // puedan referenciar sin order-of-declaration issues.
+  const selectedAirline = useFlightLogStore((s) => s.selectedAirline);
+
+  // (v3.6.0 Phase H — Epic D) Pool de vuelos para stats — si hay
+  // airline activa, usamos sólo esos; sino, todos los completados.
+  // Esto hace que el StatsWidget muestre KPIs específicos al filtro.
+  const statsPool = useMemo(() => {
+    if (!selectedAirline) return completed;
+    return completed.filter((e) =>
+      selectedAirline.icao
+        ? e.airlineIcao === selectedAirline.icao
+        : e.airlineIcao === null && e.aircraftAirline === selectedAirline.name,
+    );
+  }, [completed, selectedAirline]);
   const stats = useMemo(() => {
-    if (completed.length === 0) {
+    if (statsPool.length === 0) {
       return null;
     }
-    const totalSec = completed.reduce(
+    const totalSec = statsPool.reduce(
       (acc, e) => acc + (e.flightTimeS ?? 0),
       0,
     );
-    const totalDistance = completed.reduce(
+    const totalDistance = statsPool.reduce(
       (acc, e) => acc + (e.distanceNm ?? 0),
       0,
     );
@@ -114,13 +139,13 @@ export function FlightBookView() {
     // Filtramos valores null antes de sumar — un vuelo viejo sin estos
     // campos no tira el total a NaN ni contamina la cuenta "X vuelos
     // con datos". Si NINGÚN vuelo reporta, mostramos "—" en el card.
-    const passengersValid = completed
+    const passengersValid = statsPool
       .map((e) => e.passengers)
       .filter((v): v is number => v !== null);
-    const cargoValid = completed
+    const cargoValid = statsPool
       .map((e) => e.cargoKg)
       .filter((v): v is number => v !== null);
-    const fuelValid = completed
+    const fuelValid = statsPool
       .map((e) => e.fuelUsedKg)
       .filter((v): v is number => v !== null);
     const totalPassengers = passengersValid.reduce((a, b) => a + b, 0);
@@ -132,7 +157,7 @@ export function FlightBookView() {
     // no traen este dato → quedan filtrados naturalmente al filtrar
     // landingFpm !== null. El usuario pidió que se muestre como avg
     // en el resumen.
-    const fpmValid = completed
+    const fpmValid = statsPool
       .map((e) => e.landingFpm)
       .filter((v): v is number => v !== null && v < 0);
     const avgLandingFpm =
@@ -141,7 +166,7 @@ export function FlightBookView() {
         : null;
 
     return {
-      count: completed.length,
+      count: statsPool.length,
       totalSec,
       totalDistance,
       totalPassengers,
@@ -153,14 +178,27 @@ export function FlightBookView() {
       avgLandingFpm,
       fpmFlightCount: fpmValid.length,
     };
-  }, [completed]);
+  }, [statsPool]);
 
-  // (v3.5.0) Sidebar list filtering — match against ICAO orig/dest,
-  // airline, registration, aircraft type. Case-insensitive substring.
+  // (v3.6.0 Phase H — Epic C/D) Sidebar list filtering — match against
+  // ICAO orig/dest, airline, registration, aircraft type, **flight_number**,
+  // **callsign**, **airline_icao**. Case-insensitive substring.
+  // ADEMÁS aplica el filtro de aerolínea seleccionada del store (chip
+  // arriba del mapa). Si selectedAirline está activo, sólo entran vuelos
+  // que matchean el icao o el name fallback. `selectedAirline` viene
+  // del declaration de arriba (compartido con statsPool).
   const filteredCompleted = useMemo(() => {
-    if (!sidebarQuery.trim()) return completed;
+    let arr = completed;
+    if (selectedAirline) {
+      arr = arr.filter((e) =>
+        selectedAirline.icao
+          ? e.airlineIcao === selectedAirline.icao
+          : e.airlineIcao === null && e.aircraftAirline === selectedAirline.name,
+      );
+    }
+    if (!sidebarQuery.trim()) return arr;
     const q = sidebarQuery.trim().toLowerCase();
-    return completed.filter((e) => {
+    return arr.filter((e) => {
       const haystack = [
         e.originIcao,
         e.destinationIcao,
@@ -168,13 +206,16 @@ export function FlightBookView() {
         e.aircraftAirline,
         e.aircraftRegistration,
         e.aircraftTitle,
+        e.flightNumber,
+        e.callsign,
+        e.airlineIcao,
       ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [completed, sidebarQuery]);
+  }, [completed, sidebarQuery, selectedAirline]);
 
   // (v3.5.0) Pieza central del overlay flotante — escoge contenido
   // según el estado: vuelo seleccionado > vuelo activo > preflight >
@@ -298,7 +339,11 @@ export function FlightBookView() {
                 del mapa, en la parte superior del panel.
               · Map canvas con la glass card de detalle como overlay. */}
         <div className="flex min-h-0 flex-col gap-2">
-          <DetailActionsBar />
+          <DetailActionsBar
+            selectedFlightId={selectedFlightId}
+            onToggleChecklist={() => setChecklistOpen((v) => !v)}
+            checklistOpen={checklistOpen && selectedFlightId != null}
+          />
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
             <div className="absolute inset-0">
               <RoutesMapView
@@ -306,6 +351,25 @@ export function FlightBookView() {
                 selectedFlightId={selectedFlightId}
               />
             </div>
+
+            {/* (v3.6.0 Phase H — Epic D) AirlineTagFilter — chips
+                horizontales en la parte superior del mapa. Sólo se
+                renderiza cuando hay vuelos completados y el usuario no
+                tiene un vuelo seleccionado (los detalles deben tener
+                prioridad visual). */}
+            {!selectedFlight && (
+              <AirlineTagFilter />
+            )}
+
+            {/* (v3.6.0 Phase H — Epic E) ChecklistWidget — glass
+                overlay con score breakdown del vuelo seleccionado.
+                Se abre con el botón Checklist en DetailActionsBar. */}
+            {checklistOpen && selectedFlightId != null && (
+              <ChecklistWidget
+                flightId={selectedFlightId}
+                onClose={() => setChecklistOpen(false)}
+              />
+            )}
 
             {/* GLASS OVERLAY — card de detalle flotando sobre el mapa.
                 · "selected": altura completa + scroll interno (el
@@ -1535,28 +1599,58 @@ function colorFromString(s: string): string {
  *  (V-speeds, runway analysis), Weather (METAR / TAF), NOTAMs.
  *  Hoy renderizan opacas + cursor not-allowed; cada una muestra un dot
  *  de color para identificar visualmente la categoría. Cuando se
- *  implementen, se quitará el `disabled` y se conectará el handler. */
-function DetailActionsBar() {
+ *  implementen, se quitará el `disabled` y se conectará el handler.
+ *
+ *  (v3.6.0 Phase H — Epic E) **Checklist** YA ESTÁ habilitada cuando
+ *  hay un vuelo seleccionado. El click abre el ChecklistWidget como
+ *  glass overlay sobre el mapa.
+ */
+function DetailActionsBar({
+  selectedFlightId,
+  onToggleChecklist,
+  checklistOpen,
+}: {
+  selectedFlightId: number | null;
+  onToggleChecklist: () => void;
+  checklistOpen: boolean;
+}) {
+  const checklistDisabled = selectedFlightId == null;
   const tabs = [
     {
+      key: "checklist" as const,
       icon: <ClipboardCheck className="h-3.5 w-3.5" />,
       label: t("fb.tabs.checklist"),
       dot: "bg-emerald-400",
+      enabled: !checklistDisabled,
+      onClick: onToggleChecklist,
+      active: checklistOpen,
     },
     {
+      key: "performance" as const,
       icon: <Gauge className="h-3.5 w-3.5" />,
       label: t("fb.tabs.performance"),
       dot: "bg-sky-400",
+      enabled: false,
+      onClick: () => {},
+      active: false,
     },
     {
+      key: "weather" as const,
       icon: <Cloud className="h-3.5 w-3.5" />,
       label: t("fb.tabs.weather"),
       dot: "bg-amber-400",
+      enabled: false,
+      onClick: () => {},
+      active: false,
     },
     {
+      key: "notams" as const,
       icon: <AlertTriangle className="h-3.5 w-3.5" />,
       label: t("fb.tabs.notams"),
       dot: "bg-rose-400",
+      enabled: false,
+      onClick: () => {},
+      active: false,
     },
   ];
   return (
@@ -1564,9 +1658,24 @@ function DetailActionsBar() {
       {tabs.map((tab) => (
         <button
           key={tab.label}
-          disabled
-          title={t("fb.tabs.coming_soon", { feature: tab.label })}
-          className="relative flex flex-col items-center gap-1 rounded-xl border border-slate-700/60 bg-slate-950/65 px-2 py-2 text-[10px] font-medium text-slate-300 opacity-60 ring-1 ring-slate-800/60 backdrop-blur-xl transition-opacity disabled:cursor-not-allowed"
+          disabled={!tab.enabled}
+          onClick={tab.onClick}
+          title={
+            tab.enabled
+              ? tab.active
+                ? t("fb.checklist.close.tooltip")
+                : t("fb.checklist.open.tooltip")
+              : checklistDisabled && tab.key === "checklist"
+                ? t("fb.checklist.disabled.tooltip")
+                : t("fb.tabs.coming_soon", { feature: tab.label })
+          }
+          className={`relative flex flex-col items-center gap-1 rounded-xl border px-2 py-2 text-[10px] font-medium ring-1 backdrop-blur-xl transition-all ${
+            tab.active
+              ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-100 ring-emerald-500/30"
+              : tab.enabled
+                ? "border-slate-700/60 bg-slate-950/65 text-slate-200 ring-slate-800/60 hover:border-slate-600 hover:bg-slate-900/75"
+                : "border-slate-700/60 bg-slate-950/65 text-slate-300 opacity-60 ring-slate-800/60 disabled:cursor-not-allowed"
+          }`}
         >
           <span
             className={`absolute right-1.5 top-1.5 inline-block h-1.5 w-1.5 rounded-full ${tab.dot}`}
@@ -1637,6 +1746,31 @@ function CompactFlightRow({
           {duration}
         </span>
       </div>
+      {/* (v3.6.0 Phase H — Epic C) Línea adicional con flight_number
+          prominente cuando está presente. La UI manda dos columnas:
+          flight number a la izquierda (mono, semibold), score grade
+          a la derecha si está disponible (badge de color por grade). */}
+      {(entry.flightNumber || entry.scoreGrade) && (
+        <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px]">
+          <span className="truncate font-mono font-semibold text-sky-300">
+            {entry.flightNumber ?? ""}
+          </span>
+          {entry.scoreGrade && (
+            <span
+              title={
+                entry.scoreTotal !== null && entry.scoreMax !== null
+                  ? `${entry.scoreTotal}/${entry.scoreMax}`
+                  : undefined
+              }
+              className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${gradeBadgeClass(
+                entry.scoreGrade,
+              )}`}
+            >
+              {entry.scoreGrade}
+            </span>
+          )}
+        </div>
+      )}
       <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-slate-500">
         <span className="truncate">
           {aircraft && <span className="text-slate-400">{aircraft}</span>}
@@ -1672,6 +1806,23 @@ function shortGate(gate: string): string {
   return `${lat},${lon}`;
 }
 
+/** (v3.6.0 Phase H — Epic E) Clase Tailwind del badge de grade en
+ *  la sidebar. Grade A verde, B sky, C amber, D orange, F rose. */
+function gradeBadgeClass(grade: string): string {
+  switch (grade) {
+    case "A":
+      return "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/40";
+    case "B":
+      return "bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/40";
+    case "C":
+      return "bg-amber-500/20 text-amber-200 ring-1 ring-amber-500/40";
+    case "D":
+      return "bg-orange-500/20 text-orange-200 ring-1 ring-orange-500/40";
+    default:
+      return "bg-rose-500/20 text-rose-200 ring-1 ring-rose-500/40";
+  }
+}
+
 function formatHM(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
   const h = Math.floor(seconds / 3600);
@@ -1697,4 +1848,279 @@ function formatDate(iso: string): string {
   } catch {
     return iso.slice(0, 10);
   }
+}
+
+/** (v3.6.0 Phase H — Epic D) Tira horizontal de chips de aerolíneas
+ *  flotando sobre el mapa. Cada chip representa una airline con vuelos
+ *  en el historial. Click toggle = activa/desactiva el filtro. Cuando
+ *  hay un chip activo, el sidebar + el mapa + las KPIs se recalculan
+ *  para esa aerolínea.
+ *
+ *  Layout: row scrollable horizontal, max-width contenido para no
+ *  invadir el centro del mapa. Posición absolute con el suficiente
+ *  z-index para no interferir con los controles del MapLibre.
+ */
+function AirlineTagFilter() {
+  const airlines = useFlightLogStore((s) => s.airlines);
+  const selected = useFlightLogStore((s) => s.selectedAirline);
+  const setSelected = useFlightLogStore((s) => s.setSelectedAirline);
+  if (airlines.length === 0) return null;
+  return (
+    <div className="pointer-events-none absolute left-3 right-3 top-3 z-20 flex justify-center">
+      <div
+        className="pointer-events-auto flex max-w-full items-center gap-1.5 overflow-x-auto rounded-full border border-slate-700/70 bg-slate-950/75 px-2 py-1.5 ring-1 ring-slate-800/70 backdrop-blur-xl"
+        style={{ scrollbarWidth: "none" }}
+      >
+        <button
+          onClick={() => setSelected(null)}
+          className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+            selected == null
+              ? "bg-emerald-500/25 text-emerald-100 ring-1 ring-emerald-500/40"
+              : "text-slate-300 hover:bg-slate-800/70"
+          }`}
+        >
+          {t("fb.airline.all")}
+        </button>
+        {airlines.map((a) => {
+          const key = a.icao ?? a.name;
+          const isActive = selected
+            ? a.icao
+              ? selected.icao === a.icao
+              : selected.icao === null && selected.name === a.name
+            : false;
+          return (
+            <button
+              key={key}
+              onClick={() =>
+                setSelected(
+                  isActive ? null : { icao: a.icao, name: a.name },
+                )
+              }
+              title={a.name}
+              className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+                isActive
+                  ? "bg-amber-500/25 text-amber-100 ring-1 ring-amber-500/40"
+                  : "text-slate-300 hover:bg-slate-800/70"
+              }`}
+            >
+              <span className="font-mono">{a.icao ?? a.name.slice(0, 3).toUpperCase()}</span>
+              <span className="ml-1 text-slate-500">·</span>
+              <span className="ml-1 tabular-nums">{a.flightCount}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** (v3.6.0 Phase H — Epic E) Widget de Checklist (score breakdown).
+ *  Se abre como glass overlay sobre el mapa cuando el usuario clickea
+ *  el botón Checklist en la DetailActionsBar.
+ *
+ *  Two modes:
+ *    · `expanded = false` → compact, 360x520, esquina superior derecha.
+ *    · `expanded = true`  → fullsize, casi todo el mapa, scrollable.
+ *
+ *  Carga el report via `api.scoreGetReport(flightId)` que devuelve el
+ *  persistido si existe, o lo computa al vuelo. Cada phase se muestra
+ *  con su total "X/Y", expandible al clickearla para ver las reglas
+ *  individuales (passed/failed) + evidencia.
+ */
+function ChecklistWidget({
+  flightId,
+  onClose,
+}: {
+  flightId: number;
+  onClose: () => void;
+}) {
+  const [report, setReport] = useState<import("../lib/types").ScoreReport | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [openPhases, setOpenPhases] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    import("../lib/tauri")
+      .then(({ api }) => api.scoreGetReport(flightId))
+      .then((rep) => {
+        if (!cancelled) {
+          setReport(rep);
+          setLoading(false);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setError(String(e));
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [flightId]);
+
+  // Agrupa items por phase preservando el orden de `RULES` (que el
+  // backend nos devuelve en `items`).
+  const byPhase = useMemo(() => {
+    if (!report) return [];
+    const groups: { phase: string; items: typeof report.items; earned: number; max: number }[] = [];
+    for (const item of report.items) {
+      let g = groups.find((x) => x.phase === item.phase);
+      if (!g) {
+        g = { phase: item.phase, items: [], earned: 0, max: 0 };
+        groups.push(g);
+      }
+      g.items.push(item);
+      g.earned += item.pointsEarned;
+      g.max += item.pointsMax;
+    }
+    return groups;
+  }, [report]);
+
+  return (
+    <div
+      className={`pointer-events-auto absolute z-30 rounded-2xl border border-slate-700/80 bg-slate-950/85 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur-xl transition-all ${
+        expanded
+          ? "inset-3 flex flex-col"
+          : "right-3 top-16 flex max-h-[calc(100%-5rem)] w-[360px] flex-col"
+      }`}
+    >
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <ClipboardCheck className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+          <span className="truncate text-xs font-semibold text-slate-100">
+            {t("fb.checklist.title")}
+          </span>
+          {report && (
+            <span
+              className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${gradeBadgeClass(
+                report.grade,
+              )}`}
+            >
+              {report.grade} · {report.total}/{report.max}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? t("fb.checklist.shrink") : t("fb.checklist.expand")}
+            className="rounded p-1 text-slate-400 hover:bg-slate-800/70 hover:text-slate-200"
+          >
+            {expanded ? "⤢" : "⤡"}
+          </button>
+          <button
+            onClick={onClose}
+            title={t("common.close")}
+            className="rounded p-1 text-slate-400 hover:bg-slate-800/70 hover:text-slate-200"
+          >
+            ×
+          </button>
+        </div>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {loading && (
+          <div className="px-2 py-6 text-center text-xs text-slate-500">
+            {t("fb.checklist.loading")}
+          </div>
+        )}
+        {error && (
+          <div className="rounded bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/30">
+            {error}
+          </div>
+        )}
+        {!loading && !error && byPhase.length === 0 && (
+          <div className="px-2 py-6 text-center text-xs text-slate-500">
+            {t("fb.checklist.empty")}
+          </div>
+        )}
+        {byPhase.map((group) => {
+          const isOpen = openPhases.has(group.phase);
+          const pct = group.max > 0 ? (group.earned / group.max) * 100 : 0;
+          const phaseColor =
+            pct >= 95
+              ? "text-emerald-300"
+              : pct >= 70
+                ? "text-amber-300"
+                : "text-rose-300";
+          return (
+            <div
+              key={group.phase}
+              className="mb-1 rounded-lg border border-slate-800/70 bg-slate-900/40"
+            >
+              <button
+                onClick={() =>
+                  setOpenPhases((s) => {
+                    const next = new Set(s);
+                    if (next.has(group.phase)) next.delete(group.phase);
+                    else next.add(group.phase);
+                    return next;
+                  })
+                }
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[11px] font-medium text-slate-200 hover:bg-slate-800/40"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-500">
+                    {isOpen ? "▾" : "▸"}
+                  </span>
+                  <span className="capitalize">
+                    {phaseLabelText(group.phase)}
+                  </span>
+                </span>
+                <span className={`font-mono tabular-nums ${phaseColor}`}>
+                  {group.earned}/{group.max}
+                </span>
+              </button>
+              {isOpen && (
+                <ul className="space-y-1 border-t border-slate-800/70 px-3 py-2">
+                  {group.items.map((it) => (
+                    <li
+                      key={it.ruleId}
+                      className="flex items-baseline justify-between gap-2 text-[10px]"
+                    >
+                      <span className="min-w-0 truncate text-slate-300">
+                        <span
+                          className={`mr-1.5 ${
+                            it.passed
+                              ? "text-emerald-400"
+                              : it.severity === "warn"
+                                ? "text-amber-400"
+                                : "text-rose-400"
+                          }`}
+                        >
+                          {it.passed ? "✓" : it.severity === "warn" ? "⚠" : "✗"}
+                        </span>
+                        {it.label}
+                      </span>
+                      <span className="shrink-0 font-mono tabular-nums text-slate-400">
+                        {it.pointsEarned}/{it.pointsMax}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Mapea el phase id estable a un label traducido (sin diccionario por
+ *  cada uno — usamos un fallback i18n con clave dinámica). */
+function phaseLabelText(phase: string): string {
+  const key = `fb.checklist.phase.${phase}`;
+  const translated = t(key);
+  if (translated === key) {
+    // No traducción → fallback humano del ID.
+    return phase.replace(/_/g, " ");
+  }
+  return translated;
 }

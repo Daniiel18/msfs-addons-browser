@@ -269,6 +269,68 @@ export interface FlightLogEntry {
    *  están restados del `flightTimeS` (block time real). */
   pausedSeconds: number;
   source: string;
+  /** (v3.6.0 Phase H) Número de vuelo VA ("DL115"). Para VAS-ACARS
+   *  viene del summary; para SimConnect del cross-match con el OFP
+   *  de SimBrief al iniciar el vuelo. */
+  flightNumber: string | null;
+  /** (v3.6.0) Callsign ATC ("DAL115"). Misma fuente que flightNumber. */
+  callsign: string | null;
+  /** (v3.6.0) ICAO de aerolínea (3 letras: "DAL", "IBE"). Canónico
+   *  para agrupar por aerolínea — más robusto que `aircraftAirline`. */
+  airlineIcao: string | null;
+  /** (v3.6.0) `completed` | `partial`. La UI sólo muestra `completed`. */
+  status: string;
+  /** (v3.6.0 Epic E) Score total alcanzado (suma de items). */
+  scoreTotal: number | null;
+  /** (v3.6.0) Score máximo posible (suma de points_max). */
+  scoreMax: number | null;
+  /** (v3.6.0) Grade derivada del %: 'A'|'B'|'C'|'D'|'F'. */
+  scoreGrade: string | null;
+}
+
+/** (v3.6.0 Phase H — Epic E) Reporte de scoring para un vuelo. */
+export interface ScoreReport {
+  flightId: number;
+  total: number;
+  max: number;
+  percentage: number;
+  grade: string;
+  items: ScoreItem[];
+}
+
+export interface ScoreItem {
+  phase: string;
+  ruleId: string;
+  label: string;
+  pointsEarned: number;
+  pointsMax: number;
+  passed: boolean;
+  severity: string;
+  evidence: unknown;
+}
+
+/** (v3.6.0 Phase H — Epic D) Tag de aerolínea para los chips
+ *  horizontales sobre el mapa. */
+export interface AirlineTag {
+  /** ICAO 3-letter — preferido. `null` para fallback por aircraft_airline. */
+  icao: string | null;
+  /** Nombre legible mostrado en el chip. */
+  name: string;
+  /** Cantidad de vuelos completados — para badge "N flights". */
+  flightCount: number;
+}
+
+/** (v3.6.0 Phase H — Epic D) KPIs agregados de una aerolínea. */
+export interface AirlineKpis {
+  airlineIcao: string | null;
+  airlineName: string | null;
+  flightCount: number;
+  totalPassengers: number;
+  totalCargoKg: number;
+  totalFuelKg: number;
+  totalDistanceNm: number;
+  totalBlockSeconds: number;
+  avgLandingFpm: number | null;
 }
 
 /** Estadísticas agregadas que pinta la vista «Dashboard». Sale de

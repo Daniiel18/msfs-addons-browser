@@ -54,6 +54,9 @@ import type {
   UpdateDiagnostic,
   UpdateFlightInput,
   UpdateInfo,
+  AirlineTag,
+  AirlineKpis,
+  ScoreReport,
 } from "./types";
 
 /** True when we're running inside the Tauri webview (vs. a plain browser). */
@@ -322,6 +325,26 @@ interface Api {
   /** Suscribe un callback a cambios en el estado de vuelo —
    *  el watcher emite `flight://current` cuando cambia. */
   onFlightStatus: (cb: (status: FlightStatus) => void) => Promise<UnlistenFn>;
+
+  // (v3.6.0 Phase H) Scoring + Airlines
+  /** Recomputa y persiste el score completo de un vuelo. */
+  scoreFlight: (flightId: number) => Promise<ScoreReport>;
+  /** Devuelve el score persistido (rápido — no recomputa salvo que esté
+   *  vacío). Lo usa el ChecklistWidget al abrir. */
+  scoreGetReport: (flightId: number) => Promise<ScoreReport>;
+  /** Lista de aerolíneas distintas en el historial (chips de filter). */
+  listAirlines: () => Promise<AirlineTag[]>;
+  /** KPIs agregados para una aerolínea. */
+  airlineKpis: (
+    airlineIcao: string | null,
+    airlineName: string | null,
+  ) => Promise<AirlineKpis>;
+  /** Eventos emitidos por el watcher al auto-puntuar un vuelo. */
+  onScoreDone: (cb: (report: ScoreReport) => void) => Promise<UnlistenFn>;
+  onScoreUploadSuccess: (cb: (report: unknown) => void) => Promise<UnlistenFn>;
+  onScoreUploadError: (
+    cb: (err: { flightId: number; error: string }) => void,
+  ) => Promise<UnlistenFn>;
 }
 
 const realApi: Api = {
@@ -486,6 +509,24 @@ const realApi: Api = {
   getFlightStatus: () => invoke<FlightStatus>("get_flight_status"),
   onFlightStatus: (cb) =>
     listen<FlightStatus>("flight://current", (event) => cb(event.payload)),
+
+  // (v3.6.0 Phase H) Scoring + Airlines
+  scoreFlight: (flightId) =>
+    invoke<ScoreReport>("score_flight", { flightId }),
+  scoreGetReport: (flightId) =>
+    invoke<ScoreReport>("score_get_report", { flightId }),
+  listAirlines: () => invoke<AirlineTag[]>("list_airlines"),
+  airlineKpis: (airlineIcao, airlineName) =>
+    invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
+  onScoreDone: (cb) =>
+    listen<ScoreReport>("score:done", (event) => cb(event.payload)),
+  onScoreUploadSuccess: (cb) =>
+    listen<unknown>("score:upload:success", (event) => cb(event.payload)),
+  onScoreUploadError: (cb) =>
+    listen<{ flightId: number; error: string }>(
+      "score:upload:error",
+      (event) => cb(event.payload),
+    ),
 
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   setAppSetting: (key, value) => invoke<void>("set_app_setting", { key, value }),
@@ -1209,6 +1250,51 @@ const demoApi: Api = {
     /* no-op demo */
   },
   async onFlightStatus() {
+    return async () => {};
+  },
+  async scoreFlight() {
+    return {
+      flightId: 0,
+      total: 0,
+      max: 0,
+      percentage: 0,
+      grade: "F",
+      items: [],
+    };
+  },
+  async scoreGetReport() {
+    return {
+      flightId: 0,
+      total: 0,
+      max: 0,
+      percentage: 0,
+      grade: "F",
+      items: [],
+    };
+  },
+  async listAirlines() {
+    return [];
+  },
+  async airlineKpis() {
+    return {
+      airlineIcao: null,
+      airlineName: null,
+      flightCount: 0,
+      totalPassengers: 0,
+      totalCargoKg: 0,
+      totalFuelKg: 0,
+      totalDistanceNm: 0,
+      totalBlockSeconds: 0,
+      avgLandingFpm: null,
+    };
+  },
+  async onScoreDone() {
+    return async () => {};
+  },
+  async onScoreUploadSuccess() {
+    return async () => {};
+  },
+  async onScoreUploadError() {
     return async () => {};
   },
   async getDashboardStats() {
