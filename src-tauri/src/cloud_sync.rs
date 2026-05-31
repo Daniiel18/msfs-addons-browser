@@ -1174,27 +1174,65 @@ pub async fn test_connection(
     let mut steps = Vec::new();
     let mut hint: Option<String> = None;
 
-    // Paso 1 — Credenciales locales
-    let client_id = get_setting(pool, KEY_CLIENT_ID).await.ok().flatten();
-    let client_secret = get_setting(pool, KEY_CLIENT_SECRET).await.ok().flatten();
-    if client_id.is_none() || client_secret.is_none() {
+    // Paso 1 — Credenciales locales.
+    //
+    // (v3.6.2 fix I12) Usar `resolve_credentials` para que mire PRIMERO
+    // los valores hardcoded del build (`option_env!` desde build.rs +
+    // secrets.local.toml) y SOLO si faltan caiga al fallback de DB.
+    //
+    // El bug previo: este paso leía SOLO la DB, lo que daba "Falta
+    // Client ID" aunque el binario tuviera los secrets embedidos y
+    // todos los demás flujos (connect, upload, download) funcionaran.
+    // El mensaje también mencionaba un botón "Configurar credenciales"
+    // que YA NO existe (eliminado en task #85 — Cloud UI cleanup) —
+    // pista falsa para el usuario.
+    let creds = resolve_credentials(pool).await;
+    let (client_id, client_secret) = match creds {
+        Ok(pair) => pair,
+        Err(e) => {
+            steps.push(CloudTestStep {
+                name: "Credenciales locales".to_string(),
+                ok: false,
+                detail: format!("Error consultando credenciales: {e}"),
+            });
+            return CloudTestReport {
+                overall_ok: false,
+                steps,
+                hint: None,
+            };
+        }
+    };
+    let cid_ok = client_id.as_deref().filter(|s| !s.is_empty()).is_some();
+    let secret_ok = client_secret.as_deref().filter(|s| !s.is_empty()).is_some();
+    if !cid_ok || !secret_ok {
         steps.push(CloudTestStep {
             name: "Credenciales locales".to_string(),
             ok: false,
-            detail: "Falta Client ID y/o Client Secret. Pulsa 'Configurar credenciales' arriba.".to_string(),
+            detail: "No hay Client ID / Secret embedidos. El binario fue compilado sin `secrets.local.toml` (gitignored) — re-buildea con el archivo presente en `src-tauri/`.".to_string(),
         });
         return CloudTestReport {
             overall_ok: false,
             steps,
-            hint: Some("Configura primero el Client ID + Client Secret de un OAuth client tipo 'Desktop app'.".to_string()),
+            hint: Some(
+                "Las credenciales OAuth vienen embedidas en el binario via build.rs. Coloca `src-tauri/secrets.local.toml` y recompila.".to_string(),
+            ),
         };
     }
+    let source = if HARDCODED_CLIENT_ID
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
+        "embedidas en el binario"
+    } else {
+        "leídas de DB (legacy v2.x)"
+    };
     steps.push(CloudTestStep {
         name: "Credenciales locales".to_string(),
         ok: true,
         detail: format!(
-            "Client ID guardado ({} chars), Client Secret guardado.",
-            client_id.as_ref().unwrap().len()
+            "Client ID + Secret OK ({} chars) — {}.",
+            client_id.as_ref().map(|s| s.len()).unwrap_or(0),
+            source
         ),
     });
 
