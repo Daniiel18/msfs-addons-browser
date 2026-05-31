@@ -340,6 +340,17 @@ mod windows_simconnect {
         /// phase_label cuando GSX o el ATC interno lo dispara, en vez
         /// de adivinar por threshold de velocidad.
         pushback_state: f64,
+        /// (v3.6.7 N2) `PLANE TOUCHDOWN NORMAL VELOCITY` en
+        /// **feet/second** (negativo = descenso) — el simvar EXACTO
+        /// que MSFS actualiza AT the moment of touchdown. Lo que usan
+        /// todos los landing rate tools serios (LandingToast, Better
+        /// Pushback, Smart Landing). Multiplicar por 60 → fpm.
+        ///
+        /// MSFS lo actualiza con resolución de frame (60Hz típicamente),
+        /// no es un promedio sobre samples como nuestra estimación
+        /// previa por altitudes. Esto da el FPM REAL del touchdown
+        /// que coincide con lo que reportan los VA platforms.
+        touchdown_normal_velocity_fps: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -757,6 +768,8 @@ mod windows_simconnect {
         let units_bool = sc::cstr("bool");
         let units_fpm = sc::cstr("feet per minute");
         let units_pounds = sc::cstr("pounds");
+        // (v3.6.7 N2) "feet per second" para PLANE TOUCHDOWN NORMAL VELOCITY.
+        let units_fps = sc::cstr("feet per second");
 
         let names: &[(&str, &std::ffi::CStr)] = &[
             ("PLANE LATITUDE", units_deg.as_c_str()),
@@ -800,6 +813,16 @@ mod windows_simconnect {
             // (o el ATC interno) lo dispara, en vez de adivinar
             // por threshold de velocidad.
             ("PUSHBACK STATE", units_bool.as_c_str()),
+            // (v3.6.7 N2) Touchdown rate REAL via simvar dedicado.
+            // MSFS lo actualiza AT touchdown con resolución de frame
+            // (60Hz). Unit "feet per second" — multiplicar × 60 → fpm.
+            // Es lo que usa LandingToast / Better Pushback / etc.
+            //
+            // Antes calculábamos VS de altitudes / tiempo a 4Hz, que
+            // promediaba el flare + contacto → daba valores 2× los
+            // reales (-365 fpm cuando real era -188). Este simvar es
+            // el touchdown VS exacto.
+            ("PLANE TOUCHDOWN NORMAL VELOCITY", units_fps.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -2216,15 +2239,51 @@ mod windows_simconnect {
                     // Touchdown — captura landing_fpm pero NO cierra
                     // la fila. El vuelo sigue abierto durante el
                     // taxi-in; el cierre real es al engine shutdown.
-                    let landing_vs = recent_vs
-                        .iter()
-                        .copied()
-                        .fold(f64::INFINITY, f64::min);
-                    let fpm = if landing_vs.is_finite() {
-                        Some(landing_vs as i64)
+                    //
+                    // (v3.6.7 N2) PRIORIZAR el simvar dedicado
+                    // PLANE TOUCHDOWN NORMAL VELOCITY (ft/s × 60 = fpm).
+                    // MSFS lo actualiza AT the moment of touchdown con
+                    // resolución de frame (60Hz). Es lo que usa
+                    // LandingToast y los VA platforms para reportar
+                    // landing rate exacto.
+                    //
+                    // El simvar viene NEGATIVO al descender (convención
+                    // SimConnect: Y positivo arriba). Multiplicamos × 60
+                    // para convertir ft/s → ft/min.
+                    //
+                    // Fallback: si el simvar es 0 (algunos aviones no
+                    // lo actualizan), caemos al cálculo viejo basado en
+                    // VERTICAL SPEED a 4Hz.
+                    let touchdown_fps_raw = data.touchdown_normal_velocity_fps;
+                    let touchdown_fpm = if touchdown_fps_raw.is_finite()
+                        && touchdown_fps_raw.abs() > 0.01
+                    {
+                        Some((touchdown_fps_raw * 60.0) as i64)
                     } else {
                         None
                     };
+                    let fallback_fpm = {
+                        let landing_vs = recent_vs
+                            .iter()
+                            .copied()
+                            .fold(f64::INFINITY, f64::min);
+                        if landing_vs.is_finite() {
+                            Some(landing_vs as i64)
+                        } else {
+                            None
+                        }
+                    };
+                    let fpm = touchdown_fpm.or(fallback_fpm);
+                    if let Some(v) = fpm {
+                        tracing::info!(
+                            target: "simconnect",
+                            "TOUCHDOWN landing_fpm={} (simvar_fps={:.3} → {} fpm) (fallback_min_vs={:?})",
+                            v,
+                            touchdown_fps_raw,
+                            touchdown_fpm.unwrap_or(0),
+                            fallback_fpm
+                        );
+                    }
                     *captured_landing_fpm = fpm;
                     let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
                     if let Some(id) = id_opt {

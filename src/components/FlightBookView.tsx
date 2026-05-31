@@ -844,37 +844,46 @@ function SelectedFlightPanel({
           </div>
         </DetailBlock>
 
-        {/* (v3.5.0 F3) Métricas pico = SOLO altitud y velocidad máxima
-            (los "peaks" reales del vuelo). El FPM de aterrizaje se
-            movió a su propia fila — no es un "peak", es un evento
-            puntual del touchdown que conviene mostrar aparte y con
-            color (verde = suave, rojo = duro). */}
-        {/* (v3.6.1 fix I4) Peak metrics: SÓLO Ground Speed (GS).
-            El usuario pidió no usar TAS como fallback ni mostrar "kt"
-            genérico — específicamente GS porque es la velocidad sobre
-            tierra (verdadera referencia del piloto), no IAS/TAS. */}
-        {(entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
-            <span className="text-slate-500">{t("fb.block.peak")}:</span>
-            {entry.maxAltitudeFt !== null && (
-              <span className="font-mono text-slate-200">
-                <span className="text-slate-400">ALT</span>{" "}
-                {entry.maxAltitudeFt.toLocaleString("en-US")} ft
-              </span>
-            )}
-            {entry.maxGroundSpeedKt !== null && (
-              <span className="font-mono text-slate-200">
-                <span className="text-slate-400">GS</span>{" "}
-                {entry.maxGroundSpeedKt} kt
-              </span>
-            )}
+        {/* (v3.6.7 fix N1) Para vuelos IMPORTADOS (source != simconnect)
+            mostramos un badge "Imported flight" en vez de las peak
+            metrics. El sampling de VAS-ACARS no permite calcular FPM
+            con la precisión que reportan los VA platforms; preferible
+            ser honesto y NO mostrar datos imprecisos.
+            Para vuelos volados en vivo (SimConnect), las peak metrics
+            sí son precisas (capturadas en tiempo real con simvars). */}
+        {entry.source !== "simconnect" ? (
+          <div className="flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/5 px-4 py-2.5 text-[11px]">
+            <span className="inline-flex items-center gap-1.5 font-medium text-sky-200">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-400" />
+              {t("fb.imported_flight.badge")}
+            </span>
+            <span className="text-slate-500">
+              {t("fb.imported_flight.detail")}
+            </span>
           </div>
+        ) : (
+          (entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
+              <span className="text-slate-500">{t("fb.block.peak")}:</span>
+              {entry.maxAltitudeFt !== null && (
+                <span className="font-mono text-slate-200">
+                  <span className="text-slate-400">ALT</span>{" "}
+                  {entry.maxAltitudeFt.toLocaleString("en-US")} ft
+                </span>
+              )}
+              {entry.maxGroundSpeedKt !== null && (
+                <span className="font-mono text-slate-200">
+                  <span className="text-slate-400">GS</span>{" "}
+                  {entry.maxGroundSpeedKt} kt
+                </span>
+              )}
+            </div>
+          )
         )}
-        {/* Touchdown rate aparte — con coloreo según calidad del
-            aterrizaje (literatura de aviación: <-100 mariposa,
-            -100 a -300 buen aterrizaje, -300 a -600 firme,
-            <-600 duro/abusivo). */}
-        {entry.landingFpm !== null && entry.landingFpm < 0 && (() => {
+        {/* Touchdown rate sólo para vuelos en vivo (SimConnect) — ahí
+            el valor viene del simvar PLANE TOUCHDOWN NORMAL VELOCITY
+            que es preciso. Para imports VAS-ACARS no se muestra. */}
+        {entry.source === "simconnect" && entry.landingFpm !== null && entry.landingFpm < 0 && (() => {
           const fpm = entry.landingFpm;
           const color =
             fpm > -200

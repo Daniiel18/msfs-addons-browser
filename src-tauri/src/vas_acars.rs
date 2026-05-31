@@ -1745,11 +1745,23 @@ async fn import_one(
         None => (None, None, None),
     };
 
-    // 8. **Métricas pico REALES desde el track** (no estimaciones).
-    let max_altitude_ft = track.max_altitude_ft();
-    let max_ground_speed_kt = track.max_ground_speed_kt();
-    let max_true_airspeed_kt = track.max_true_airspeed_kt();
-    let landing_fpm = track.landing_fpm();
+    // 8. **Peak metrics: NO se computan para imports VAS** (v3.6.7 N1).
+    //
+    // El sampling de VAS-ACARS (~10s entre altitudes, sin VS field)
+    // no permite calcular landing_fpm con la precisión que reporta
+    // la VA platform (ej. skyteamvirtual da -188 fpm, nosotros -219
+    // — 31 fpm de error siendo el mejor algoritmo posible).
+    //
+    // Decisión del usuario: para vuelos importados, NO mostrar peak
+    // metrics ni landing fpm — preferible "—" honesto que un número
+    // engañoso. La UI muestra un badge "Vuelo importado" en su lugar.
+    //
+    // Para vuelos volados en vivo con SimConnect, la captura es
+    // precisa (simvar `PLANE TOUCHDOWN NORMAL VELOCITY` × 60).
+    let max_altitude_ft: Option<i64> = None;
+    let max_ground_speed_kt: Option<i64> = None;
+    let max_true_airspeed_kt: Option<i64> = None;
+    let landing_fpm: Option<i64> = None;
 
     // (v3.6.1 fix I9) Fallback eliminado para landing_fpm.
     // ANTES caía a `estimate_peak_metrics` que devolvía valores

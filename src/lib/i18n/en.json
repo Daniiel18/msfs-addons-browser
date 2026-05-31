@@ -351,6 +351,8 @@
   "fb.detail.expand": "Expand panel — show details",
   "fb.detail.collapse_label": "Minimize",
   "fb.detail.expand_label": "Expand",
+  "fb.imported_flight.badge": "Imported flight",
+  "fb.imported_flight.detail": "Peak metrics and landing rate only available for flights flown in SimFleet",
   "fb.action.deselect": "Deselect",
   "fb.card.select_tooltip": "Click to view this flight's actual track on the map",
   "fb.card.no_route": "No route data",

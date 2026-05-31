@@ -351,6 +351,8 @@
   "fb.detail.expand": "Expandir panel — ver detalles",
   "fb.detail.collapse_label": "Minimizar",
   "fb.detail.expand_label": "Expandir",
+  "fb.imported_flight.badge": "Vuelo importado",
+  "fb.imported_flight.detail": "Métricas pico y aterrizaje sólo disponibles para vuelos volados en SimFleet",
   "fb.action.deselect": "Deseleccionar",
   "fb.card.select_tooltip": "Click para ver la ruta real de este vuelo en el mapa",
   "fb.card.no_route": "Ruta sin datos",
