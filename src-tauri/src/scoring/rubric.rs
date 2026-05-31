@@ -8,22 +8,29 @@
 //!
 //! ## Diseño de pesos
 //!
-//! Total max ≈ 1140 puntos. Distribución:
+//! (v3.6.1 fix I7 — feedback usuario) **Rubric saneado**. Reglas que
+//! NO son responsabilidad del piloto fueron removidas:
+//!
+//! · `pushback_speed_safe` — quitada. GSX controla la velocidad del
+//!   pushback; el piloto no puede limitarla. Penalizarlo era injusto.
+//! · `cruise_altitude_held` — quitada. Pilotos pueden subir/bajar
+//!   altitud de crucero por motivos legítimos (turbulencia, clima,
+//!   instrucciones ATC). Mantener una altitud fija no es virtud.
+//!
+//! Total max ≈ **940 puntos**. Distribución actualizada:
 //!
 //! | Phase           | Pts | Reglas |
 //! |-----------------|-----|--------|
 //! | General         | 180 | metadata, distance, time |
-//! | Pre-departure   | 100 | parking brake, gate |
-//! | Pushback        |  60 | speed |
-//! | Taxi-out        |  80 | speed limits |
-//! | Takeoff         |  80 | clean rotation |
-//! | Climb           | 120 | overspeed below 10k, climb rate |
-//! | Cruise          | 100 | alt held, speed consistency |
-//! | Descent         | 100 | rate, overspeed below 10k |
-//! | Approach        | 100 | speed, descent rate |
-//! | Landing         | 120 | smooth landing, runway accuracy |
-//! | Taxi-in         |  60 | speed |
-//! | Arrived         |  40 | completion bonus |
+//! | Pre-departure   | 100 | origen detectado, gate registrado |
+//! | Taxi-out        |  80 | speed limit (≤ 30 kt) |
+//! | Takeoff         |  80 | clean rotation (VS 500-3000 fpm) |
+//! | Climb           | 120 | no overspeed > 280 kt bajo 10k ft |
+//! | Descent         | 100 | rate ≤ 3000 fpm |
+//! | Approach        | 100 | speed estable ≤ 200 kt a 5 nm dest |
+//! | Landing         | 120 | smooth touchdown FPM |
+//! | Taxi-in         |  60 | speed limit (≤ 30 kt) |
+//! | Arrived         |  40 | vuelo completado |
 //!
 //! La grade derivada del % total:
 //! · A ≥ 95%, B ≥ 85%, C ≥ 70%, D ≥ 50%, F < 50%
@@ -119,14 +126,14 @@ pub static RULES: &[Rule] = &[
         points_max: 50,
         evaluator: eval_departure_gate,
     },
-    // ===== PUSHBACK (60 pts) =====
-    Rule {
-        id: "pushback_speed_safe",
-        label: "Velocidad ≤ 5 kt en pushback",
-        phase: Phase::Pushback,
-        points_max: 60,
-        evaluator: eval_pushback_speed,
-    },
+    // ===== PUSHBACK =====
+    // (v3.6.1 fix I7) Regla `pushback_speed_safe` REMOVIDA.
+    // GSX controla la velocidad del pushback con su propio script —
+    // el piloto no puede limitarla. Penalizarlo era un falso negativo.
+    // Si en el futuro queremos rescatar algo de la phase pushback,
+    // podríamos puntuar "freno de mano suelto durante pushback" o
+    // "no aceleración intencional con motores running" pero requiere
+    // capturar más simvars.
     // ===== TAXI-OUT (80 pts) =====
     Rule {
         id: "taxi_speed_below_30kt",
@@ -151,14 +158,15 @@ pub static RULES: &[Rule] = &[
         points_max: 120,
         evaluator: eval_no_overspeed_below_10k,
     },
-    // ===== CRUISE (100 pts) =====
-    Rule {
-        id: "cruise_altitude_held",
-        label: "Altitud de crucero mantenida (±200 ft)",
-        phase: Phase::Cruise,
-        points_max: 100,
-        evaluator: eval_cruise_alt_held,
-    },
+    // ===== CRUISE =====
+    // (v3.6.1 fix I7) Regla `cruise_altitude_held` REMOVIDA.
+    // El piloto cambia altitud de crucero por razones LEGÍTIMAS:
+    // turbulencia, clima, vectores ATC, optimización de fuel. Forzar
+    // ±200 ft penalizaba step-climbs perfectamente normales.
+    // Si en el futuro queremos puntuar crucero, sería mejor:
+    //  · "VS ≈ 0 al menos N minutos seguidos" (sí mantuvo crucero
+    //    estable en algún momento)
+    //  · "GS ≥ M kt sostenido" (sí llegó a velocidad de crucero)
     // ===== DESCENT (100 pts) =====
     Rule {
         id: "descent_rate_reasonable",
@@ -331,6 +339,9 @@ fn eval_departure_gate(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     partial(rule, rule.points_max / 2, evidence)
 }
 
+/// (v3.6.1) Regla removida del rubric pero conservada como referencia
+/// por si la rescatamos con otra señal de input.
+#[allow(dead_code)]
 fn eval_pushback_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let samples = ctx.samples_in_phase("pushback");
     if samples.is_empty() {
@@ -446,6 +457,9 @@ fn eval_no_overspeed_below_10k(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
+/// (v3.6.1) Regla removida — pilotos pueden cambiar altitud
+/// legítimamente. Conservada por si se rescata con otra lógica.
+#[allow(dead_code)]
 fn eval_cruise_alt_held(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let samples = ctx.samples_in_phase("cruise");
     if samples.is_empty() {
@@ -468,6 +482,7 @@ fn eval_cruise_alt_held(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     cruise_alt_stability(&samples, rule)
 }
 
+#[allow(dead_code)]
 fn cruise_alt_stability(samples: &[&TrackSample], rule: &Rule) -> ScoreItem {
     let alts: Vec<i64> = samples.iter().filter_map(|s| s.alt_ft).collect();
     if alts.is_empty() {

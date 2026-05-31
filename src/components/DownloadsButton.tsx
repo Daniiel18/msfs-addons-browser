@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Download } from "lucide-react";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
+import { t } from "../lib/i18n";
 
 export function DownloadsButton() {
   const jobsMap = useDownloadsStore((s) => s.jobs);
@@ -21,14 +22,15 @@ export function DownloadsButton() {
     return count;
   }, [jobsMap]);
 
+  const label = t("nav.downloads");
   return (
     <button
       onClick={toggle}
       className="relative inline-flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-brand-500/40 hover:text-slate-100"
-      title="Descargas"
+      title={label}
     >
       <Download className="h-3.5 w-3.5" />
-      <span>Descargas</span>
+      <span>{label}</span>
       {active > 0 && (
         <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-500 px-1 text-[10px] font-bold text-slate-950">
           {active}

@@ -40,6 +40,7 @@
   "nav.map": "Mapa (escenarios)",
   "nav.addons": "Addons",
   "nav.flightbook": "FlightBook",
+  "nav.downloads": "Descargas",
 
   "header.tagline": "FlightBook · SimBrief · SimConnect · GSX",
   "header.settings.tooltip": "Configuración",
@@ -344,6 +345,8 @@
   "fb.delete.body": "Esta acción no se puede deshacer. El vuelo, su traza completa y todas las ediciones se borrarán para siempre.",
   "fb.delete.confirm": "Eliminar",
   "fb.action.edit": "Editar",
+  "fb.detail.collapse": "Minimizar panel — libera el mapa",
+  "fb.detail.expand": "Expandir panel — ver detalles",
   "fb.action.deselect": "Deseleccionar",
   "fb.card.select_tooltip": "Click para ver la ruta real de este vuelo en el mapa",
   "fb.card.no_route": "Ruta sin datos",

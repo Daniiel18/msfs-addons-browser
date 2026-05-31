@@ -65,6 +65,11 @@ export function FlightBookView() {
   const [sidebarQuery, setSidebarQuery] = useState("");
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
+  // (v3.6.1 fix I6) Colapso del SelectedFlightPanel. Cuando true,
+  // sólo se muestra el header con la ruta y el grade — el resto del
+  // mapa queda visible para que el usuario pueda ver la trayectoria
+  // del vuelo seleccionado.
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const selectedFlight = useMemo(
     () =>
       selectedFlightId != null
@@ -352,14 +357,13 @@ export function FlightBookView() {
               />
             </div>
 
-            {/* (v3.6.0 Phase H — Epic D) AirlineTagFilter — chips
-                horizontales en la parte superior del mapa. Sólo se
-                renderiza cuando hay vuelos completados y el usuario no
-                tiene un vuelo seleccionado (los detalles deben tener
-                prioridad visual). */}
-            {!selectedFlight && (
-              <AirlineTagFilter />
-            )}
+            {/* (v3.6.0 Phase H — Epic D → v3.6.1 fix I8) AirlineTagFilter
+                — chips horizontales en la parte superior del mapa.
+                ANTES sólo se renderizaba sin vuelo seleccionado;
+                ahora **siempre** visible para que el usuario pueda
+                cambiar de filtro sin tener que deseleccionar el vuelo
+                que está mirando. */}
+            <AirlineTagFilter />
 
             {/* (v3.6.0 Phase H — Epic E) ChecklistWidget — glass
                 overlay con score breakdown del vuelo seleccionado.
@@ -393,23 +397,33 @@ export function FlightBookView() {
                     className={`pointer-events-auto w-full ${
                       overlayKind === "stats" ? "max-w-[260px]" : "max-w-[420px]"
                     }`}
-                    style={overlayKind === "selected" ? { height: "100%" } : undefined}
+                    style={
+                      overlayKind === "selected" && !panelCollapsed
+                        ? { height: "100%" }
+                        : undefined
+                    }
                   >
                     <motion.div
                       layout
                       className={`overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/75 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur-xl ${
-                        overlayKind === "selected" ? "flex h-full flex-col" : ""
+                        overlayKind === "selected" && !panelCollapsed
+                          ? "flex h-full flex-col"
+                          : ""
                       }`}
                     >
                       <div
                         className={`p-3 ${
-                          overlayKind === "selected"
+                          overlayKind === "selected" && !panelCollapsed
                             ? "min-h-0 flex-1 overflow-y-auto"
                             : ""
                         }`}
                       >
                     {overlayKind === "selected" && selectedFlight && (
-                      <SelectedFlightPanel entry={selectedFlight} />
+                      <SelectedFlightPanel
+                        entry={selectedFlight}
+                        collapsed={panelCollapsed}
+                        onToggleCollapse={() => setPanelCollapsed((v) => !v)}
+                      />
                     )}
                     {overlayKind === "active" && inFlight && (
                       <ActiveFlightCard entry={inFlight} />
@@ -545,7 +559,15 @@ function DeleteFlightModal({
  *  Cada bloque es una card independiente con borde redondeado, shadow
  *  sutil y padding generoso. AnimatePresence + motion.div para
  *  microanimaciones al cambiar de vuelo seleccionado. */
-function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
+function SelectedFlightPanel({
+  entry,
+  collapsed,
+  onToggleCollapse,
+}: {
+  entry: FlightLogEntry;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const reload = useFlightLogStore((s) => s.reload);
 
@@ -567,14 +589,30 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
               <PlaneLanding className="h-3 w-3" />
               {t("fb.selected_flight")}
             </div>
-            <button
-              onClick={() => setEditing(true)}
-              title={t("fb.action.edit")}
-              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
-            >
-              <Pencil className="h-2.5 w-2.5" />
-              {t("fb.action.edit")}
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              {/* (v3.6.1 fix I6) Botón colapsar/expandir el panel para
+                  liberar el mapa cuando el usuario quiere ver la
+                  trayectoria completa sin que el overlay tape la ruta. */}
+              <button
+                onClick={onToggleCollapse}
+                title={
+                  collapsed
+                    ? t("fb.detail.expand")
+                    : t("fb.detail.collapse")
+                }
+                className="inline-flex items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+              >
+                {collapsed ? "▾" : "▴"}
+              </button>
+              <button
+                onClick={() => setEditing(true)}
+                title={t("fb.action.edit")}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+              >
+                <Pencil className="h-2.5 w-2.5" />
+                {t("fb.action.edit")}
+              </button>
+            </div>
           </div>
           {editing && (
             <EditFlightModal
@@ -612,6 +650,11 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
           </div>
         </div>
 
+        {/* (v3.6.1 fix I6) Cuando el panel está colapsado, sólo se ve
+            la card del header — el resto del mapa queda libre para que
+            el usuario examine la trayectoria. */}
+        {collapsed ? null : (
+        <>
         {/* BLOQUE 1 — Route */}
         <DetailBlock title={t("fb.block.route")} icon="route">
           <BlockRow label={t("fb.route.origin")} value={
@@ -781,9 +824,11 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
             movió a su propia fila — no es un "peak", es un evento
             puntual del touchdown que conviene mostrar aparte y con
             color (verde = suave, rojo = duro). */}
-        {(entry.maxAltitudeFt !== null ||
-          entry.maxGroundSpeedKt !== null ||
-          entry.maxTrueAirspeedKt !== null) && (
+        {/* (v3.6.1 fix I4) Peak metrics: SÓLO Ground Speed (GS).
+            El usuario pidió no usar TAS como fallback ni mostrar "kt"
+            genérico — específicamente GS porque es la velocidad sobre
+            tierra (verdadera referencia del piloto), no IAS/TAS. */}
+        {(entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
             <span className="text-slate-500">{t("fb.block.peak")}:</span>
             {entry.maxAltitudeFt !== null && (
@@ -792,11 +837,10 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
                 {entry.maxAltitudeFt.toLocaleString("en-US")} ft
               </span>
             )}
-            {(entry.maxGroundSpeedKt !== null ||
-              entry.maxTrueAirspeedKt !== null) && (
+            {entry.maxGroundSpeedKt !== null && (
               <span className="font-mono text-slate-200">
-                <span className="text-slate-400">VEL</span>{" "}
-                {entry.maxGroundSpeedKt ?? entry.maxTrueAirspeedKt} kt
+                <span className="text-slate-400">GS</span>{" "}
+                {entry.maxGroundSpeedKt} kt
               </span>
             )}
           </div>
@@ -822,6 +866,8 @@ function SelectedFlightPanel({ entry }: { entry: FlightLogEntry }) {
             </div>
           );
         })()}
+        </>
+        )}
       </motion.div>
     </AnimatePresence>
   );
@@ -1746,14 +1792,15 @@ function CompactFlightRow({
           {duration}
         </span>
       </div>
-      {/* (v3.6.0 Phase H — Epic C) Línea adicional con flight_number
-          prominente cuando está presente. La UI manda dos columnas:
-          flight number a la izquierda (mono, semibold), score grade
-          a la derecha si está disponible (badge de color por grade). */}
-      {(entry.flightNumber || entry.scoreGrade) && (
+      {/* (v3.6.0 Phase H — Epic C → v3.6.1 fix I1) **Callsign** preferido
+          sobre flight_number. El usuario reportó: "DAL1803 / JBU8774 /
+          AAL9833" (3-letter ICAO + número) es el formato que usa para
+          identificar vuelos, no el IATA "DL3880". Fallback a
+          flight_number si no hay callsign capturado. */}
+      {(entry.callsign || entry.flightNumber || entry.scoreGrade) && (
         <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px]">
           <span className="truncate font-mono font-semibold text-sky-300">
-            {entry.flightNumber ?? ""}
+            {entry.callsign ?? entry.flightNumber ?? ""}
           </span>
           {entry.scoreGrade && (
             <span
@@ -1988,7 +2035,7 @@ function ChecklistWidget({
       className={`pointer-events-auto absolute z-30 rounded-2xl border border-slate-700/80 bg-slate-950/85 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur-xl transition-all ${
         expanded
           ? "inset-3 flex flex-col"
-          : "right-3 top-16 flex max-h-[calc(100%-5rem)] w-[360px] flex-col"
+          : "right-3 top-16 flex max-h-[60vh] w-[340px] flex-col"
       }`}
     >
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">

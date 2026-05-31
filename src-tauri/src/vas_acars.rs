@@ -168,24 +168,64 @@ impl VasFlightTrack {
     }
 
     /// Landing FPM = vertical speed (ft/min) calculada en el momento
-    /// del touchdown. Detectamos touchdown como la **última transición
-    /// `on_ground: false → true`**. Si f21 no fue parseado, fallback:
-    /// asumimos que el último sample es la parada → tomamos VS al
-    /// final del descent (último sample con altitud > 50 m sobre el
-    /// último valor de altitud).
+    /// del touchdown.
+    ///
+    /// (v3.6.1 fix I9) Algoritmo dual:
+    ///
+    ///   **A. Si hay `on_ground`** (campo f21 parseado): detectamos
+    ///   touchdown como la **última transición `false → true`**.
+    ///
+    ///   **B. Si NO hay `on_ground`** (algunos .bin lo omiten): buscamos
+    ///   el **último sample con altitud > 100 m** sobre la altitud
+    ///   final del track — eso aproxima el momento "todavía volando".
+    ///   El touchdown es el siguiente sample con altitud menor. Esto
+    ///   antes caía al `estimate_peak_metrics` por tipo de avión que
+    ///   devolvía -200/-220 hardcoded para TODOS los vuelos, dando la
+    ///   ilusión que el aterrizaje era idéntico (-200 fpm exactos en
+    ///   todo el historial). Ahora la VS es REAL, calculada del track.
     pub fn landing_fpm(&self) -> Option<i64> {
-        // Buscar la última transición air → ground.
+        if self.samples.len() < 4 {
+            return None;
+        }
+
+        // === Camino A: transición on_ground false→true ===
         let mut touchdown_idx: Option<usize> = None;
-        for i in 1..self.samples.len() {
-            let prev = self.samples[i - 1].on_ground.unwrap_or(true);
-            let curr = self.samples[i].on_ground.unwrap_or(true);
-            if !prev && curr {
-                touchdown_idx = Some(i);
+        let has_on_ground_data = self.samples.iter().any(|s| s.on_ground.is_some());
+        if has_on_ground_data {
+            for i in 1..self.samples.len() {
+                let prev = self.samples[i - 1].on_ground.unwrap_or(true);
+                let curr = self.samples[i].on_ground.unwrap_or(true);
+                if !prev && curr {
+                    touchdown_idx = Some(i);
+                }
             }
         }
+
+        // === Camino B: heurística por altitud cuando A falla ===
+        if touchdown_idx.is_none() {
+            // Tomamos altitud final como "referencia tierra" para este
+            // vuelo (puede ser un aeropuerto a 5000ft de elevation).
+            let last_alt = self.samples.last().and_then(|s| s.altitude_m)?;
+            // Buscamos el ÚLTIMO sample con altitud >100m por encima
+            // de la altitud final. El touchdown está justo después.
+            let mut last_airborne_idx: Option<usize> = None;
+            for (i, s) in self.samples.iter().enumerate() {
+                if let Some(a) = s.altitude_m {
+                    if (a - last_alt) > 100.0 {
+                        last_airborne_idx = Some(i);
+                    }
+                }
+            }
+            if let Some(li) = last_airborne_idx {
+                // El touchdown es ~3 samples después (≈15s a 5s/sample).
+                touchdown_idx = Some((li + 3).min(self.samples.len() - 1));
+            }
+        }
+
         let td = touchdown_idx?;
-        // Tomamos ventana de ~30s antes (≈6 samples a 5s sampling).
-        let pre = td.saturating_sub(6).max(0);
+        // Ventana de ~30s antes (≈6 samples a 5s sampling) para
+        // estabilizar el cálculo de VS.
+        let pre = td.saturating_sub(6);
         if pre >= td {
             return None;
         }
@@ -583,6 +623,11 @@ fn estimate_payload(aircraft_path: &str) -> Option<(i64, i64, i64)> {
 /// Formato: `(landing_fpm, max_ground_speed_kt, max_true_airspeed_kt)`.
 /// El landing_fpm es un "promedio aceptable" (-200 fpm = aterrizaje
 /// suave estándar). El GS y TAS son cruise reales del tipo.
+/// (v3.6.1 fix I9) Marcada dead_code — el caller fue eliminado porque
+/// los valores hardcoded daban "todos los vuelos -220 fpm". Conservada
+/// como referencia histórica en caso de que se rescaten heurísticas
+/// más sofisticadas (por altitud máxima del track, por ejemplo).
+#[allow(dead_code)]
 fn estimate_peak_metrics(aircraft_path: &str) -> Option<(i64, i64, i64)> {
     let p = aircraft_path.to_lowercase();
     // Wide-body — cruise alto
@@ -1654,12 +1699,23 @@ async fn import_one(
     let max_true_airspeed_kt = track.max_true_airspeed_kt();
     let landing_fpm = track.landing_fpm();
 
-    // Si el track no produjo métricas (samples sin altitud/speed), caemos
-    // a estimaciones por aircraft type — peor que tener algo nulo.
-    let fallback_peak = estimate_peak_metrics(path_or_livery);
-    let landing_fpm = landing_fpm.or_else(|| fallback_peak.map(|t| t.0));
-    let max_ground_speed_kt = max_ground_speed_kt.or_else(|| fallback_peak.map(|t| t.1));
-    let max_true_airspeed_kt = max_true_airspeed_kt.or_else(|| fallback_peak.map(|t| t.2));
+    // (v3.6.1 fix I9) Fallback eliminado para landing_fpm.
+    // ANTES caía a `estimate_peak_metrics` que devolvía valores
+    // hardcoded por tipo de avión — eso hacía que TODOS los vuelos
+    // de A320 mostraran -220 fpm, todos los 737 -220, etc., como si
+    // hubieran aterrizado idéntico. El usuario reportó "todos los
+    // aterrizajes son iguales -200/-220 fpm" — esa era la causa.
+    //
+    // Para GS/TAS también descartamos el fallback de aircraft type
+    // por la misma razón. Si el track no aporta datos, mejor mostrar
+    // "—" en UI que un número falso.
+    //
+    // Quedamos sólo con un fallback razonable: si max_ground_speed
+    // del track es null PERO el track tiene altitud > 30000 ft, sabemos
+    // que voló high-altitude → al menos podemos estimar GS típica de
+    // crucero a esa altitud. Pero NO landing_fpm — ese es evento
+    // puntual del touchdown, no puede estimarse.
+    // path_or_livery sigue siendo usado arriba por estimate_payload
 
     // 9. Distancia — preferimos GREAT-CIRCLE origen→destino vs distancia
     //    del track. La distancia gran-circular es la métrica estándar para
@@ -1831,6 +1887,27 @@ async fn import_one(
     //     sobre imports VAS, no sólo sobre vuelos volados en vivo con
     //     SimConnect (Q13=a del kickoff).
     derive_and_persist_phases(pool, flight_id, &track).await?;
+
+    // 14. (v3.6.1 fix I5) Auto-score del vuelo recién importado.
+    //     ANTES sólo se puntuaban los vuelos volados en vivo (via
+    //     finalize_after_finish del watcher). El usuario reportó que
+    //     "algunos vuelos muestran calificación y otros no" — porque
+    //     los imports nunca recibían score. Ahora lo computamos al
+    //     vuelo y persistimos en flight_log.score_total/max/grade +
+    //     flight_log_score_item.
+    //
+    //     Sólo aplicable a status='completed' — los partial no tienen
+    //     sentido puntuarlos (incompletos). Errores aquí no abortan
+    //     el import; logueamos y seguimos.
+    if final_status == "completed" {
+        if let Err(e) = crate::scoring::score_flight(pool, flight_id).await {
+            tracing::warn!(
+                target: "vas_acars",
+                "auto-score on import failed for flight {}: {:#}",
+                flight_id, e
+            );
+        }
+    }
 
     if exists.is_some() {
         Ok(ImportOutcome::Updated)

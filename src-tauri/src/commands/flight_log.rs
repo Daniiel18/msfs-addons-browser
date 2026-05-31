@@ -593,11 +593,51 @@ pub async fn delete_flights_by_source(
 ///     match, fallback al livery name.
 #[tauri::command]
 pub async fn vas_acars_import(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<VasImportReport, String> {
+    use tauri::Emitter;
     tracing::info!(target: "vas_acars", "import invoked");
-    vas_acars::import_all(&state.db).await.map_err(|e| {
+    let report = vas_acars::import_all(&state.db).await.map_err(|e| {
         tracing::error!(target: "vas_acars", "import failed: {}", e);
         e.to_string()
-    })
+    })?;
+
+    // (v3.6.1 fix I5) Auto-upload al cloud después del batch — si el
+    // usuario está conectado a Google Drive. Esto es lo que pidió:
+    // "el score se sincroniza en la nube automáticamente". Lo hacemos
+    // UNA vez al final del batch (no por vuelo) para no spam-eat la
+    // API. Errores se loguean + emiten como evento `score:upload:error`
+    // pero NO abortan el import (los datos ya están persistidos local).
+    if report.imported_count > 0 || report.updated_count > 0 {
+        let pool_c = state.db.clone();
+        let http_c = state.http.clone();
+        let app_c = app.clone();
+        tokio::spawn(async move {
+            let _ = app_c.emit(
+                "score:upload:started",
+                &serde_json::json!({ "source": "vas-acars-batch" }),
+            );
+            match crate::cloud_sync::upload_all(&pool_c, &http_c).await {
+                Ok(rep) => {
+                    tracing::info!(
+                        target: "vas_acars",
+                        "auto-upload after VAS import OK: {:?}", rep
+                    );
+                    let _ = app_c.emit("score:upload:success", &rep);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "vas_acars",
+                        "auto-upload after VAS import failed (probably not connected to cloud — ignoring): {:#}",
+                        e
+                    );
+                    // No emitimos error si el usuario no está conectado
+                    // — sería ruido. Sólo si está conectado y el upload falló.
+                }
+            }
+        });
+    }
+
+    Ok(report)
 }
