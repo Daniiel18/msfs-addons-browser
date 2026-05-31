@@ -32,6 +32,26 @@ interface FlightLogState {
     tag: { icao: string | null; name: string } | null,
   ) => void;
 
+  /** (v3.6.3 fix J2) Progreso del import VAS-ACARS. Global para que
+   *  cuando el usuario cierra Settings y la reabre, el botón siga
+   *  mostrando la barra de progreso donde iba. `null` = idle. */
+  vasImport: {
+    running: boolean;
+    current: number;
+    total: number;
+    phase: "started" | "importing" | "done";
+  } | null;
+  setVasImport: (
+    p:
+      | {
+          running: boolean;
+          current: number;
+          total: number;
+          phase: "started" | "importing" | "done";
+        }
+      | null,
+  ) => void;
+
   bootstrap: () => Promise<void>;
   reload: () => Promise<void>;
   reloadAirlines: () => Promise<void>;
@@ -48,9 +68,13 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
   lastError: null,
   airlines: [],
   selectedAirline: null,
+  vasImport: null,
 
   setSelectedAirline(tag) {
     set({ selectedAirline: tag });
+  },
+  setVasImport(p) {
+    set({ vasImport: p });
   },
 
   async bootstrap() {
@@ -76,6 +100,32 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
     api
       .onFlightStatus((s) => set({ status: s }))
       .catch((e) => console.warn("flight status subscribe failed:", e));
+    // (v3.6.3 fix J2) Suscripción al progreso de import VAS-ACARS.
+    // El backend emite "vas:import:progress" con { current, total, phase }.
+    // Guardamos el state global; el botón en Settings lee de aquí en
+    // vez de tener su propio useState — así al cerrar y reabrir el
+    // modal, la barra de progreso sigue avanzando.
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<{
+        current: number;
+        total: number;
+        phase: "started" | "importing" | "done";
+      }>("vas:import:progress", (event) => {
+        const p = event.payload;
+        if (p.phase === "done") {
+          // Mostrar 100% por 1.5s y luego limpiar.
+          set({ vasImport: { running: true, ...p } });
+          setTimeout(() => {
+            const s = useFlightLogStore.getState();
+            if (s.vasImport?.phase === "done") {
+              set({ vasImport: null });
+            }
+          }, 1500);
+        } else {
+          set({ vasImport: { running: true, ...p } });
+        }
+      }).catch((e) => console.warn("vas:import:progress subscribe failed:", e));
+    });
   },
 
   async reload() {

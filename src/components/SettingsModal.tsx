@@ -1508,12 +1508,21 @@ function MsfsLogbookRow({
 }: {
   onFeedback: (msg: string | null) => void;
 }) {
-  const [importingVas, setImportingVas] = useState(false);
+  // (v3.6.3 fix J2) Estado del import ahora vive en el store global —
+  // el progreso persiste al cerrar y reabrir Settings.
+  const vasImport = useFlightLogStore((s) => s.vasImport);
+  const setVasImport = useFlightLogStore((s) => s.setVasImport);
   const reload = useFlightLogStore((s) => s.reload);
+  const importing = !!vasImport?.running;
+  const percent = vasImport && vasImport.total > 0
+    ? Math.round((vasImport.current / vasImport.total) * 100)
+    : 0;
 
   const onImportVas = async () => {
     console.log("[logbook] VAS-ACARS import clicked");
-    setImportingVas(true);
+    // Set inmediato del state para que el botón muestre 0% incluso
+    // antes de que llegue el primer evento del backend (latencia ~50ms).
+    setVasImport({ running: true, current: 0, total: 0, phase: "started" });
     onFeedback(t("settings.msfs_logbook.importing"));
     try {
       const vas = await api.vasAcarsImport();
@@ -1533,8 +1542,7 @@ function MsfsLogbookRow({
     } catch (e) {
       console.error("[logbook] vas import error:", e);
       onFeedback(t("settings.msfs_logbook.error", { message: String(e) }));
-    } finally {
-      setImportingVas(false);
+      setVasImport(null); // limpiar barra en caso de error
     }
   };
 
@@ -1548,20 +1556,47 @@ function MsfsLogbookRow({
           <p className="mt-0.5 text-[11px] text-slate-500">
             {t("settings.msfs_logbook.hint")}
           </p>
+          {/* (v3.6.3 fix J2) Barra de progreso debajo del título.
+              Aparece sólo durante import; muestra "23/138 (16%)". */}
+          {importing && vasImport && (
+            <div className="mt-2 space-y-1">
+              <div className="flex items-baseline justify-between gap-2 text-[10px]">
+                <span className="text-slate-300">
+                  {vasImport.phase === "done"
+                    ? t("settings.msfs_logbook.progress_done")
+                    : t("settings.msfs_logbook.progress_label", {
+                        current: String(vasImport.current),
+                        total: String(vasImport.total),
+                      })}
+                </span>
+                <span className="font-mono tabular-nums text-emerald-300">
+                  {percent}%
+                </span>
+              </div>
+              <div className="h-1 w-full overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all duration-200"
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={onImportVas}
-            disabled={importingVas}
+            disabled={importing}
             title={t("settings.msfs_logbook.button_vas_hint")}
             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-emerald-500/40 hover:text-emerald-200 disabled:opacity-50"
           >
-            {importingVas ? (
+            {importing ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <FileText className="h-3.5 w-3.5" />
             )}
-            {t("settings.msfs_logbook.button_vas")}
+            {importing
+              ? `${percent}%`
+              : t("settings.msfs_logbook.button_vas")}
           </button>
           <DeleteImportsButton onFeedback={onFeedback} />
         </div>

@@ -223,22 +223,43 @@ impl VasFlightTrack {
         }
 
         let td = touchdown_idx?;
-        // Ventana de ~30s antes (≈6 samples a 5s sampling) para
-        // estabilizar el cálculo de VS.
-        let pre = td.saturating_sub(6);
-        if pre >= td {
+
+        // (v3.6.3 fix J3) Cálculo más preciso del touchdown FPM.
+        //
+        // ANTES: tomábamos 30s antes del touchdown y promediábamos —
+        // eso da el AVG VS del final approach, no el touchdown rate
+        // real. Reportaba números genéricos como -800 fpm aunque el
+        // VA tracker dijera -120.
+        //
+        // AHORA:
+        //   · `landing_idx` = ÚLTIMO sample airborne (td - 1) — el
+        //     sample del touchdown puede tener alt ya estabilizada
+        //     en el suelo, así que retrocedemos 1.
+        //   · `pre_idx`     = 2 samples atrás (~10s) — ventana corta
+        //     para capturar la VS instantánea de los últimos 10s
+        //     antes de tocar pista, que es lo que mide VA platforms
+        //     (smartCARS, vasystem, vatsim).
+        //
+        // Si los 10s no están disponibles (vuelo demasiado corto),
+        // bajamos a 5s. Si tampoco, devolvemos None — más honesto
+        // que un número promediado sobre toda la aproximación.
+        let landing_idx = td.saturating_sub(1);
+        let pre_idx = landing_idx.saturating_sub(2); // 2 samples = ~10s
+        if pre_idx >= landing_idx {
             return None;
         }
-        let alt_now = self.samples[td].altitude_m?;
-        let alt_pre = self.samples[pre].altitude_m?;
-        let dt = (self.samples[td].ts_epoch - self.samples[pre].ts_epoch) as f32;
+        let alt_now = self.samples[landing_idx].altitude_m?;
+        let alt_pre = self.samples[pre_idx].altitude_m?;
+        let dt = (self.samples[landing_idx].ts_epoch - self.samples[pre_idx].ts_epoch) as f32;
         if dt <= 0.0 {
             return None;
         }
         // FPM = Δalt(m) × 3.28084 (ft/m) / (dt/60) (min)
         let fpm = (alt_now - alt_pre) * 3.28084 / (dt / 60.0);
-        // Clamp a rango razonable (±5000 fpm) — outliers son spikes.
-        let clamped = fpm.clamp(-5000.0, 5000.0);
+        // Clamp a rango razonable (±2000 fpm). Antes era ±5000 pero
+        // touchdowns reales prácticamente nunca pasan -1500; valores
+        // más extremos son artefactos del sampling.
+        let clamped = fpm.clamp(-2000.0, 2000.0);
         Some(clamped as i64)
     }
 }
@@ -1342,12 +1363,17 @@ const TRACK_DOWNSAMPLE_STRIDE: usize = 1;
 ///
 /// Persistencia del track: 1 de cada 2 muestras (≈10s) a `flight_log_track`,
 /// para coincidir con el sampling rate del watcher SimConnect.
-pub async fn import_all(pool: &SqlitePool) -> anyhow::Result<VasImportReport> {
+pub async fn import_all(
+    pool: &SqlitePool,
+    app: Option<&tauri::AppHandle>,
+) -> anyhow::Result<VasImportReport> {
+    use tauri::Emitter;
     let candidates = detect_flights();
+    let total = candidates.len();
     let dir = flights_dir().map(|p| p.to_string_lossy().into_owned());
     let mut report = VasImportReport {
         source_dir: dir,
-        candidates_found: candidates.len(),
+        candidates_found: total,
         ..Default::default()
     };
 
@@ -1357,8 +1383,21 @@ pub async fn import_all(pool: &SqlitePool) -> anyhow::Result<VasImportReport> {
         target: "vas_acars",
         "summary index has {} entries; {} .bin candidates",
         summary_index.len(),
-        candidates.len()
+        total
     );
+
+    // (v3.6.3 fix J2) Emit "started" event para que la UI muestre
+    // la barra de progreso desde 0%.
+    if let Some(app) = app {
+        let _ = app.emit(
+            "vas:import:progress",
+            &serde_json::json!({
+                "current": 0_usize,
+                "total": total,
+                "phase": "started",
+            }),
+        );
+    }
 
     // (v3.5.0 F2 v5) Reporte agregado de razones de skip — para que el
     // usuario vea por qué se rechazó cada candidate sin tener que
@@ -1366,7 +1405,20 @@ pub async fn import_all(pool: &SqlitePool) -> anyhow::Result<VasImportReport> {
     let mut skip_reasons: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
-    for cand in candidates {
+    for (idx, cand) in candidates.into_iter().enumerate() {
+        // (v3.6.3 fix J2) Emit progress por archivo antes de procesarlo.
+        // El frontend dibuja: "Importando 23/138 (16%)".
+        if let Some(app) = app {
+            let _ = app.emit(
+                "vas:import:progress",
+                &serde_json::json!({
+                    "current": idx + 1,
+                    "total": total,
+                    "phase": "importing",
+                    "uuid": cand.uuid.clone(),
+                }),
+            );
+        }
         match import_one(pool, &cand, &summary_index).await {
             Ok(ImportOutcome::Inserted) => report.imported_count += 1,
             Ok(ImportOutcome::Updated) => report.updated_count += 1,
@@ -1397,6 +1449,22 @@ pub async fn import_all(pool: &SqlitePool) -> anyhow::Result<VasImportReport> {
                 report.skipped_invalid += 1;
             }
         }
+    }
+
+    // (v3.6.3 fix J2) Emit "done" para que la UI marque 100% +
+    // resetee la barra a estado idle tras ~1s.
+    if let Some(app) = app {
+        let _ = app.emit(
+            "vas:import:progress",
+            &serde_json::json!({
+                "current": total,
+                "total": total,
+                "phase": "done",
+                "imported": report.imported_count,
+                "updated": report.updated_count,
+                "skipped": report.skipped_invalid,
+            }),
+        );
     }
 
     // Log el agregado de razones de skip para que el usuario entienda

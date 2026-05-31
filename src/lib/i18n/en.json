@@ -247,6 +247,8 @@
   "settings.msfs_logbook.button_vas": "Import ACARS",
   "settings.msfs_logbook.button_vas_hint": "Import flights from VAS-ACARS — includes real track + peak metrics (max altitude, max speed, landing FPM)",
   "settings.msfs_logbook.importing": "Searching for VAS-ACARS flights…",
+  "settings.msfs_logbook.progress_label": "Importing {current}/{total}",
+  "settings.msfs_logbook.progress_done": "Done — wrapping up…",
   "settings.msfs_logbook.trying_vas": "MSFS has no local logbook — trying VAS-ACARS…",
   "settings.msfs_logbook.success": "Imported {count} flights from MSFS logbook ({skipped} duplicates skipped)",
   "settings.msfs_logbook.vas_success": "VAS-ACARS: {count} new · {updated} updated · {invalid} unreadable",

@@ -339,16 +339,26 @@ export function FlightBookView() {
           </div>
         </aside>
 
-        {/* COLUMNA DERECHA — apila vertical:
-              · Tabs bar (Checklist / Performance / Weather / NOTAMs) FUERA
-                del mapa, en la parte superior del panel.
-              · Map canvas con la glass card de detalle como overlay. */}
+        {/* COLUMNA DERECHA — apila vertical (v3.6.3 reorganización):
+              · AirlineTagFilter chips (siempre, FUERA del mapa).
+              · DetailActionsBar (sólo cuando hay vuelo seleccionado).
+              · Map canvas con glass overlays. */}
         <div className="flex min-h-0 flex-col gap-2">
-          <DetailActionsBar
-            selectedFlightId={selectedFlightId}
-            onToggleChecklist={() => setChecklistOpen((v) => !v)}
-            checklistOpen={checklistOpen && selectedFlightId != null}
-          />
+          {/* (v3.6.3 fix J4) Tags FUERA del mapa — comparten la fila
+              donde antes vivían los tabs. Los chips se ocultan
+              automáticamente si no hay airlines en el historial. */}
+          <AirlineTagFilter />
+          {/* (v3.6.3 fix J5) Tabs (Checklist / Performance / Weather /
+              NOTAMs) SOLO con vuelo seleccionado. Antes siempre se
+              renderizaban — el usuario no podía hacer nada útil con
+              ellos sin un vuelo activo. */}
+          {selectedFlightId != null && (
+            <DetailActionsBar
+              selectedFlightId={selectedFlightId}
+              onToggleChecklist={() => setChecklistOpen((v) => !v)}
+              checklistOpen={checklistOpen && selectedFlightId != null}
+            />
+          )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
             <div className="absolute inset-0">
               <RoutesMapView
@@ -356,14 +366,6 @@ export function FlightBookView() {
                 selectedFlightId={selectedFlightId}
               />
             </div>
-
-            {/* (v3.6.0 Phase H — Epic D → v3.6.1 fix I8) AirlineTagFilter
-                — chips horizontales en la parte superior del mapa.
-                ANTES sólo se renderizaba sin vuelo seleccionado;
-                ahora **siempre** visible para que el usuario pueda
-                cambiar de filtro sin tener que deseleccionar el vuelo
-                que está mirando. */}
-            <AirlineTagFilter />
 
             {/* (v3.6.0 Phase H — Epic E) ChecklistWidget — glass
                 overlay con score breakdown del vuelo seleccionado.
@@ -1911,52 +1913,51 @@ function AirlineTagFilter() {
   const airlines = useFlightLogStore((s) => s.airlines);
   const selected = useFlightLogStore((s) => s.selectedAirline);
   const setSelected = useFlightLogStore((s) => s.setSelectedAirline);
-  if (airlines.length === 0) return null;
+  // (v3.6.3 fix J4) Auto-ocultar tags con flight_count = 0 (puede
+  // pasar si el listado se desactualiza). Y no renderizar la barra
+  // si no hay ninguna aerolínea con vuelos.
+  const visible = airlines.filter((a) => a.flightCount > 0);
+  if (visible.length === 0) return null;
   return (
-    <div className="pointer-events-none absolute left-3 right-3 top-3 z-20 flex justify-center">
-      <div
-        className="pointer-events-auto flex max-w-full items-center gap-1.5 overflow-x-auto rounded-full border border-slate-700/70 bg-slate-950/75 px-2 py-1.5 ring-1 ring-slate-800/70 backdrop-blur-xl"
-        style={{ scrollbarWidth: "none" }}
+    <div className="flex w-full items-center gap-1.5 overflow-x-auto rounded-full border border-slate-700/70 bg-slate-950/65 px-2 py-1.5 ring-1 ring-slate-800/70" style={{ scrollbarWidth: "none" }}>
+      <button
+        onClick={() => setSelected(null)}
+        className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+          selected == null
+            ? "bg-emerald-500/25 text-emerald-100 ring-1 ring-emerald-500/40"
+            : "text-slate-300 hover:bg-slate-800/70"
+        }`}
       >
-        <button
-          onClick={() => setSelected(null)}
-          className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
-            selected == null
-              ? "bg-emerald-500/25 text-emerald-100 ring-1 ring-emerald-500/40"
-              : "text-slate-300 hover:bg-slate-800/70"
-          }`}
-        >
-          {t("fb.airline.all")}
-        </button>
-        {airlines.map((a) => {
-          const key = a.icao ?? a.name;
-          const isActive = selected
-            ? a.icao
-              ? selected.icao === a.icao
-              : selected.icao === null && selected.name === a.name
-            : false;
-          return (
-            <button
-              key={key}
-              onClick={() =>
-                setSelected(
-                  isActive ? null : { icao: a.icao, name: a.name },
-                )
-              }
-              title={a.name}
-              className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
-                isActive
-                  ? "bg-amber-500/25 text-amber-100 ring-1 ring-amber-500/40"
-                  : "text-slate-300 hover:bg-slate-800/70"
-              }`}
-            >
-              <span className="font-mono">{a.icao ?? a.name.slice(0, 3).toUpperCase()}</span>
-              <span className="ml-1 text-slate-500">·</span>
-              <span className="ml-1 tabular-nums">{a.flightCount}</span>
-            </button>
-          );
-        })}
-      </div>
+        {t("fb.airline.all")}
+      </button>
+      {visible.map((a) => {
+        const key = a.icao ?? a.name;
+        const isActive = selected
+          ? a.icao
+            ? selected.icao === a.icao
+            : selected.icao === null && selected.name === a.name
+          : false;
+        return (
+          <button
+            key={key}
+            onClick={() =>
+              setSelected(
+                isActive ? null : { icao: a.icao, name: a.name },
+              )
+            }
+            title={a.name}
+            className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+              isActive
+                ? "bg-amber-500/25 text-amber-100 ring-1 ring-amber-500/40"
+                : "text-slate-300 hover:bg-slate-800/70"
+            }`}
+          >
+            <span className="font-mono">{a.icao ?? a.name.slice(0, 3).toUpperCase()}</span>
+            <span className="ml-1 text-slate-500">·</span>
+            <span className="ml-1 tabular-nums">{a.flightCount}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

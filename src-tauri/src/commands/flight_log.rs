@@ -598,10 +598,12 @@ pub async fn vas_acars_import(
 ) -> Result<VasImportReport, String> {
     use tauri::Emitter;
     tracing::info!(target: "vas_acars", "import invoked");
-    let report = vas_acars::import_all(&state.db).await.map_err(|e| {
-        tracing::error!(target: "vas_acars", "import failed: {}", e);
-        e.to_string()
-    })?;
+    let report = vas_acars::import_all(&state.db, Some(&app))
+        .await
+        .map_err(|e| {
+            tracing::error!(target: "vas_acars", "import failed: {}", e);
+            e.to_string()
+        })?;
 
     // (v3.6.1 fix I5) Auto-upload al cloud después del batch — si el
     // usuario está conectado a Google Drive. Esto es lo que pidió:

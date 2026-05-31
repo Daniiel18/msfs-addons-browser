@@ -198,42 +198,22 @@ export function RoutesMapView({
         },
       });
       // FlightLog — verde esmeralda con halo (vuelos reales).
-      // (v3.6.0 Phase H — Epic D) Las opacidades del glow + line se
-      // interpolan por la prop `match` que añadimos en flightLogGeojson:
-      // 1 cuando matchea el filtro de aerolínea o no hay filtro,
-      // 0.15 cuando NO matchea (atenuado pero todavía visible).
+      // (v3.6.3 fix J4) Vuelta a opacity fija — el filtro de aerolínea
+      // ahora EXCLUYE features no-matching en lugar de atenuarlas.
       map.addSource("rt-flightlog", { type: "geojson", data: empty });
       map.addLayer({
         id: "rt-flightlog-line-glow",
         type: "line",
         source: "rt-flightlog",
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#34d399",
-          "line-width": 5,
-          "line-opacity": [
-            "case",
-            ["==", ["coalesce", ["get", "match"], 1], 1],
-            0.35,
-            0.08,
-          ],
-        },
+        paint: { "line-color": "#34d399", "line-width": 5, "line-opacity": 0.35 },
       });
       map.addLayer({
         id: "rt-flightlog-line",
         type: "line",
         source: "rt-flightlog",
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#34d399",
-          "line-width": 2.4,
-          "line-opacity": [
-            "case",
-            ["==", ["coalesce", ["get", "match"], 1], 1],
-            1.0,
-            0.18,
-          ],
-        },
+        paint: { "line-color": "#34d399", "line-width": 2.4 },
       });
       // Endpoints — círculos en origen/destino.
       map.addSource("rt-endpoints", { type: "geojson", data: empty });
@@ -688,13 +668,11 @@ export function RoutesMapView({
     [simbriefFlights, showSimbriefLines, detailMode],
   );
 
-  // SimConnect: verde esmeralda con halo — vuelos reales son
-  // los que más le importan al usuario, así que pesan más.
-  // En modo detalle se oculta (lo reemplaza el track real).
-  // (v3.6.0 Phase H — Epic D) Cada feature lleva `match`:
-  //   · 1 si no hay filtro de aerolínea o la entry matchea
-  //   · 0 si hay filtro y NO matchea
-  // El layer-paint usa `match` para atenuar la opacidad.
+  // SimConnect: verde esmeralda con halo.
+  // (v3.6.3 fix J4) Focus EXCLUSIVO: cuando hay airline activa, los
+  // vuelos que NO matchean simplemente se EXCLUYEN del GeoJSON (antes
+  // se atenuaban con opacity — al usuario no le gustó). El mapa muestra
+  // sólo las rutas filtradas, sin ruido visual de las demás.
   const selectedAirline = useFlightLogStore((s) => s.selectedAirline);
   const flightLogGeojson = useMemo<
     GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
@@ -710,20 +688,20 @@ export function RoutesMapView({
                 e.destinationLat !== null &&
                 e.destinationLon !== null,
             )
+            .filter((e) => {
+              if (!selectedAirline) return true;
+              return selectedAirline.icao
+                ? e.airlineIcao === selectedAirline.icao
+                : e.airlineIcao === null &&
+                    e.aircraftAirline === selectedAirline.name;
+            })
             .map((e) => {
-              const matches = selectedAirline
-                ? selectedAirline.icao
-                  ? e.airlineIcao === selectedAirline.icao
-                  : e.airlineIcao === null &&
-                    e.aircraftAirline === selectedAirline.name
-                : true;
               return {
                 type: "Feature" as const,
                 properties: {
                   id: e.id,
                   label: `${e.originIcao ?? "?"} → ${e.destinationIcao ?? "?"}`,
                   distanceNm: e.distanceNm,
-                  match: matches ? 1 : 0,
                 },
                 geometry: {
                   type: "MultiLineString" as const,

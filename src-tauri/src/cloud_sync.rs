@@ -498,12 +498,18 @@ async fn fresh_access_token(
     let refresh_token = get_setting(pool, KEY_REFRESH_TOKEN)
         .await?
         .ok_or_else(|| anyhow!("No conectado — pulsa Conectar primero"))?;
-    let client_id = get_setting(pool, KEY_CLIENT_ID)
-        .await?
-        .ok_or_else(|| anyhow!("Client ID no configurado"))?;
-    let client_secret = get_setting(pool, KEY_CLIENT_SECRET)
-        .await?
-        .ok_or_else(|| anyhow!("Client Secret no configurado"))?;
+    // (v3.6.3 fix I13) Usar resolve_credentials para que mire los valores
+    // hardcoded del binario primero (build.rs + secrets.local.toml) y
+    // SOLO si faltan caiga al fallback DB. Antes leía solo DB y daba
+    // "Client ID no configurado" en step 3 del diagnostic aunque las
+    // credenciales estuvieran embedidas correctamente.
+    let (cid_opt, secret_opt) = resolve_credentials(pool).await?;
+    let client_id = cid_opt
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("Client ID no embebido en el binario (re-buildea con secrets.local.toml)"))?;
+    let client_secret = secret_opt
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("Client Secret no embebido en el binario"))?;
     let resp = http
         .post("https://oauth2.googleapis.com/token")
         .form(&[
