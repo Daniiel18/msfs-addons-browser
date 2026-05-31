@@ -605,6 +605,16 @@ pub async fn vas_acars_import(
             e.to_string()
         })?;
 
+    // (v3.6.5 fix L1) Emit `flightlog://changed` para que el store del
+    // frontend refresque entries Y airlines. Sin esto, los chips de
+    // aerolínea no aparecían tras re-importar (el usuario lo reportó:
+    // "cuando vuelvo a importar no me vuelven a aparecer los tags").
+    // El watcher de SimConnect emite este evento al finish_flight, pero
+    // el path de import VAS lo omitía — la suscripción universal en
+    // useFlightLogStore.bootstrap llama tanto reload() como
+    // reloadAirlines() al recibirlo.
+    let _ = app.emit("flightlog://changed", ());
+
     // (v3.6.1 fix I5) Auto-upload al cloud después del batch — si el
     // usuario está conectado a Google Drive. Esto es lo que pidió:
     // "el score se sincroniza en la nube automáticamente". Lo hacemos

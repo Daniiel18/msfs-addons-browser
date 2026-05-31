@@ -167,97 +167,78 @@ impl VasFlightTrack {
         }
     }
 
-    /// Landing FPM = vertical speed (ft/min) calculada en el momento
-    /// del touchdown.
+    /// Landing FPM = vertical speed (ft/min) en el momento del touchdown.
     ///
-    /// (v3.6.1 fix I9) Algoritmo dual:
+    /// (v3.6.5 fix L2) **Rewrite completo** después de descubrir que
+    /// el campo `f21` que yo creía era `on_ground` en realidad SIEMPRE
+    /// vale 1 en los .bin de VAS-ACARS (verificado con diagnóstico
+    /// Python sobre 2 archivos del usuario, 8000+ samples). No es un
+    /// flag de aterrizaje sino algún otro indicador que VAS emite
+    /// constantemente.
     ///
-    ///   **A. Si hay `on_ground`** (campo f21 parseado): detectamos
-    ///   touchdown como la **última transición `false → true`**.
+    /// Sin `on_ground` confiable, el algoritmo se basa **solo en
+    /// altitud**:
     ///
-    ///   **B. Si NO hay `on_ground`** (algunos .bin lo omiten): buscamos
-    ///   el **último sample con altitud > 100 m** sobre la altitud
-    ///   final del track — eso aproxima el momento "todavía volando".
-    ///   El touchdown es el siguiente sample con altitud menor. Esto
-    ///   antes caía al `estimate_peak_metrics` por tipo de avión que
-    ///   devolvía -200/-220 hardcoded para TODOS los vuelos, dando la
-    ///   ilusión que el aterrizaje era idéntico (-200 fpm exactos en
-    ///   todo el historial). Ahora la VS es REAL, calculada del track.
+    ///   1. **Runway elevation** = altitud del último sample (plane
+    ///      en taxi/parking, alt ≈ field elevation).
+    ///   2. **Buscamos hacia atrás** desde el final del track hasta
+    ///      encontrar el primer sample cuya altitud > runway + 20m.
+    ///      Ese sample es el "último airborne" — todavía descendiendo.
+    ///   3. **Touchdown** = el sample inmediatamente después del
+    ///      último airborne. Su altitud ya está cerca de runway.
+    ///   4. **VS touchdown** = (alt[touchdown] - alt[last_airborne])
+    ///      / dt × 60. Ese delta sobre los ~5s del sampling de VAS
+    ///      es el promedio del flare + contacto inicial.
+    ///
+    /// Limitación conocida: VAS samplea a 5s. No podemos calcular VS
+    /// sub-5s (no hay data point intermedio). Las plataformas VA tipo
+    /// skyteamvirtual capturan con resolución mayor durante el
+    /// touchdown (ACARS de Fenix, PMDG etc. samplean a 0.5-1s
+    /// internamente y guardan el peak VS al touchdown). Sin acceso a
+    /// esa data, este es el mejor estimate posible desde el .bin.
     pub fn landing_fpm(&self) -> Option<i64> {
         if self.samples.len() < 4 {
             return None;
         }
 
-        // === Camino A: transición on_ground false→true ===
-        let mut touchdown_idx: Option<usize> = None;
-        let has_on_ground_data = self.samples.iter().any(|s| s.on_ground.is_some());
-        if has_on_ground_data {
-            for i in 1..self.samples.len() {
-                let prev = self.samples[i - 1].on_ground.unwrap_or(true);
-                let curr = self.samples[i].on_ground.unwrap_or(true);
-                if !prev && curr {
-                    touchdown_idx = Some(i);
+        // 1. Runway elevation = alt del último sample (taxi/parking).
+        let runway_alt = self.samples.last().and_then(|s| s.altitude_m)?;
+
+        // 2. Walk BACKWARDS desde el final. Encontrar el ÚLTIMO sample
+        //    cuya altitud está claramente arriba del runway (>20m,
+        //    para tolerar GPS noise y plane parado en pendiente).
+        //    Ese es el "last airborne" sample.
+        let mut last_airborne_idx: Option<usize> = None;
+        for i in (0..self.samples.len()).rev() {
+            if let Some(a) = self.samples[i].altitude_m {
+                if (a - runway_alt) > 20.0 {
+                    last_airborne_idx = Some(i);
+                    break;
                 }
             }
         }
+        let la = last_airborne_idx?;
 
-        // === Camino B: heurística por altitud cuando A falla ===
-        if touchdown_idx.is_none() {
-            // Tomamos altitud final como "referencia tierra" para este
-            // vuelo (puede ser un aeropuerto a 5000ft de elevation).
-            let last_alt = self.samples.last().and_then(|s| s.altitude_m)?;
-            // Buscamos el ÚLTIMO sample con altitud >100m por encima
-            // de la altitud final. El touchdown está justo después.
-            let mut last_airborne_idx: Option<usize> = None;
-            for (i, s) in self.samples.iter().enumerate() {
-                if let Some(a) = s.altitude_m {
-                    if (a - last_alt) > 100.0 {
-                        last_airborne_idx = Some(i);
-                    }
-                }
-            }
-            if let Some(li) = last_airborne_idx {
-                // El touchdown es ~3 samples después (≈15s a 5s/sample).
-                touchdown_idx = Some((li + 3).min(self.samples.len() - 1));
-            }
-        }
-
-        let td = touchdown_idx?;
-
-        // (v3.6.4 fix K1) Cálculo del touchdown FPM más fiel a lo que
-        // miden las plataformas VA (skyteamvirtual, vasystem, smartCARS).
-        //
-        // Iteraciones previas:
-        //   · v1: ventana de 30s antes del touchdown → AVG del descent,
-        //         devolvía valores enormes (-800fpm cuando real era -180).
-        //   · v2 (v3.6.3): 10s antes del último airborne → mejor pero
-        //         todavía incluye parte del descent pre-flare.
-        //   · v3 (este): el intervalo de 5s que CONTIENE el touchdown,
-        //         es decir [td-1 = último airborne, td = primer
-        //         on_ground]. Ese delta promedia el flare + el
-        //         contacto inicial — coincide casi al exacto con lo
-        //         que reportan los VA trackers.
-        //
-        // El sample `td` aterriza en plena pista a altitud constante
-        // (~runway elevation). El sample `td-1` está pocos metros
-        // arriba todavía descendiendo. La diferencia / dt = VS
-        // instantánea del touchdown.
-        if td == 0 {
+        // 3. Touchdown sample = el siguiente al last airborne.
+        let td = la + 1;
+        if td >= self.samples.len() {
             return None;
         }
-        let landing_idx = td;
-        let pre_idx = td - 1;
-        let alt_now = self.samples[landing_idx].altitude_m?;
-        let alt_pre = self.samples[pre_idx].altitude_m?;
-        let dt = (self.samples[landing_idx].ts_epoch - self.samples[pre_idx].ts_epoch) as f32;
+
+        // 4. VS touchdown = delta de altitud sobre el intervalo
+        //    [last_airborne, touchdown]. Es el promedio durante el flare
+        //    + contacto inicial — lo más cercano que podemos calcular
+        //    al touchdown rate real con sampling de 5s.
+        let alt_now = self.samples[td].altitude_m?;
+        let alt_pre = self.samples[la].altitude_m?;
+        let dt = (self.samples[td].ts_epoch - self.samples[la].ts_epoch) as f32;
         if dt <= 0.0 {
             return None;
         }
         // FPM = Δalt(m) × 3.28084 (ft/m) / (dt/60) (min)
         let fpm = (alt_now - alt_pre) * 3.28084 / (dt / 60.0);
-        // Clamp ±2000 fpm — touchdowns reales prácticamente nunca
-        // pasan -1500; valores más extremos son artefactos del
-        // sampling de VAS o un go-around mal detectado.
+        // Clamp ±2000 fpm — touchdowns reales raramente pasan -1500;
+        // valores extremos son artefactos del sampling o go-arounds.
         let clamped = fpm.clamp(-2000.0, 2000.0);
         Some(clamped as i64)
     }

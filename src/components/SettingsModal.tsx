@@ -1513,6 +1513,7 @@ function MsfsLogbookRow({
   const vasImport = useFlightLogStore((s) => s.vasImport);
   const setVasImport = useFlightLogStore((s) => s.setVasImport);
   const reload = useFlightLogStore((s) => s.reload);
+  const reloadAirlines = useFlightLogStore((s) => s.reloadAirlines);
   const importing = !!vasImport?.running;
   const percent = vasImport && vasImport.total > 0
     ? Math.round((vasImport.current / vasImport.total) * 100)
@@ -1538,7 +1539,11 @@ function MsfsLogbookRow({
           invalid: String(vas.skippedInvalid),
         }),
       );
-      await reload();
+      // (v3.6.5 fix L1) Refresca entries + airlines en paralelo. El
+      // backend ya emite flightlog://changed, pero el doble fetch acá
+      // garantiza que la UI esté lista cuando el usuario vuelva al
+      // FlightBook (sin esperar al evento que es async).
+      await Promise.all([reload(), reloadAirlines()]);
     } catch (e) {
       console.error("[logbook] vas import error:", e);
       onFeedback(t("settings.msfs_logbook.error", { message: String(e) }));
