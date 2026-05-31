@@ -224,30 +224,29 @@ impl VasFlightTrack {
 
         let td = touchdown_idx?;
 
-        // (v3.6.3 fix J3) Cálculo más preciso del touchdown FPM.
+        // (v3.6.4 fix K1) Cálculo del touchdown FPM más fiel a lo que
+        // miden las plataformas VA (skyteamvirtual, vasystem, smartCARS).
         //
-        // ANTES: tomábamos 30s antes del touchdown y promediábamos —
-        // eso da el AVG VS del final approach, no el touchdown rate
-        // real. Reportaba números genéricos como -800 fpm aunque el
-        // VA tracker dijera -120.
+        // Iteraciones previas:
+        //   · v1: ventana de 30s antes del touchdown → AVG del descent,
+        //         devolvía valores enormes (-800fpm cuando real era -180).
+        //   · v2 (v3.6.3): 10s antes del último airborne → mejor pero
+        //         todavía incluye parte del descent pre-flare.
+        //   · v3 (este): el intervalo de 5s que CONTIENE el touchdown,
+        //         es decir [td-1 = último airborne, td = primer
+        //         on_ground]. Ese delta promedia el flare + el
+        //         contacto inicial — coincide casi al exacto con lo
+        //         que reportan los VA trackers.
         //
-        // AHORA:
-        //   · `landing_idx` = ÚLTIMO sample airborne (td - 1) — el
-        //     sample del touchdown puede tener alt ya estabilizada
-        //     en el suelo, así que retrocedemos 1.
-        //   · `pre_idx`     = 2 samples atrás (~10s) — ventana corta
-        //     para capturar la VS instantánea de los últimos 10s
-        //     antes de tocar pista, que es lo que mide VA platforms
-        //     (smartCARS, vasystem, vatsim).
-        //
-        // Si los 10s no están disponibles (vuelo demasiado corto),
-        // bajamos a 5s. Si tampoco, devolvemos None — más honesto
-        // que un número promediado sobre toda la aproximación.
-        let landing_idx = td.saturating_sub(1);
-        let pre_idx = landing_idx.saturating_sub(2); // 2 samples = ~10s
-        if pre_idx >= landing_idx {
+        // El sample `td` aterriza en plena pista a altitud constante
+        // (~runway elevation). El sample `td-1` está pocos metros
+        // arriba todavía descendiendo. La diferencia / dt = VS
+        // instantánea del touchdown.
+        if td == 0 {
             return None;
         }
+        let landing_idx = td;
+        let pre_idx = td - 1;
         let alt_now = self.samples[landing_idx].altitude_m?;
         let alt_pre = self.samples[pre_idx].altitude_m?;
         let dt = (self.samples[landing_idx].ts_epoch - self.samples[pre_idx].ts_epoch) as f32;
@@ -256,9 +255,9 @@ impl VasFlightTrack {
         }
         // FPM = Δalt(m) × 3.28084 (ft/m) / (dt/60) (min)
         let fpm = (alt_now - alt_pre) * 3.28084 / (dt / 60.0);
-        // Clamp a rango razonable (±2000 fpm). Antes era ±5000 pero
-        // touchdowns reales prácticamente nunca pasan -1500; valores
-        // más extremos son artefactos del sampling.
+        // Clamp ±2000 fpm — touchdowns reales prácticamente nunca
+        // pasan -1500; valores más extremos son artefactos del
+        // sampling de VAS o un go-around mal detectado.
         let clamped = fpm.clamp(-2000.0, 2000.0);
         Some(clamped as i64)
     }

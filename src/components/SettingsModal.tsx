@@ -1618,6 +1618,8 @@ function DeleteImportsButton({
 }) {
   const [deleting, setDeleting] = useState(false);
   const reload = useFlightLogStore((s) => s.reload);
+  const reloadAirlines = useFlightLogStore((s) => s.reloadAirlines);
+  const setSelectedAirline = useFlightLogStore((s) => s.setSelectedAirline);
 
   const onDelete = async () => {
     if (
@@ -1639,6 +1641,10 @@ function DeleteImportsButton({
         }),
       );
       await reload();
+      // (v3.6.4 fix K3) Refresca airlines + limpia el tag seleccionado
+      // — los chips se quedaban "fantasma" tras borrar todos.
+      await reloadAirlines();
+      setSelectedAirline(null);
     } catch (e) {
       onFeedback(`${t("common.error")}: ${String(e)}`);
     } finally {

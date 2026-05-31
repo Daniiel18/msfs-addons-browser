@@ -349,6 +349,8 @@
   "fb.action.edit": "Editar",
   "fb.detail.collapse": "Minimizar panel — libera el mapa",
   "fb.detail.expand": "Expandir panel — ver detalles",
+  "fb.detail.collapse_label": "Minimizar",
+  "fb.detail.expand_label": "Expandir",
   "fb.action.deselect": "Deseleccionar",
   "fb.card.select_tooltip": "Click para ver la ruta real de este vuelo en el mapa",
   "fb.card.no_route": "Ruta sin datos",

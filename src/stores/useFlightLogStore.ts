@@ -100,21 +100,38 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
     api
       .onFlightStatus((s) => set({ status: s }))
       .catch((e) => console.warn("flight status subscribe failed:", e));
-    // (v3.6.3 fix J2) Suscripción al progreso de import VAS-ACARS.
-    // El backend emite "vas:import:progress" con { current, total, phase }.
-    // Guardamos el state global; el botón en Settings lee de aquí en
-    // vez de tener su propio useState — así al cerrar y reabrir el
-    // modal, la barra de progreso sigue avanzando.
+    // (v3.6.3 fix J2 → v3.6.4 fix K4) Suscripción al progreso de import.
+    // Backend emite "vas:import:progress" con { current, total, phase,
+    // imported?, updated?, skipped? }. Al "done" disparamos:
+    //   · Notificación nativa Windows (Web Notification API — no
+    //     requiere plugin, anda en el WebView). Útil cuando el
+    //     usuario está focus en MSFS u otra app.
+    //   · Toast in-app via useToastStore.
     import("@tauri-apps/api/event").then(({ listen }) => {
       listen<{
         current: number;
         total: number;
         phase: "started" | "importing" | "done";
+        imported?: number;
+        updated?: number;
+        skipped?: number;
       }>("vas:import:progress", (event) => {
         const p = event.payload;
         if (p.phase === "done") {
-          // Mostrar 100% por 1.5s y luego limpiar.
           set({ vasImport: { running: true, ...p } });
+          // Pedir permiso lazy (la primera vez) y disparar la nativa.
+          void notifyImportDone(p.imported ?? 0, p.updated ?? 0);
+          // Toast in-app — usar dynamic import para evitar circular
+          // dependency con useToastStore.
+          import("./useToastStore").then(({ useToastStore }) => {
+            useToastStore.getState().push({
+              kind: "success",
+              title: "VAS-ACARS",
+              message: `${p.imported ?? 0} nuevos · ${p.updated ?? 0} actualizados`,
+              ttlMs: 5000,
+            });
+          });
+          // Auto-limpiar la barra de progreso tras 1.5s.
           setTimeout(() => {
             const s = useFlightLogStore.getState();
             if (s.vasImport?.phase === "done") {
@@ -151,6 +168,19 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
     try {
       await api.deleteFlightLogEntry(id);
       set((s) => ({ entries: s.entries.filter((e) => e.id !== id) }));
+      // (v3.6.4 fix K3) Refresca airlines — si era el último vuelo de
+      // esa aerolínea, el chip debe desaparecer. Antes los tags se
+      // quedaban persistentes tras borrar todos los vuelos.
+      await get().reloadAirlines();
+      // Si la aerolínea seleccionada ya no existe en el listado,
+      // desactiva el filtro automáticamente.
+      const sel = get().selectedAirline;
+      if (sel) {
+        const stillExists = get().airlines.some((a) =>
+          sel.icao ? a.icao === sel.icao : a.name === sel.name,
+        );
+        if (!stillExists) set({ selectedAirline: null });
+      }
     } catch (e) {
       console.warn("flightlog delete failed:", e);
     }
@@ -171,4 +201,41 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
 if (typeof window !== "undefined") {
   (window as unknown as { __seedFlightLog?: () => Promise<void> }).__seedFlightLog =
     () => useFlightLogStore.getState().seedDemoEntry();
+}
+
+/**
+ * (v3.6.4 fix K4) Notificación nativa de Windows cuando termina el
+ * import de VAS-ACARS. Usa la Web Notification API que el WebView
+ * de Tauri expone gratis — no requiere instalar el plugin
+ * `tauri-plugin-notification`.
+ *
+ * El permiso se pide la primera vez que se intenta notificar; una
+ * vez aceptado, Windows lo recuerda y las notificaciones aparecen en
+ * el centro de notificaciones aunque la app esté minimizada.
+ */
+async function notifyImportDone(imported: number, updated: number) {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return;
+  }
+  try {
+    if (Notification.permission === "default") {
+      // Pedir permiso silenciosamente — si el usuario rechaza, no
+      // volvemos a molestar.
+      await Notification.requestPermission().catch(() => {});
+    }
+    if (Notification.permission !== "granted") {
+      return;
+    }
+    const title = "SimFleet — Importación completa";
+    const body =
+      imported === 0 && updated === 0
+        ? "No había vuelos nuevos para importar."
+        : `${imported} vuelos importados · ${updated} actualizados`;
+    new Notification(title, {
+      body,
+      tag: "simfleet-vas-import-done", // reemplaza notificación previa si existe
+    });
+  } catch (e) {
+    console.warn("notifyImportDone failed:", e);
+  }
 }

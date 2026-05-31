@@ -349,6 +349,8 @@
   "fb.action.edit": "Edit",
   "fb.detail.collapse": "Collapse panel — show the map",
   "fb.detail.expand": "Expand panel — show details",
+  "fb.detail.collapse_label": "Minimize",
+  "fb.detail.expand_label": "Expand",
   "fb.action.deselect": "Deselect",
   "fb.card.select_tooltip": "Click to view this flight's actual track on the map",
   "fb.card.no_route": "No route data",

@@ -26,7 +26,7 @@ import { useSimBriefStore } from "../stores/useSimBriefStore";
 import type { FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
-import { Pencil } from "lucide-react";
+import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
 /**
  * Vista completa del FlightBook — bitácora de vuelos reales
@@ -99,6 +99,27 @@ export function FlightBookView() {
     }
   }, [selectedFlightId, checklistOpen]);
 
+  // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
+  // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
+  // para evitar TDZ errors.
+  const selectedAirline = useFlightLogStore((s) => s.selectedAirline);
+
+  // (v3.6.4 fix K2) Cuando el usuario cambia de tag de aerolínea,
+  // deseleccionar el vuelo actual. El usuario reportó: "el focus
+  // cuando filtro por tags no funciona, solo funciona si hago un
+  // cambio de pantallas". Causa: con un vuelo seleccionado el
+  // RoutesMapView está en detailMode (oculta TODAS las rutas y
+  // muestra sólo el track del seleccionado), así que el filter de
+  // aerolínea no tenía efecto visual. Al cambiar de pantalla, el
+  // vuelo se deselecciona y el map vuelve al modo overview donde
+  // el filter sí aplica. Ahora hacemos esa transición automática.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (selectedAirline) {
+      setSelectedFlightId(null);
+    }
+  }, [selectedAirline]);
+
   // (v3.5.0 F3) `inFlight` solo cuenta cuando el watcher de SimConnect
   // está REALMENTE conectado y reportando posición. Sin esto, un vuelo
   // descargado del cloud con `endedAt = null` (estaba en curso en otra
@@ -111,10 +132,7 @@ export function FlightBookView() {
       : undefined;
   const completed = entries.filter((e) => e.endedAt !== null);
 
-  // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
-  // Lo declaramos arriba para que statsPool + filteredCompleted lo
-  // puedan referenciar sin order-of-declaration issues.
-  const selectedAirline = useFlightLogStore((s) => s.selectedAirline);
+  // `selectedAirline` ya declarado arriba (antes del useEffect del fix K2).
 
   // (v3.6.0 Phase H — Epic D) Pool de vuelos para stats — si hay
   // airline activa, usamos sólo esos; sino, todos los completados.
@@ -592,9 +610,9 @@ function SelectedFlightPanel({
               {t("fb.selected_flight")}
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              {/* (v3.6.1 fix I6) Botón colapsar/expandir el panel para
-                  liberar el mapa cuando el usuario quiere ver la
-                  trayectoria completa sin que el overlay tape la ruta. */}
+              {/* (v3.6.1 fix I6 → v3.6.4 fix K5) Botón colapsar/expandir
+                  con iconos lucide claros (Maximize2/Minimize2). El
+                  usuario reportó que el punto "▴/▾" se veía confuso. */}
               <button
                 onClick={onToggleCollapse}
                 title={
@@ -602,9 +620,14 @@ function SelectedFlightPanel({
                     ? t("fb.detail.expand")
                     : t("fb.detail.collapse")
                 }
-                className="inline-flex items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
               >
-                {collapsed ? "▾" : "▴"}
+                {collapsed ? (
+                  <Maximize2 className="h-2.5 w-2.5" />
+                ) : (
+                  <Minimize2 className="h-2.5 w-2.5" />
+                )}
+                {collapsed ? t("fb.detail.expand_label") : t("fb.detail.collapse_label")}
               </button>
               <button
                 onClick={() => setEditing(true)}
