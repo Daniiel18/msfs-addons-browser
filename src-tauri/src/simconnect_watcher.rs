@@ -1394,6 +1394,15 @@ mod windows_simconnect {
         // `touch_landing` para no perderlo si la app crashea entre
         // touchdown y engine shutdown.
         let mut captured_landing_fpm: Option<i64> = None;
+        // (v4.0.0 P7.5) Post-touchdown observation window. El simvar
+        // `PLANE TOUCHDOWN NORMAL VELOCITY` se actualiza AT touchdown
+        // pero a veces MSFS no lo tiene listo en el primer tick post-
+        // touchdown (especialmente con aviones custom como Fenix). Por
+        // eso, durante los ~3 segundos posteriores al touch (12 ticks
+        // a 4Hz) seguimos leyendo el simvar y el `vs` y conservamos el
+        // MIN (más negativo). Reset a 0 cuando salimos de Landed o
+        // cuando se vence el window.
+        let mut post_touchdown_ticks_remaining: u32 = 0;
         // True si vimos al menos un motor encendido durante este
         // vuelo. Sin esto, la condición "todos los motores apagados"
         // sería trivialmente cierta al arrancar el sim antes de
@@ -1709,6 +1718,7 @@ mod windows_simconnect {
                         &mut ticks_since_persist,
                         &mut ticks_since_emit,
                         &mut captured_landing_fpm,
+                        &mut post_touchdown_ticks_remaining,
                         &mut engines_seen_running,
                         &mut idle_ticks_in_landed,
                         &mut initial_fuel_lb,
@@ -2094,6 +2104,7 @@ mod windows_simconnect {
         ticks_since_persist: &mut u32,
         ticks_since_emit: &mut u32,
         captured_landing_fpm: &mut Option<i64>,
+        post_touchdown_ticks_remaining: &mut u32,
         engines_seen_running: &mut bool,
         idle_ticks_in_landed: &mut u32,
         initial_fuel_lb: &mut Option<f64>,
@@ -2189,6 +2200,68 @@ mod windows_simconnect {
             }
         } else {
             *idle_ticks_in_landed = 0;
+        }
+
+        // (v4.0.0 P7.5) Post-touchdown observation window. La
+        // transición Airborne→Landed setea `post_touchdown_ticks_remaining`
+        // a 12 (3s @ 4Hz). Mientras esté > 0 y sigamos en Landed,
+        // releemos el simvar `PLANE TOUCHDOWN NORMAL VELOCITY` y el
+        // `vs` en CADA tick, conservando el MIN (más negativo) si
+        // mejora el valor capturado. Esto cubre el caso donde el
+        // simvar todavía no estaba listo al primer tick post-touch
+        // (Fenix A319, FBW A380, otros aviones third-party que
+        // actualizan el simvar 1-3 frames más tarde).
+        //
+        // Persistimos en DB sólo cuando el MIN baja (no spam de
+        // touch_landing). Al salir de Landed (touch-and-go o
+        // IN/OnGround), no necesitamos reset explícito — la transición
+        // del state machine lo hace.
+        if matches!(*phase, FlightPhase::Landed) && *post_touchdown_ticks_remaining > 0 {
+            *post_touchdown_ticks_remaining -= 1;
+            // Lee simvar otra vez.
+            let live_simvar = data.touchdown_normal_velocity_fps;
+            let live_simvar_fpm = if live_simvar.is_finite() && live_simvar < -0.01 {
+                Some((live_simvar * 60.0) as i64)
+            } else {
+                None
+            };
+            // Live vs (instantáneo).
+            let live_vs_fpm = if vs.is_finite() && vs < -1.0 {
+                Some(vs as i64)
+            } else {
+                None
+            };
+            let candidate = match (live_simvar_fpm, live_vs_fpm) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            if let Some(new_fpm) = candidate {
+                let improved = match *captured_landing_fpm {
+                    None => true,
+                    Some(prev) => new_fpm < prev,
+                };
+                if improved {
+                    tracing::info!(
+                        target: "simconnect",
+                        "POST-TOUCHDOWN obs: landing_fpm {:?} → {} (simvar={:.3}fps vs={:.1}fpm ticks_left={})",
+                        *captured_landing_fpm,
+                        new_fpm,
+                        live_simvar,
+                        vs,
+                        *post_touchdown_ticks_remaining,
+                    );
+                    *captured_landing_fpm = Some(new_fpm);
+                    let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+                    if let Some(id) = id_opt {
+                        let pool_c = pool.clone();
+                        tokio::spawn(async move {
+                            let _ = crate::flight_log::touch_landing(&pool_c, id, new_fpm).await;
+                        });
+                    }
+                }
+            }
         }
 
         // (v1.1.1) Guard de posición — MSFS reporta el avión en
@@ -2294,6 +2367,12 @@ mod windows_simconnect {
                     let lon_c = lon;
                     let id_slot = current_flight_id.clone();
                     let app_c = app.clone();
+                    // Nota: pasamos `None, None` para aircraft meta —
+                    // al OUT el dispatch de meta puede no haber llegado
+                    // todavía. `populate_simbrief_async` (que corre
+                    // después y lee aircraft_atc del DB tras
+                    // update_aircraft_meta) hace el matching real con
+                    // validación de aircraft (P7.6).
                     let start_result = std::thread::scope(|s| {
                         let h = s.spawn(|| {
                             let rt = tokio::runtime::Builder::new_current_thread()
@@ -2321,8 +2400,18 @@ mod windows_simconnect {
                         // no bloquea el watcher. Ventana 7 días (era 48h
                         // que el usuario reportó como demasiado estricta;
                         // los OFPs viejos también deberían contar).
+                        // (v4.0.0 P7.6) populate_simbrief_async hace
+                        // cross-match con aircraft_atc y persiste el
+                        // simbrief_ofp_id link en la fila.
                         let pool_b = pool_c.clone();
                         tokio::spawn(async move {
+                            // Pequeño delay para que update_aircraft_meta
+                            // tenga tiempo de poblar aircraft_atc_type en
+                            // el DB antes de hacer el matching. El dispatch
+                            // de meta llega típicamente 1-3s después del
+                            // OUT (FLAG_DEFAULT = 1s polling). 2s es un
+                            // compromiso entre rapidez y precisión.
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                             populate_simbrief_async(&pool_b, id, lat_c, lon_c).await;
                         });
                     } else {
@@ -2481,6 +2570,15 @@ mod windows_simconnect {
                         );
                     }
                     *captured_landing_fpm = fpm;
+                    // (v4.0.0 P7.5) Abrir window de observación post-
+                    // touchdown — 12 ticks ≈ 3s a 4Hz. Durante ese
+                    // window seguimos leyendo el simvar y `vs` en
+                    // cada tick (en el branch `else` de Landed más
+                    // abajo) y actualizamos `captured_landing_fpm`
+                    // con el MIN observado. Cubre casos donde el
+                    // simvar todavía no estaba listo al ingresar a
+                    // Landed (Fenix A319 / aviones third-party).
+                    *post_touchdown_ticks_remaining = 12;
                     let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
                     if let Some(id) = id_opt {
                         if let Some(fpm_val) = fpm {
@@ -2500,7 +2598,7 @@ mod windows_simconnect {
                     }
                     tracing::info!(
                         target: "simconnect",
-                        "TOUCHDOWN — landing_fpm={:?} (taxi pendiente, esperando engine shutdown)",
+                        "TOUCHDOWN — landing_fpm={:?} (taxi pendiente, esperando engine shutdown, obs window=12 ticks)",
                         fpm
                     );
                     *idle_ticks_in_landed = 0;
@@ -3165,18 +3263,125 @@ mod windows_simconnect {
         lat: f64,
         lon: f64,
     ) {
-        // (v2.2.0) Origen del vuelo — primero intentamos leerlo del
-        // flight_log (caso IN: el vuelo ya tiene origin_icao). Si no
-        // hay, caemos al nearest airport del lat/lon (caso OUT: la
-        // fila aún no tiene origin_icao porque start_flight no lo
-        // guardó todavía).
-        let origin_from_db: Option<String> =
-            sqlx::query_scalar("SELECT origin_icao FROM flight_log WHERE id = ?1")
-                .bind(flight_id)
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten();
+        // (v4.0.0 P7.6) Leemos meta del vuelo. `aircraft_atc_type`
+        // viene del dispatch SimConnect (update_aircraft_meta), que
+        // puede haber llegado o no para cuando esta función corre.
+        let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT origin_icao, aircraft_atc_type, simbrief_ofp_id FROM flight_log WHERE id = ?1"
+        )
+        .bind(flight_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        let (origin_from_db, aircraft_atc_from_db, ofp_id_from_db) = match row {
+            Some((a, b, c)) => (a, b, c),
+            None => (None, None, None),
+        };
+
+        // (v4.0.0 P7.6) Si start_flight ya linkeó un OFP, RE-VALIDAMOS
+        // que ese OFP matchee el aircraft type actual (ya disponible
+        // gracias al dispatch de meta). Si no matchea, lo desligamos y
+        // re-evaluamos contra todos los OFPs no-consumidos. Esto cubre
+        // el caso de cuenta SimBrief compartida: start_flight pudo
+        // haber agarrado el OFP del compañero antes de saber el
+        // aircraft real.
+        if let Some(linked_ofp_id) =
+            ofp_id_from_db.as_deref().filter(|s| !s.is_empty())
+        {
+            let linked_ofp: Option<crate::simbrief::SimBriefFlight> = sqlx::query_as(
+                r#"
+                SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
+                       origin_icao, origin_name, origin_lat, origin_lon,
+                       destination_icao, destination_name, destination_lat, destination_lon,
+                       route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+                       pax_count, cargo_kg, fuel_burn_kg, units
+                FROM simbrief_flights
+                WHERE ofp_id = ?1
+                LIMIT 1
+                "#,
+            )
+            .bind(linked_ofp_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+
+            let aircraft_ok = match (
+                linked_ofp.as_ref().and_then(|o| o.aircraft_icao.as_deref()),
+                aircraft_atc_from_db.as_deref(),
+            ) {
+                (Some(ofp_ac), Some(plane_atc)) => {
+                    let a: String = ofp_ac
+                        .trim()
+                        .to_ascii_uppercase()
+                        .chars()
+                        .take(3)
+                        .collect();
+                    let b: String = plane_atc
+                        .trim()
+                        .to_ascii_uppercase()
+                        .chars()
+                        .take(3)
+                        .collect();
+                    !a.is_empty() && a == b
+                }
+                // Si falta una de las dos puntas, no podemos validar →
+                // asumimos OK (no romper vuelos pre-P7.6 donde no hay
+                // aircraft meta capturado).
+                _ => true,
+            };
+
+            if let (Some(ofp), true) = (linked_ofp.as_ref(), aircraft_ok) {
+                // Match OK — populamos pax/cargo/fuel del linked OFP.
+                let input = crate::flight_log::UpdateEntryInput {
+                    passengers: ofp.pax_count,
+                    cargo_kg: ofp.cargo_kg,
+                    fuel_used_kg: ofp.fuel_burn_kg,
+                    ..Default::default()
+                };
+                match crate::flight_log::update_entry(pool, flight_id, &input).await {
+                    Ok(_) => tracing::info!(
+                        target: "simconnect",
+                        "OFP {} re-validado para vuelo id={} (aircraft_atc={:?} ofp_aircraft={:?}) — pax={:?} cargo={:?}kg fuel={:?}kg",
+                        ofp.ofp_id,
+                        flight_id,
+                        aircraft_atc_from_db,
+                        ofp.aircraft_icao,
+                        ofp.pax_count,
+                        ofp.cargo_kg,
+                        ofp.fuel_burn_kg,
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "simconnect",
+                        "pre-populate del linked OFP {} falló: {e:#}",
+                        linked_ofp_id
+                    ),
+                }
+                return;
+            }
+
+            // Mismatch o OFP eliminado — limpiamos los campos VA que
+            // start_flight set (pueden ser de otro piloto si hay cuenta
+            // compartida) y re-matchearemos abajo.
+            tracing::warn!(
+                target: "simconnect",
+                "OFP {} linked al vuelo id={} NO matchea aircraft_atc={:?} (ofp_aircraft={:?}) — cleared, re-matching",
+                linked_ofp_id,
+                flight_id,
+                aircraft_atc_from_db,
+                linked_ofp.as_ref().and_then(|o| o.aircraft_icao.as_deref()),
+            );
+            let _ = sqlx::query(
+                "UPDATE flight_log SET simbrief_ofp_id = NULL, flight_number = NULL, callsign = NULL, airline_icao = NULL WHERE id = ?1"
+            )
+            .bind(flight_id)
+            .execute(pool)
+            .await;
+        }
+
+        // Re-match con aircraft_atc (puede ser None — el matcher cae a
+        // legacy behavior si no hay aircraft).
         let icao = match origin_from_db {
             Some(s) if !s.is_empty() => s,
             _ => {
@@ -3188,44 +3393,70 @@ mod windows_simconnect {
                 }
             }
         };
-        match crate::simbrief::find_recent_for_origin(pool, &icao, 7 * 24).await {
+        match crate::simbrief::find_matching_for_flight(
+            pool,
+            &icao,
+            aircraft_atc_from_db.as_deref(),
+            7 * 24,
+        ).await {
             Ok(Some(ofp)) => {
-                let input = crate::flight_log::UpdateEntryInput {
-                    passengers: ofp.pax_count,
-                    cargo_kg: ofp.cargo_kg,
-                    fuel_used_kg: ofp.fuel_burn_kg,
-                    ..Default::default()
-                };
-                if let Err(e) =
-                    crate::flight_log::update_entry(pool, flight_id, &input).await
+                let derived_airline = crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
+                if let Err(e) = sqlx::query(
+                    r#"
+                    UPDATE flight_log
+                    SET simbrief_ofp_id  = ?1,
+                        flight_number    = COALESCE(flight_number, ?2),
+                        callsign         = COALESCE(callsign, ?3),
+                        airline_icao     = COALESCE(airline_icao, ?4),
+                        passengers       = COALESCE(passengers, ?5),
+                        cargo_kg         = COALESCE(cargo_kg, ?6),
+                        fuel_used_kg     = COALESCE(fuel_used_kg, ?7)
+                    WHERE id = ?8
+                    "#,
+                )
+                .bind(&ofp.ofp_id)
+                .bind(ofp.flight_number.as_deref())
+                .bind(ofp.callsign.as_deref())
+                .bind(derived_airline.as_deref())
+                .bind(ofp.pax_count)
+                .bind(ofp.cargo_kg)
+                .bind(ofp.fuel_burn_kg)
+                .bind(flight_id)
+                .execute(pool)
+                .await
                 {
                     tracing::warn!(
                         target: "simconnect",
-                        "pre-populate desde SimBrief falló: {e:#}"
+                        "linkear+populate OFP {} → flight_id={} falló: {e:#}",
+                        ofp.ofp_id, flight_id
                     );
                 } else {
                     tracing::info!(
                         target: "simconnect",
-                        "OFP {} pre-populó pax={:?} cargo={:?}kg fuel_burn={:?}kg en flight_log id={}",
+                        "OFP {} matched + linked al vuelo id={} (aircraft_atc={:?} ofp_aircraft={:?}) → fn={:?} cs={:?} pax={:?} cargo={:?}kg fuel={:?}kg",
                         ofp.ofp_id,
+                        flight_id,
+                        aircraft_atc_from_db,
+                        ofp.aircraft_icao,
+                        ofp.flight_number,
+                        ofp.callsign,
                         ofp.pax_count,
                         ofp.cargo_kg,
                         ofp.fuel_burn_kg,
-                        flight_id
                     );
                 }
             }
             Ok(None) => {
-                tracing::debug!(
+                tracing::info!(
                     target: "simconnect",
-                    "sin OFP de SimBrief reciente para {} — pax/cargo/fuel queda NULL",
-                    icao
+                    "sin OFP de SimBrief que matchee {} + aircraft={:?} — pax/cargo/fuel/flight_number queda NULL",
+                    icao, aircraft_atc_from_db
                 );
             }
             Err(e) => {
                 tracing::warn!(
                     target: "simconnect",
-                    "find_recent_for_origin falló: {e:#}"
+                    "find_matching_for_flight falló: {e:#}"
                 );
             }
         }

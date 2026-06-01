@@ -180,6 +180,10 @@ pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFligh
 /// Lo usa el watcher en el OUT event para pre-popular
 /// `flight_log.passengers/cargo_kg/fuel_used_kg` con los valores
 /// planificados del OFP — misma data que GSX consume.
+///
+/// (v4.0.0 P7.6) Esta función se reservó para callers que NO tienen
+/// info de aircraft. Los call-sites del watcher migran a
+/// `find_matching_for_flight`, que cruza ICAO + aircraft + consumed.
 pub async fn find_recent_for_origin(
     pool: &SqlitePool,
     origin_icao: &str,
@@ -207,6 +211,104 @@ pub async fn find_recent_for_origin(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// (v4.0.0 P7.6) Busca el OFP más reciente para `origin_icao` que
+/// **además** matchee el tipo de avión actual y **no haya sido
+/// consumido** por otro vuelo cerrado.
+///
+/// Motivación: los usuarios que comparten cuenta SimBrief reciben los
+/// MISMOS OFPs en ambas instalaciones. Antes de este filtro, el
+/// primer vuelo desde el mismo origen heredaba el OFP del compañero
+/// (flight_number, callsign, pax, cargo, fuel burn) — bug reportado:
+/// "yo hice LAN1407 y al amigo le aparece LAN1407 en vez de su vuelo".
+///
+/// Validaciones aplicadas (en orden):
+///
+/// 1. **origin_icao match** — igual que `find_recent_for_origin`.
+/// 2. **within_hours window** — descarta OFPs muy viejos.
+/// 3. **simbrief_ofp_id NOT consumed** — excluye OFPs que ya están
+///    vinculados a un `flight_log` con `ended_at IS NOT NULL`.
+/// 4. **aircraft_icao match** (si tenemos `aircraft_atc`) — el OFP
+///    típicamente reporta "A319" / "B738" / "A20N". El simvar
+///    `ATC MODEL` del avión actual suele ser similar. Comparamos
+///    los primeros 3 caracteres uppercased (cubre A320 vs A20N,
+///    B738 vs B739, etc., aceptando small variants intencionalmente).
+///    Si el match falla, **NO atribuimos** el OFP — mejor un vuelo
+///    sin metadata que uno con metadata de otro piloto.
+///
+/// Si el caller no conoce `aircraft_atc` (None), saltamos el step 4
+/// y caemos a comportamiento legacy (origin + freshness + unconsumed).
+pub async fn find_matching_for_flight(
+    pool: &SqlitePool,
+    origin_icao: &str,
+    aircraft_atc: Option<&str>,
+    within_hours: i64,
+) -> anyhow::Result<Option<SimBriefFlight>> {
+    // Pre-filtramos en SQL por origin + freshness + unconsumed. El
+    // aircraft match lo hacemos en Rust para tener flexibilidad de
+    // matching (3-char prefix tolerante en vez de equality exacta).
+    let rows = sqlx::query_as::<_, SimBriefFlight>(
+        r#"
+        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
+               origin_icao, origin_name, origin_lat, origin_lon,
+               destination_icao, destination_name, destination_lat, destination_lon,
+               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+               pax_count, cargo_kg, fuel_burn_kg, units
+        FROM simbrief_flights
+        WHERE UPPER(origin_icao) = UPPER(?1)
+          AND (
+            generated_at IS NOT NULL
+            AND CAST(generated_at AS INTEGER) > strftime('%s', 'now', '-' || ?2 || ' hours')
+          )
+          AND ofp_id NOT IN (
+            SELECT simbrief_ofp_id FROM flight_log
+            WHERE simbrief_ofp_id IS NOT NULL
+              AND ended_at IS NOT NULL
+          )
+        ORDER BY CAST(generated_at AS INTEGER) DESC
+        LIMIT 10
+        "#,
+    )
+    .bind(origin_icao)
+    .bind(within_hours)
+    .fetch_all(pool)
+    .await?;
+
+    // Sin info de aircraft → devolvemos el más reciente (legacy
+    // behavior, pero ya filtrado por unconsumed).
+    let Some(plane_atc) = aircraft_atc else {
+        return Ok(rows.into_iter().next());
+    };
+    let plane_norm = plane_atc.trim().to_ascii_uppercase();
+    if plane_norm.is_empty() {
+        return Ok(rows.into_iter().next());
+    }
+
+    // Aircraft match: comparamos primeros 3 chars del aircraft_icao
+    // del OFP contra los primeros 3 del ATC type del avión. Cubre:
+    //   · A319 vs A319  → match (3 chars iguales)
+    //   · A319 vs A20N  → no match (A31 vs A20)
+    //   · B738 vs B73X  → match (B73)
+    //   · "Boeing 737-800" → solo si SimBrief lo reporta como "B738"
+    //                       (caso normal); si reporta "Boeing 737-800"
+    //                       el primer slug no matchea — aceptable, en
+    //                       ese caso skip y dejamos pax/cargo en NULL.
+    let plane_prefix: String = plane_norm.chars().take(3).collect();
+    for ofp in &rows {
+        let ofp_ac = match ofp.aircraft_icao.as_deref() {
+            Some(s) => s.trim().to_ascii_uppercase(),
+            None => continue,
+        };
+        if ofp_ac.is_empty() {
+            continue;
+        }
+        let ofp_prefix: String = ofp_ac.chars().take(3).collect();
+        if ofp_prefix == plane_prefix {
+            return Ok(Some(ofp.clone()));
+        }
+    }
+    Ok(None)
 }
 
 pub async fn delete_flight(pool: &SqlitePool, ofp_id: &str) -> anyhow::Result<()> {
