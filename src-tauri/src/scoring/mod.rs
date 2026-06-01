@@ -86,6 +86,24 @@ pub struct TrackSample {
     pub lon: f64,
     pub alt_ft: Option<i64>,
     pub gs_kt: Option<i64>,
+    // (v3.7.0 — Phase O) Simvars VAS-aligned. Vienen NULL para
+    // vuelos importados de VAS-ACARS; populados sólo para vuelos
+    // capturados por el watcher de SimConnect.
+    pub ias_kt: Option<i64>,
+    pub vs_fpm: Option<i64>,
+    pub pitch_deg: Option<f64>,
+    pub bank_deg: Option<f64>,
+    pub g_force: Option<f64>,
+    pub flaps_pct: Option<i64>,
+    pub gear_down: Option<bool>,
+    pub spoilers_pct: Option<i64>,
+    pub light_nav: Option<bool>,
+    pub light_beacon: Option<bool>,
+    pub light_taxi: Option<bool>,
+    pub light_landing: Option<bool>,
+    pub light_strobe: Option<bool>,
+    pub parking_brake: Option<bool>,
+    pub transponder_code: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +139,33 @@ impl FlightContext {
         }
         out
     }
+}
+
+/// (v3.7.0 Phase O) Row helper para el track con todos los simvars
+/// VAS-aligned. Mismas razones que `FlightRow` para usar struct en
+/// vez de tupla (sqlx FromRow tope = 16 elementos).
+#[derive(sqlx::FromRow)]
+struct TrackRow {
+    ts: String,
+    lat: f64,
+    lon: f64,
+    alt_ft: Option<i64>,
+    gs_kt: Option<i64>,
+    ias_kt: Option<i64>,
+    vs_fpm: Option<i64>,
+    pitch_deg: Option<f64>,
+    bank_deg: Option<f64>,
+    g_force: Option<f64>,
+    flaps_pct: Option<i64>,
+    gear_down: Option<i64>,
+    spoilers_pct: Option<i64>,
+    light_nav: Option<i64>,
+    light_beacon: Option<i64>,
+    light_taxi: Option<i64>,
+    light_landing: Option<i64>,
+    light_strobe: Option<i64>,
+    parking_brake: Option<i64>,
+    transponder_code: Option<i64>,
 }
 
 /// Row helper para `sqlx::query_as` — sqlx no implementa FromRow para
@@ -167,9 +212,17 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
     .fetch_one(pool)
     .await?;
 
-    let track: Vec<(String, f64, f64, Option<i64>, Option<i64>)> = sqlx::query_as(
+    // (v3.7.0 Phase O) Carga todos los campos extendidos via struct
+    // dedicada — sqlx no implementa FromRow para tuplas >16 elementos.
+    // Los booleans vienen como Option<i64> (SQLite tiene INTEGER 0/1)
+    // y los normalizamos a bool al construir el TrackSample.
+    let track: Vec<TrackRow> = sqlx::query_as(
         r#"
-        SELECT ts, lat, lon, alt_ft, gs_kt
+        SELECT ts, lat, lon, alt_ft, gs_kt,
+               ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
+               flaps_pct, gear_down, spoilers_pct,
+               light_nav, light_beacon, light_taxi, light_landing, light_strobe,
+               parking_brake, transponder_code
         FROM flight_log_track
         WHERE flight_id = ?1
         ORDER BY ts
@@ -214,12 +267,30 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
         arrival_gate: row.arrival_gate,
         track: track
             .into_iter()
-            .map(|(ts, lat, lon, alt, gs)| TrackSample {
-                ts,
-                lat,
-                lon,
-                alt_ft: alt,
-                gs_kt: gs,
+            .map(|r| {
+                let b = |o: Option<i64>| o.map(|v| v != 0);
+                TrackSample {
+                    ts: r.ts,
+                    lat: r.lat,
+                    lon: r.lon,
+                    alt_ft: r.alt_ft,
+                    gs_kt: r.gs_kt,
+                    ias_kt: r.ias_kt,
+                    vs_fpm: r.vs_fpm,
+                    pitch_deg: r.pitch_deg,
+                    bank_deg: r.bank_deg,
+                    g_force: r.g_force,
+                    flaps_pct: r.flaps_pct,
+                    gear_down: b(r.gear_down),
+                    spoilers_pct: r.spoilers_pct,
+                    light_nav: b(r.light_nav),
+                    light_beacon: b(r.light_beacon),
+                    light_taxi: b(r.light_taxi),
+                    light_landing: b(r.light_landing),
+                    light_strobe: b(r.light_strobe),
+                    parking_brake: b(r.parking_brake),
+                    transponder_code: r.transponder_code,
+                }
             })
             .collect(),
         phases: phases
@@ -248,7 +319,12 @@ pub async fn score_flight(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<S
     for rule in RULES.iter() {
         let item = (rule.evaluator)(&ctx, rule);
         total += item.points_earned;
-        max += rule.points_max;
+        // (v3.7.0 — Phase O) Usar `item.points_max` (no `rule.points_max`)
+        // permite que evaluadores devuelvan 0/0 cuando los datos para
+        // la regla no existen (típicamente VAS imports sin lights/pitch).
+        // Esas reglas no inflan el denominador, y el % de score
+        // sigue siendo significativo aún con datos parciales.
+        max += item.points_max;
         items.push(item);
     }
 

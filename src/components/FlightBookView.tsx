@@ -2159,30 +2159,57 @@ function ChecklistWidget({
               </button>
               {isOpen && (
                 <ul className="space-y-1 border-t border-slate-800/70 px-3 py-2">
-                  {group.items.map((it) => (
-                    <li
-                      key={it.ruleId}
-                      className="flex items-baseline justify-between gap-2 text-[10px]"
-                    >
-                      <span className="min-w-0 truncate text-slate-300">
+                  {group.items.map((it) => {
+                    // (v3.7.0 Phase O) "skipped" = la regla no se
+                    // pudo evaluar (datos ausentes — típico para
+                    // VAS imports sin lights/pitch). La pintamos
+                    // gris con icono "·" y NO suma puntos (0/0).
+                    const skipped = it.severity === "skipped";
+                    const ruleLabel = ruleLabelText(it.ruleId, it.label);
+                    return (
+                      <li
+                        key={it.ruleId}
+                        className="flex items-baseline justify-between gap-2 text-[10px]"
+                      >
+                        <span className="min-w-0 truncate text-slate-300">
+                          <span
+                            className={`mr-1.5 ${
+                              skipped
+                                ? "text-slate-500"
+                                : it.passed
+                                  ? "text-emerald-400"
+                                  : it.severity === "warn"
+                                    ? "text-amber-400"
+                                    : "text-rose-400"
+                            }`}
+                            title={
+                              skipped
+                                ? t("fb.checklist.severity.skipped")
+                                : undefined
+                            }
+                          >
+                            {skipped
+                              ? "·"
+                              : it.passed
+                                ? "✓"
+                                : it.severity === "warn"
+                                  ? "⚠"
+                                  : "✗"}
+                          </span>
+                          {ruleLabel}
+                        </span>
                         <span
-                          className={`mr-1.5 ${
-                            it.passed
-                              ? "text-emerald-400"
-                              : it.severity === "warn"
-                                ? "text-amber-400"
-                                : "text-rose-400"
+                          className={`shrink-0 font-mono tabular-nums ${
+                            skipped ? "text-slate-600" : "text-slate-400"
                           }`}
                         >
-                          {it.passed ? "✓" : it.severity === "warn" ? "⚠" : "✗"}
+                          {skipped
+                            ? t("fb.checklist.severity.skipped")
+                            : `${it.pointsEarned}/${it.pointsMax}`}
                         </span>
-                        {it.label}
-                      </span>
-                      <span className="shrink-0 font-mono tabular-nums text-slate-400">
-                        {it.pointsEarned}/{it.pointsMax}
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
@@ -2201,6 +2228,20 @@ function phaseLabelText(phase: string): string {
   if (translated === key) {
     // No traducción → fallback humano del ID.
     return phase.replace(/_/g, " ");
+  }
+  return translated;
+}
+
+/** (v3.7.0 Phase O) Mapea el rule_id estable a un label traducido.
+ *  Si no hay traducción para el id, usamos el `fallback` (el label
+ *  EN que viene del backend en `ScoreItem.label`). Esto permite que
+ *  reglas viejas pre-v3.7 sigan mostrando algo razonable hasta que
+ *  el flight se re-evalúe con el rubric nuevo. */
+function ruleLabelText(ruleId: string, fallback: string): string {
+  const key = `fb.rule.${ruleId}`;
+  const translated = t(key);
+  if (translated === key) {
+    return fallback;
   }
   return translated;
 }

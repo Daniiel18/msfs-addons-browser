@@ -1002,28 +1002,50 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         if flight_id == 0 || ts.is_empty() {
             continue;
         }
+        // (v2.2.0) FIX: la columna real en la tabla es `gs_kt`, no
+        // `ground_speed_kt`. El JSON puede traer cualquiera.
+        //
+        // (v3.7.0 Phase O) Extendido para soportar los simvars VAS-aligned
+        // que se sumaron a `flight_log_track`. Snapshots pre-v3.7 no
+        // tienen estos campos → los binds caen a NULL.
+        let b_bool = |key: &str| -> Option<i64> {
+            json_i64(row, key).map(|v| if v != 0 { 1 } else { 0 })
+        };
         sqlx::query(
-            // (v2.2.0) FIX: la columna real en la tabla es `gs_kt`, no
-            // `ground_speed_kt`. El error `(code: 1) table flight_log_track
-            // has no column named ground_speed_kt` que reportó el usuario
-            // venía de aquí. El JSON de la snapshot puede contener cualquiera
-            // de las dos keys según la versión que la generó, así que el
-            // restore acepta ambas via groundSpeedKt / gsKt.
-            "INSERT OR IGNORE INTO flight_log_track (flight_id, ts, lat, lon, alt_ft, gs_kt) VALUES (?,?,?,?,?,?)",
+            r#"INSERT OR IGNORE INTO flight_log_track (
+                flight_id, ts, lat, lon, alt_ft, gs_kt,
+                ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
+                flaps_pct, gear_down, spoilers_pct,
+                light_nav, light_beacon, light_taxi, light_landing, light_strobe,
+                parking_brake, transponder_code
+            ) VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?)"#,
         )
         .bind(flight_id)
         .bind(&ts)
         .bind(json_f64(row, "lat").unwrap_or(0.0))
         .bind(json_f64(row, "lon").unwrap_or(0.0))
-        .bind(json_i64(row, "altFt").unwrap_or(0))
+        .bind(json_i64(row, "altFt"))
         .bind(
             // (v2.2.0) Compat: snapshots viejas usan "groundSpeedKt",
-            // las nuevas (dynamic row_to_json) usan "gsKt". Aceptar
-            // ambas.
+            // las nuevas (dynamic row_to_json) usan "gsKt". Aceptar ambas.
             json_i64(row, "gsKt")
-                .or_else(|| json_i64(row, "groundSpeedKt"))
-                .unwrap_or(0),
+                .or_else(|| json_i64(row, "groundSpeedKt")),
         )
+        .bind(json_i64(row, "iasKt"))
+        .bind(json_i64(row, "vsFpm"))
+        .bind(json_f64(row, "pitchDeg"))
+        .bind(json_f64(row, "bankDeg"))
+        .bind(json_f64(row, "gForce"))
+        .bind(json_i64(row, "flapsPct"))
+        .bind(b_bool("gearDown"))
+        .bind(json_i64(row, "spoilersPct"))
+        .bind(b_bool("lightNav"))
+        .bind(b_bool("lightBeacon"))
+        .bind(b_bool("lightTaxi"))
+        .bind(b_bool("lightLanding"))
+        .bind(b_bool("lightStrobe"))
+        .bind(b_bool("parkingBrake"))
+        .bind(json_i64(row, "transponderCode"))
         .execute(&mut *tx)
         .await?;
         tracks += 1;
@@ -1712,20 +1734,43 @@ pub async fn download_missing(
         if ts.is_empty() {
             continue;
         }
+        // (v3.7.0 Phase O) Extendido para los simvars VAS-aligned.
+        let b_bool = |key: &str| -> Option<i64> {
+            json_i64(track, key).map(|v| if v != 0 { 1 } else { 0 })
+        };
         sqlx::query(
-            "INSERT OR IGNORE INTO flight_log_track (flight_id, ts, lat, lon, alt_ft, gs_kt)
-             VALUES (?,?,?,?,?,?)",
+            r#"INSERT OR IGNORE INTO flight_log_track (
+                flight_id, ts, lat, lon, alt_ft, gs_kt,
+                ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
+                flaps_pct, gear_down, spoilers_pct,
+                light_nav, light_beacon, light_taxi, light_landing, light_strobe,
+                parking_brake, transponder_code
+            ) VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?)"#,
         )
         .bind(local_flight_id)
         .bind(&ts)
         .bind(json_f64(track, "lat").unwrap_or(0.0))
         .bind(json_f64(track, "lon").unwrap_or(0.0))
-        .bind(json_i64(track, "altFt").unwrap_or(0))
+        .bind(json_i64(track, "altFt"))
         .bind(
             json_i64(track, "gsKt")
-                .or_else(|| json_i64(track, "groundSpeedKt"))
-                .unwrap_or(0),
+                .or_else(|| json_i64(track, "groundSpeedKt")),
         )
+        .bind(json_i64(track, "iasKt"))
+        .bind(json_i64(track, "vsFpm"))
+        .bind(json_f64(track, "pitchDeg"))
+        .bind(json_f64(track, "bankDeg"))
+        .bind(json_f64(track, "gForce"))
+        .bind(json_i64(track, "flapsPct"))
+        .bind(b_bool("gearDown"))
+        .bind(json_i64(track, "spoilersPct"))
+        .bind(b_bool("lightNav"))
+        .bind(b_bool("lightBeacon"))
+        .bind(b_bool("lightTaxi"))
+        .bind(b_bool("lightLanding"))
+        .bind(b_bool("lightStrobe"))
+        .bind(b_bool("parkingBrake"))
+        .bind(json_i64(track, "transponderCode"))
         .execute(&mut *tx)
         .await?;
         report.new_tracks += 1;

@@ -783,10 +783,39 @@ pub struct FlightTrackPoint {
     pub ts: String,
 }
 
-/// Inserta un punto en la traza del vuelo. Llamado por el watcher
-/// cada ~10s mientras el vuelo está en fases BlockOut / Airborne /
-/// Landed. No es idempotente — cada muestreo es una fila nueva, el
-/// PK es AUTOINCREMENT.
+/// (v3.7.0 — Phase O) Payload extendido para `insert_track_point_full`.
+/// Cubre todos los simvars VAS-aligned que el rubric necesita.
+///
+/// Los campos opcionales son los que ACARS no exporta y por tanto
+/// quedan NULL para imports VAS — el rubric detecta la columna toda
+/// NULL para una phase y devuelve "skipped" sin penalizar.
+#[derive(Debug, Clone, Default)]
+pub struct TrackPointInsert {
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_ft: Option<i64>,
+    pub gs_kt: Option<i64>,
+    pub ias_kt: Option<i64>,
+    pub vs_fpm: Option<i64>,
+    pub pitch_deg: Option<f64>,
+    pub bank_deg: Option<f64>,
+    pub g_force: Option<f64>,
+    pub flaps_pct: Option<i64>,
+    pub gear_down: Option<bool>,
+    pub spoilers_pct: Option<i64>,
+    pub light_nav: Option<bool>,
+    pub light_beacon: Option<bool>,
+    pub light_taxi: Option<bool>,
+    pub light_landing: Option<bool>,
+    pub light_strobe: Option<bool>,
+    pub parking_brake: Option<bool>,
+    pub transponder_code: Option<i64>,
+}
+
+/// Inserta un punto en la traza del vuelo. Compat wrapper —
+/// equivalente a `insert_track_point_full` con todos los campos
+/// extendidos en `None`. Lo siguen llamando rutas legacy (seed flight,
+/// fallback paths del watcher) que no tienen los simvars nuevos.
 pub async fn insert_track_point(
     pool: &SqlitePool,
     flight_id: i64,
@@ -795,21 +824,72 @@ pub async fn insert_track_point(
     alt_ft: i64,
     gs_kt: i64,
 ) -> anyhow::Result<()> {
+    insert_track_point_full(
+        pool,
+        flight_id,
+        TrackPointInsert {
+            lat,
+            lon,
+            alt_ft: Some(alt_ft),
+            gs_kt: Some(gs_kt),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Insert con TODOS los campos extendidos. Usado por el watcher
+/// SimConnect (que tiene todos los simvars VAS-aligned) y por
+/// futuros importers que expongan más datos. No es idempotente —
+/// cada muestreo es una fila nueva, el PK es AUTOINCREMENT.
+pub async fn insert_track_point_full(
+    pool: &SqlitePool,
+    flight_id: i64,
+    pt: TrackPointInsert,
+) -> anyhow::Result<()> {
     let now = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+    let b = |o: Option<bool>| o.map(|v| if v { 1_i64 } else { 0_i64 });
     sqlx::query(
         r#"
-        INSERT INTO flight_log_track (flight_id, lat, lon, alt_ft, gs_kt, ts)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO flight_log_track (
+            flight_id, lat, lon, alt_ft, gs_kt, ts,
+            ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
+            flaps_pct, gear_down, spoilers_pct,
+            light_nav, light_beacon, light_taxi, light_landing, light_strobe,
+            parking_brake, transponder_code
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6,
+            ?7, ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14,
+            ?15, ?16, ?17, ?18, ?19,
+            ?20, ?21
+        )
         "#,
     )
     .bind(flight_id)
-    .bind(lat)
-    .bind(lon)
-    .bind(alt_ft)
-    .bind(gs_kt)
+    .bind(pt.lat)
+    .bind(pt.lon)
+    .bind(pt.alt_ft)
+    .bind(pt.gs_kt)
     .bind(&now)
+    .bind(pt.ias_kt)
+    .bind(pt.vs_fpm)
+    .bind(pt.pitch_deg)
+    .bind(pt.bank_deg)
+    .bind(pt.g_force)
+    .bind(pt.flaps_pct)
+    .bind(b(pt.gear_down))
+    .bind(pt.spoilers_pct)
+    .bind(b(pt.light_nav))
+    .bind(b(pt.light_beacon))
+    .bind(b(pt.light_taxi))
+    .bind(b(pt.light_landing))
+    .bind(b(pt.light_strobe))
+    .bind(b(pt.parking_brake))
+    .bind(pt.transponder_code)
     .execute(pool)
     .await?;
     Ok(())

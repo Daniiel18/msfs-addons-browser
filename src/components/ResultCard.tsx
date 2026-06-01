@@ -215,17 +215,32 @@ function deriveInstallState(
     });
   }
 
-  // **No hay Camino C.** Antes intentábamos detectar por modelo
-  // de aeronave sólo (sin creator) para Simplaza — pero eso daba
-  // falsos positivos masivos: buscar "737" marcaba como instalados
+  // **No hay Camino C para AIRCRAFT/livery.** Antes intentábamos
+  // detectar por modelo sólo (sin creator) para Simplaza — pero eso
+  // daba falsos positivos masivos: buscar "737" marcaba como instalados
   // todos los addons de 737 (FS2Crew SOP, MSFS Wear, repaints…)
   // porque el usuario tenía PMDG 737-800 base. La heurística por
   // modelo sin creator es inherentemente ambigua: dos productos
   // distintos pueden ser para el mismo avión.
   //
-  // Si el catálogo no expone developer parseable, mostramos "no
-  // instalado" — preferible al falso positivo. El usuario puede
-  // verificar visualmente si tiene el addon en la pestaña Addons.
+  // **(v3.7.0 fix O1) Camino D — SCENERY con ICAO único**:
+  // si el addon es de un aeropuerto (tiene ICAO) y el usuario tiene
+  // **exactamente UN** paquete con ese ICAO en Community, lo marcamos
+  // como instalado aunque el catálogo no exponga developer parseable
+  // (caso KATL Imagine Simulation: el catálogo devolvía addon.developer
+  // null y title largo, los Caminos A/B fallaban). El riesgo de falso
+  // positivo es bajo: pilotos rara vez tienen 2 sceneries del mismo
+  // aeropuerto instalados al mismo tiempo. Si tienen 2+, el match
+  // estricto sigue activo (los multi-ICAO se manejan en Camino A).
+  if (!exactMatch && addon.icao) {
+    const target = addon.icao.toUpperCase();
+    const sameIcao = packages.filter(
+      (p) => p.icao && p.icao.toUpperCase() === target,
+    );
+    if (sameIcao.length === 1) {
+      exactMatch = sameIcao[0];
+    }
+  }
 
   if (!exactMatch) return { kind: "not-installed" };
 
@@ -484,10 +499,16 @@ function InstallBadge({ state }: { state: InstallState }) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-md bg-amber-500/95 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-950 shadow-lg shadow-amber-500/30 ring-1 ring-amber-300 backdrop-blur"
-        title={`Tienes v${state.pkg.packageVersion ?? "?"} instalada — disponible v${state.latestVersion}`}
+        title={t("result.update.tooltip", {
+          installed: state.pkg.packageVersion ?? "?",
+          latest: state.latestVersion,
+        })}
       >
         <Sparkles className="h-3 w-3" />
-        Update v{state.pkg.packageVersion} → v{state.latestVersion}
+        {t("result.update.label", {
+          from: state.pkg.packageVersion ?? "?",
+          to: state.latestVersion,
+        })}
       </span>
     );
   }
@@ -496,10 +517,14 @@ function InstallBadge({ state }: { state: InstallState }) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/40 backdrop-blur"
-        title={`Ya tienes v${state.pkg.packageVersion} instalada`}
+        title={t("result.installed.with_version.tooltip", {
+          version: state.pkg.packageVersion ?? "",
+        })}
       >
         <CheckCircle2 className="h-3 w-3" />
-        Instalado · v{state.pkg.packageVersion}
+        {t("result.installed.with_version", {
+          version: state.pkg.packageVersion ?? "",
+        })}
       </span>
     );
   }
@@ -508,10 +533,10 @@ function InstallBadge({ state }: { state: InstallState }) {
   return (
     <span
       className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/40 backdrop-blur"
-      title="Ya lo tienes en Community (versión desconocida)"
+      title={t("result.installed.unknown.tooltip")}
     >
       <CheckCircle2 className="h-3 w-3" />
-      Instalado
+      {t("result.installed.unknown")}
     </span>
   );
 }

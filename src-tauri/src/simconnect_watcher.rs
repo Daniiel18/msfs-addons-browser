@@ -351,6 +351,51 @@ mod windows_simconnect {
         /// previa por altitudes. Esto da el FPM REAL del touchdown
         /// que coincide con lo que reportan los VA platforms.
         touchdown_normal_velocity_fps: f64,
+        // ==========================================================
+        // (v3.7.0 — Phase O) Simvars VAS-aligned para el rubric
+        // expandido. Se persisten por sample en `flight_log_track`.
+        // Los evaluators leen estos campos por phase (ej. flaps=0
+        // durante pre-departure, light_landing=1 durante takeoff…).
+        // ==========================================================
+        /// `PLANE PITCH DEGREES` — pitch en RADIANES (no degrees a
+        /// pesar del nombre — SimConnect quirk). Lo convertimos a
+        /// degrees al consumir. Rango ±π/2 ≈ ±1.57 rad.
+        pitch_radians: f64,
+        /// `PLANE BANK DEGREES` — bank también en RADIANES. Misma
+        /// conversión.
+        bank_radians: f64,
+        /// `G FORCE` — multiplicador G actual (1.0 reposo, >2 turn
+        /// agresivo).
+        g_force: f64,
+        /// `AIRSPEED INDICATED` en knots — la lectura del IAS bug del
+        /// avión. Diferente de AIRSPEED TRUE (que ya capturamos en
+        /// `true_airspeed_kt`) — IAS es lo que el ATC/VAS-ACARS usa
+        /// para reglas de velocidad (ej. "≤250 kt bajo 10k").
+        indicated_airspeed_kt: f64,
+        /// `FLAPS HANDLE PERCENT` — 0.0..1.0 (NO 0..100 como dice el
+        /// nombre — SimConnect quirk). Multiplicar por 100 al
+        /// consumir. 0 = retraídos, 1 = full extended.
+        flaps_handle_pct: f64,
+        /// `GEAR HANDLE POSITION` — 0.0 (up) / 1.0 (down). Bool.
+        gear_handle: f64,
+        /// `SPOILERS HANDLE POSITION` — 0.0..1.0 (otra que parece %
+        /// pero es fracción). 0 = retraídos, 1 = full extended.
+        spoilers_handle_pct: f64,
+        /// `LIGHT NAV` — bool 0/1. Luces de navegación.
+        light_nav: f64,
+        /// `LIGHT BEACON` — bool 0/1. Beacon rojo rotatorio.
+        light_beacon: f64,
+        /// `LIGHT TAXI` — bool 0/1. Luz de taxi (rodaje).
+        light_taxi: f64,
+        /// `LIGHT LANDING` — bool 0/1. Luces de aterrizaje (las
+        /// fuertes que se encienden bajo 10k ft y durante takeoff).
+        light_landing: f64,
+        /// `LIGHT STROBE` — bool 0/1. Strobes (flashes blancos en
+        /// punta de ala).
+        light_strobe: f64,
+        /// `TRANSPONDER CODE:1` — código BCD del XPDR. Lo trataremos
+        /// como i64 al persistir (4 dígitos).
+        transponder_code: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -770,6 +815,15 @@ mod windows_simconnect {
         let units_pounds = sc::cstr("pounds");
         // (v3.6.7 N2) "feet per second" para PLANE TOUCHDOWN NORMAL VELOCITY.
         let units_fps = sc::cstr("feet per second");
+        // (v3.7.0 Phase O) Units para los nuevos simvars VAS-aligned.
+        // SimConnect quirk: PITCH/BANK DEGREES vienen en RADIANES — la
+        // unidad "radians" es lo que el SDK acepta. "percent over 100"
+        // para FLAPS/SPOILERS HANDLE da fracción 0..1 — lo escalamos al
+        // consumir. "number" para G FORCE (multiplicador). El xpdr
+        // viene como número.
+        let units_radians = sc::cstr("radians");
+        let units_pct_over_100 = sc::cstr("percent over 100");
+        let units_number = sc::cstr("number");
 
         let names: &[(&str, &std::ffi::CStr)] = &[
             ("PLANE LATITUDE", units_deg.as_c_str()),
@@ -823,6 +877,23 @@ mod windows_simconnect {
             // reales (-365 fpm cuando real era -188). Este simvar es
             // el touchdown VS exacto.
             ("PLANE TOUCHDOWN NORMAL VELOCITY", units_fps.as_c_str()),
+            // ----------------------------------------------------------
+            // (v3.7.0 — Phase O) Simvars VAS-aligned. Mismo orden que
+            // los campos nuevos en `AircraftData`.
+            // ----------------------------------------------------------
+            ("PLANE PITCH DEGREES", units_radians.as_c_str()),
+            ("PLANE BANK DEGREES", units_radians.as_c_str()),
+            ("G FORCE", units_number.as_c_str()),
+            ("AIRSPEED INDICATED", units_knots.as_c_str()),
+            ("FLAPS HANDLE PERCENT", units_pct_over_100.as_c_str()),
+            ("GEAR HANDLE POSITION", units_bool.as_c_str()),
+            ("SPOILERS HANDLE POSITION", units_pct_over_100.as_c_str()),
+            ("LIGHT NAV", units_bool.as_c_str()),
+            ("LIGHT BEACON", units_bool.as_c_str()),
+            ("LIGHT TAXI", units_bool.as_c_str()),
+            ("LIGHT LANDING", units_bool.as_c_str()),
+            ("LIGHT STROBE", units_bool.as_c_str()),
+            ("TRANSPONDER CODE:1", units_number.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -2480,6 +2551,25 @@ mod windows_simconnect {
                 let lon_c = lon;
                 let alt_c = alt as i64;
                 let gs_c = gs as i64;
+                // (v3.7.0 — Phase O) Snapshot de todos los simvars
+                // VAS-aligned para persistir junto al punto. Algunos
+                // necesitan conversión de unidad — radians→degrees,
+                // fracción→pct, f64→bool.
+                let pitch_deg_c = data.pitch_radians.to_degrees();
+                let bank_deg_c = data.bank_radians.to_degrees();
+                let g_force_c = data.g_force;
+                let ias_kt_c = data.indicated_airspeed_kt as i64;
+                let vs_fpm_c = vs as i64;
+                let flaps_pct_c = (data.flaps_handle_pct * 100.0).round() as i64;
+                let spoilers_pct_c = (data.spoilers_handle_pct * 100.0).round() as i64;
+                let gear_down_c = data.gear_handle >= 0.5;
+                let light_nav_c = data.light_nav >= 0.5;
+                let light_beacon_c = data.light_beacon >= 0.5;
+                let light_taxi_c = data.light_taxi >= 0.5;
+                let light_landing_c = data.light_landing >= 0.5;
+                let light_strobe_c = data.light_strobe >= 0.5;
+                let parking_brake_c = parking_brake_set;
+                let transponder_c = data.transponder_code as i64;
                 tokio::spawn(async move {
                     if let Err(e) = crate::flight_log::touch_live_position(
                         &pool_c, id, lat_c, lon_c, alt_c, gs_c,
@@ -2493,15 +2583,37 @@ mod windows_simconnect {
                     }
                     // Append a la traza — independiente del update
                     // de last_position porque queremos conservar TODOS
-                    // los puntos.
-                    if let Err(e) = crate::flight_log::insert_track_point(
-                        &pool_c, id, lat_c, lon_c, alt_c, gs_c,
+                    // los puntos. Incluye TODOS los simvars VAS-aligned
+                    // para que el scoring engine los lea por phase.
+                    let pt = crate::flight_log::TrackPointInsert {
+                        lat: lat_c,
+                        lon: lon_c,
+                        alt_ft: Some(alt_c),
+                        gs_kt: Some(gs_c),
+                        ias_kt: Some(ias_kt_c),
+                        vs_fpm: Some(vs_fpm_c),
+                        pitch_deg: Some(pitch_deg_c),
+                        bank_deg: Some(bank_deg_c),
+                        g_force: Some(g_force_c),
+                        flaps_pct: Some(flaps_pct_c),
+                        gear_down: Some(gear_down_c),
+                        spoilers_pct: Some(spoilers_pct_c),
+                        light_nav: Some(light_nav_c),
+                        light_beacon: Some(light_beacon_c),
+                        light_taxi: Some(light_taxi_c),
+                        light_landing: Some(light_landing_c),
+                        light_strobe: Some(light_strobe_c),
+                        parking_brake: Some(parking_brake_c),
+                        transponder_code: Some(transponder_c),
+                    };
+                    if let Err(e) = crate::flight_log::insert_track_point_full(
+                        &pool_c, id, pt,
                     )
                     .await
                     {
                         tracing::warn!(
                             target: "simconnect",
-                            "insert_track_point falló: {e:#}"
+                            "insert_track_point_full falló: {e:#}"
                         );
                     }
                 });

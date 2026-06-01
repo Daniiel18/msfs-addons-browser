@@ -6,40 +6,55 @@
 //! `ScoreItem` con puntos earned, passed/failed, severity y evidencia
 //! (JSON con los valores observados que dispararon el verdict).
 //!
-//! ## Diseño de pesos
+//! ## Diseño (v3.7.0 — Phase O)
 //!
-//! (v3.6.1 fix I7 — feedback usuario) **Rubric saneado**. Reglas que
-//! NO son responsabilidad del piloto fueron removidas:
+//! El rubric se reescribió completo para alinearse con la rúbrica de
+//! puntuación de las plataformas VAS (Virtual Airline System) — el
+//! formato que el usuario recibe en su VA tras subir un vuelo via
+//! ACARS. La idea es que **lo que SimFleet computa internamente
+//! coincida con lo que la aerolínea verá** en su propio web.
 //!
-//! · `pushback_speed_safe` — quitada. GSX controla la velocidad del
-//!   pushback; el piloto no puede limitarla. Penalizarlo era injusto.
-//! · `cruise_altitude_held` — quitada. Pilotos pueden subir/bajar
-//!   altitud de crucero por motivos legítimos (turbulencia, clima,
-//!   instrucciones ATC). Mantener una altitud fija no es virtud.
+//! 13 phases, ~35 reglas, total max ≈ 2115 puntos:
 //!
-//! Total max ≈ **940 puntos**. Distribución actualizada:
+//! | Phase            | Pts  | Reglas |
+//! |------------------|------|--------|
+//! | General          | 590  | pitch±20, bank30, g_force2, overspeed, stall, max_alt |
+//! | Pre-Departure    | 300  | parking_brake, engines_off, flaps_up, spoilers_up, ample_time |
+//! | Pushback         | 160  | nav_light, beacon_light, doors, engines_off_at_start |
+//! | Taxi-Out         |  80  | speed≤30, flaps_set, transponder, taxi_light |
+//! | Take-Off         |  55  | landing_light, strobe, pitch≤15 |
+//! | Take-Off Accel   | 105  | gear_up, ias≤250 |
+//! | Initial Climb    |  40  | flaps_retracted, landing_light_off_10k |
+//! | Cruise           | 120  | gear_up, landing_light_off, flaps_up, doors_closed |
+//! | Initial Approach |  85  | pitch≥-15, flaps_deployed, ias≤200, landing_light |
+//! | Final Approach   | 260  | pitch≥-15, flaps, gear_down, spoilers_armed, ias≤250 |
+//! | Landing          |  50  | vs≤1000fpm |
+//! | Taxi-In          |  80  | landing_light_off, speed≤30, flaps_retracted, taxi_light |
+//! | Arrived          | 190  | parking_brake, flaps_up, spoilers_up, engines_off |
 //!
-//! | Phase           | Pts | Reglas |
-//! |-----------------|-----|--------|
-//! | General         | 180 | metadata, distance, time |
-//! | Pre-departure   | 100 | origen detectado, gate registrado |
-//! | Taxi-out        |  80 | speed limit (≤ 30 kt) |
-//! | Takeoff         |  80 | clean rotation (VS 500-3000 fpm) |
-//! | Climb           | 120 | no overspeed > 280 kt bajo 10k ft |
-//! | Descent         | 100 | rate ≤ 3000 fpm |
-//! | Approach        | 100 | speed estable ≤ 200 kt a 5 nm dest |
-//! | Landing         | 120 | smooth touchdown FPM |
-//! | Taxi-in         |  60 | speed limit (≤ 30 kt) |
-//! | Arrived         |  40 | vuelo completado |
+//! ## Skipped rules (v3.7.0)
 //!
-//! La grade derivada del % total:
+//! Para vuelos importados de VAS-ACARS los campos como `light_*`,
+//! `pitch_deg`, `bank_deg`, etc. quedan NULL — el .bin del ACARS no
+//! los exporta. Los evaluadores detectan la ausencia y devuelven
+//! `severity = "skipped"` con `points_max = 0` (no `rule.points_max`).
+//!
+//! El loop en `score_flight` ahora suma `item.points_max` (no el del
+//! rule), así las skipped no inflan el denominador y el % de score
+//! sigue siendo significativo aún con datos parciales.
+//!
+//! Para vuelos SimConnect, **todos** los campos están populados — el
+//! watcher captura los simvars VAS-aligned (LIGHT NAV / TAXI / etc.)
+//! por sample y los persiste en `flight_log_track`.
+//!
+//! ## Grade derivada del %:
 //! · A ≥ 95%, B ≥ 85%, C ≥ 70%, D ≥ 50%, F < 50%
 
 use serde_json::json;
 
 use super::{FlightContext, ScoreItem, TrackSample};
 
-#[allow(dead_code)] // Variants are kept for future use and for the rubric DSL even if not all are referenced.
+#[allow(dead_code)] // Variants kept for completeness even if not all referenced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     General,
@@ -47,10 +62,14 @@ pub enum Phase {
     Pushback,
     TaxiOut,
     Takeoff,
+    TakeoffAccel,
+    InitialClimb,
     Climb,
     Cruise,
     Descent,
-    Approach,
+    InitialApproach,
+    FinalApproach,
+    Approach, // legacy alias — kept for backwards-compat with old score_items
     Landing,
     TaxiIn,
     Arrived,
@@ -64,9 +83,13 @@ impl Phase {
             Phase::Pushback => "pushback",
             Phase::TaxiOut => "taxi_out",
             Phase::Takeoff => "takeoff",
+            Phase::TakeoffAccel => "takeoff_accel",
+            Phase::InitialClimb => "initial_climb",
             Phase::Climb => "climb",
             Phase::Cruise => "cruise",
             Phase::Descent => "descent",
+            Phase::InitialApproach => "initial_approach",
+            Phase::FinalApproach => "final_approach",
             Phase::Approach => "approach",
             Phase::Landing => "landing",
             Phase::TaxiIn => "taxi_in",
@@ -89,131 +112,401 @@ pub struct Rule {
 /// evaluación y el orden en que se persisten — la UI los agrupa por
 /// `phase` para mostrar el breakdown.
 pub static RULES: &[Rule] = &[
-    // ===== GENERAL (180 pts) =====
+    // ============================================================
+    // GENERAL (590 pts) — Aircraft state durante TODO el vuelo
+    // ============================================================
     Rule {
-        id: "va_metadata_present",
-        label: "Datos de aerolínea presentes",
+        id: "general_pitch_up_limit",
+        label: "Pitch up never more than +20°",
         phase: Phase::General,
-        points_max: 60,
-        evaluator: eval_va_metadata,
+        points_max: 70,
+        evaluator: eval_pitch_up_limit,
     },
     Rule {
-        id: "distance_reasonable",
-        label: "Distancia voladada > 50 nm",
+        id: "general_pitch_down_limit",
+        label: "Pitch down never less than -20°",
         phase: Phase::General,
-        points_max: 60,
-        evaluator: eval_distance_reasonable,
+        points_max: 70,
+        evaluator: eval_pitch_down_limit,
     },
     Rule {
-        id: "flight_time_reasonable",
-        label: "Tiempo de vuelo > 15 min",
+        id: "general_bank_limit",
+        label: "Bank angle never more than 30°",
         phase: Phase::General,
-        points_max: 60,
-        evaluator: eval_flight_time_reasonable,
+        points_max: 100,
+        evaluator: eval_bank_limit,
     },
-    // ===== PRE-DEPARTURE (100 pts) =====
     Rule {
-        id: "started_in_airport_area",
-        label: "Origen detectado (ICAO)",
-        phase: Phase::PreDeparture,
+        id: "general_g_force_limit",
+        label: "G-Force never more than 2G",
+        phase: Phase::General,
+        points_max: 100,
+        evaluator: eval_g_force_limit,
+    },
+    Rule {
+        id: "general_no_overspeed",
+        label: "Overspeed never indicated",
+        phase: Phase::General,
         points_max: 50,
-        evaluator: eval_origin_known,
+        evaluator: eval_no_overspeed,
     },
     Rule {
-        id: "departure_gate_recorded",
-        label: "Gate de salida registrado",
+        id: "general_no_stall",
+        label: "Stall never indicated",
+        phase: Phase::General,
+        points_max: 100,
+        evaluator: eval_no_stall,
+    },
+    Rule {
+        id: "general_max_service_ceiling",
+        label: "Max service ceiling not exceeded",
+        phase: Phase::General,
+        points_max: 100,
+        evaluator: eval_max_service_ceiling,
+    },
+    // ============================================================
+    // PRE-DEPARTURE (300 pts) — Antes del pushback
+    // ============================================================
+    Rule {
+        id: "predep_parking_brake",
+        label: "Parking brake applied",
         phase: Phase::PreDeparture,
-        points_max: 50,
-        evaluator: eval_departure_gate,
+        points_max: 70,
+        evaluator: eval_predep_parking_brake,
     },
-    // ===== PUSHBACK =====
-    // (v3.6.1 fix I7) Regla `pushback_speed_safe` REMOVIDA.
-    // GSX controla la velocidad del pushback con su propio script —
-    // el piloto no puede limitarla. Penalizarlo era un falso negativo.
-    // Si en el futuro queremos rescatar algo de la phase pushback,
-    // podríamos puntuar "freno de mano suelto durante pushback" o
-    // "no aceleración intencional con motores running" pero requiere
-    // capturar más simvars.
-    // ===== TAXI-OUT (80 pts) =====
     Rule {
-        id: "taxi_speed_below_30kt",
-        label: "Taxi ≤ 30 kt",
-        phase: Phase::TaxiOut,
+        id: "predep_engines_off",
+        label: "All engines off",
+        phase: Phase::PreDeparture,
+        points_max: 100,
+        evaluator: eval_predep_engines_off,
+    },
+    Rule {
+        id: "predep_flaps_up",
+        label: "Flaps in up position",
+        phase: Phase::PreDeparture,
+        points_max: 20,
+        evaluator: eval_predep_flaps_up,
+    },
+    Rule {
+        id: "predep_spoilers_stowed",
+        label: "Spoilers not deployed",
+        phase: Phase::PreDeparture,
+        points_max: 40,
+        evaluator: eval_predep_spoilers_stowed,
+    },
+    Rule {
+        id: "predep_ample_time",
+        label: "Ample pre-departure time",
+        phase: Phase::PreDeparture,
+        points_max: 70,
+        evaluator: eval_predep_ample_time,
+    },
+    // ============================================================
+    // PUSHBACK (160 pts) — Durante el pushback
+    // ============================================================
+    Rule {
+        id: "pushback_nav_light",
+        label: "Navigation lights used",
+        phase: Phase::Pushback,
+        points_max: 20,
+        evaluator: eval_pushback_nav_light,
+    },
+    Rule {
+        id: "pushback_beacon_light",
+        label: "Beacon light used",
+        phase: Phase::Pushback,
+        points_max: 50,
+        evaluator: eval_pushback_beacon_light,
+    },
+    Rule {
+        id: "pushback_engines_off_at_start",
+        label: "Pushback started with engines off",
+        phase: Phase::Pushback,
         points_max: 80,
+        evaluator: eval_pushback_engines_off_at_start,
+    },
+    Rule {
+        id: "pushback_doors_closed",
+        label: "Doors closed",
+        phase: Phase::Pushback,
+        points_max: 10,
+        evaluator: eval_pushback_doors_closed,
+    },
+    // ============================================================
+    // TAXI-OUT (80 pts) — Rodaje a la pista
+    // ============================================================
+    Rule {
+        id: "taxi_out_speed",
+        label: "Taxi speed never more than 30 kt",
+        phase: Phase::TaxiOut,
+        points_max: 20,
         evaluator: eval_taxi_out_speed,
     },
-    // ===== TAKEOFF (80 pts) =====
     Rule {
-        id: "clean_rotation",
-        label: "Rotación limpia (VS 500-3000 fpm)",
+        id: "taxi_out_flaps_set",
+        label: "Flaps set for takeoff",
+        phase: Phase::TaxiOut,
+        points_max: 20,
+        evaluator: eval_taxi_out_flaps_set,
+    },
+    Rule {
+        id: "taxi_out_transponder",
+        label: "Transponder set to IFR code",
+        phase: Phase::TaxiOut,
+        points_max: 20,
+        evaluator: eval_taxi_out_transponder,
+    },
+    Rule {
+        id: "taxi_out_taxi_light",
+        label: "Taxi light used",
+        phase: Phase::TaxiOut,
+        points_max: 10,
+        evaluator: eval_taxi_out_taxi_light,
+    },
+    Rule {
+        id: "taxi_out_nav_light",
+        label: "Navigation lights used",
+        phase: Phase::TaxiOut,
+        points_max: 10,
+        evaluator: eval_taxi_out_nav_light,
+    },
+    // ============================================================
+    // TAKE-OFF (55 pts) — Roll de despegue + rotación
+    // ============================================================
+    Rule {
+        id: "takeoff_landing_light",
+        label: "Landing lights used",
         phase: Phase::Takeoff,
-        points_max: 80,
-        evaluator: eval_clean_rotation,
+        points_max: 10,
+        evaluator: eval_takeoff_landing_light,
     },
-    // ===== CLIMB (120 pts) =====
     Rule {
-        id: "no_overspeed_below_10k",
-        label: "Sin overspeed (≤ 250 kt) bajo 10,000 ft",
-        phase: Phase::Climb,
-        points_max: 120,
-        evaluator: eval_no_overspeed_below_10k,
+        id: "takeoff_strobe_light",
+        label: "Strobe lights used",
+        phase: Phase::Takeoff,
+        points_max: 20,
+        evaluator: eval_takeoff_strobe_light,
     },
-    // ===== CRUISE =====
-    // (v3.6.1 fix I7) Regla `cruise_altitude_held` REMOVIDA.
-    // El piloto cambia altitud de crucero por razones LEGÍTIMAS:
-    // turbulencia, clima, vectores ATC, optimización de fuel. Forzar
-    // ±200 ft penalizaba step-climbs perfectamente normales.
-    // Si en el futuro queremos puntuar crucero, sería mejor:
-    //  · "VS ≈ 0 al menos N minutos seguidos" (sí mantuvo crucero
-    //    estable en algún momento)
-    //  · "GS ≥ M kt sostenido" (sí llegó a velocidad de crucero)
-    // ===== DESCENT (100 pts) =====
     Rule {
-        id: "descent_rate_reasonable",
-        label: "Descenso ≤ 3000 fpm",
-        phase: Phase::Descent,
+        id: "takeoff_pitch_limit",
+        label: "Pitch never more than 15°",
+        phase: Phase::Takeoff,
+        points_max: 25,
+        evaluator: eval_takeoff_pitch_limit,
+    },
+    // ============================================================
+    // TAKE-OFF ACCELERATION (105 pts) — 0..1000 ft AGL
+    // ============================================================
+    Rule {
+        id: "takeoff_accel_gear_up",
+        label: "Landing gear retracted",
+        phase: Phase::TakeoffAccel,
+        points_max: 75,
+        evaluator: eval_takeoff_accel_gear_up,
+    },
+    Rule {
+        id: "takeoff_accel_ias_limit",
+        label: "Indicated airspeed ≤ 250 kt",
+        phase: Phase::TakeoffAccel,
+        points_max: 30,
+        evaluator: eval_takeoff_accel_ias_limit,
+    },
+    // ============================================================
+    // INITIAL CLIMB (40 pts) — 1000..10000 ft AGL
+    // ============================================================
+    Rule {
+        id: "initial_climb_flaps_retracted",
+        label: "Flaps fully retracted",
+        phase: Phase::InitialClimb,
+        points_max: 30,
+        evaluator: eval_initial_climb_flaps_retracted,
+    },
+    Rule {
+        id: "initial_climb_landing_light_off",
+        label: "Landing lights off before 10,000 ft",
+        phase: Phase::InitialClimb,
+        points_max: 10,
+        evaluator: eval_initial_climb_landing_light_off,
+    },
+    // ============================================================
+    // CRUISE (120 pts) — Above 10,000 ft
+    // ============================================================
+    Rule {
+        id: "cruise_gear_up",
+        label: "Landing gear not deployed",
+        phase: Phase::Cruise,
+        points_max: 40,
+        evaluator: eval_cruise_gear_up,
+    },
+    Rule {
+        id: "cruise_landing_light_off",
+        label: "Landing lights not used",
+        phase: Phase::Cruise,
+        points_max: 20,
+        evaluator: eval_cruise_landing_light_off,
+    },
+    Rule {
+        id: "cruise_flaps_up",
+        label: "Flaps not deployed",
+        phase: Phase::Cruise,
+        points_max: 50,
+        evaluator: eval_cruise_flaps_up,
+    },
+    Rule {
+        id: "cruise_doors_closed",
+        label: "Doors closed",
+        phase: Phase::Cruise,
+        points_max: 10,
+        evaluator: eval_cruise_doors_closed,
+    },
+    // ============================================================
+    // INITIAL APPROACH (85 pts) — 1800..10000 ft, descending
+    // ============================================================
+    Rule {
+        id: "initial_approach_pitch_limit",
+        label: "Pitch never less than -15°",
+        phase: Phase::InitialApproach,
+        points_max: 25,
+        evaluator: eval_initial_approach_pitch_limit,
+    },
+    Rule {
+        id: "initial_approach_flaps_deployed",
+        label: "Flaps deployed",
+        phase: Phase::InitialApproach,
+        points_max: 20,
+        evaluator: eval_initial_approach_flaps_deployed,
+    },
+    Rule {
+        id: "initial_approach_ias_limit",
+        label: "Indicated airspeed ≤ 200 kt",
+        phase: Phase::InitialApproach,
+        points_max: 30,
+        evaluator: eval_initial_approach_ias_limit,
+    },
+    Rule {
+        id: "initial_approach_landing_light",
+        label: "Landing lights used",
+        phase: Phase::InitialApproach,
+        points_max: 10,
+        evaluator: eval_initial_approach_landing_light,
+    },
+    // ============================================================
+    // FINAL APPROACH (260 pts) — Below 1800 ft AGL
+    // ============================================================
+    Rule {
+        id: "final_approach_pitch_limit",
+        label: "Pitch never less than -15°",
+        phase: Phase::FinalApproach,
+        points_max: 25,
+        evaluator: eval_final_approach_pitch_limit,
+    },
+    Rule {
+        id: "final_approach_flaps_deployed",
+        label: "Flaps deployed",
+        phase: Phase::FinalApproach,
+        points_max: 20,
+        evaluator: eval_final_approach_flaps_deployed,
+    },
+    Rule {
+        id: "final_approach_gear_down",
+        label: "Landing gear deployed",
+        phase: Phase::FinalApproach,
+        points_max: 75,
+        evaluator: eval_final_approach_gear_down,
+    },
+    Rule {
+        id: "final_approach_spoilers_stowed",
+        label: "Spoilers not deployed",
+        phase: Phase::FinalApproach,
+        points_max: 40,
+        evaluator: eval_final_approach_spoilers_stowed,
+    },
+    Rule {
+        id: "final_approach_ias_limit",
+        label: "Indicated airspeed ≤ 250 kt",
+        phase: Phase::FinalApproach,
         points_max: 100,
-        evaluator: eval_descent_rate,
+        evaluator: eval_final_approach_ias_limit,
     },
-    // ===== APPROACH (100 pts) =====
+    // ============================================================
+    // LANDING (50 pts) — Touchdown
+    // ============================================================
     Rule {
-        id: "stable_approach",
-        label: "Aproximación estable (≤ 200 kt a 5 nm)",
-        phase: Phase::Approach,
-        points_max: 100,
-        evaluator: eval_stable_approach,
-    },
-    // ===== LANDING (120 pts) =====
-    Rule {
-        id: "smooth_landing",
-        label: "Aterrizaje suave",
+        id: "landing_smooth",
+        label: "Vertical speed at touchdown ≤ -1000 fpm",
         phase: Phase::Landing,
-        points_max: 120,
-        evaluator: eval_smooth_landing,
+        points_max: 50,
+        evaluator: eval_landing_smooth,
     },
-    // ===== TAXI-IN (60 pts) =====
+    // ============================================================
+    // TAXI-IN (80 pts) — Rollout + rodaje a gate
+    // ============================================================
     Rule {
-        id: "taxi_in_speed_safe",
-        label: "Taxi de llegada ≤ 30 kt",
+        id: "taxi_in_landing_light_off",
+        label: "Landing lights turned off",
         phase: Phase::TaxiIn,
-        points_max: 60,
+        points_max: 20,
+        evaluator: eval_taxi_in_landing_light_off,
+    },
+    Rule {
+        id: "taxi_in_speed",
+        label: "Ground speed never more than 30 kt",
+        phase: Phase::TaxiIn,
+        points_max: 30,
         evaluator: eval_taxi_in_speed,
     },
-    // ===== ARRIVED (40 pts) =====
     Rule {
-        id: "block_in_reached",
-        label: "Vuelo completado en destino",
+        id: "taxi_in_flaps_retracted",
+        label: "Flaps retracted",
+        phase: Phase::TaxiIn,
+        points_max: 20,
+        evaluator: eval_taxi_in_flaps_retracted,
+    },
+    Rule {
+        id: "taxi_in_taxi_light",
+        label: "Taxi light used",
+        phase: Phase::TaxiIn,
+        points_max: 10,
+        evaluator: eval_taxi_in_taxi_light,
+    },
+    // ============================================================
+    // ARRIVED (190 pts) — En gate, motores apagados
+    // ============================================================
+    Rule {
+        id: "arrived_parking_brake",
+        label: "Parking brake applied",
         phase: Phase::Arrived,
-        points_max: 40,
-        evaluator: eval_block_in_reached,
+        points_max: 100,
+        evaluator: eval_arrived_parking_brake,
+    },
+    Rule {
+        id: "arrived_engines_off",
+        label: "All engines off",
+        phase: Phase::Arrived,
+        points_max: 50,
+        evaluator: eval_arrived_engines_off,
+    },
+    Rule {
+        id: "arrived_flaps_up",
+        label: "Flaps not deployed",
+        phase: Phase::Arrived,
+        points_max: 20,
+        evaluator: eval_arrived_flaps_up,
+    },
+    Rule {
+        id: "arrived_spoilers_stowed",
+        label: "Spoilers not deployed",
+        phase: Phase::Arrived,
+        points_max: 20,
+        evaluator: eval_arrived_spoilers_stowed,
     },
 ];
 
 // =============================================================================
-// Helpers
+// Helpers — constructores de ScoreItem
 // =============================================================================
 
-/// Construye un `ScoreItem` con campos derivados.
 fn pass(rule: &Rule, evidence: serde_json::Value) -> ScoreItem {
     ScoreItem {
         phase: rule.phase.as_str().to_string(),
@@ -261,120 +554,395 @@ fn partial(rule: &Rule, earned: i64, evidence: serde_json::Value) -> ScoreItem {
     }
 }
 
-/// Devuelve `(max_gs, max_alt)` entre las muestras dadas.
-fn track_extrema(samples: &[&TrackSample]) -> (Option<i64>, Option<i64>) {
-    let mut max_gs: Option<i64> = None;
-    let mut max_alt: Option<i64> = None;
-    for s in samples {
-        if let Some(gs) = s.gs_kt {
-            max_gs = Some(max_gs.map_or(gs, |m| m.max(gs)));
-        }
-        if let Some(alt) = s.alt_ft {
-            max_alt = Some(max_alt.map_or(alt, |m| m.max(alt)));
-        }
+/// (v3.7.0) Marca una regla como "no evaluable" — los datos necesarios
+/// no están en el track. Típico para VAS imports sin lights/pitch.
+/// `item.points_max = 0` → no infla el denominador del score total.
+fn skip(rule: &Rule, reason: &str) -> ScoreItem {
+    ScoreItem {
+        phase: rule.phase.as_str().to_string(),
+        rule_id: rule.id.to_string(),
+        label: rule.label.to_string(),
+        points_earned: 0,
+        points_max: 0,
+        passed: true,
+        severity: "skipped".to_string(),
+        evidence: json!({ "reason": reason }),
     }
-    (max_gs, max_alt)
 }
 
 // =============================================================================
-// Evaluadores
+// Helpers — slices del track por sub-phase derivada
 // =============================================================================
 
-fn eval_va_metadata(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let has_fn = ctx.flight_number.is_some();
-    let has_cs = ctx.callsign.is_some();
-    let has_icao = ctx.airline_icao.is_some();
-    let count = [has_fn, has_cs, has_icao].iter().filter(|v| **v).count() as i64;
-    let earned = (rule.points_max * count) / 3;
-    let evidence = json!({
-        "flight_number": ctx.flight_number,
-        "callsign": ctx.callsign,
-        "airline_icao": ctx.airline_icao,
-    });
-    partial(rule, earned, evidence)
+/// Samples durante la phase "takeoff" del watcher con alt < 1000 ft AGL.
+/// Equivalente a "Take-Off Acceleration" del VAS.
+fn samples_takeoff_accel<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    let base = ctx.origin_lat.is_finite();
+    let _ = base;
+    ctx.samples_in_phase("takeoff")
+        .into_iter()
+        .chain(ctx.samples_in_phase("climbing").into_iter())
+        .filter(|s| s.alt_ft.map(|a| a < 1000).unwrap_or(false))
+        .collect()
 }
 
-fn eval_distance_reasonable(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let d = ctx.distance_nm.unwrap_or(0.0);
-    let evidence = json!({ "distance_nm": d });
-    if d >= 50.0 {
-        pass(rule, evidence)
-    } else if d >= 20.0 {
-        partial(rule, rule.points_max / 2, evidence)
-    } else {
-        fail(rule, "fail", 0, evidence)
+/// Samples durante climbing con alt 1000..10000 ft AGL.
+fn samples_initial_climb<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    ctx.samples_in_phase("climbing")
+        .into_iter()
+        .filter(|s| s.alt_ft.map(|a| (1000..10000).contains(&a)).unwrap_or(false))
+        .collect()
+}
+
+/// Samples durante approach con alt > 1800 ft (Initial Approach).
+fn samples_initial_approach<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    ctx.samples_in_phase("approach")
+        .into_iter()
+        .chain(ctx.samples_in_phase("descent").into_iter())
+        .filter(|s| s.alt_ft.map(|a| a > 1800 && a < 10000).unwrap_or(false))
+        .collect()
+}
+
+/// Samples durante approach con alt ≤ 1800 ft (Final Approach).
+fn samples_final_approach<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    ctx.samples_in_phase("approach")
+        .into_iter()
+        .filter(|s| s.alt_ft.map(|a| a <= 1800).unwrap_or(false))
+        .collect()
+}
+
+/// Samples durante taxi_in (post-landing).
+fn samples_taxi_in<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    ctx.samples_in_phase("taxi_in")
+        .into_iter()
+        .chain(ctx.samples_in_phase("landed_rollout").into_iter())
+        .collect()
+}
+
+/// Samples post-arrival (engines off / parking / deboarding).
+fn samples_arrived<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    ctx.samples_in_phase("parking")
+        .into_iter()
+        .chain(ctx.samples_in_phase("deboarding").into_iter())
+        .collect()
+}
+
+// =============================================================================
+// Helpers — aggregations de campos opcionales
+// =============================================================================
+
+/// True si **algún** sample del slice tiene el extractor Some — usado
+/// para saber si la regla tiene datos para evaluar o debe ser skipped.
+fn any_present<F, T>(samples: &[&TrackSample], extract: F) -> bool
+where
+    F: Fn(&TrackSample) -> Option<T>,
+{
+    samples.iter().any(|s| extract(s).is_some())
+}
+
+/// Max absoluto de un campo f64 sobre los samples.
+fn max_abs_f64<F>(samples: &[&TrackSample], extract: F) -> Option<f64>
+where
+    F: Fn(&TrackSample) -> Option<f64>,
+{
+    samples
+        .iter()
+        .filter_map(|s| extract(s))
+        .map(f64::abs)
+        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
+}
+
+/// Max de un campo f64 (con signo).
+fn max_f64<F>(samples: &[&TrackSample], extract: F) -> Option<f64>
+where
+    F: Fn(&TrackSample) -> Option<f64>,
+{
+    samples
+        .iter()
+        .filter_map(|s| extract(s))
+        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
+}
+
+/// Min de un campo f64 (con signo).
+fn min_f64<F>(samples: &[&TrackSample], extract: F) -> Option<f64>
+where
+    F: Fn(&TrackSample) -> Option<f64>,
+{
+    samples
+        .iter()
+        .filter_map(|s| extract(s))
+        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.min(v))))
+}
+
+/// Max de un campo i64.
+fn max_i64<F>(samples: &[&TrackSample], extract: F) -> Option<i64>
+where
+    F: Fn(&TrackSample) -> Option<i64>,
+{
+    samples
+        .iter()
+        .filter_map(|s| extract(s))
+        .max()
+}
+
+/// % de samples cuyo bool sea Some(true). Si ninguno tiene dato, None.
+fn pct_bool_true<F>(samples: &[&TrackSample], extract: F) -> Option<f32>
+where
+    F: Fn(&TrackSample) -> Option<bool>,
+{
+    let present: Vec<bool> = samples.iter().filter_map(|s| extract(s)).collect();
+    if present.is_empty() {
+        return None;
     }
+    let true_count = present.iter().filter(|v| **v).count();
+    Some(true_count as f32 / present.len() as f32)
 }
 
-fn eval_flight_time_reasonable(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let s = ctx.flight_time_s.unwrap_or(0);
-    let evidence = json!({ "flight_time_s": s, "minutes": s / 60 });
-    if s >= 900 {
-        // 15 min
-        pass(rule, evidence)
-    } else if s >= 300 {
-        // 5 min
-        partial(rule, rule.points_max / 2, evidence)
-    } else {
-        fail(rule, "fail", 0, evidence)
+// =============================================================================
+// Evaluadores — GENERAL
+// =============================================================================
+
+fn eval_pitch_up_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    if !any_present(&ctx.track.iter().collect::<Vec<_>>(), |s| s.pitch_deg) {
+        return skip(rule, "no_pitch_data");
     }
-}
-
-fn eval_origin_known(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let evidence = json!({ "origin_icao": ctx.origin_icao });
-    if ctx.origin_icao.is_some() {
-        pass(rule, evidence)
-    } else {
-        fail(rule, "warn", 0, evidence)
-    }
-}
-
-fn eval_departure_gate(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // Para VAS-ACARS imports tendremos el gate del summary.
-    // Para SimConnect lo tendremos si la Facility Data API resolvió.
-    // No mantenemos el departure_gate en FlightContext porque no lo
-    // cargamos — sería trivial agregar. Por ahora, evaluamos siempre
-    // como passed si el ctx existe. Marca TODO de mejora.
-    let evidence = json!({ "departure_gate": "not_loaded_into_ctx_yet" });
-    partial(rule, rule.points_max / 2, evidence)
-}
-
-/// (v3.6.1) Regla removida del rubric pero conservada como referencia
-/// por si la rescatamos con otra señal de input.
-#[allow(dead_code)]
-fn eval_pushback_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("pushback");
-    if samples.is_empty() {
-        // Sin phase pushback registrada — no penalizar fuerte, dar mid.
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "no_pushback_phase" }),
-        );
-    }
-    let (max_gs, _) = track_extrema(&samples);
-    let max_gs_v = max_gs.unwrap_or(0);
-    let evidence = json!({ "max_gs_kt": max_gs_v });
-    match max_gs_v {
-        n if n <= 5 => pass(rule, evidence),
-        n if n <= 10 => partial(rule, rule.points_max / 2, evidence),
+    let max_up = max_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.pitch_deg).unwrap_or(0.0);
+    let evidence = json!({ "max_pitch_up_deg": max_up });
+    match max_up {
+        v if v <= 20.0 => pass(rule, evidence),
+        v if v <= 25.0 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        v if v <= 30.0 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
 
+fn eval_pitch_down_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    if !any_present(&ctx.track.iter().collect::<Vec<_>>(), |s| s.pitch_deg) {
+        return skip(rule, "no_pitch_data");
+    }
+    let min_down = min_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.pitch_deg).unwrap_or(0.0);
+    let evidence = json!({ "min_pitch_down_deg": min_down });
+    match min_down {
+        v if v >= -20.0 => pass(rule, evidence),
+        v if v >= -25.0 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        v if v >= -30.0 => partial(rule, rule.points_max / 3, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+fn eval_bank_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    if !any_present(&ctx.track.iter().collect::<Vec<_>>(), |s| s.bank_deg) {
+        return skip(rule, "no_bank_data");
+    }
+    let max_bank = max_abs_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.bank_deg).unwrap_or(0.0);
+    let evidence = json!({ "max_bank_deg": max_bank });
+    match max_bank {
+        v if v <= 30.0 => pass(rule, evidence),
+        v if v <= 45.0 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        v if v <= 60.0 => partial(rule, rule.points_max / 3, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+fn eval_g_force_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    if !any_present(&ctx.track.iter().collect::<Vec<_>>(), |s| s.g_force) {
+        return skip(rule, "no_g_force_data");
+    }
+    let max_g = max_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.g_force).unwrap_or(1.0);
+    let evidence = json!({ "max_g_force": max_g });
+    match max_g {
+        v if v <= 2.0 => pass(rule, evidence),
+        v if v <= 2.5 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        v if v <= 3.0 => partial(rule, rule.points_max / 3, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+fn eval_no_overspeed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // (v3.7.0) Proxy de overspeed: IAS > 350 kt bajo 10k ft. SimConnect
+    // expone `OVERSPEED INDICATOR` pero requiere otro simvar; usamos
+    // IAS+ALT como heurística estable. Si no hay IAS, skip.
+    let track_refs: Vec<&TrackSample> = ctx.track.iter().collect();
+    if !any_present(&track_refs, |s| s.ias_kt) {
+        return skip(rule, "no_ias_data");
+    }
+    let over: Vec<(i64, i64)> = track_refs
+        .iter()
+        .filter_map(|s| match (s.alt_ft, s.ias_kt) {
+            (Some(alt), Some(ias)) if alt < 10000 && ias > 350 => Some((alt, ias)),
+            _ => None,
+        })
+        .collect();
+    let evidence = json!({ "overspeed_samples": over.len(), "examples": over.iter().take(3).collect::<Vec<_>>() });
+    match over.len() {
+        0 => pass(rule, evidence),
+        1..=3 => partial(rule, rule.points_max / 2, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+fn eval_no_stall(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // Stall warning no se persiste en el track (sería un simvar más).
+    // Por ahora todos pasan — placeholder honesto que la UI etiqueta
+    // como "info" pero no penaliza. Pendiente: capturar STALL WARNING.
+    skip(rule, "stall_indicator_not_captured")
+}
+
+fn eval_max_service_ceiling(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // Sin la design max alt del avión, no podemos comparar. Heurística:
+    // si max_altitude_ft > 50,000 ft probablemente está fuera de specs
+    // de un avión comercial típico. Aceptable como guard amplio.
+    let Some(max_alt) = ctx.max_altitude_ft else {
+        return skip(rule, "no_max_alt_data");
+    };
+    let evidence = json!({ "max_altitude_ft": max_alt });
+    match max_alt {
+        a if a <= 45000 => pass(rule, evidence),
+        a if a <= 51000 => partial(rule, rule.points_max / 2, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+// =============================================================================
+// Evaluadores — PRE-DEPARTURE
+// =============================================================================
+
+fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("preflight");
+    if !any_present(&samples, |s| s.parking_brake) {
+        return skip(rule, "no_parking_brake_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
+    let evidence = json!({ "parking_brake_set_pct": (pct * 100.0) as i32 });
+    if pct >= 0.95 {
+        pass(rule, evidence)
+    } else if pct >= 0.7 {
+        partial(rule, (rule.points_max * 2) / 3, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_predep_engines_off(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // No persistimos engines N2 por sample. Si en el futuro lo hacemos,
+    // este eval lee de samples_in_phase("preflight"). Por ahora skip.
+    skip(rule, "engine_n2_per_sample_not_captured")
+}
+
+fn eval_predep_flaps_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("preflight");
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    let max_flaps = max_i64(&samples, |s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "max_flaps_pct_during_predep": max_flaps });
+    if max_flaps <= 5 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_predep_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("preflight");
+    if !any_present(&samples, |s| s.spoilers_pct) {
+        return skip(rule, "no_spoilers_data");
+    }
+    let max_sp = max_i64(&samples, |s| s.spoilers_pct).unwrap_or(0);
+    let evidence = json!({ "max_spoilers_pct_during_predep": max_sp });
+    if max_sp <= 5 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_predep_ample_time(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // Duración de la phase preflight (entered_at..exited_at). Si dura
+    // ≥ 5 min, pass. Menos, partial; nada, skip.
+    let Some(range) = ctx.phases.iter().find(|p| p.phase == "preflight") else {
+        return skip(rule, "no_preflight_phase");
+    };
+    let entered = chrono::DateTime::parse_from_rfc3339(&range.entered_at).ok();
+    let exited = range
+        .exited_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let (Some(a), Some(b)) = (entered, exited) else {
+        return skip(rule, "preflight_phase_unclosed");
+    };
+    let secs = (b - a).num_seconds();
+    let evidence = json!({ "preflight_seconds": secs });
+    match secs {
+        s if s >= 300 => pass(rule, evidence),
+        s if s >= 120 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        s if s >= 60 => partial(rule, rule.points_max / 3, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+// =============================================================================
+// Evaluadores — PUSHBACK
+// =============================================================================
+
+fn eval_pushback_nav_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("pushback");
+    if samples.is_empty() {
+        return skip(rule, "no_pushback_phase");
+    }
+    if !any_present(&samples, |s| s.light_nav) {
+        return skip(rule, "no_light_nav_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_nav).unwrap_or(0.0);
+    let evidence = json!({ "nav_light_on_pct": (pct * 100.0) as i32 });
+    if pct >= 0.9 {
+        pass(rule, evidence)
+    } else if pct >= 0.5 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_pushback_beacon_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("pushback");
+    if samples.is_empty() {
+        return skip(rule, "no_pushback_phase");
+    }
+    if !any_present(&samples, |s| s.light_beacon) {
+        return skip(rule, "no_light_beacon_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_beacon).unwrap_or(0.0);
+    let evidence = json!({ "beacon_light_on_pct": (pct * 100.0) as i32 });
+    if pct >= 0.9 {
+        pass(rule, evidence)
+    } else if pct >= 0.5 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_pushback_engines_off_at_start(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    skip(rule, "engine_n2_per_sample_not_captured")
+}
+
+fn eval_pushback_doors_closed(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    skip(rule, "doors_open_simvar_not_captured")
+}
+
+// =============================================================================
+// Evaluadores — TAXI-OUT
+// =============================================================================
+
 fn eval_taxi_out_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let samples = ctx.samples_in_phase("taxi_out");
     if samples.is_empty() {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "no_taxi_phase" }),
-        );
+        return skip(rule, "no_taxi_out_phase");
     }
-    let (max_gs, _) = track_extrema(&samples);
-    let max_gs_v = max_gs.unwrap_or(0);
-    let evidence = json!({ "max_gs_kt": max_gs_v });
-    match max_gs_v {
+    let max_gs = max_i64(&samples, |s| s.gs_kt).unwrap_or(0);
+    let evidence = json!({ "max_gs_kt": max_gs });
+    match max_gs {
         n if n <= 30 => pass(rule, evidence),
         n if n <= 40 => partial(rule, (rule.points_max * 2) / 3, evidence),
         n if n <= 50 => partial(rule, rule.points_max / 3, evidence),
@@ -382,214 +950,467 @@ fn eval_taxi_out_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
-fn eval_clean_rotation(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // Buscamos la primera transición ground→air estimada via alt_ft.
-    // El primer sample con alt > 50 ft sobre el origen marca el lift-off.
-    // Tomamos VS = Δalt / Δt en una ventana de 30s después de lift-off.
-    let mut lift_idx: Option<usize> = None;
-    let baseline_alt: Option<i64> = ctx.track.first().and_then(|s| s.alt_ft);
-    let baseline = baseline_alt.unwrap_or(0);
-    for (i, s) in ctx.track.iter().enumerate() {
-        if let Some(alt) = s.alt_ft {
-            if alt > baseline + 50 {
-                lift_idx = Some(i);
-                break;
-            }
-        }
+fn eval_taxi_out_flaps_set(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("taxi_out");
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_out_phase");
     }
-    let Some(li) = lift_idx else {
-        return fail(
-            rule,
-            "warn",
-            0,
-            json!({ "reason": "no_liftoff_detected" }),
-        );
-    };
-    let to_idx = (li + 6).min(ctx.track.len() - 1); // 30s assuming 5s samples
-    let s0 = &ctx.track[li];
-    let s1 = &ctx.track[to_idx];
-    let (Some(a0), Some(a1)) = (s0.alt_ft, s1.alt_ft) else {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "alt_missing" }),
-        );
-    };
-    let dt = ts_diff_seconds(&s0.ts, &s1.ts).unwrap_or(0.0);
-    if dt < 1.0 {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "dt_too_small" }),
-        );
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
     }
-    let vs_fpm = ((a1 - a0) as f64 / (dt / 60.0)).round() as i64;
-    let evidence = json!({ "vs_fpm": vs_fpm });
-    match vs_fpm {
-        v if (500..=3000).contains(&v) => pass(rule, evidence),
-        v if (300..500).contains(&v) || (3000..=4500).contains(&v) => {
-            partial(rule, (rule.points_max * 2) / 3, evidence)
-        }
-        _ => fail(rule, "fail", rule.points_max / 4, evidence),
+    let max_flaps = max_i64(&samples, |s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "max_flaps_pct_taxi_out": max_flaps });
+    if max_flaps >= 5 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
     }
 }
 
-fn eval_no_overspeed_below_10k(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // Reglas FAA: ≤ 250 KIAS bajo 10,000 ft AGL. Como proxy usamos GS
-    // (no tenemos IAS exacto en el track). El threshold lo subimos a
-    // 280 kt para acomodar tailwind razonable (la nota es 'no más de
-    // 30 kt de margen sobre IAS').
-    let mut over: Vec<(i64, i64)> = Vec::new();
-    for s in &ctx.track {
-        if let (Some(alt), Some(gs)) = (s.alt_ft, s.gs_kt) {
-            if alt < 10000 && gs > 280 {
-                over.push((alt, gs));
-            }
-        }
+fn eval_taxi_out_transponder(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("taxi_out");
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_out_phase");
     }
-    let count = over.len() as i64;
-    let evidence = json!({ "over_samples": count, "examples": over.iter().take(3).collect::<Vec<_>>() });
-    match count {
-        0 => pass(rule, evidence),
-        1..=3 => partial(rule, (rule.points_max * 3) / 4, evidence),
-        4..=10 => partial(rule, rule.points_max / 2, evidence),
+    if !any_present(&samples, |s| s.transponder_code) {
+        return skip(rule, "no_transponder_data");
+    }
+    let max_code = max_i64(&samples, |s| s.transponder_code).unwrap_or(0);
+    let evidence = json!({ "max_transponder_code": max_code });
+    // 1200 (VFR) o 7000 son códigos non-IFR — el ATC asigna IFR > 0 y
+    // distinto a 1200/7000. Aceptamos cualquier código > 0 que NO sea
+    // 1200/7000 como "IFR set".
+    if max_code > 0 && max_code != 1200 && max_code != 7000 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", rule.points_max / 2, evidence)
+    }
+}
+
+fn eval_taxi_out_taxi_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("taxi_out");
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_out_phase");
+    }
+    if !any_present(&samples, |s| s.light_taxi) {
+        return skip(rule, "no_light_taxi_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_taxi).unwrap_or(0.0);
+    let evidence = json!({ "taxi_light_on_pct": (pct * 100.0) as i32 });
+    if pct >= 0.8 {
+        pass(rule, evidence)
+    } else if pct >= 0.4 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_taxi_out_nav_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("taxi_out");
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_out_phase");
+    }
+    if !any_present(&samples, |s| s.light_nav) {
+        return skip(rule, "no_light_nav_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_nav).unwrap_or(0.0);
+    let evidence = json!({ "nav_light_on_pct": (pct * 100.0) as i32 });
+    if pct >= 0.9 {
+        pass(rule, evidence)
+    } else if pct >= 0.5 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+// =============================================================================
+// Evaluadores — TAKE-OFF
+// =============================================================================
+
+fn eval_takeoff_landing_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("takeoff");
+    if samples.is_empty() {
+        return skip(rule, "no_takeoff_phase");
+    }
+    if !any_present(&samples, |s| s.light_landing) {
+        return skip(rule, "no_light_landing_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_landing).unwrap_or(0.0);
+    let evidence = json!({ "landing_light_on_pct": (pct * 100.0) as i32 });
+    if pct >= 0.8 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_takeoff_strobe_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("takeoff");
+    if samples.is_empty() {
+        return skip(rule, "no_takeoff_phase");
+    }
+    if !any_present(&samples, |s| s.light_strobe) {
+        return skip(rule, "no_light_strobe_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_strobe).unwrap_or(0.0);
+    let evidence = json!({ "strobe_light_on_pct": (pct * 100.0) as i32 });
+    if pct >= 0.8 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_takeoff_pitch_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("takeoff");
+    if samples.is_empty() {
+        return skip(rule, "no_takeoff_phase");
+    }
+    if !any_present(&samples, |s| s.pitch_deg) {
+        return skip(rule, "no_pitch_data");
+    }
+    let max_pitch = max_f64(&samples, |s| s.pitch_deg).unwrap_or(0.0);
+    let evidence = json!({ "max_pitch_deg_during_takeoff": max_pitch });
+    if max_pitch <= 15.0 {
+        pass(rule, evidence)
+    } else if max_pitch <= 20.0 {
+        partial(rule, (rule.points_max * 2) / 3, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+// =============================================================================
+// Evaluadores — TAKE-OFF ACCELERATION (0..1000 ft AGL)
+// =============================================================================
+
+fn eval_takeoff_accel_gear_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_takeoff_accel(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_takeoff_accel_data");
+    }
+    if !any_present(&samples, |s| s.gear_down) {
+        return skip(rule, "no_gear_data");
+    }
+    // Tomar el ÚLTIMO sample (al final de la phase de aceleración) —
+    // a 1000 ft AGL el gear ya debe estar arriba.
+    let last_gear = samples.last().and_then(|s| s.gear_down).unwrap_or(true);
+    let evidence = json!({ "gear_down_at_1000ft": last_gear });
+    if !last_gear {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_takeoff_accel_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_takeoff_accel(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_takeoff_accel_data");
+    }
+    if !any_present(&samples, |s| s.ias_kt) {
+        return skip(rule, "no_ias_data");
+    }
+    let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
+    let evidence = json!({ "max_ias_kt_below_1000ft": max_ias });
+    match max_ias {
+        n if n <= 250 => pass(rule, evidence),
+        n if n <= 280 => partial(rule, rule.points_max / 2, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
 
-/// (v3.6.1) Regla removida — pilotos pueden cambiar altitud
-/// legítimamente. Conservada por si se rescata con otra lógica.
-#[allow(dead_code)]
-fn eval_cruise_alt_held(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+// =============================================================================
+// Evaluadores — INITIAL CLIMB (1000..10000 ft)
+// =============================================================================
+
+fn eval_initial_climb_flaps_retracted(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_initial_climb(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_initial_climb_data");
+    }
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    // En el último sample del initial climb (cercano a 10k), flaps == 0.
+    let last_flaps = samples.last().and_then(|s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "flaps_pct_at_10k": last_flaps });
+    if last_flaps <= 2 {
+        pass(rule, evidence)
+    } else if last_flaps <= 15 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_initial_climb_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_initial_climb(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_initial_climb_data");
+    }
+    if !any_present(&samples, |s| s.light_landing) {
+        return skip(rule, "no_light_landing_data");
+    }
+    // En el último sample (~10k ft), landing_light=false.
+    let last_ll = samples.last().and_then(|s| s.light_landing).unwrap_or(true);
+    let evidence = json!({ "landing_light_at_10k": last_ll });
+    if !last_ll {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+// =============================================================================
+// Evaluadores — CRUISE (above 10k ft)
+// =============================================================================
+
+fn eval_cruise_gear_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let samples = ctx.samples_in_phase("cruise");
     if samples.is_empty() {
-        // Fallback: sin phase explícita, asume que cruise = ventana
-        // entre 30% y 70% del vuelo en altitud > 10000 ft.
-        let high_alt: Vec<&TrackSample> = ctx
-            .track
-            .iter()
-            .filter(|s| s.alt_ft.unwrap_or(0) > 10000)
-            .collect();
-        if high_alt.len() < 6 {
-            return partial(
-                rule,
-                rule.points_max / 2,
-                json!({ "reason": "no_cruise_data" }),
-            );
-        }
-        return cruise_alt_stability(&high_alt, rule);
+        return skip(rule, "no_cruise_phase");
     }
-    cruise_alt_stability(&samples, rule)
-}
-
-#[allow(dead_code)]
-fn cruise_alt_stability(samples: &[&TrackSample], rule: &Rule) -> ScoreItem {
-    let alts: Vec<i64> = samples.iter().filter_map(|s| s.alt_ft).collect();
-    if alts.is_empty() {
-        return partial(rule, rule.points_max / 2, json!({ "reason": "no_alt" }));
+    if !any_present(&samples, |s| s.gear_down) {
+        return skip(rule, "no_gear_data");
     }
-    let target = *alts.iter().max().unwrap();
-    let within = alts.iter().filter(|a| (target - **a).abs() <= 200).count() as i64;
-    let total = alts.len() as i64;
-    let pct = (within as f32 / total as f32) * 100.0;
-    let evidence = json!({ "target_alt": target, "within_200ft_pct": pct as i32 });
-    let earned = (rule.points_max * within) / total.max(1);
-    partial(rule, earned, evidence)
-}
-
-fn eval_descent_rate(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("descent");
-    let pool: Vec<&TrackSample> = if samples.is_empty() {
-        // Fallback: ventana post-cruise — desde la altitud máxima
-        // hasta el último sample.
-        let max_alt = ctx
-            .track
-            .iter()
-            .filter_map(|s| s.alt_ft)
-            .max()
-            .unwrap_or(0);
-        ctx.track
-            .iter()
-            .skip_while(|s| s.alt_ft.unwrap_or(0) < max_alt)
-            .collect()
+    let any_down = samples.iter().any(|s| s.gear_down == Some(true));
+    let evidence = json!({ "gear_down_during_cruise": any_down });
+    if !any_down {
+        pass(rule, evidence)
     } else {
-        samples
-    };
-    if pool.len() < 3 {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "no_descent_data" }),
-        );
+        fail(rule, "fail", 0, evidence)
     }
-    let mut worst_vs: i64 = 0;
-    for win in pool.windows(2) {
-        let (a, b) = (win[0], win[1]);
-        let (Some(a_alt), Some(b_alt)) = (a.alt_ft, b.alt_ft) else {
-            continue;
-        };
-        let dt = ts_diff_seconds(&a.ts, &b.ts).unwrap_or(0.0);
-        if dt < 1.0 {
-            continue;
-        }
-        let vs = ((b_alt - a_alt) as f64 / (dt / 60.0)) as i64;
-        if vs < worst_vs {
-            worst_vs = vs;
-        }
+}
+
+fn eval_cruise_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("cruise");
+    if samples.is_empty() {
+        return skip(rule, "no_cruise_phase");
     }
-    let evidence = json!({ "worst_vs_fpm": worst_vs });
-    match worst_vs {
-        v if v >= -2500 => pass(rule, evidence),
-        v if v >= -3500 => partial(rule, (rule.points_max * 2) / 3, evidence),
-        v if v >= -4500 => partial(rule, rule.points_max / 3, evidence),
+    if !any_present(&samples, |s| s.light_landing) {
+        return skip(rule, "no_light_landing_data");
+    }
+    let pct_on = pct_bool_true(&samples, |s| s.light_landing).unwrap_or(0.0);
+    let evidence = json!({ "landing_light_on_pct_cruise": (pct_on * 100.0) as i32 });
+    if pct_on <= 0.05 {
+        pass(rule, evidence)
+    } else if pct_on <= 0.3 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_cruise_flaps_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("cruise");
+    if samples.is_empty() {
+        return skip(rule, "no_cruise_phase");
+    }
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    let max_flaps = max_i64(&samples, |s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "max_flaps_pct_cruise": max_flaps });
+    if max_flaps <= 2 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_cruise_doors_closed(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    skip(rule, "doors_open_simvar_not_captured")
+}
+
+// =============================================================================
+// Evaluadores — INITIAL APPROACH (1800..10000 ft)
+// =============================================================================
+
+fn eval_initial_approach_pitch_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_initial_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_initial_approach_data");
+    }
+    if !any_present(&samples, |s| s.pitch_deg) {
+        return skip(rule, "no_pitch_data");
+    }
+    let min_pitch = min_f64(&samples, |s| s.pitch_deg).unwrap_or(0.0);
+    let evidence = json!({ "min_pitch_deg_initial_approach": min_pitch });
+    if min_pitch >= -15.0 {
+        pass(rule, evidence)
+    } else if min_pitch >= -20.0 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_initial_approach_flaps_deployed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_initial_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_initial_approach_data");
+    }
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    // En el último sample (cerca de 1800 ft) flaps debería estar >0.
+    let last_flaps = samples.last().and_then(|s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "flaps_pct_at_1800ft": last_flaps });
+    if last_flaps >= 5 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_initial_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_initial_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_initial_approach_data");
+    }
+    if !any_present(&samples, |s| s.ias_kt) {
+        return skip(rule, "no_ias_data");
+    }
+    let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
+    let evidence = json!({ "max_ias_kt_initial_approach": max_ias });
+    match max_ias {
+        n if n <= 200 => pass(rule, evidence),
+        n if n <= 230 => partial(rule, rule.points_max / 2, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
 
-fn eval_stable_approach(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // Definir "approach" como las muestras dentro de 5 nm del
-    // destination_icao (o el último sample como proxy de destino).
-    let (dlat, dlon) = match (ctx.destination_lat, ctx.destination_lon) {
-        (Some(la), Some(lo)) => (la, lo),
-        _ => match ctx.track.last() {
-            Some(s) => (s.lat, s.lon),
-            None => return fail(rule, "warn", 0, json!({ "reason": "no_dest" })),
-        },
-    };
-    let close: Vec<&TrackSample> = ctx
-        .track
-        .iter()
-        .filter(|s| crate::flight_log::haversine_nm(s.lat, s.lon, dlat, dlon) <= 5.0)
-        .collect();
-    if close.len() < 3 {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "insufficient_approach_samples" }),
-        );
+fn eval_initial_approach_landing_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_initial_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_initial_approach_data");
     }
-    let max_gs = close.iter().filter_map(|s| s.gs_kt).max().unwrap_or(0);
-    let evidence = json!({ "max_gs_within_5nm": max_gs });
-    match max_gs {
-        n if n <= 180 => pass(rule, evidence),
-        n if n <= 220 => partial(rule, (rule.points_max * 2) / 3, evidence),
-        n if n <= 260 => partial(rule, rule.points_max / 3, evidence),
+    if !any_present(&samples, |s| s.light_landing) {
+        return skip(rule, "no_light_landing_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_landing).unwrap_or(0.0);
+    let evidence = json!({ "landing_light_on_pct_initial_approach": (pct * 100.0) as i32 });
+    if pct >= 0.7 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+// =============================================================================
+// Evaluadores — FINAL APPROACH (below 1800 ft AGL)
+// =============================================================================
+
+fn eval_final_approach_pitch_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_final_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_final_approach_data");
+    }
+    if !any_present(&samples, |s| s.pitch_deg) {
+        return skip(rule, "no_pitch_data");
+    }
+    let min_pitch = min_f64(&samples, |s| s.pitch_deg).unwrap_or(0.0);
+    let evidence = json!({ "min_pitch_deg_final_approach": min_pitch });
+    if min_pitch >= -15.0 {
+        pass(rule, evidence)
+    } else if min_pitch >= -20.0 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_final_approach_flaps_deployed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_final_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_final_approach_data");
+    }
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    let min_flaps = samples.iter().filter_map(|s| s.flaps_pct).min().unwrap_or(0);
+    let evidence = json!({ "min_flaps_pct_final_approach": min_flaps });
+    if min_flaps >= 20 {
+        pass(rule, evidence)
+    } else if min_flaps >= 5 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_final_approach_gear_down(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_final_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_final_approach_data");
+    }
+    if !any_present(&samples, |s| s.gear_down) {
+        return skip(rule, "no_gear_data");
+    }
+    let pct_down = pct_bool_true(&samples, |s| s.gear_down).unwrap_or(0.0);
+    let evidence = json!({ "gear_down_pct_final_approach": (pct_down * 100.0) as i32 });
+    if pct_down >= 0.95 {
+        pass(rule, evidence)
+    } else if pct_down >= 0.5 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_final_approach_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_final_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_final_approach_data");
+    }
+    if !any_present(&samples, |s| s.spoilers_pct) {
+        return skip(rule, "no_spoilers_data");
+    }
+    // Spoilers armed (no deployed) — flight spoilers en armado son OK,
+    // pero deployed (>30%) durante final approach es malo. Aceptamos ≤ 30%.
+    let max_sp = max_i64(&samples, |s| s.spoilers_pct).unwrap_or(0);
+    let evidence = json!({ "max_spoilers_pct_final_approach": max_sp });
+    if max_sp <= 30 {
+        pass(rule, evidence)
+    } else if max_sp <= 60 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_final_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_final_approach(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_final_approach_data");
+    }
+    if !any_present(&samples, |s| s.ias_kt) {
+        return skip(rule, "no_ias_data");
+    }
+    let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
+    let evidence = json!({ "max_ias_kt_final_approach": max_ias });
+    match max_ias {
+        n if n <= 200 => pass(rule, evidence),
+        n if n <= 250 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        n if n <= 280 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
 
-fn eval_smooth_landing(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+// =============================================================================
+// Evaluadores — LANDING (touchdown)
+// =============================================================================
+
+fn eval_landing_smooth(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let Some(fpm) = ctx.landing_fpm else {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "no_landing_fpm" }),
-        );
+        return skip(rule, "no_landing_fpm");
     };
     let evidence = json!({ "landing_fpm": fpm });
-    // FPM negativo = descenso. Más negativo = más duro.
     match fpm {
-        f if f > -200 => pass(rule, evidence), // mariposa / muy suave
+        f if f > -200 => pass(rule, evidence),
         f if f > -400 => partial(rule, (rule.points_max * 4) / 5, evidence),
         f if f > -600 => partial(rule, (rule.points_max * 3) / 5, evidence),
         f if f > -800 => partial(rule, (rule.points_max * 2) / 5, evidence),
@@ -598,44 +1419,166 @@ fn eval_smooth_landing(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
-fn eval_taxi_in_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("taxi_in");
+// =============================================================================
+// Evaluadores — TAXI-IN
+// =============================================================================
+
+fn eval_taxi_in_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_taxi_in(ctx);
     if samples.is_empty() {
-        return partial(
-            rule,
-            rule.points_max / 2,
-            json!({ "reason": "no_taxi_in_phase" }),
-        );
+        return skip(rule, "no_taxi_in_data");
     }
-    let (max_gs, _) = track_extrema(&samples);
-    let v = max_gs.unwrap_or(0);
-    let evidence = json!({ "max_gs_kt": v });
-    match v {
+    if !any_present(&samples, |s| s.light_landing) {
+        return skip(rule, "no_light_landing_data");
+    }
+    let pct_on = pct_bool_true(&samples, |s| s.light_landing).unwrap_or(0.0);
+    let evidence = json!({ "landing_light_on_pct_taxi_in": (pct_on * 100.0) as i32 });
+    if pct_on <= 0.1 {
+        pass(rule, evidence)
+    } else if pct_on <= 0.4 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_taxi_in_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_taxi_in(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_in_data");
+    }
+    let max_gs = max_i64(&samples, |s| s.gs_kt).unwrap_or(0);
+    let evidence = json!({ "max_gs_kt_taxi_in": max_gs });
+    match max_gs {
         n if n <= 30 => pass(rule, evidence),
         n if n <= 40 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        n if n <= 50 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
 
-fn eval_block_in_reached(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let has_end = ctx.ended_at.is_some();
-    let has_dest = ctx.destination_icao.is_some();
-    let has_gate = ctx.arrival_gate.is_some();
-    let evidence = json!({
-        "ended_at": ctx.ended_at,
-        "destination_icao": ctx.destination_icao,
-        "arrival_gate": ctx.arrival_gate,
-    });
-    let score = (if has_end { 1 } else { 0 })
-        + (if has_dest { 1 } else { 0 })
-        + (if has_gate { 1 } else { 0 });
-    let earned = (rule.points_max * score) / 3;
-    partial(rule, earned, evidence)
+fn eval_taxi_in_flaps_retracted(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_taxi_in(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_in_data");
+    }
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    // En el ÚLTIMO sample del taxi-in los flaps deberían estar ya
+    // retraídos. Si nunca se retraen, fail.
+    let last_flaps = samples.last().and_then(|s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "flaps_pct_end_taxi_in": last_flaps });
+    if last_flaps <= 2 {
+        pass(rule, evidence)
+    } else if last_flaps <= 15 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
 }
 
-/// Diferencia en segundos entre dos timestamps ISO 8601 UTC.
-fn ts_diff_seconds(a: &str, b: &str) -> Option<f64> {
-    let ta = chrono::DateTime::parse_from_rfc3339(a).ok()?;
-    let tb = chrono::DateTime::parse_from_rfc3339(b).ok()?;
-    Some((tb - ta).num_seconds() as f64)
+fn eval_taxi_in_taxi_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_taxi_in(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_taxi_in_data");
+    }
+    if !any_present(&samples, |s| s.light_taxi) {
+        return skip(rule, "no_light_taxi_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.light_taxi).unwrap_or(0.0);
+    let evidence = json!({ "taxi_light_on_pct_taxi_in": (pct * 100.0) as i32 });
+    if pct >= 0.8 {
+        pass(rule, evidence)
+    } else if pct >= 0.4 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+// =============================================================================
+// Evaluadores — ARRIVED (en gate, motores off)
+// =============================================================================
+
+fn eval_arrived_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_arrived(ctx);
+    if samples.is_empty() {
+        // Fallback: usar el último sample del track (si no hay phase
+        // "parking" explícita).
+        if ctx.track.is_empty() {
+            return skip(rule, "no_arrived_data");
+        }
+        let last = ctx.track.last().unwrap();
+        if let Some(b) = last.parking_brake {
+            let evidence = json!({ "parking_brake_at_end": b });
+            return if b { pass(rule, evidence) } else { fail(rule, "fail", 0, evidence) };
+        }
+        return skip(rule, "no_parking_brake_data");
+    }
+    if !any_present(&samples, |s| s.parking_brake) {
+        return skip(rule, "no_parking_brake_data");
+    }
+    let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
+    let evidence = json!({ "parking_brake_set_pct": (pct * 100.0) as i32 });
+    if pct >= 0.9 {
+        pass(rule, evidence)
+    } else if pct >= 0.5 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_arrived_engines_off(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // El cierre del vuelo en flight_log se dispara cuando engines_off,
+    // así que si llegamos a "arrived" implícitamente los motores se
+    // apagaron. Pass (1/1) — la prueba más fuerte es que el row exista.
+    pass(rule, json!({ "reason": "flight_finished_implies_engines_off" }))
+}
+
+fn eval_arrived_flaps_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_arrived(ctx);
+    if samples.is_empty() {
+        if let Some(last) = ctx.track.last() {
+            if let Some(f) = last.flaps_pct {
+                let evidence = json!({ "flaps_pct_at_end": f });
+                return if f <= 5 { pass(rule, evidence) } else { fail(rule, "fail", 0, evidence) };
+            }
+        }
+        return skip(rule, "no_flaps_data");
+    }
+    if !any_present(&samples, |s| s.flaps_pct) {
+        return skip(rule, "no_flaps_data");
+    }
+    let last_flaps = samples.last().and_then(|s| s.flaps_pct).unwrap_or(0);
+    let evidence = json!({ "flaps_pct_at_arrived": last_flaps });
+    if last_flaps <= 5 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+fn eval_arrived_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = samples_arrived(ctx);
+    if samples.is_empty() {
+        if let Some(last) = ctx.track.last() {
+            if let Some(s) = last.spoilers_pct {
+                let evidence = json!({ "spoilers_pct_at_end": s });
+                return if s <= 5 { pass(rule, evidence) } else { fail(rule, "fail", 0, evidence) };
+            }
+        }
+        return skip(rule, "no_spoilers_data");
+    }
+    if !any_present(&samples, |s| s.spoilers_pct) {
+        return skip(rule, "no_spoilers_data");
+    }
+    let last_sp = samples.last().and_then(|s| s.spoilers_pct).unwrap_or(0);
+    let evidence = json!({ "spoilers_pct_at_arrived": last_sp });
+    if last_sp <= 5 {
+        pass(rule, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
 }
