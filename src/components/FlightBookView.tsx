@@ -373,6 +373,7 @@ export function FlightBookView() {
           {selectedFlightId != null && (
             <DetailActionsBar
               selectedFlightId={selectedFlightId}
+              selectedFlightSource={selectedFlight?.source ?? null}
               onToggleChecklist={() => setChecklistOpen((v) => !v)}
               checklistOpen={checklistOpen && selectedFlightId != null}
             />
@@ -1687,15 +1688,23 @@ function colorFromString(s: string): string {
  */
 function DetailActionsBar({
   selectedFlightId,
+  selectedFlightSource,
   onToggleChecklist,
   checklistOpen,
 }: {
   selectedFlightId: number | null;
+  selectedFlightSource: string | null;
   onToggleChecklist: () => void;
   checklistOpen: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
-  const tabs = [
+  // (v4.0.0 — P3) El tab "Weather" sólo aplica a vuelos volados en
+  // SimFleet con telemetría capturada. Para imports de VAS-ACARS no
+  // tenemos historical wind/clouds/precip — el .bin del ACARS no los
+  // expone — y las APIs gratuitas no soportan query histórica. El usuario
+  // decidió ocultarlo en vez de mostrarlo como "datos no disponibles".
+  const isSimflownFlight = selectedFlightSource === "simconnect";
+  const allTabs = [
     {
       key: "checklist" as const,
       icon: <ClipboardCheck className="h-3.5 w-3.5" />,
@@ -1733,8 +1742,14 @@ function DetailActionsBar({
       active: false,
     },
   ];
+  const tabs = allTabs.filter(
+    (t) => t.key !== "weather" || isSimflownFlight,
+  );
+  // Grid responsive: si Weather se oculta usamos grid-cols-3 para no
+  // dejar un slot vacío. Si está, grid-cols-4 como siempre.
+  const gridCols = tabs.length === 4 ? "grid-cols-4" : "grid-cols-3";
   return (
-    <div className="grid grid-cols-4 gap-1.5">
+    <div className={`grid ${gridCols} gap-1.5`}>
       {tabs.map((tab) => (
         <button
           key={tab.label}
