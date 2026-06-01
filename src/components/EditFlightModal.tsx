@@ -142,34 +142,30 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
         exit={{ opacity: 0 }}
         transition={{ duration: 0.12 }}
         onClick={() => !saving && onClose()}
-        className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/75 backdrop-blur-sm"
+        // (v4.0.0 — P6.2 fix iter 3) El SCROLL vive en el backdrop,
+        // no en el body del modal. Razón: la ventana de SimFleet es
+        // 540px alta — incluso con max-h del modal y body scrolleable,
+        // WebView2 + framer-motion en algunos casos no honran bien la
+        // cadena flex/grid + overflow-y-auto. Approach más robusto:
+        // backdrop scrollea el modal entero cuando no cabe → en
+        // pantallas grandes se centra normal, en chicas se scrollea
+        // verticalmente hasta llegar al footer con Guardar/Cancelar.
+        // Patrón estándar de cualquier dialog web (Tailwind UI,
+        // Headless UI, Radix Dialog).
+        className="fixed inset-0 z-[65] flex items-start justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm"
       >
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 8 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 8 }}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          // (v4.0.0 — P6.2 fix iteración 2) CSS Grid con tres filas
-          // `auto / minmax(0,1fr) / auto` resuelve el scroll del body
-          // sin ambigüedades. Patrón más confiable que flex+min-h-0
-          // que en algunas versiones de WebView2 (Tauri) no honraba
-          // bien el `flex-1` cuando el contenido tenía altura intrínseca
-          // mayor que el max-h. Con grid el row del body es estricto:
-          // minmax(0, 1fr) → puede colapsar a 0 pero también ocupar
-          // todo el espacio restante; el overflow-y-auto del child
-          // entonces sí dispara scroll cuando el contenido excede.
-          //
-          // max-h-[85vh] en vez de calc(100vh-2rem) porque la app
-          // SimFleet vive en ventana 540px alta — un margen mayor
-          // garantiza que el modal nunca pegue al borde de la
-          // ventana en aspect ratios chicos.
-          style={{
-            display: "grid",
-            gridTemplateRows: "auto minmax(0, 1fr) auto",
-            maxHeight: "85vh",
-          }}
-          className="w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+          // `my-auto` centra verticalmente cuando hay espacio; cuando
+          // el modal es más alto que el viewport, los margins son 0
+          // automáticamente y el contenido se ve completo via scroll
+          // del backdrop. Se quitó `scale` de la animación porque
+          // interfería con el cálculo de altura inicial al montar.
+          className="my-auto w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
         >
           <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
             <div>
@@ -190,7 +186,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
             </button>
           </header>
 
-          <div className="space-y-3 overflow-y-auto p-4">
+          <div className="space-y-3 p-4">
             <Field label="Block time">
               <div className="flex items-center gap-1.5">
                 <NumInput
