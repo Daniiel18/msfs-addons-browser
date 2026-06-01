@@ -94,6 +94,11 @@ pub struct UpdateEntryDto {
     pub departure_gate: Option<String>,
     pub arrival_gate: Option<String>,
     pub aircraft_registration: Option<String>,
+    /// (v4.0.0 — P6.2) Origen y destino editables — el watcher a
+    /// veces detecta mal el ICAO de spawn o el vuelo VAS importa
+    /// con ICAOs anómalos. El usuario los corrige aquí.
+    pub origin_icao: Option<String>,
+    pub destination_icao: Option<String>,
 }
 
 /// Edita campos manualmente — usado por el botón "Editar" del panel
@@ -114,6 +119,8 @@ pub async fn update_flight_log_entry(
         departure_gate: input.departure_gate,
         arrival_gate: input.arrival_gate,
         aircraft_registration: input.aircraft_registration,
+        origin_icao: input.origin_icao,
+        destination_icao: input.destination_icao,
     };
     flight_log::update_entry(&state.db, id, &mapped)
         .await

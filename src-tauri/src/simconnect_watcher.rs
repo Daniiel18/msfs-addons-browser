@@ -2432,12 +2432,27 @@ mod windows_simconnect {
                     // SimConnect: Y positivo arriba). Multiplicamos × 60
                     // para convertir ft/s → ft/min.
                     //
-                    // Fallback: si el simvar es 0 (algunos aviones no
-                    // lo actualizan), caemos al cálculo viejo basado en
-                    // VERTICAL SPEED a 4Hz.
+                    // (v4.0.0 — P6.3 fix) **Sólo aceptar valores
+                    // NEGATIVOS** del simvar. El simvar `PLANE
+                    // TOUCHDOWN NORMAL VELOCITY` reporta el VS del
+                    // touchdown — para un aterrizaje real es siempre
+                    // negativo (descenso). Casos donde sale positivo:
+                    //   · Avión rebotando (`bounce`) — segundo contacto
+                    //     desde abajo, velocidad neta positiva.
+                    //   · Aviones de terceros con modelado dudoso que
+                    //     no actualizan el signo correctamente.
+                    //   · El simvar no se actualizó (~0) → consideramos
+                    //     no-touchdown válido.
+                    //
+                    // Si el simvar da algo no-negativo, **caemos al
+                    // fallback** del min(recent_vs) que SÍ filtra
+                    // por signo. Sin este check, el watcher persistía
+                    // valores positivos y el frontend los filtraba al
+                    // render → el FPM aparecía en logs pero "no se
+                    // pintaba en la app" (bug reportado P6.3).
                     let touchdown_fps_raw = data.touchdown_normal_velocity_fps;
                     let touchdown_fpm = if touchdown_fps_raw.is_finite()
-                        && touchdown_fps_raw.abs() > 0.01
+                        && touchdown_fps_raw < -0.01
                     {
                         Some((touchdown_fps_raw * 60.0) as i64)
                     } else {
@@ -2448,7 +2463,7 @@ mod windows_simconnect {
                             .iter()
                             .copied()
                             .fold(f64::INFINITY, f64::min);
-                        if landing_vs.is_finite() {
+                        if landing_vs.is_finite() && landing_vs < 0.0 {
                             Some(landing_vs as i64)
                         } else {
                             None

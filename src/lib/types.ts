@@ -481,6 +481,12 @@ export interface UpdateFlightInput {
    *  de foto en planespotters funcione cuando el livery no contenía
    *  un tail real (ej. liveries Fenix con códigos internos). */
   aircraftRegistration?: string | null;
+  /** (v4.0.0 — P6.2) ICAO de origen/destino editables. El watcher
+   *  a veces detecta mal el aeropuerto de spawn, o un vuelo VAS
+   *  importado trae un ICAO erróneo. El backend hace .to_uppercase()
+   *  antes de persistir. */
+  originIcao?: string | null;
+  destinationIcao?: string | null;
 }
 
 /** (v3.5.0 F2) Reporte tras borrar todos los vuelos de una fuente. */

@@ -52,6 +52,11 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
   const [registration, setRegistration] = useState(
     () => entry.aircraftRegistration ?? "",
   );
+  // (v4.0.0 — P6.2) Origen / destino editables. Útil cuando el watcher
+  // detectó un ICAO erróneo o cuando un import VAS trae el aeropuerto
+  // mal parseado. El usuario corrige tipeando un ICAO (3-4 letras).
+  const [originIcao, setOriginIcao] = useState(() => entry.originIcao ?? "");
+  const [destIcao, setDestIcao] = useState(() => entry.destinationIcao ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,6 +111,17 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
         aircraftRegistration:
           registration !== (entry.aircraftRegistration ?? "")
             ? registration
+            : undefined,
+        // (v4.0.0 — P6.2) Origen / destino — solo enviamos si el
+        // usuario realmente cambió el valor (string compare con el
+        // ICAO original). Backend uppercases automáticamente.
+        originIcao:
+          originIcao.trim().toUpperCase() !== (entry.originIcao ?? "").toUpperCase()
+            ? originIcao.trim()
+            : undefined,
+        destinationIcao:
+          destIcao.trim().toUpperCase() !== (entry.destinationIcao ?? "").toUpperCase()
+            ? destIcao.trim()
             : undefined,
       };
       await api.updateFlightLogEntry(entry.id, input);
@@ -181,6 +197,33 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 </span>
               </div>
             </Field>
+
+            {/* (v4.0.0 — P6.2) Origen + destino ICAO editables.
+                Útil cuando el watcher detectó mal el spawn o cuando
+                un import VAS trae el ICAO con typo. El backend hace
+                .to_uppercase() antes de persistir. */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Origen (ICAO)">
+                <input
+                  type="text"
+                  value={originIcao}
+                  onChange={(e) => setOriginIcao(e.target.value.toUpperCase())}
+                  placeholder="Ej. KJFK, LFPG, SEQM"
+                  maxLength={4}
+                  className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
+                />
+              </Field>
+              <Field label="Destino (ICAO)">
+                <input
+                  type="text"
+                  value={destIcao}
+                  onChange={(e) => setDestIcao(e.target.value.toUpperCase())}
+                  placeholder="Ej. EGLL, KLAX, OMDB"
+                  maxLength={4}
+                  className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
+                />
+              </Field>
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <Field label="Pasajeros">

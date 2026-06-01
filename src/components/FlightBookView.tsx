@@ -913,8 +913,15 @@ function SelectedFlightPanel({
         )}
         {/* Touchdown rate sólo para vuelos en vivo (SimConnect) — ahí
             el valor viene del simvar PLANE TOUCHDOWN NORMAL VELOCITY
-            que es preciso. Para imports VAS-ACARS no se muestra. */}
-        {entry.source === "simconnect" && entry.landingFpm !== null && entry.landingFpm < 0 && (() => {
+            que es preciso. Para imports VAS-ACARS no se muestra.
+            (v4.0.0 — P6.3 fix) Quitado el filtro `< 0`. El backend
+            ahora garantiza que solo persiste valores negativos
+            válidos en el watcher (fix en simconnect_watcher.rs). El
+            usuario reportó que el FPM estaba en los logs pero no se
+            pintaba — causa: valores positivos del simvar (bounce o
+            modelado dudoso) pasaban el filtro `!== null` pero
+            fallaban el `< 0` del frontend. */}
+        {entry.source === "simconnect" && entry.landingFpm !== null && (() => {
           const fpm = entry.landingFpm;
           const color =
             fpm > -200

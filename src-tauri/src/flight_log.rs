@@ -444,6 +444,15 @@ pub struct UpdateEntryInput {
     /// VAS-ACARS donde el livery no contenía un tail real, o vuelos
     /// viejos pre-v3.5.0 sin captura SimConnect de `ATC ID`).
     pub aircraft_registration: Option<String>,
+    /// (v4.0.0 — P6.2) Origen y destino editables. Útil cuando el
+    /// watcher detectó un ICAO erróneo (spawn en aeropuerto cercano
+    /// al real, vuelos VAS importados con ICAOs mal parseados, etc.).
+    /// El frontend manda strings de 3-4 letras; backend NO valida
+    /// contra la tabla airports — confiamos en el usuario, una
+    /// validación interactiva con sugerencias sería un esfuerzo
+    /// futuro (autocomplete). Se uppercase-ean antes de persistir.
+    pub origin_icao: Option<String>,
+    pub destination_icao: Option<String>,
 }
 
 pub async fn update_entry(
@@ -477,6 +486,12 @@ pub async fn update_entry(
     if input.aircraft_registration.is_some() {
         sets.push("aircraft_registration = ?");
     }
+    if input.origin_icao.is_some() {
+        sets.push("origin_icao = ?");
+    }
+    if input.destination_icao.is_some() {
+        sets.push("destination_icao = ?");
+    }
     if sets.is_empty() {
         return Ok(());
     }
@@ -505,6 +520,14 @@ pub async fn update_entry(
     }
     if let Some(v) = input.aircraft_registration.as_ref() {
         q = q.bind(v);
+    }
+    if let Some(v) = input.origin_icao.as_ref() {
+        // Uppercase para consistencia con la convención del schema
+        // (ICAOs son siempre uppercase en aviación civil).
+        q = q.bind(v.to_uppercase());
+    }
+    if let Some(v) = input.destination_icao.as_ref() {
+        q = q.bind(v.to_uppercase());
     }
     q = q.bind(id);
     q.execute(pool).await?;
