@@ -93,11 +93,16 @@ export function FlightBookView() {
   }, [entries, selectedFlightId]);
 
   // (v3.6.0 Phase H) Cierra el ChecklistWidget al volver al globo.
+  // (v4.0.0 — P3.2) También al cambiar a un vuelo VAS import: el
+  // botón Checklist se oculta para imports, así que el widget no
+  // debe quedar abierto del vuelo simconnect anterior.
   useEffect(() => {
-    if (selectedFlightId == null && checklistOpen) {
+    if (!checklistOpen) return;
+    const isSimflown = selectedFlight?.source === "simconnect";
+    if (selectedFlightId == null || !isSimflown) {
       setChecklistOpen(false);
     }
-  }, [selectedFlightId, checklistOpen]);
+  }, [selectedFlightId, selectedFlight?.source, checklistOpen]);
 
   // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
   // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
@@ -1698,11 +1703,16 @@ function DetailActionsBar({
   checklistOpen: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
-  // (v4.0.0 — P3) El tab "Weather" sólo aplica a vuelos volados en
-  // SimFleet con telemetría capturada. Para imports de VAS-ACARS no
-  // tenemos historical wind/clouds/precip — el .bin del ACARS no los
-  // expone — y las APIs gratuitas no soportan query histórica. El usuario
-  // decidió ocultarlo en vez de mostrarlo como "datos no disponibles".
+  // (v4.0.0 — P3 + P3.2) Tabs gated por source del vuelo:
+  //   · **Checklist** — solo vuelos hechos en SimFleet (`simconnect`).
+  //     Para VAS imports el rubric depende de simvars que no existen
+  //     en el .bin (lights, pitch, etc.) → el score sería engañoso.
+  //   · **Weather** — solo vuelos `simconnect`. Imports no tienen
+  //     historical wind/clouds y las APIs gratuitas no permiten
+  //     query histórica.
+  //   · Performance y NOTAMs siguen visibles (a la espera de
+  //     implementación en P5/P8 — VAS imports tendrán datos limitados
+  //     pero al menos los básicos del .bin alcanzan).
   const isSimflownFlight = selectedFlightSource === "simconnect";
   const allTabs = [
     {
@@ -1742,12 +1752,20 @@ function DetailActionsBar({
       active: false,
     },
   ];
-  const tabs = allTabs.filter(
-    (t) => t.key !== "weather" || isSimflownFlight,
-  );
-  // Grid responsive: si Weather se oculta usamos grid-cols-3 para no
-  // dejar un slot vacío. Si está, grid-cols-4 como siempre.
-  const gridCols = tabs.length === 4 ? "grid-cols-4" : "grid-cols-3";
+  const tabs = allTabs.filter((t) => {
+    if (t.key === "weather" && !isSimflownFlight) return false;
+    if (t.key === "checklist" && !isSimflownFlight) return false;
+    return true;
+  });
+  // Grid responsive: el ancho de los tabs se ajusta a 2/3/4 cols
+  // según cuántos sobreviven el filtrado. Para VAS imports quedan 2
+  // (Performance + NOTAMs), para SimFleet vuelos quedan 4.
+  const gridCols =
+    tabs.length === 4
+      ? "grid-cols-4"
+      : tabs.length === 3
+        ? "grid-cols-3"
+        : "grid-cols-2";
   return (
     <div className={`grid ${gridCols} gap-1.5`}>
       {tabs.map((tab) => (
@@ -1806,6 +1824,14 @@ function CompactFlightRow({
   const duration =
     entry.flightTimeS !== null ? formatHM(entry.flightTimeS) : "—";
   const aircraft = entry.aircraftAtcType ?? entry.aircraftTitle ?? "";
+  // (v4.0.0 — P3.3 + P3.4) Vuelo importado (VAS-ACARS u otro): se
+  // muestra un badge "Imported" y se **oculta** el grade del score.
+  // El rubric depende de simvars que el .bin no expone (lights,
+  // pitch, gear, flaps, etc.) — la mayoría de reglas saldrían
+  // "skipped" y el grade resultante es engañoso. El usuario decidió
+  // dejar esos vuelos sin score visible en el sidebar.
+  const isImported = entry.source !== "simconnect";
+  const showScore = !!entry.scoreGrade && !isImported;
   return (
     <li
       onClick={onSelect}
@@ -1846,12 +1872,19 @@ function CompactFlightRow({
           AAL9833" (3-letter ICAO + número) es el formato que usa para
           identificar vuelos, no el IATA "DL3880". Fallback a
           flight_number si no hay callsign capturado. */}
-      {(entry.callsign || entry.flightNumber || entry.scoreGrade) && (
+      {(entry.callsign || entry.flightNumber || showScore || isImported) && (
         <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px]">
           <span className="truncate font-mono font-semibold text-sky-300">
             {entry.callsign ?? entry.flightNumber ?? ""}
           </span>
-          {entry.scoreGrade && (
+          {isImported ? (
+            <span
+              title={t("fb.imported_flight.detail")}
+              className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-300 ring-1 ring-sky-500/30"
+            >
+              {t("fb.imported_flight.badge")}
+            </span>
+          ) : showScore ? (
             <span
               title={
                 entry.scoreTotal !== null && entry.scoreMax !== null
@@ -1859,12 +1892,12 @@ function CompactFlightRow({
                   : undefined
               }
               className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${gradeBadgeClass(
-                entry.scoreGrade,
+                entry.scoreGrade!,
               )}`}
             >
               {entry.scoreGrade}
             </span>
-          )}
+          ) : null}
         </div>
       )}
       <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-slate-500">

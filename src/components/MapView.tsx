@@ -47,6 +47,11 @@ export function MapView() {
   const detailsFor = useCommunityStore((s) => s.detailsFor);
   const openDetails = useCommunityStore((s) => s.openDetails);
   const lastScanError = useCommunityStore((s) => s.lastScanError);
+  // (v4.0.0 — P3.1) Necesitamos el set de ICAOs con GSX al nivel del
+  // padre para alimentar el GeoJSON con la prop `hasGsx`. El layer del
+  // mapa luego pinta rojo los puntos sin GSX (mismo patrón que el
+  // ámbar de updates).
+  const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
 
   // Aquí sólo viven aeropuertos reales — SCENERY + ICAO resuelto
   // en la tabla `airports` (OurAirports). Eso excluye liveries,
@@ -145,8 +150,8 @@ export function MapView() {
   }, []);
 
   const geojson = useMemo(
-    () => buildGeoJSON(geolocated, updatesByFolder),
-    [geolocated, updatesByFolder],
+    () => buildGeoJSON(geolocated, updatesByFolder, gsxInstalledIcaos),
+    [geolocated, updatesByFolder, gsxInstalledIcaos],
   );
 
   useEffect(() => {
@@ -180,9 +185,16 @@ export function MapView() {
         data: geojson,
       });
 
-      // Punto individual — color depende de "hasUpdate". Stroke
-      // blanco para garantizar contraste contra el azul del océano
-      // del basemap.
+      // (v4.0.0 — P3.1) Color del marker según prioridad:
+      //   1. **Ámbar** (`#f59e0b`) — hay update disponible (señal más
+      //      accionable, sobre-escribe cualquier otro estado).
+      //   2. **Rojo** (`#ef4444`) — no tiene perfil GSX local
+      //      (oportunidad clara: el usuario puede ir a flightsim.to
+      //      a bajarlo). Igual estilo visual que el badge GSX rojo
+      //      que ya existe en MapView sidebar.
+      //   3. **Verde** (`#10b981`) — al día y con GSX (estado nominal).
+      // Stroke blanco para garantizar contraste contra el azul del
+      // océano del basemap.
       map.addLayer({
         id: "package-point",
         type: "circle",
@@ -191,8 +203,10 @@ export function MapView() {
           "circle-color": [
             "case",
             ["==", ["get", "hasUpdate"], true],
-            "#f59e0b", // ámbar — hay update
-            "#10b981", // verde — al día
+            "#f59e0b", // ámbar — update disponible (prioridad max)
+            ["==", ["get", "hasGsx"], false],
+            "#ef4444", // rojo — sin perfil GSX
+            "#10b981", // verde — al día y con GSX
           ],
           "circle-radius": 6,
           "circle-stroke-width": 1.5,
@@ -527,6 +541,7 @@ function Sidebar({
 function buildGeoJSON(
   packages: CommunityPackage[],
   updatesByFolder: Map<string, AvailableUpdate>,
+  gsxInstalledIcaos: Set<string>,
 ): GeoJSON.FeatureCollection<GeoJSON.Point> {
   return {
     type: "FeatureCollection",
@@ -542,6 +557,12 @@ function buildGeoJSON(
           creator: p.creator,
           packageVersion: p.packageVersion,
           hasUpdate: updatesByFolder.has(p.folderName),
+          // (v4.0.0 — P3.1) `hasGsx` por feature. Si el ICAO no está
+          // en el set local de perfiles GSX → false → marker rojo en
+          // el paint expression. Sceneries sin ICAO se asumen "OK"
+          // (no podemos correlacionar — irían como verdes).
+          hasGsx:
+            !p.icao || gsxInstalledIcaos.has(p.icao.toUpperCase()),
         },
         geometry: {
           type: "Point",
