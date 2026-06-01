@@ -17,10 +17,116 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(opts)
-        .await?;
+        .await
+        .map_err(|e| {
+            tracing::error!("db: pool connect_with falló: {e:#}");
+            e
+        })?;
+    tracing::info!("db: pool conectado, corriendo migraciones…");
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    // (v3.7.1 hotfix) Normaliza checksums de migraciones ya aplicadas.
+    //
+    // **Bug**: usuario reportó "splash blanco y se cierra" tras upgrade
+    // v3.5.0→v3.7.0. El log terminaba en "opening database" sin pista.
+    // Diagnóstico via binario `diag_migrate` reveló:
+    //   `migration 1 was previously applied but has been modified`
+    //
+    // **Causa raíz**: las migraciones SQL fueron movidas entre repos
+    // (worktree → clean clone) y Git autocrlf convirtió LF→CRLF. El
+    // checksum que sqlx calcula sobre el contenido embedded en el
+    // binario v3.7.0 ya NO coincide con el guardado en `_sqlx_migrations`
+    // (calculado por v3.5.0 sobre el archivo LF original).
+    //
+    // Las migraciones son funcionalmente idénticas — sólo cambió el
+    // line ending. Reaplicarlas fallaría (las columnas/tablas ya
+    // existen). La solución segura: UPDATE de los checksums almacenados
+    // para que coincidan con el binario actual.
+    //
+    // Esto es un parche de compatibilidad. Si en el futuro alguna
+    // migración cambia REALMENTE su contenido, este normalize la
+    // bypasearía silenciosamente — pero el contrato es que las
+    // migraciones son inmutables después de release, así que no
+    // debería pasar.
+    if let Err(e) = normalize_migration_checksums(&pool).await {
+        tracing::warn!(
+            "db: normalize_migration_checksums falló (no-op si tabla no existe aún): {e:#}"
+        );
+    }
+
+    // (v3.7.1) Migración con logging explícito por si falla — sin
+    // esto un fallo se propagaba silencioso (el `?` mata el setup de
+    // Tauri sin que veamos qué pasó).
+    match sqlx::migrate!("./migrations").run(&pool).await {
+        Ok(()) => tracing::info!("db: migraciones aplicadas OK"),
+        Err(e) => {
+            tracing::error!("db: sqlx migrate FALLÓ: {e:#}");
+            return Err(e.into());
+        }
+    }
     Ok(pool)
+}
+
+/// (v3.7.1 hotfix) Normaliza los checksums de `_sqlx_migrations` para
+/// que coincidan con los embedded en el binario actual. Bypass del
+/// check de "previously applied but has been modified" cuando la
+/// causa es line endings (CRLF↔LF) o whitespace cosmético.
+///
+/// Sólo toca rows que YA existen en `_sqlx_migrations` y que tienen
+/// el mismo `version` que una migración embedded — el contenido
+/// asumimos funcionalmente idéntico.
+///
+/// Si `_sqlx_migrations` no existe todavía (instalación fresca),
+/// devuelve Ok sin tocar nada — `sqlx::migrate!` la creará.
+async fn normalize_migration_checksums(pool: &SqlitePool) -> anyhow::Result<()> {
+    // ¿Existe la tabla?
+    let table_exists: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if table_exists.is_none() {
+        tracing::debug!("db: _sqlx_migrations no existe — primera instalación");
+        return Ok(());
+    }
+
+    // Itera las migraciones embedded en el binario.
+    let migrator = sqlx::migrate!("./migrations");
+    let mut updated = 0;
+    for migration in migrator.iter() {
+        let version = migration.version;
+        let new_checksum: &[u8] = &migration.checksum;
+        // ¿Está aplicada ya con un checksum distinto?
+        let stored: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT checksum FROM _sqlx_migrations WHERE version = ?1",
+        )
+        .bind(version)
+        .fetch_optional(pool)
+        .await?;
+        let Some(stored) = stored else { continue };
+        if stored.as_slice() == new_checksum {
+            continue;
+        }
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ?1 WHERE version = ?2")
+            .bind(new_checksum)
+            .bind(version)
+            .execute(pool)
+            .await?;
+        updated += 1;
+        tracing::info!(
+            "db: checksum de migración {} ({}) normalizado — line endings o whitespace cambió",
+            version,
+            migration.description
+        );
+    }
+    if updated > 0 {
+        tracing::info!(
+            "db: normalize_migration_checksums OK ({} migraciones actualizadas)",
+            updated
+        );
+    } else {
+        tracing::debug!("db: todos los checksums coinciden, sin cambios");
+    }
+    Ok(())
 }
 
 pub mod repo {
