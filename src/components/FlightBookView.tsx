@@ -26,6 +26,7 @@ import { useSimBriefStore } from "../stores/useSimBriefStore";
 import type { FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
+import { PerformanceModal } from "./PerformanceModal";
 import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
 /**
@@ -65,6 +66,8 @@ export function FlightBookView() {
   const [sidebarQuery, setSidebarQuery] = useState("");
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
+  // (v4.0.0 — P5) Estado del Performance modal.
+  const [performanceOpen, setPerformanceOpen] = useState(false);
   // (v3.6.1 fix I6) Colapso del SelectedFlightPanel. Cuando true,
   // sólo se muestra el header con la ruta y el grade — el resto del
   // mapa queda visible para que el usuario pueda ver la trayectoria
@@ -103,6 +106,15 @@ export function FlightBookView() {
       setChecklistOpen(false);
     }
   }, [selectedFlightId, selectedFlight?.source, checklistOpen]);
+
+  // (v4.0.0 — P5) Cierra el Performance modal al volver al globo.
+  // No depende del source — Performance funciona con VAS imports
+  // también (alt/gs solamente).
+  useEffect(() => {
+    if (selectedFlightId == null && performanceOpen) {
+      setPerformanceOpen(false);
+    }
+  }, [selectedFlightId, performanceOpen]);
 
   // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
   // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
@@ -381,6 +393,8 @@ export function FlightBookView() {
               selectedFlightSource={selectedFlight?.source ?? null}
               onToggleChecklist={() => setChecklistOpen((v) => !v)}
               checklistOpen={checklistOpen && selectedFlightId != null}
+              onTogglePerformance={() => setPerformanceOpen((v) => !v)}
+              performanceOpen={performanceOpen && selectedFlightId != null}
             />
           )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
@@ -398,6 +412,17 @@ export function FlightBookView() {
               <ChecklistWidget
                 flightId={selectedFlightId}
                 onClose={() => setChecklistOpen(false)}
+              />
+            )}
+
+            {/* (v4.0.0 — P5) Performance modal — flotante resizable
+                con Recharts. Se renderiza con z-40 por encima del
+                ChecklistWidget (z-30) para que abrirse no se vea
+                detrás. */}
+            {performanceOpen && selectedFlightId != null && (
+              <PerformanceModal
+                flightId={selectedFlightId}
+                onClose={() => setPerformanceOpen(false)}
               />
             )}
 
@@ -1696,11 +1721,15 @@ function DetailActionsBar({
   selectedFlightSource,
   onToggleChecklist,
   checklistOpen,
+  onTogglePerformance,
+  performanceOpen,
 }: {
   selectedFlightId: number | null;
   selectedFlightSource: string | null;
   onToggleChecklist: () => void;
   checklistOpen: boolean;
+  onTogglePerformance: () => void;
+  performanceOpen: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
   // (v4.0.0 — P3 + P3.2) Tabs gated por source del vuelo:
@@ -1725,13 +1754,17 @@ function DetailActionsBar({
       active: checklistOpen,
     },
     {
+      // (v4.0.0 — P5) Performance modal habilitado para TODOS los
+      // vuelos con un flight_id válido. Para VAS imports solo
+      // habrán datos de Vertical/Speed Profile — el resto de tabs
+      // se ocultan automáticamente en el modal.
       key: "performance" as const,
       icon: <Gauge className="h-3.5 w-3.5" />,
       label: t("fb.tabs.performance"),
       dot: "bg-sky-400",
-      enabled: false,
-      onClick: () => {},
-      active: false,
+      enabled: !checklistDisabled,
+      onClick: onTogglePerformance,
+      active: performanceOpen,
     },
     {
       key: "weather" as const,

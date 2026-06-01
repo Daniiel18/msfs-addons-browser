@@ -500,6 +500,51 @@ export interface FlightTrackPoint {
   ts: string;
 }
 
+/** (v4.0.0 — P5) Punto completo con telemetría extendida para el
+ *  Performance modal. Incluye attitude, lights/gear/flaps y 6
+ *  métricas × 4 engine slots. Para vuelos VAS imports muchos
+ *  campos vienen `null` — el modal detecta series vacías y oculta
+ *  las curvas correspondientes. */
+export interface FlightTrackFullPoint {
+  ts: string;
+  lat: number;
+  lon: number;
+  altFt: number | null;
+  gsKt: number | null;
+  iasKt: number | null;
+  vsFpm: number | null;
+  pitchDeg: number | null;
+  bankDeg: number | null;
+  gForce: number | null;
+  flapsPct: number | null;
+  gearDown: number | null;
+  spoilersPct: number | null;
+  engN11: number | null;
+  engN12: number | null;
+  engN13: number | null;
+  engN14: number | null;
+  engN21: number | null;
+  engN22: number | null;
+  engN23: number | null;
+  engN24: number | null;
+  engEgt1: number | null;
+  engEgt2: number | null;
+  engEgt3: number | null;
+  engEgt4: number | null;
+  engFfPph1: number | null;
+  engFfPph2: number | null;
+  engFfPph3: number | null;
+  engFfPph4: number | null;
+  engOilTemp1: number | null;
+  engOilTemp2: number | null;
+  engOilTemp3: number | null;
+  engOilTemp4: number | null;
+  engOilPress1: number | null;
+  engOilPress2: number | null;
+  engOilPress3: number | null;
+  engOilPress4: number | null;
+}
+
 /** Reporte de la desinstalación total (v0.1.19). El backend borra
  *  el folder en CADA Community detectada + carpetas extras
  *  (Documents\MSFS Sceneries\…). Devuelve qué paths se eliminaron

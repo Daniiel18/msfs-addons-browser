@@ -22,6 +22,7 @@ import type {
   FlightLogEntry,
   FlightStatus,
   FlightTrackPoint,
+  FlightTrackFullPoint,
   DownloadMethod,
   CloudConfig,
   CloudOauthCompletedEvent,
@@ -310,6 +311,10 @@ interface Api {
   /** Polyline real (puntos cada ~10s) de un vuelo. Lo pinta la
    *  vista detalle en el mapa de FlightBook. */
   getFlightTrack: (flightId: number) => Promise<FlightTrackPoint[]>;
+  /** (v4.0.0 — P5) Track completo con telemetría extendida para el
+   *  Performance modal: ALT/GS/IAS/VS, attitude (pitch/bank/g),
+   *  flaps/gear/spoilers y 6 métricas × 4 engine slots. */
+  getFlightTrackFull: (flightId: number) => Promise<FlightTrackFullPoint[]>;
   /** Edita campos manualmente — `null` deja sin tocar la columna.
    *  Usado por el modal "Editar" del panel de detalle. */
   updateFlightLogEntry: (id: number, input: UpdateFlightInput) => Promise<void>;
@@ -501,6 +506,8 @@ const realApi: Api = {
   listFlightLog: () => invoke<FlightLogEntry[]>("list_flight_log"),
   getFlightTrack: (flightId) =>
     invoke<FlightTrackPoint[]>("get_flight_track", { flightId }),
+  getFlightTrackFull: (flightId) =>
+    invoke<FlightTrackFullPoint[]>("get_flight_track_full", { flightId }),
   updateFlightLogEntry: (id, input) =>
     invoke<void>("update_flight_log_entry", { id, input }),
   deleteFlightLogEntry: (id) => invoke<void>("delete_flight_log_entry", { id }),
@@ -1213,6 +1220,9 @@ const demoApi: Api = {
     return [];
   },
   async getFlightTrack() {
+    return [];
+  },
+  async getFlightTrackFull() {
     return [];
   },
   async deleteFlightLogEntry() {

@@ -37,6 +37,21 @@ pub async fn get_flight_track(
         .map_err(|e| e.to_string())
 }
 
+/// (v4.0.0 — P5) Track completo para el Performance modal: incluye
+/// altitud, velocidades (gs/ias), VS, attitude (pitch/bank/g),
+/// flaps/gear/spoilers, y 6 métricas × 4 engine slots.
+/// Para vuelos VAS imports muchos campos vienen NULL — el frontend
+/// detecta series vacías y oculta esas curvas.
+#[tauri::command]
+pub async fn get_flight_track_full(
+    flight_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<flight_log::FlightTrackFullPoint>, String> {
+    flight_log::list_track_full(&state.db, flight_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_flight_log_entry(
     id: i64,

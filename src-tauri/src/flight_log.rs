@@ -959,6 +959,85 @@ pub async fn list_track_for_flight(
     Ok(rows)
 }
 
+/// (v4.0.0 — P5) Sample completo del track para el Performance modal.
+/// Lee todos los campos que el modal puede graficar: posición,
+/// altitud, velocidades, attitude, lights, gear/flaps/spoilers y
+/// motores 1..4.
+///
+/// Para vuelos VAS imports muchos campos vienen NULL — el frontend
+/// detecta una serie sin datos válidos y oculta esa curva del chart.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlightTrackFullPoint {
+    pub ts: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_ft: Option<i64>,
+    pub gs_kt: Option<i64>,
+    pub ias_kt: Option<i64>,
+    pub vs_fpm: Option<i64>,
+    pub pitch_deg: Option<f64>,
+    pub bank_deg: Option<f64>,
+    pub g_force: Option<f64>,
+    pub flaps_pct: Option<i64>,
+    pub gear_down: Option<i64>,
+    pub spoilers_pct: Option<i64>,
+    // Motor 1..4 (6 métricas cada uno).
+    pub eng_n1_1: Option<f64>,
+    pub eng_n1_2: Option<f64>,
+    pub eng_n1_3: Option<f64>,
+    pub eng_n1_4: Option<f64>,
+    pub eng_n2_1: Option<f64>,
+    pub eng_n2_2: Option<f64>,
+    pub eng_n2_3: Option<f64>,
+    pub eng_n2_4: Option<f64>,
+    pub eng_egt_1: Option<f64>,
+    pub eng_egt_2: Option<f64>,
+    pub eng_egt_3: Option<f64>,
+    pub eng_egt_4: Option<f64>,
+    pub eng_ff_pph_1: Option<f64>,
+    pub eng_ff_pph_2: Option<f64>,
+    pub eng_ff_pph_3: Option<f64>,
+    pub eng_ff_pph_4: Option<f64>,
+    pub eng_oil_temp_1: Option<f64>,
+    pub eng_oil_temp_2: Option<f64>,
+    pub eng_oil_temp_3: Option<f64>,
+    pub eng_oil_temp_4: Option<f64>,
+    pub eng_oil_press_1: Option<f64>,
+    pub eng_oil_press_2: Option<f64>,
+    pub eng_oil_press_3: Option<f64>,
+    pub eng_oil_press_4: Option<f64>,
+}
+
+/// (v4.0.0 — P5) Carga el track completo para el Performance modal.
+/// Tres queries en una porque sqlx no implementa FromRow para tuplas
+/// >16 elementos — usamos el struct dedicado.
+pub async fn list_track_full(
+    pool: &SqlitePool,
+    flight_id: i64,
+) -> anyhow::Result<Vec<FlightTrackFullPoint>> {
+    let rows = sqlx::query_as::<_, FlightTrackFullPoint>(
+        r#"
+        SELECT ts, lat, lon, alt_ft, gs_kt,
+               ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
+               flaps_pct, gear_down, spoilers_pct,
+               eng_n1_1, eng_n1_2, eng_n1_3, eng_n1_4,
+               eng_n2_1, eng_n2_2, eng_n2_3, eng_n2_4,
+               eng_egt_1, eng_egt_2, eng_egt_3, eng_egt_4,
+               eng_ff_pph_1, eng_ff_pph_2, eng_ff_pph_3, eng_ff_pph_4,
+               eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
+               eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4
+        FROM flight_log_track
+        WHERE flight_id = ?1
+        ORDER BY ts ASC
+        "#,
+    )
+    .bind(flight_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntry>> {
     // (v3.6.0 Phase H) Filtramos `status = 'completed'` por defecto.
     // Los `partial` se conservan en DB para auditoria/recompute pero
