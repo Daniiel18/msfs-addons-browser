@@ -27,6 +27,7 @@ import type { FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
 import { PerformanceModal } from "./PerformanceModal";
+import { WeatherModal } from "./WeatherModal";
 import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
 /**
@@ -68,6 +69,8 @@ export function FlightBookView() {
   const [checklistOpen, setChecklistOpen] = useState(false);
   // (v4.0.0 — P5) Estado del Performance modal.
   const [performanceOpen, setPerformanceOpen] = useState(false);
+  // (v4.0.0 — P7) Estado del Weather modal.
+  const [weatherOpen, setWeatherOpen] = useState(false);
   // (v3.6.1 fix I6) Colapso del SelectedFlightPanel. Cuando true,
   // sólo se muestra el header con la ruta y el grade — el resto del
   // mapa queda visible para que el usuario pueda ver la trayectoria
@@ -115,6 +118,16 @@ export function FlightBookView() {
       setPerformanceOpen(false);
     }
   }, [selectedFlightId, performanceOpen]);
+
+  // (v4.0.0 — P7) Cierra el Weather modal al volver al globo, o si
+  // se cambia a un vuelo VAS import (Weather no aplica para ellos).
+  useEffect(() => {
+    if (!weatherOpen) return;
+    const isSimflown = selectedFlight?.source === "simconnect";
+    if (selectedFlightId == null || !isSimflown) {
+      setWeatherOpen(false);
+    }
+  }, [selectedFlightId, selectedFlight?.source, weatherOpen]);
 
   // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
   // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
@@ -395,6 +408,8 @@ export function FlightBookView() {
               checklistOpen={checklistOpen && selectedFlightId != null}
               onTogglePerformance={() => setPerformanceOpen((v) => !v)}
               performanceOpen={performanceOpen && selectedFlightId != null}
+              onToggleWeather={() => setWeatherOpen((v) => !v)}
+              weatherOpen={weatherOpen && selectedFlightId != null}
             />
           )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
@@ -423,6 +438,16 @@ export function FlightBookView() {
               <PerformanceModal
                 flightId={selectedFlightId}
                 onClose={() => setPerformanceOpen(false)}
+              />
+            )}
+
+            {/* (v4.0.0 — P7) Weather modal — flotante resizable con
+                mapa MapLibre + capas weather. Solo aparece para
+                vuelos SimConnect (no VAS imports). */}
+            {weatherOpen && selectedFlight != null && (
+              <WeatherModal
+                entry={selectedFlight}
+                onClose={() => setWeatherOpen(false)}
               />
             )}
 
@@ -1741,6 +1766,8 @@ function DetailActionsBar({
   checklistOpen,
   onTogglePerformance,
   performanceOpen,
+  onToggleWeather,
+  weatherOpen,
 }: {
   selectedFlightId: number | null;
   selectedFlightSource: string | null;
@@ -1748,6 +1775,8 @@ function DetailActionsBar({
   checklistOpen: boolean;
   onTogglePerformance: () => void;
   performanceOpen: boolean;
+  onToggleWeather: () => void;
+  weatherOpen: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
   // (v4.0.0 — P3 + P3.2) Tabs gated por source del vuelo:
@@ -1785,13 +1814,15 @@ function DetailActionsBar({
       active: performanceOpen,
     },
     {
+      // (v4.0.0 — P7) Weather modal habilitado para vuelos SimConnect.
+      // Para VAS imports se filtra fuera del array de tabs.
       key: "weather" as const,
       icon: <Cloud className="h-3.5 w-3.5" />,
       label: t("fb.tabs.weather"),
       dot: "bg-amber-400",
-      enabled: false,
-      onClick: () => {},
-      active: false,
+      enabled: !checklistDisabled,
+      onClick: onToggleWeather,
+      active: weatherOpen,
     },
     {
       key: "notams" as const,
