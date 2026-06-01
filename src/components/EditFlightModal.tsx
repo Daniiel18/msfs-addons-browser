@@ -150,14 +150,28 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          // (v4.0.0 — P6.2 fix) `max-h` + `flex flex-col` permiten que
-          // el body del form haga scroll interno cuando el contenido
-          // crece más allá del viewport. Antes con solo `overflow-hidden`
-          // los campos nuevos (origen/destino ICAO) empujaban el footer
-          // fuera de la pantalla y el usuario no podía scrollear.
-          className="flex max-h-[calc(100vh-2rem)] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+          // (v4.0.0 — P6.2 fix iteración 2) CSS Grid con tres filas
+          // `auto / minmax(0,1fr) / auto` resuelve el scroll del body
+          // sin ambigüedades. Patrón más confiable que flex+min-h-0
+          // que en algunas versiones de WebView2 (Tauri) no honraba
+          // bien el `flex-1` cuando el contenido tenía altura intrínseca
+          // mayor que el max-h. Con grid el row del body es estricto:
+          // minmax(0, 1fr) → puede colapsar a 0 pero también ocupar
+          // todo el espacio restante; el overflow-y-auto del child
+          // entonces sí dispara scroll cuando el contenido excede.
+          //
+          // max-h-[85vh] en vez de calc(100vh-2rem) porque la app
+          // SimFleet vive en ventana 540px alta — un margen mayor
+          // garantiza que el modal nunca pegue al borde de la
+          // ventana en aspect ratios chicos.
+          style={{
+            display: "grid",
+            gridTemplateRows: "auto minmax(0, 1fr) auto",
+            maxHeight: "85vh",
+          }}
+          className="w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
         >
-          <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
+          <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
             <div>
               <h3 className="text-sm font-semibold text-amber-200">
                 Editar vuelo · {entry.originIcao ?? "?"} → {entry.destinationIcao ?? "?"}
@@ -176,7 +190,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
             </button>
           </header>
 
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          <div className="space-y-3 overflow-y-auto p-4">
             <Field label="Block time">
               <div className="flex items-center gap-1.5">
                 <NumInput
@@ -308,7 +322,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
             )}
           </div>
 
-          <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-800 px-5 py-3">
+          <footer className="flex items-center justify-between gap-2 border-t border-slate-800 px-5 py-3">
             <p className="text-[10px] text-slate-500">
               Los cambios se guardan en la DB local.
             </p>
