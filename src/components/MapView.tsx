@@ -317,19 +317,50 @@ function Sidebar({
   onShowDetails: (folder: string) => void;
 }) {
   const [filter, setFilter] = useState("");
+  // (v4.0.0 — P2) Filtro GSX. `"all"` = sin filtro (default), `"gsx"` =
+  // sólo escenarios con perfil GSX instalado, `"no-gsx"` = sólo los que
+  // NO lo tienen. Mutuamente exclusivo: activar uno desactiva el otro.
+  // Click en el chip activo lo desactiva y vuelve a `"all"`.
+  const [gsxFilter, setGsxFilter] = useState<"all" | "gsx" | "no-gsx">("all");
   // (v2.0.0) Set de ICAOs con perfil GSX local — para badge por
   // escenario en esta lista (no ya sólo en results de búsqueda).
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return packages;
-    return packages.filter((p) =>
-      [p.title, p.creator, p.icao, p.folderName]
-        .filter(Boolean)
-        .some((s) => s!.toLowerCase().includes(q)),
-    );
-  }, [filter, packages]);
+    let pool = packages;
+    if (q) {
+      pool = pool.filter((p) =>
+        [p.title, p.creator, p.icao, p.folderName]
+          .filter(Boolean)
+          .some((s) => s!.toLowerCase().includes(q)),
+      );
+    }
+    if (gsxFilter !== "all") {
+      pool = pool.filter((p) => {
+        const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
+        return gsxFilter === "gsx" ? has : !has;
+      });
+    }
+    return pool;
+  }, [filter, packages, gsxFilter, gsxInstalledIcaos]);
+
+  // Contadores para mostrar dentro de cada chip — ayudan a entender
+  // de un vistazo cuántos sceneries caen en cada bucket.
+  const { gsxCount, noGsxCount } = useMemo(() => {
+    let g = 0;
+    let n = 0;
+    for (const p of packages) {
+      const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
+      if (has) g += 1;
+      else n += 1;
+    }
+    return { gsxCount: g, noGsxCount: n };
+  }, [packages, gsxInstalledIcaos]);
+
+  const toggleGsx = (target: "gsx" | "no-gsx") => {
+    setGsxFilter((cur) => (cur === target ? "all" : target));
+  };
 
   return (
     <aside className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
@@ -353,7 +384,7 @@ function Sidebar({
         </div>
       )}
 
-      <div className="border-b border-slate-800 px-3 py-2">
+      <div className="space-y-2 border-b border-slate-800 px-3 py-2">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
           <input
@@ -362,6 +393,24 @@ function Sidebar({
             onChange={(e) => setFilter(e.target.value)}
             placeholder={t("map.filter_placeholder")}
             className="w-full rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-7 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+          />
+        </div>
+        {/* (v4.0.0 — P2) Chips GSX / NO GSX. Mutuamente exclusivos.
+            Click en el chip activo lo desactiva → vuelve a "all". */}
+        <div className="flex flex-wrap gap-1.5">
+          <GsxFilterChip
+            active={gsxFilter === "gsx"}
+            tone="violet"
+            onClick={() => toggleGsx("gsx")}
+            label={t("map.gsx_filter.with")}
+            count={gsxCount}
+          />
+          <GsxFilterChip
+            active={gsxFilter === "no-gsx"}
+            tone="slate"
+            onClick={() => toggleGsx("no-gsx")}
+            label={t("map.gsx_filter.without")}
+            count={noGsxCount}
           />
         </div>
       </div>
@@ -500,6 +549,63 @@ function buildGeoJSON(
         },
       })),
   };
+}
+
+/**
+ * (v4.0.0 — P2) Chip de filtro GSX / NO GSX en el sidebar de Scenery.
+ *
+ * UX:
+ *   · No activo → borde y bg neutros, count con tipografía pareja.
+ *   · Activo (mutuamente exclusivo entre los dos chips):
+ *       - "gsx" → tono violet (mismo accent que el badge GSX existente).
+ *       - "no-gsx" → tono slate (visualmente "ausencia").
+ *   · Click en el chip activo lo desactiva → caller resetea a "all".
+ *
+ * El count se renderiza dentro de la pill con bg semi-transparente
+ * para que se lea contra el accent. Mismo patrón visual que los
+ * type-chips de AddonsView.
+ */
+function GsxFilterChip({
+  active,
+  tone,
+  onClick,
+  label,
+  count,
+}: {
+  active: boolean;
+  tone: "violet" | "slate";
+  onClick: () => void;
+  label: string;
+  count: number;
+}) {
+  const activeClass =
+    tone === "violet"
+      ? "border-violet-500 bg-violet-500/15 text-violet-100"
+      : "border-slate-500 bg-slate-500/15 text-slate-100";
+  const idleClass =
+    "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60";
+  const countBgActive =
+    tone === "violet"
+      ? "bg-violet-500/30 text-violet-100"
+      : "bg-slate-500/30 text-slate-100";
+  const countBgIdle = "bg-slate-800 text-slate-400";
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+        active ? activeClass : idleClass
+      }`}
+    >
+      {label}
+      <span
+        className={`rounded-full px-1.5 text-[10px] font-semibold ${
+          active ? countBgActive : countBgIdle
+        }`}
+      >
+        {count}
+      </span>
+    </button>
+  );
 }
 
 const OSM_STYLE: maplibregl.StyleSpecification = {

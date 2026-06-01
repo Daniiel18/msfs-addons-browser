@@ -456,6 +456,8 @@
   "map.update_all": "Actualizar todo",
   "map.update_all.tooltip": "Actualizar todos los aeropuertos con update",
   "map.installed": "Instalados",
+  "map.gsx_filter.with": "GSX",
+  "map.gsx_filter.without": "Sin GSX",
   "map.filter_placeholder": "Filtrar…",
   "map.focus_tooltip": "Click para enfocar este aeropuerto en el mapa",
   "map.details_tooltip": "Ver detalles, reparar o desinstalar",
