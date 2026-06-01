@@ -15,6 +15,7 @@ import {
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 import { buildTerminatorPolygon } from "../lib/terminator";
+import { cityLightsGeoJSON } from "../lib/cityLights";
 
 /** (v2.0.0) Icono del avión — silueta TOP-VIEW (vista cenital) tal
  *  como se ve un avión desde arriba en mapas de aviación. La punta
@@ -330,20 +331,45 @@ export function RoutesMapView({
         },
       });
 
-      // (v4.0.0 — P6) Terminator día/noche. Source + fill-layer
-      // semi-transparente que cubre el hemisferio en sombra. El
-      // GeoJSON inicial es el polígono para `new Date()`; un effect
-      // separado lo actualiza cada 60s para que el terminator se
-      // mueva en tiempo real con la rotación de la Tierra.
+      // (v4.0.0 — P6) Terminator día/noche con efecto "satellite black
+      // marble". Tres capas en orden de fondo a frente:
       //
-      // Order del layer: lo añadimos DESPUÉS de las rutas pero ANTES
-      // de que las rutas seleccionadas (la noche queda detrás de la
-      // ruta para no ocultarla). Como `addLayer` apila secuencialmente
-      // y el terminator es el ÚLTIMO aquí, está visualmente al frente
-      // — pero su opacity de 0.35 deja ver lo que está debajo.
+      //   1. **Penumbra** — polígono del civil twilight (sol entre 0°
+      //      y -6° bajo el horizonte). Fill negro suave que define
+      //      la banda crepuscular alrededor del terminator estándar.
+      //   2. **Shadow** — polígono del terminator estándar (sol = 0°).
+      //      Fill negro más opaco que crea la NOCHE real. Mucho más
+      //      oscuro que en la primera iteración (0.32 → 0.62) para
+      //      que las city lights resalten estilo satélite.
+      //   3. **City lights** — circle-layer con ~150 metrópolis
+      //      bundled en cityLights.ts. Halo ámbar tipo lámpara de
+      //      sodio (#fde68a). En zona oscura saltan a la vista; en
+      //      zona iluminada se confunden con el basemap.
+      //
+      // Dos sources distintos (`rt-twilight` + `rt-terminator`) porque
+      // el polígono del civil twilight es geométricamente MÁS GRANDE
+      // que el del terminator (la noche real está ADENTRO de la
+      // penumbra). Apilando ambos con fill-color negro se obtiene un
+      // gradiente de oscuridad de 3 niveles: día → crepúsculo →
+      // noche profunda.
+      const now0 = new Date();
+      map.addSource("rt-twilight", {
+        type: "geojson",
+        data: buildTerminatorPolygon(now0, 2, -6),
+      });
       map.addSource("rt-terminator", {
         type: "geojson",
-        data: buildTerminatorPolygon(new Date()),
+        data: buildTerminatorPolygon(now0),
+      });
+      map.addLayer({
+        id: "rt-twilight-band",
+        type: "fill",
+        source: "rt-twilight",
+        paint: {
+          "fill-color": "#020617",
+          "fill-opacity": 0.25,
+          "fill-antialias": true,
+        },
       });
       map.addLayer({
         id: "rt-terminator-shadow",
@@ -351,19 +377,64 @@ export function RoutesMapView({
         source: "rt-terminator",
         paint: {
           "fill-color": "#020617",
-          "fill-opacity": 0.32,
+          "fill-opacity": 0.62,
           "fill-antialias": true,
         },
       });
+
+      // City lights — ciudades grandes como dots ámbar con halo.
+      // El `circle-radius` escala por `pop` (millones) usando una
+      // step-expression para que las megaciudades sean más visibles.
+      // `circle-blur` da el efecto glow de luz nocturna.
+      map.addSource("rt-cities", {
+        type: "geojson",
+        data: cityLightsGeoJSON,
+      });
       map.addLayer({
-        id: "rt-terminator-edge",
-        type: "line",
-        source: "rt-terminator",
+        id: "rt-cities-glow",
+        type: "circle",
+        source: "rt-cities",
         paint: {
-          "line-color": "#fbbf24",
-          "line-width": 0.6,
-          "line-opacity": 0.45,
-          "line-blur": 0.8,
+          // Halo grande, blur fuerte para efecto luz.
+          "circle-radius": [
+            "interpolate",
+            ["linear"],
+            ["get", "pop"],
+            0.5,
+            2.5,
+            5,
+            5,
+            15,
+            8,
+            30,
+            12,
+          ],
+          "circle-color": "#fde68a",
+          "circle-blur": 0.7,
+          "circle-opacity": 0.55,
+        },
+      });
+      map.addLayer({
+        id: "rt-cities-core",
+        type: "circle",
+        source: "rt-cities",
+        paint: {
+          // Dot duro central, más chico, sin blur.
+          "circle-radius": [
+            "interpolate",
+            ["linear"],
+            ["get", "pop"],
+            0.5,
+            0.8,
+            5,
+            1.5,
+            15,
+            2.2,
+            30,
+            3,
+          ],
+          "circle-color": "#fffbeb",
+          "circle-opacity": 0.9,
         },
       });
 
@@ -389,22 +460,25 @@ export function RoutesMapView({
     };
   }, []);
 
-  // (v4.0.0 — P6) Refresca el terminator cada 60s para que se mueva
-  // con la rotación de la Tierra. La Tierra rota 0.25°/min, así que
-  // un update por minuto produce un movimiento perceptible pero
-  // suave (no animación de cada frame, eso sería overkill).
-  //
-  // El primer update también recalcula al `mapReady = true` para que
-  // el polígono refleje el instante REAL de la carga (no el momento
-  // del addSource, que puede ser ~100ms antes).
+  // (v4.0.0 — P6) Refresca el terminator + twilight cada 60s para
+  // que se muevan con la rotación de la Tierra. La Tierra rota
+  // 0.25°/min, así que un update por minuto produce un movimiento
+  // perceptible pero suave (no animación de cada frame, eso sería
+  // overkill). Ambos polígonos se recomputan a partir del mismo
+  // `Date.now()` para que estén siempre sincronizados.
   useEffect(() => {
     if (!mapReady) return;
     const map = mapRef.current;
     if (!map) return;
     const refresh = () => {
       try {
-        const src = map.getSource("rt-terminator") as GeoJSONSource | undefined;
-        if (src) src.setData(buildTerminatorPolygon(new Date()));
+        const now = new Date();
+        const term = map.getSource("rt-terminator") as
+          | GeoJSONSource
+          | undefined;
+        if (term) term.setData(buildTerminatorPolygon(now));
+        const twi = map.getSource("rt-twilight") as GeoJSONSource | undefined;
+        if (twi) twi.setData(buildTerminatorPolygon(now, 2, -6));
       } catch (e) {
         console.warn("[RoutesMapView] terminator refresh falló:", e);
       }

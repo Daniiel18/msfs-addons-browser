@@ -53,25 +53,30 @@ import SunCalc from "suncalc";
  * En ~16 iteraciones la precisión es < 0.001° — más que suficiente
  * para resolución de mapa.
  */
-function terminatorLatAtLon(date: Date, lon: number): number | null {
-  // En cada longitud, el terminator está donde altitude(lat) = 0.
-  // altitude varía monótonamente con lat para una longitud fija (sol
-  // sale en hemisferio iluminado, se pone en hemisferio oscuro).
+function terminatorLatAtLon(
+  date: Date,
+  lon: number,
+  altitudeThresholdRad: number = 0,
+): number | null {
+  // En cada longitud, buscamos la latitud donde altitude(lat) =
+  // `altitudeThresholdRad`. Para el terminator estándar el threshold
+  // es 0 (horizonte). Para civil twilight usamos -6° = -0.1047 rad,
+  // que define el límite donde aún hay luz crepuscular suave en el
+  // cielo. La altitude solar varía monótonamente con lat para una
+  // longitud fija, así que la bisección converge en ~18 iteraciones.
   let lo = -90;
   let hi = 90;
-  const aLo = SunCalc.getPosition(date, lo, lon).altitude;
-  const aHi = SunCalc.getPosition(date, hi, lon).altitude;
-  // Mismo signo en ambos extremos = el sol está arriba (o abajo) en
-  // toda la longitud. Polar day / polar night → sin terminator.
+  const aLo = SunCalc.getPosition(date, lo, lon).altitude - altitudeThresholdRad;
+  const aHi = SunCalc.getPosition(date, hi, lon).altitude - altitudeThresholdRad;
   if (aLo * aHi > 0) return null;
   for (let i = 0; i < 18; i++) {
     const mid = (lo + hi) / 2;
-    const aMid = SunCalc.getPosition(date, mid, lon).altitude;
+    const aMid =
+      SunCalc.getPosition(date, mid, lon).altitude - altitudeThresholdRad;
     if (aMid * aLo < 0) {
       hi = mid;
     } else {
       lo = mid;
-      // Mantener el signo de aLo coherente.
     }
   }
   return (lo + hi) / 2;
@@ -93,17 +98,19 @@ function terminatorLatAtLon(date: Date, lon: number): number | null {
 export function buildTerminatorPolygon(
   date: Date = new Date(),
   step: number = 2,
+  altitudeDeg: number = 0,
 ): GeoJSON.Feature<GeoJSON.Polygon> {
+  const altitudeRad = (altitudeDeg * Math.PI) / 180;
   // Sample del terminator cada `step`° de longitud, de -180 a +180.
   const terminatorRing: [number, number][] = [];
   for (let lon = -180; lon <= 180; lon += step) {
-    const lat = terminatorLatAtLon(date, lon);
+    const lat = terminatorLatAtLon(date, lon, altitudeRad);
     // Si no hay terminator en esta longitud (sol siempre arriba),
     // anclamos al polo más cercano al hemisferio iluminado para
     // mantener el polígono cerrado y continuo. La declinación solar
     // decide qué polo.
     if (lat == null) {
-      const decl = SunCalc.getPosition(date, 0, lon).altitude;
+      const decl = SunCalc.getPosition(date, 0, lon).altitude - altitudeRad;
       terminatorRing.push([lon, decl > 0 ? 90 : -90]);
     } else {
       terminatorRing.push([lon, lat]);
@@ -112,8 +119,9 @@ export function buildTerminatorPolygon(
 
   // ¿Qué hemisferio está oscuro? El hemisferio opuesto al que tiene
   // el sol arriba ahora. Usamos `getPosition` en el polo norte:
-  // altitude > 0 → sol en el norte → noche en el sur.
-  const northSunny = SunCalc.getPosition(date, 89, 0).altitude > 0;
+  // altitude > threshold → sol en el norte → noche en el sur.
+  const northSunny =
+    SunCalc.getPosition(date, 89, 0).altitude - altitudeRad > 0;
 
   // Para cerrar el polígono "noche" añadimos los segmentos verticales
   // a los polos. Si el norte está iluminado, la noche cubre desde el
