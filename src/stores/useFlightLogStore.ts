@@ -3,6 +3,75 @@ import type { AirlineTag, FlightLogEntry, FlightStatus } from "../lib/types";
 import { api } from "../lib/tauri";
 
 /**
+ * (v4.0.0 — P1 fix flicker) Merger inteligente para `FlightStatus`
+ * que viene del watcher (evento `flight://current`).
+ *
+ * **Por qué existe**: el watcher tiene dos paths que emiten ese evento:
+ *
+ *   1. **SimConnect FFI thread** — 4Hz, full state (lat/lon/heading/
+ *      phase/airport/gate populados).
+ *   2. **Fallback proceso+SimBrief thread** — cada 5s, parcial
+ *      (los campos "live" salen como `null` porque el fallback no
+ *      tiene SimConnect).
+ *
+ * Antes este store hacía `set({ status: s })` — REPLACE total — y
+ * cuando el fallback pisaba el estado del SC thread, los campos
+ * live se vaciaban → `FlyingNowBadge` desaparecía hasta el próximo
+ * frame del SC thread (~250ms). Flicker reportado por el usuario.
+ *
+ * Aún con el fix backend (fallback no emite cuando sc_connected),
+ * esta función es defensa en profundidad: si por cualquier razón
+ * llega un emit con campos live `null` mientras `simconnectConnected`
+ * permanece `true` en ambos lados, preservamos el último valor
+ * conocido. Last-known-good a nivel de store.
+ *
+ * Regla precisa: para CADA campo en `LIVE_FIELDS`, si
+ *   · el nuevo evento lo trae `null`/`undefined`, Y
+ *   · el estado previo lo tenía con valor, Y
+ *   · ambos estados tienen `simconnectConnected = true`
+ * → mantener el valor previo.
+ *
+ * Si `simconnectConnected` transita true→false, eso es un disconnect
+ * real → aceptamos el nuevo state sin merge (las wipe queries del
+ * fallback deben ser visibles para que la UI refleje desconexión).
+ */
+const LIVE_FIELDS = [
+  "currentLat",
+  "currentLon",
+  "currentAltFt",
+  "currentGroundSpeedKt",
+  "currentHeadingDeg",
+  "onGround",
+  "phaseLabel",
+  "currentGate",
+  "currentAirportIcao",
+] as const;
+
+function mergeFlightStatus(
+  prev: FlightStatus | null,
+  next: FlightStatus,
+): FlightStatus {
+  if (!prev) return next;
+  const bothConnected = !!prev.simconnectConnected && !!next.simconnectConnected;
+  if (!bothConnected) {
+    // Sin SC en ambos lados → el nuevo evento es autoritativo.
+    return next;
+  }
+  const merged: FlightStatus = { ...next };
+  const prevRec = prev as unknown as Record<string, unknown>;
+  const nextRec = next as unknown as Record<string, unknown>;
+  const mergedRec = merged as unknown as Record<string, unknown>;
+  for (const field of LIVE_FIELDS) {
+    const nextVal = nextRec[field];
+    const prevVal = prevRec[field];
+    if ((nextVal === null || nextVal === undefined) && prevVal != null) {
+      mergedRec[field] = prevVal;
+    }
+  }
+  return merged;
+}
+
+/**
  * Estado del flight log. Las entradas las inserta el watcher de
  * SimConnect (Rust) y la app las pinta en el mapa como líneas
  * sólidas verdes (a diferencia de SimBrief, que usa cyan dashed).
@@ -98,7 +167,7 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
       })
       .catch((e) => console.warn("flightlog onChange subscribe failed:", e));
     api
-      .onFlightStatus((s) => set({ status: s }))
+      .onFlightStatus((s) => set((state) => ({ status: mergeFlightStatus(state.status, s) })))
       .catch((e) => console.warn("flight status subscribe failed:", e));
     // (v3.6.3 fix J2 → v3.6.4 fix K4) Suscripción al progreso de import.
     // Backend emite "vas:import:progress" con { current, total, phase,

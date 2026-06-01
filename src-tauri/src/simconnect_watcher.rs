@@ -123,8 +123,36 @@ pub fn spawn(pool: SqlitePool, app: AppHandle) -> SharedState {
         loop {
             let status = compute_fallback_status(&pool, &task_state).await;
             let changed = status_changed_for_fallback(&last_emitted, &status);
-            let should_emit = changed || polls_since_emit >= FALLBACK_HEARTBEAT_EVERY;
-            if should_emit {
+            // (v4.0.0 — P1 fix flicker) **NUNCA emitir desde el fallback
+            // cuando SimConnect está conectado.**
+            //
+            // Bug reportado por el usuario: badge SimBrief + FlyingNow
+            // parpadeaban ~1s cada ~5s durante todo el vuelo. Causa
+            // raíz: este thread emite cada 5s un `FlightStatus` con
+            // `..Default::default()` → los campos `live` (current_lat,
+            // current_lon, phase_label, current_airport_icao…) salen
+            // como None. El frontend hacía `set({ status: s })` (replace
+            // total) y la badge cae al check
+            // `if (!currentAirportIcao && !originIcao) return null` en
+            // FlyingNowBadge.tsx hasta el próximo frame del SC thread
+            // (4Hz). Resultado: flicker de ~250ms cada 5s.
+            //
+            // Cuando SimConnect está conectado, **él es la fuente
+            // autoritativa** de los campos live. Este fallback se
+            // diseñó para cuando NO hay SimConnect (proceso detectado
+            // + SimBrief OFP). Mantener el polling es útil para
+            // detectar desconexiones del proceso, pero el emit hacia
+            // el frontend es ruido contraproducente.
+            //
+            // Mantenemos `should_emit_now = false` cuando sc_connected,
+            // pero seguimos:
+            //   · Actualizando `task_state.shared.status` (abajo) para
+            //     que `getFlightStatus()` en bootstrap tenga datos
+            //     frescos del fallback.
+            //   · Computando el status para detectar transiciones.
+            let should_emit_now = (changed || polls_since_emit >= FALLBACK_HEARTBEAT_EVERY)
+                && !status.simconnect_connected;
+            if should_emit_now {
                 tracing::info!(
                     target: "simconnect",
                     "emit flight://current (fallback{}) sim_running={} sc_connected={} origin={:?}",
