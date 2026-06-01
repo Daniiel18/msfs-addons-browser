@@ -1011,14 +1011,24 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         let b_bool = |key: &str| -> Option<i64> {
             json_i64(row, key).map(|v| if v != 0 { 1 } else { 0 })
         };
+        // (v4.0.0 — P4) Extendido con métricas de motor por slot 1..4.
+        // 24 columnas extra. Snapshots pre-v4 NO traen estas keys →
+        // todos los binds caen a NULL.
         sqlx::query(
             r#"INSERT OR IGNORE INTO flight_log_track (
                 flight_id, ts, lat, lon, alt_ft, gs_kt,
                 ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
                 flaps_pct, gear_down, spoilers_pct,
                 light_nav, light_beacon, light_taxi, light_landing, light_strobe,
-                parking_brake, transponder_code
-            ) VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?)"#,
+                parking_brake, transponder_code,
+                eng_n1_1, eng_n1_2, eng_n1_3, eng_n1_4,
+                eng_n2_1, eng_n2_2, eng_n2_3, eng_n2_4,
+                eng_egt_1, eng_egt_2, eng_egt_3, eng_egt_4,
+                eng_ff_pph_1, eng_ff_pph_2, eng_ff_pph_3, eng_ff_pph_4,
+                eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
+                eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4
+            ) VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,
+                      ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?)"#,
         )
         .bind(flight_id)
         .bind(&ts)
@@ -1046,6 +1056,30 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .bind(b_bool("lightStrobe"))
         .bind(b_bool("parkingBrake"))
         .bind(json_i64(row, "transponderCode"))
+        .bind(json_f64(row, "engN11"))
+        .bind(json_f64(row, "engN12"))
+        .bind(json_f64(row, "engN13"))
+        .bind(json_f64(row, "engN14"))
+        .bind(json_f64(row, "engN21"))
+        .bind(json_f64(row, "engN22"))
+        .bind(json_f64(row, "engN23"))
+        .bind(json_f64(row, "engN24"))
+        .bind(json_f64(row, "engEgt1"))
+        .bind(json_f64(row, "engEgt2"))
+        .bind(json_f64(row, "engEgt3"))
+        .bind(json_f64(row, "engEgt4"))
+        .bind(json_f64(row, "engFfPph1"))
+        .bind(json_f64(row, "engFfPph2"))
+        .bind(json_f64(row, "engFfPph3"))
+        .bind(json_f64(row, "engFfPph4"))
+        .bind(json_f64(row, "engOilTemp1"))
+        .bind(json_f64(row, "engOilTemp2"))
+        .bind(json_f64(row, "engOilTemp3"))
+        .bind(json_f64(row, "engOilTemp4"))
+        .bind(json_f64(row, "engOilPress1"))
+        .bind(json_f64(row, "engOilPress2"))
+        .bind(json_f64(row, "engOilPress3"))
+        .bind(json_f64(row, "engOilPress4"))
         .execute(&mut *tx)
         .await?;
         tracks += 1;
@@ -1738,14 +1772,22 @@ pub async fn download_missing(
         let b_bool = |key: &str| -> Option<i64> {
             json_i64(track, key).map(|v| if v != 0 { 1 } else { 0 })
         };
+        // (v4.0.0 — P4) Extendido con 24 columnas de motor.
         sqlx::query(
             r#"INSERT OR IGNORE INTO flight_log_track (
                 flight_id, ts, lat, lon, alt_ft, gs_kt,
                 ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
                 flaps_pct, gear_down, spoilers_pct,
                 light_nav, light_beacon, light_taxi, light_landing, light_strobe,
-                parking_brake, transponder_code
-            ) VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?)"#,
+                parking_brake, transponder_code,
+                eng_n1_1, eng_n1_2, eng_n1_3, eng_n1_4,
+                eng_n2_1, eng_n2_2, eng_n2_3, eng_n2_4,
+                eng_egt_1, eng_egt_2, eng_egt_3, eng_egt_4,
+                eng_ff_pph_1, eng_ff_pph_2, eng_ff_pph_3, eng_ff_pph_4,
+                eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
+                eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4
+            ) VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,
+                      ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?)"#,
         )
         .bind(local_flight_id)
         .bind(&ts)
@@ -1771,6 +1813,30 @@ pub async fn download_missing(
         .bind(b_bool("lightStrobe"))
         .bind(b_bool("parkingBrake"))
         .bind(json_i64(track, "transponderCode"))
+        .bind(json_f64(track, "engN11"))
+        .bind(json_f64(track, "engN12"))
+        .bind(json_f64(track, "engN13"))
+        .bind(json_f64(track, "engN14"))
+        .bind(json_f64(track, "engN21"))
+        .bind(json_f64(track, "engN22"))
+        .bind(json_f64(track, "engN23"))
+        .bind(json_f64(track, "engN24"))
+        .bind(json_f64(track, "engEgt1"))
+        .bind(json_f64(track, "engEgt2"))
+        .bind(json_f64(track, "engEgt3"))
+        .bind(json_f64(track, "engEgt4"))
+        .bind(json_f64(track, "engFfPph1"))
+        .bind(json_f64(track, "engFfPph2"))
+        .bind(json_f64(track, "engFfPph3"))
+        .bind(json_f64(track, "engFfPph4"))
+        .bind(json_f64(track, "engOilTemp1"))
+        .bind(json_f64(track, "engOilTemp2"))
+        .bind(json_f64(track, "engOilTemp3"))
+        .bind(json_f64(track, "engOilTemp4"))
+        .bind(json_f64(track, "engOilPress1"))
+        .bind(json_f64(track, "engOilPress2"))
+        .bind(json_f64(track, "engOilPress3"))
+        .bind(json_f64(track, "engOilPress4"))
         .execute(&mut *tx)
         .await?;
         report.new_tracks += 1;

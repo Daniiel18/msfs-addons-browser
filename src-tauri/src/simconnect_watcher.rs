@@ -424,6 +424,47 @@ mod windows_simconnect {
         /// `TRANSPONDER CODE:1` — código BCD del XPDR. Lo trataremos
         /// como i64 al persistir (4 dígitos).
         transponder_code: f64,
+        // ==========================================================
+        // (v4.0.0 — P4) Métricas de motor por slot 1..4. Persistidas
+        // por sample en `flight_log_track` (migration 024). El
+        // Performance modal de P5 las grafica con Recharts.
+        //
+        // Aviones con menos de 4 motores: los slots sobrantes leen
+        // valores cercanos a 0 (SimConnect devuelve 0 cuando el slot
+        // no está poblado). Esa convención coincide con la que ya
+        // usamos para eng_combustion_3 / eng_combustion_4.
+        //
+        // Units requested al SDK:
+        //   N1, N2   → percent
+        //   EGT      → celsius
+        //   Fuel FF  → pounds per hour
+        //   Oil T    → celsius
+        //   Oil P    → psi
+        // ==========================================================
+        eng_n1_1: f64,
+        eng_n1_2: f64,
+        eng_n1_3: f64,
+        eng_n1_4: f64,
+        eng_n2_1: f64,
+        eng_n2_2: f64,
+        eng_n2_3: f64,
+        eng_n2_4: f64,
+        eng_egt_1: f64,
+        eng_egt_2: f64,
+        eng_egt_3: f64,
+        eng_egt_4: f64,
+        eng_ff_pph_1: f64,
+        eng_ff_pph_2: f64,
+        eng_ff_pph_3: f64,
+        eng_ff_pph_4: f64,
+        eng_oil_temp_1: f64,
+        eng_oil_temp_2: f64,
+        eng_oil_temp_3: f64,
+        eng_oil_temp_4: f64,
+        eng_oil_press_1: f64,
+        eng_oil_press_2: f64,
+        eng_oil_press_3: f64,
+        eng_oil_press_4: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -852,6 +893,15 @@ mod windows_simconnect {
         let units_radians = sc::cstr("radians");
         let units_pct_over_100 = sc::cstr("percent over 100");
         let units_number = sc::cstr("number");
+        // (v4.0.0 — P4) Units para simvars de motor.
+        //   · "percent"          → N1/N2 (0..100, no la fracción).
+        //   · "celsius"          → EGT / Oil Temp (más útil que Rankine).
+        //   · "pounds per hour"  → Fuel Flow (PPH es el estándar).
+        //   · "psi"              → Oil Pressure (más legible que psf).
+        let units_percent = sc::cstr("percent");
+        let units_celsius = sc::cstr("celsius");
+        let units_pph = sc::cstr("pounds per hour");
+        let units_psi = sc::cstr("psi");
 
         let names: &[(&str, &std::ffi::CStr)] = &[
             ("PLANE LATITUDE", units_deg.as_c_str()),
@@ -922,6 +972,38 @@ mod windows_simconnect {
             ("LIGHT LANDING", units_bool.as_c_str()),
             ("LIGHT STROBE", units_bool.as_c_str()),
             ("TRANSPONDER CODE:1", units_number.as_c_str()),
+            // ----------------------------------------------------------
+            // (v4.0.0 — P4) Métricas de motor por slot 1..4 para el
+            // Performance modal de P5. Orden DEBE coincidir con los
+            // campos del struct AircraftData (eng_n1_1..4, eng_n2_1..4,
+            // egt_1..4, ff_pph_1..4, oil_temp_1..4, oil_press_1..4).
+            // SimConnect copia los bytes en orden — un desfase aquí
+            // rompe el alineamiento de TODOS los campos siguientes.
+            // ----------------------------------------------------------
+            ("TURB ENG N1:1", units_percent.as_c_str()),
+            ("TURB ENG N1:2", units_percent.as_c_str()),
+            ("TURB ENG N1:3", units_percent.as_c_str()),
+            ("TURB ENG N1:4", units_percent.as_c_str()),
+            ("TURB ENG N2:1", units_percent.as_c_str()),
+            ("TURB ENG N2:2", units_percent.as_c_str()),
+            ("TURB ENG N2:3", units_percent.as_c_str()),
+            ("TURB ENG N2:4", units_percent.as_c_str()),
+            ("GENERAL ENG EXHAUST GAS TEMPERATURE:1", units_celsius.as_c_str()),
+            ("GENERAL ENG EXHAUST GAS TEMPERATURE:2", units_celsius.as_c_str()),
+            ("GENERAL ENG EXHAUST GAS TEMPERATURE:3", units_celsius.as_c_str()),
+            ("GENERAL ENG EXHAUST GAS TEMPERATURE:4", units_celsius.as_c_str()),
+            ("ENG FUEL FLOW PPH:1", units_pph.as_c_str()),
+            ("ENG FUEL FLOW PPH:2", units_pph.as_c_str()),
+            ("ENG FUEL FLOW PPH:3", units_pph.as_c_str()),
+            ("ENG FUEL FLOW PPH:4", units_pph.as_c_str()),
+            ("ENG OIL TEMPERATURE:1", units_celsius.as_c_str()),
+            ("ENG OIL TEMPERATURE:2", units_celsius.as_c_str()),
+            ("ENG OIL TEMPERATURE:3", units_celsius.as_c_str()),
+            ("ENG OIL TEMPERATURE:4", units_celsius.as_c_str()),
+            ("ENG OIL PRESSURE:1", units_psi.as_c_str()),
+            ("ENG OIL PRESSURE:2", units_psi.as_c_str()),
+            ("ENG OIL PRESSURE:3", units_psi.as_c_str()),
+            ("ENG OIL PRESSURE:4", units_psi.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -2598,6 +2680,46 @@ mod windows_simconnect {
                 let light_strobe_c = data.light_strobe >= 0.5;
                 let parking_brake_c = parking_brake_set;
                 let transponder_c = data.transponder_code as i64;
+                // (v4.0.0 — P4) Snapshot de motor por slot 1..4. Para
+                // aviones con menos motores los slots sobrantes leen
+                // ~0 desde SimConnect — el frontend (P5) los descarta
+                // si todos los samples del slot son 0/NULL.
+                let eng_n1_c = [
+                    data.eng_n1_1,
+                    data.eng_n1_2,
+                    data.eng_n1_3,
+                    data.eng_n1_4,
+                ];
+                let eng_n2_c = [
+                    data.eng_n2_1,
+                    data.eng_n2_2,
+                    data.eng_n2_3,
+                    data.eng_n2_4,
+                ];
+                let eng_egt_c = [
+                    data.eng_egt_1,
+                    data.eng_egt_2,
+                    data.eng_egt_3,
+                    data.eng_egt_4,
+                ];
+                let eng_ff_pph_c = [
+                    data.eng_ff_pph_1,
+                    data.eng_ff_pph_2,
+                    data.eng_ff_pph_3,
+                    data.eng_ff_pph_4,
+                ];
+                let eng_oil_temp_c = [
+                    data.eng_oil_temp_1,
+                    data.eng_oil_temp_2,
+                    data.eng_oil_temp_3,
+                    data.eng_oil_temp_4,
+                ];
+                let eng_oil_press_c = [
+                    data.eng_oil_press_1,
+                    data.eng_oil_press_2,
+                    data.eng_oil_press_3,
+                    data.eng_oil_press_4,
+                ];
                 tokio::spawn(async move {
                     if let Err(e) = crate::flight_log::touch_live_position(
                         &pool_c, id, lat_c, lon_c, alt_c, gs_c,
@@ -2633,6 +2755,12 @@ mod windows_simconnect {
                         light_strobe: Some(light_strobe_c),
                         parking_brake: Some(parking_brake_c),
                         transponder_code: Some(transponder_c),
+                        eng_n1: eng_n1_c.map(Some),
+                        eng_n2: eng_n2_c.map(Some),
+                        eng_egt: eng_egt_c.map(Some),
+                        eng_ff_pph: eng_ff_pph_c.map(Some),
+                        eng_oil_temp: eng_oil_temp_c.map(Some),
+                        eng_oil_press: eng_oil_press_c.map(Some),
                     };
                     if let Err(e) = crate::flight_log::insert_track_point_full(
                         &pool_c, id, pt,

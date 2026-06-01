@@ -810,6 +810,13 @@ pub struct TrackPointInsert {
     pub light_strobe: Option<bool>,
     pub parking_brake: Option<bool>,
     pub transponder_code: Option<i64>,
+    // (v4.0.0 — P4) Métricas de motor por slot 1..4.
+    pub eng_n1: [Option<f64>; 4],
+    pub eng_n2: [Option<f64>; 4],
+    pub eng_egt: [Option<f64>; 4],
+    pub eng_ff_pph: [Option<f64>; 4],
+    pub eng_oil_temp: [Option<f64>; 4],
+    pub eng_oil_press: [Option<f64>; 4],
 }
 
 /// Inserta un punto en la traza del vuelo. Compat wrapper —
@@ -858,14 +865,26 @@ pub async fn insert_track_point_full(
             ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
             flaps_pct, gear_down, spoilers_pct,
             light_nav, light_beacon, light_taxi, light_landing, light_strobe,
-            parking_brake, transponder_code
+            parking_brake, transponder_code,
+            eng_n1_1, eng_n1_2, eng_n1_3, eng_n1_4,
+            eng_n2_1, eng_n2_2, eng_n2_3, eng_n2_4,
+            eng_egt_1, eng_egt_2, eng_egt_3, eng_egt_4,
+            eng_ff_pph_1, eng_ff_pph_2, eng_ff_pph_3, eng_ff_pph_4,
+            eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
+            eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
             ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21
+            ?20, ?21,
+            ?22, ?23, ?24, ?25,
+            ?26, ?27, ?28, ?29,
+            ?30, ?31, ?32, ?33,
+            ?34, ?35, ?36, ?37,
+            ?38, ?39, ?40, ?41,
+            ?42, ?43, ?44, ?45
         )
         "#,
     )
@@ -890,6 +909,31 @@ pub async fn insert_track_point_full(
     .bind(b(pt.light_strobe))
     .bind(b(pt.parking_brake))
     .bind(pt.transponder_code)
+    // (v4.0.0 — P4) Métricas de motor — 24 binds.
+    .bind(pt.eng_n1[0])
+    .bind(pt.eng_n1[1])
+    .bind(pt.eng_n1[2])
+    .bind(pt.eng_n1[3])
+    .bind(pt.eng_n2[0])
+    .bind(pt.eng_n2[1])
+    .bind(pt.eng_n2[2])
+    .bind(pt.eng_n2[3])
+    .bind(pt.eng_egt[0])
+    .bind(pt.eng_egt[1])
+    .bind(pt.eng_egt[2])
+    .bind(pt.eng_egt[3])
+    .bind(pt.eng_ff_pph[0])
+    .bind(pt.eng_ff_pph[1])
+    .bind(pt.eng_ff_pph[2])
+    .bind(pt.eng_ff_pph[3])
+    .bind(pt.eng_oil_temp[0])
+    .bind(pt.eng_oil_temp[1])
+    .bind(pt.eng_oil_temp[2])
+    .bind(pt.eng_oil_temp[3])
+    .bind(pt.eng_oil_press[0])
+    .bind(pt.eng_oil_press[1])
+    .bind(pt.eng_oil_press[2])
+    .bind(pt.eng_oil_press[3])
     .execute(pool)
     .await?;
     Ok(())
