@@ -14,6 +14,7 @@ import {
 } from "../lib/smooth";
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
+import { buildTerminatorPolygon } from "../lib/terminator";
 
 /** (v2.0.0) Icono del avión — silueta TOP-VIEW (vista cenital) tal
  *  como se ve un avión desde arriba en mapas de aviación. La punta
@@ -328,6 +329,44 @@ export function RoutesMapView({
           "line-dasharray": [3, 2],
         },
       });
+
+      // (v4.0.0 — P6) Terminator día/noche. Source + fill-layer
+      // semi-transparente que cubre el hemisferio en sombra. El
+      // GeoJSON inicial es el polígono para `new Date()`; un effect
+      // separado lo actualiza cada 60s para que el terminator se
+      // mueva en tiempo real con la rotación de la Tierra.
+      //
+      // Order del layer: lo añadimos DESPUÉS de las rutas pero ANTES
+      // de que las rutas seleccionadas (la noche queda detrás de la
+      // ruta para no ocultarla). Como `addLayer` apila secuencialmente
+      // y el terminator es el ÚLTIMO aquí, está visualmente al frente
+      // — pero su opacity de 0.35 deja ver lo que está debajo.
+      map.addSource("rt-terminator", {
+        type: "geojson",
+        data: buildTerminatorPolygon(new Date()),
+      });
+      map.addLayer({
+        id: "rt-terminator-shadow",
+        type: "fill",
+        source: "rt-terminator",
+        paint: {
+          "fill-color": "#020617",
+          "fill-opacity": 0.32,
+          "fill-antialias": true,
+        },
+      });
+      map.addLayer({
+        id: "rt-terminator-edge",
+        type: "line",
+        source: "rt-terminator",
+        paint: {
+          "line-color": "#fbbf24",
+          "line-width": 0.6,
+          "line-opacity": 0.45,
+          "line-blur": 0.8,
+        },
+      });
+
       setMapReady(true);
     };
 
@@ -349,6 +388,31 @@ export function RoutesMapView({
       setMapReady(false);
     };
   }, []);
+
+  // (v4.0.0 — P6) Refresca el terminator cada 60s para que se mueva
+  // con la rotación de la Tierra. La Tierra rota 0.25°/min, así que
+  // un update por minuto produce un movimiento perceptible pero
+  // suave (no animación de cada frame, eso sería overkill).
+  //
+  // El primer update también recalcula al `mapReady = true` para que
+  // el polígono refleje el instante REAL de la carga (no el momento
+  // del addSource, que puede ser ~100ms antes).
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+    const refresh = () => {
+      try {
+        const src = map.getSource("rt-terminator") as GeoJSONSource | undefined;
+        if (src) src.setData(buildTerminatorPolygon(new Date()));
+      } catch (e) {
+        console.warn("[RoutesMapView] terminator refresh falló:", e);
+      }
+    };
+    refresh();
+    const id = window.setInterval(refresh, 60_000);
+    return () => window.clearInterval(id);
+  }, [mapReady]);
 
   // Cuando cambia el vuelo seleccionado, fetcheamos su track real.
   // (v1.1.2) Limpiamos trackPoints INMEDIATAMENTE para evitar mostrar
