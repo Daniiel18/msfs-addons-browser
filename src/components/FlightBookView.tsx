@@ -922,7 +922,18 @@ function SelectedFlightPanel({
             modelado dudoso) pasaban el filtro `!== null` pero
             fallaban el `< 0` del frontend. */}
         {entry.source === "simconnect" && entry.landingFpm !== null && (() => {
-          const fpm = entry.landingFpm;
+          // (v4.0.0 — P6.3 iter 2) **Force-negate** el FPM en el
+          // render. El simvar `PLANE TOUCHDOWN NORMAL VELOCITY` a
+          // veces reporta valores positivos en aviones de terceros
+          // o con bounces. La convención de aviación es siempre
+          // mostrar el touchdown rate como NEGATIVO (descenso).
+          // LandingToast hace lo mismo — siempre muestra valores
+          // negativos en su UI aunque el simvar diga otra cosa.
+          //
+          // Esto también arregla los vuelos VIEJOS donde el backend
+          // pre-v3.10.0 guardó valores positivos por el bug del
+          // filtro `abs()`. Force-negate en el render sin tocar la DB.
+          const fpm = -Math.abs(entry.landingFpm);
           const color =
             fpm > -200
               ? "text-emerald-300"

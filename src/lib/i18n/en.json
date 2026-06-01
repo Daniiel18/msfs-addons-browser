@@ -399,6 +399,7 @@
   "fb.performance.samples": "samples",
   "fb.performance.loading": "Loading telemetry…",
   "fb.performance.no_data": "No data for this series",
+  "fb.performance.no_data_in_flight": "This flight has no data for this metric. Fly a new flight in SimFleet (v3.9.0+) to see it.",
   "fb.performance.resize": "Drag to resize",
   "fb.performance.tab.alt": "Altitude",
   "fb.performance.tab.spd": "Speed",

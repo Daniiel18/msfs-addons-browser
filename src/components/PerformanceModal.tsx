@@ -211,7 +211,7 @@ export function PerformanceModal({
                 title={
                   availability[t_.key]
                     ? undefined
-                    : t("fb.performance.no_data")
+                    : t("fb.performance.no_data_in_flight")
                 }
                 className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition-colors ${
                   tab === t_.key
