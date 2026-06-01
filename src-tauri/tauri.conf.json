@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SimFleet",
-  "version": "3.7.1",
+  "mainBinaryName": "simfleet",
+  "version": "3.7.2",
   "identifier": "org.n0xful.msfsaddonsbrowser",
   "build": {
     "beforeDevCommand": "npm run dev",
