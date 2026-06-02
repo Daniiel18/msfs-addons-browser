@@ -355,21 +355,38 @@ pub async fn score_simbrief_candidates(
         };
         breakdown.push(("reg".to_string(), reg_pts));
         score += reg_pts;
+        let reg_is_strong_match = reg_pts >= 50;
 
         // 2. Aircraft type match (3-char prefix)
-        let type_pts = match (plane_atc_norm.as_deref(), ofp.aircraft_icao.as_deref()) {
-            (Some(plane), Some(ofp_ac)) => {
-                let plane_prefix: String = plane.chars().take(3).collect();
-                let ofp_prefix: String = ofp_ac.trim().to_ascii_uppercase().chars().take(3).collect();
-                if !plane_prefix.is_empty() && plane_prefix == ofp_prefix {
-                    15
-                } else if ofp_prefix.is_empty() || plane_prefix.is_empty() {
-                    0
-                } else {
-                    -25
+        //
+        // (v4.0.0 P7.5b iter 2) Si el reg ya da match fuerte, ignoramos
+        // el type completamente. Motivo: SimConnect `ATC TYPE` reporta
+        // el FABRICANTE para algunos addons third-party (Fenix devuelve
+        // "Airbus" en vez de "A320"), lo que generaba un falso mismatch
+        // de -25 puntos contra el "A320" del OFP. Si la matrícula es
+        // la misma (`F-HEPI` == `F-HEPI`), por definición es la misma
+        // aeronave — no necesitamos validar el type.
+        //
+        // El type penalty/bonus sigue activo cuando reg NO matchea, ya
+        // que ahí es el único discriminador que tenemos.
+        let type_pts = if reg_is_strong_match {
+            0
+        } else {
+            match (plane_atc_norm.as_deref(), ofp.aircraft_icao.as_deref()) {
+                (Some(plane), Some(ofp_ac)) => {
+                    let plane_prefix: String = plane.chars().take(3).collect();
+                    let ofp_prefix: String =
+                        ofp_ac.trim().to_ascii_uppercase().chars().take(3).collect();
+                    if !plane_prefix.is_empty() && plane_prefix == ofp_prefix {
+                        15
+                    } else if ofp_prefix.is_empty() || plane_prefix.is_empty() {
+                        0
+                    } else {
+                        -25
+                    }
                 }
+                _ => 0,
             }
-            _ => 0,
         };
         breakdown.push(("type".to_string(), type_pts));
         score += type_pts;
