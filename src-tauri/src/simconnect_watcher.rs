@@ -3598,6 +3598,7 @@ mod windows_simconnect {
                 aircraft_reg_from_db.as_deref(),
                 fuel_loaded_lb,
                 7 * 24,
+                Some(flight_id),
             ).await;
             let still_valid = match &candidates_result {
                 Ok(crate::simbrief::MatchResult::Auto { ofp, .. }) => {
@@ -3650,6 +3651,7 @@ mod windows_simconnect {
             aircraft_reg_from_db.as_deref(),
             fuel_loaded_lb,
             7 * 24,
+            Some(flight_id),
         )
         .await
         {

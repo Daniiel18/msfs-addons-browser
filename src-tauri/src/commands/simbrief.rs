@@ -103,6 +103,11 @@ pub async fn link_simbrief_ofp(
     let derived_airline =
         crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
 
+    // (v4.0.0 P7.6b iter 4) Permitimos link tanto en vuelos abiertos
+    // como cerrados. Si el toast aparece despues del engine shutdown
+    // (caso bug que arreglamos en esta iter, pero seguimos siendo
+    // defensivos), el usuario debe poder elegir y que el link funcione
+    // retroactivamente.
     let res = sqlx::query(
         r#"
         UPDATE flight_log
@@ -113,7 +118,7 @@ pub async fn link_simbrief_ofp(
             passengers       = COALESCE(passengers, ?5),
             cargo_kg         = COALESCE(cargo_kg, ?6),
             fuel_used_kg     = COALESCE(fuel_used_kg, ?7)
-        WHERE id = ?8 AND ended_at IS NULL
+        WHERE id = ?8
         "#,
     )
     .bind(&ofp.ofp_id)
@@ -129,10 +134,7 @@ pub async fn link_simbrief_ofp(
     .map_err(|e| e.to_string())?;
 
     if res.rows_affected() == 0 {
-        return Err(format!(
-            "flight_log id={} no existe o ya está cerrado",
-            flight_id
-        ));
+        return Err(format!("flight_log id={} no existe", flight_id));
     }
 
     tracing::info!(

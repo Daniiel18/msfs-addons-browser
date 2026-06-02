@@ -292,7 +292,18 @@ pub async fn score_simbrief_candidates(
     aircraft_reg: Option<&str>,
     fuel_loaded_lb: Option<f64>,
     within_hours: i64,
+    current_flight_id: Option<i64>,
 ) -> anyhow::Result<MatchResult> {
+    // (v4.0.0 P7.6b iter 4) Excluimos `current_flight_id` del filtro
+    // de "consumed". Sin esto, al cerrar el vuelo (ended_at NOT NULL)
+    // su propio OFP se auto-excluye, la re-validación del linkeo falla
+    // y el watcher emite Ambiguous OTRA VEZ — toast post-cierre que no
+    // permite click porque la fila ya está cerrada.
+    //
+    // Bug reportado: usuario clickea toast al OUT → MANUAL LINK OK.
+    // Al ENGINE SHUTDOWN, populate re-valida, no encuentra su OFP,
+    // desliga (clear flight_number/callsign), emite Ambiguous, toast
+    // re-aparece, click no hace nada (link rechazado por ended_at).
     let rows = sqlx::query_as::<_, SimBriefFlight>(
         r#"
         SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
@@ -311,6 +322,7 @@ pub async fn score_simbrief_candidates(
             SELECT simbrief_ofp_id FROM flight_log
             WHERE simbrief_ofp_id IS NOT NULL
               AND ended_at IS NOT NULL
+              AND (?3 IS NULL OR id != ?3)
           )
         ORDER BY CAST(generated_at AS INTEGER) DESC
         LIMIT 10
@@ -318,6 +330,7 @@ pub async fn score_simbrief_candidates(
     )
     .bind(origin_icao)
     .bind(within_hours)
+    .bind(current_flight_id)
     .fetch_all(pool)
     .await?;
 
