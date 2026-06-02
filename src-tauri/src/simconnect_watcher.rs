@@ -1795,6 +1795,30 @@ mod windows_simconnect {
                     // en el Stream A (4Hz). Performance: ~60 events/s
                     // pero solo guardamos VS en buffer + detectamos
                     // flanco (operaciones O(1)).
+                    //
+                    // (v4.0.0 P7.7 iter 3) DURANTE REPLAY: skip total.
+                    // Si el watcher está en replay mode, no procesamos
+                    // este dispatch — Flight Recorder y otros pueden
+                    // disparar flancos artificiales al "aterrizar" un
+                    // avión replayed. Sin este check, Stream B captura
+                    // touchdowns falsos durante el playback.
+                    if request_id == REQUEST_ID_TOUCHDOWN && in_replay_mode {
+                        // Mantenemos prev_on_ground actualizado para
+                        // que al salir de replay no haya un flank
+                        // espurio (false→true sin razón real).
+                        let data_ptr = unsafe {
+                            let header_size =
+                                std::mem::size_of::<sc::SIMCONNECT_RECV_SIMOBJECT_DATA>();
+                            let base = p_data as *const u8;
+                            base.add(header_size - 4) as *const TouchdownData
+                        };
+                        if !data_ptr.is_null() {
+                            let td = unsafe { *data_ptr };
+                            prev_on_ground = Some(td.on_ground >= 0.5);
+                        }
+                        stream_b_recent_vs.clear();
+                        continue;
+                    }
                     if request_id == REQUEST_ID_TOUCHDOWN {
                         let data_ptr = unsafe {
                             let header_size =
@@ -2509,6 +2533,14 @@ mod windows_simconnect {
                     lat_lon_frozen, altitude_frozen, attitude_frozen
                 );
                 *in_replay_mode = true;
+                // (v4.0.0 P7.7 iter 3) Reset captured_landing_fpm.
+                // Si Stream B había capturado un FPM antes del replay
+                // y todavía no se persistió en finish, no queremos
+                // que un dispatch durante el replay reuse ese valor.
+                // El próximo touchdown REAL (post-cooldown) tendrá
+                // que volver a capturar desde 0.
+                *captured_landing_fpm = None;
+                *post_touchdown_ticks_remaining = 0;
                 #[derive(serde::Serialize, Clone)]
                 #[serde(rename_all = "camelCase")]
                 struct ReplayPayload {
@@ -2532,7 +2564,16 @@ mod windows_simconnect {
             *replay_stable_ticks_normal = 0;
         } else if *in_replay_mode {
             *replay_stable_ticks_normal = replay_stable_ticks_normal.saturating_add(1);
-            if *replay_stable_ticks_normal >= 20 {
+            // (v4.0.0 P7.7 iter 3) Threshold ampliado: 20→60 ticks
+            // (5s→15s) sostenidos de operación normal. Motivación:
+            // tras un replay externo (Flight Recorder), el avión puede
+            // quedar en estado físico extraño (aire+vs=0 en pista, o
+            // ground+motores OFF). Con solo 5s el state machine
+            // resumía y disparaba transiciones espurias (touchdowns
+            // falsos, engine shutdowns que cerraban el vuelo abierto).
+            // 15s da margen para que el avión "se asiente" o para que
+            // el usuario inicie/finalice manualmente.
+            if *replay_stable_ticks_normal >= 60 {
                 tracing::info!(
                     target: "simconnect",
                     "REPLAY/SLEW desactivado — operación normal sostenida {}s, resumiendo state machine",
