@@ -3311,6 +3311,21 @@ mod windows_simconnect {
                 let pool_c = pool.clone();
                 let lat_c = lat;
                 let lon_c = lon;
+                // (v4.0.0 P7.8c) Calculamos el scoring_phase de ESTE
+                // sample y lo escribimos EN el track point — no en una
+                // tabla separada. Esto elimina el race de timestamps que
+                // causaba "No data to evaluate" en fases cortas.
+                let scoring_phase_c = derive_scoring_phase(
+                    *phase,
+                    on_ground,
+                    gs,
+                    data.alt_above_ground_ft,
+                    vs,
+                    any_engine_running,
+                    *passed_taxi_threshold,
+                    in_pushback,
+                    *engines_seen_running,
+                );
                 let alt_c = alt as i64;
                 let gs_c = gs as i64;
                 // (v3.7.0 — Phase O) Snapshot de todos los simvars
@@ -3413,6 +3428,7 @@ mod windows_simconnect {
                         eng_ff_pph: eng_ff_pph_c.map(Some),
                         eng_oil_temp: eng_oil_temp_c.map(Some),
                         eng_oil_press: eng_oil_press_c.map(Some),
+                        scoring_phase: scoring_phase_c,
                     };
                     if let Err(e) = crate::flight_log::insert_track_point_full(
                         &pool_c, id, pt,

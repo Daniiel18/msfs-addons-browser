@@ -104,6 +104,12 @@ pub struct TrackSample {
     pub light_strobe: Option<bool>,
     pub parking_brake: Option<bool>,
     pub transponder_code: Option<i64>,
+    /// (v4.0.0 P7.8c) Fase de scoring asignada a este sample por el
+    /// watcher (o el VAS importer). El evaluador filtra por ESTE campo
+    /// en vez de la ventana temporal de flight_log_phase. Es lo que
+    /// hace que las fases cortas (initial_climb, final_approach) no se
+    /// pierdan.
+    pub scoring_phase: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +125,22 @@ impl FlightContext {
     /// devuelve un slice vacío — la regla decide cómo manejarlo (ej.
     /// las reglas de `general` no necesitan phase).
     pub fn samples_in_phase(&self, phase: &str) -> Vec<&TrackSample> {
+        // (v4.0.0 P7.8c) Estrategia primaria: filtrar por la columna
+        // `scoring_phase` de CADA sample. Esto es lo que hace el ACARS
+        // y elimina el "No data to evaluate" de fases cortas. Si AL
+        // MENOS un sample tiene scoring_phase poblado, usamos esta vía.
+        let any_tagged = self.track.iter().any(|s| s.scoring_phase.is_some());
+        if any_tagged {
+            return self
+                .track
+                .iter()
+                .filter(|s| s.scoring_phase.as_deref() == Some(phase))
+                .collect();
+        }
+
+        // Fallback legacy (vuelos pre-P7.8c sin la columna poblada):
+        // ventana temporal de flight_log_phase. Frágil para fases
+        // cortas pero es lo único que tenemos para vuelos viejos.
         let Some(range) = self.phases.iter().find(|p| p.phase == phase) else {
             return Vec::new();
         };
@@ -166,6 +188,7 @@ struct TrackRow {
     light_strobe: Option<i64>,
     parking_brake: Option<i64>,
     transponder_code: Option<i64>,
+    scoring_phase: Option<String>,
 }
 
 /// Row helper para `sqlx::query_as` — sqlx no implementa FromRow para
@@ -222,7 +245,7 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
                ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
                flaps_pct, gear_down, spoilers_pct,
                light_nav, light_beacon, light_taxi, light_landing, light_strobe,
-               parking_brake, transponder_code
+               parking_brake, transponder_code, scoring_phase
         FROM flight_log_track
         WHERE flight_id = ?1
         ORDER BY ts
@@ -290,6 +313,7 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
                     light_strobe: b(r.light_strobe),
                     parking_brake: b(r.parking_brake),
                     transponder_code: r.transponder_code,
+                    scoring_phase: r.scoring_phase,
                 }
             })
             .collect(),

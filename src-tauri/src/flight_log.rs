@@ -822,6 +822,11 @@ pub struct TrackPointInsert {
     pub eng_ff_pph: [Option<f64>; 4],
     pub eng_oil_temp: [Option<f64>; 4],
     pub eng_oil_press: [Option<f64>; 4],
+    /// (v4.0.0 P7.8c) Fase de scoring asignada a ESTE sample (nombres
+    /// del rubric: pre_departure, initial_climb, final_approach, etc.).
+    /// El evaluador filtra por esta columna en vez de hacer un JOIN
+    /// temporal frágil contra flight_log_phase. None para rutas legacy.
+    pub scoring_phase: Option<String>,
 }
 
 /// Inserta un punto en la traza del vuelo. Compat wrapper —
@@ -876,7 +881,8 @@ pub async fn insert_track_point_full(
             eng_egt_1, eng_egt_2, eng_egt_3, eng_egt_4,
             eng_ff_pph_1, eng_ff_pph_2, eng_ff_pph_3, eng_ff_pph_4,
             eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
-            eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4
+            eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4,
+            scoring_phase
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
@@ -889,7 +895,8 @@ pub async fn insert_track_point_full(
             ?30, ?31, ?32, ?33,
             ?34, ?35, ?36, ?37,
             ?38, ?39, ?40, ?41,
-            ?42, ?43, ?44, ?45
+            ?42, ?43, ?44, ?45,
+            ?46
         )
         "#,
     )
@@ -939,6 +946,7 @@ pub async fn insert_track_point_full(
     .bind(pt.eng_oil_press[1])
     .bind(pt.eng_oil_press[2])
     .bind(pt.eng_oil_press[3])
+    .bind(pt.scoring_phase.as_deref())
     .execute(pool)
     .await?;
     Ok(())
