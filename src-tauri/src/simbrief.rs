@@ -58,6 +58,17 @@ pub struct SimBriefFlight {
     /// `"lbs"` o `"kgs"` — del OFP. Sólo para debug; los campos kg
     /// arriba ya están normalizados.
     pub units: Option<String>,
+    /// (v4.0.0 P7.5b) Matrícula (`<aircraft><reg>`) del OFP. SimBrief
+    /// la expone como "Custom Tail" — campo per-pilot que cada usuario
+    /// configura en sus preferencias. Cuando matchea con `ATC ID` del
+    /// avión en el sim, es el discriminador más fuerte para casos de
+    /// cuenta SimBrief compartida.
+    pub aircraft_reg: Option<String>,
+    /// (v4.0.0 P7.5b) Fuel total ramp planificado en kg (`<fuel><plan_ramp>`).
+    /// Suma de enroute + taxi + reserve + alternate + extra. Comparable
+    /// con `FUEL TOTAL QUANTITY WEIGHT` capturado al OUT — si delta <10%,
+    /// es el OFP del piloto que cargó el avión.
+    pub plan_ramp_kg: Option<i64>,
 }
 
 /// Resultado del refresh manual: cuántos OFPs nuevos se añadieron
@@ -114,15 +125,18 @@ pub async fn refresh_latest(
             origin_icao, origin_name, origin_lat, origin_lon,
             destination_icao, destination_name, destination_lat, destination_lon,
             route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-            pax_count, cargo_kg, fuel_burn_kg, units
+            pax_count, cargo_kg, fuel_burn_kg, units,
+            aircraft_reg, plan_ramp_kg
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21, ?22, ?23)
         ON CONFLICT(ofp_id) DO UPDATE SET
             fetched_at   = datetime('now'),
             pax_count    = COALESCE(excluded.pax_count, simbrief_flights.pax_count),
             cargo_kg     = COALESCE(excluded.cargo_kg, simbrief_flights.cargo_kg),
             fuel_burn_kg = COALESCE(excluded.fuel_burn_kg, simbrief_flights.fuel_burn_kg),
-            units        = COALESCE(excluded.units, simbrief_flights.units)
+            units        = COALESCE(excluded.units, simbrief_flights.units),
+            aircraft_reg = COALESCE(excluded.aircraft_reg, simbrief_flights.aircraft_reg),
+            plan_ramp_kg = COALESCE(excluded.plan_ramp_kg, simbrief_flights.plan_ramp_kg)
         "#,
     )
     .bind(&flight.ofp_id)
@@ -146,6 +160,8 @@ pub async fn refresh_latest(
     .bind(flight.cargo_kg)
     .bind(flight.fuel_burn_kg)
     .bind(&flight.units)
+    .bind(&flight.aircraft_reg)
+    .bind(flight.plan_ramp_kg)
     .execute(pool)
     .await?;
 
@@ -163,7 +179,8 @@ pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFligh
                origin_icao, origin_name, origin_lat, origin_lon,
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units
+               pax_count, cargo_kg, fuel_burn_kg, units,
+               aircraft_reg, plan_ramp_kg
         FROM simbrief_flights
         ORDER BY COALESCE(generated_at, fetched_at) DESC
         "#,
@@ -195,7 +212,8 @@ pub async fn find_recent_for_origin(
                origin_icao, origin_name, origin_lat, origin_lon,
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units
+               pax_count, cargo_kg, fuel_burn_kg, units,
+               aircraft_reg, plan_ramp_kg
         FROM simbrief_flights
         WHERE UPPER(origin_icao) = UPPER(?1)
           AND (
@@ -213,48 +231,76 @@ pub async fn find_recent_for_origin(
     Ok(row)
 }
 
-/// (v4.0.0 P7.6) Busca el OFP más reciente para `origin_icao` que
-/// **además** matchee el tipo de avión actual y **no haya sido
-/// consumido** por otro vuelo cerrado.
+/// (v4.0.0 P7.5b) Resultado scored de un OFP candidato. El breakdown
+/// permite logging detallado y UI explicativa al usuario en caso de
+/// confirmación manual.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoredOfp {
+    pub ofp: SimBriefFlight,
+    pub score: i32,
+    /// Lista de pares (factor, puntos). Factor ej: "reg", "type", "fuel".
+    pub breakdown: Vec<(String, i32)>,
+}
+
+/// (v4.0.0 P7.5b) Veredicto del scorer SimBrief.
 ///
-/// Motivación: los usuarios que comparten cuenta SimBrief reciben los
-/// MISMOS OFPs en ambas instalaciones. Antes de este filtro, el
-/// primer vuelo desde el mismo origen heredaba el OFP del compañero
-/// (flight_number, callsign, pax, cargo, fuel burn) — bug reportado:
-/// "yo hice LAN1407 y al amigo le aparece LAN1407 en vez de su vuelo".
+/// - `Auto`: hay UN claro ganador (top score ≥ threshold y top - 2do ≥ 15).
+/// - `Ambiguous`: 2+ candidatos pasan threshold y empate cerrado → UI debe
+///   pedir al usuario que confirme cuál es suyo.
+/// - `NoMatch`: ningún candidato pasa threshold.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MatchResult {
+    Auto { ofp: SimBriefFlight, score: i32, breakdown: Vec<(String, i32)> },
+    Ambiguous { candidates: Vec<ScoredOfp> },
+    NoMatch,
+}
+
+/// (v4.0.0 P7.5b) Threshold mínimo para considerar un OFP "viable". Un
+/// match perfecto por reg da 50 puntos solo — equilibrado para que el
+/// caso optimista (reg presente) cierre solo con eso.
+const SCORE_THRESHOLD: i32 = 50;
+/// Diferencia mínima entre top-1 y top-2 para auto-link. Si la
+/// diferencia es menor, hay ambigüedad — UI pregunta.
+const SCORE_DOMINANCE_GAP: i32 = 15;
+
+/// (v4.0.0 P7.5b) Scoring multi-factor de OFPs candidatos.
 ///
-/// Validaciones aplicadas (en orden):
+/// Reemplaza a `find_matching_for_flight` (v4.0.0 P7.6) que solo hacía
+/// match binario por aircraft type. Problema: cuando los pilotos vuelan
+/// JUNTOS el mismo avión (caso típico), aircraft type no discrimina.
 ///
-/// 1. **origin_icao match** — igual que `find_recent_for_origin`.
-/// 2. **within_hours window** — descarta OFPs muy viejos.
-/// 3. **simbrief_ofp_id NOT consumed** — excluye OFPs que ya están
-///    vinculados a un `flight_log` con `ended_at IS NOT NULL`.
-/// 4. **aircraft_icao match** (si tenemos `aircraft_atc`) — el OFP
-///    típicamente reporta "A319" / "B738" / "A20N". El simvar
-///    `ATC MODEL` del avión actual suele ser similar. Comparamos
-///    los primeros 3 caracteres uppercased (cubre A320 vs A20N,
-///    B738 vs B739, etc., aceptando small variants intencionalmente).
-///    Si el match falla, **NO atribuimos** el OFP — mejor un vuelo
-///    sin metadata que uno con metadata de otro piloto.
+/// Discriminadores (en orden de fuerza):
 ///
-/// Si el caller no conoce `aircraft_atc` (None), saltamos el step 4
-/// y caemos a comportamiento legacy (origin + freshness + unconsumed).
-pub async fn find_matching_for_flight(
+/// 1. **Registration** (`<aircraft><reg>` ↔ `ATC ID`): per-pilot "Custom
+///    Tail" de SimBrief. Cuando ambos lados lo tienen y matchean → +50.
+///    Mismatch fuerte → -30. Ausencia de uno o ambos → 0 (neutral).
+/// 2. **Aircraft type** (`<aircraft><icao>` ↔ `ATC TYPE`, primeros 3 chars):
+///    Match → +15. Mismatch → -25 (un vuelo en B738 no usa OFP de A319).
+/// 3. **Fuel loaded** (`<fuel><plan_ramp>` ↔ `FUEL TOTAL QUANTITY WEIGHT`
+///    al OUT): Δ < 10% → +20. Δ 10-25% → +5. Δ > 25% → -10. Ausencia → 0.
+/// 4. **Freshness**: OFP generado en últimas N horas → bonus decreciente
+///    de hasta +20 (lineal de 0 a 24h).
+///
+/// Threshold: score ≥ 50 para considerar viable.
+/// Dominancia: top - 2do ≥ 15 para auto-link, sino ambiguous.
+pub async fn score_simbrief_candidates(
     pool: &SqlitePool,
     origin_icao: &str,
     aircraft_atc: Option<&str>,
+    aircraft_reg: Option<&str>,
+    fuel_loaded_lb: Option<f64>,
     within_hours: i64,
-) -> anyhow::Result<Option<SimBriefFlight>> {
-    // Pre-filtramos en SQL por origin + freshness + unconsumed. El
-    // aircraft match lo hacemos en Rust para tener flexibilidad de
-    // matching (3-char prefix tolerante en vez de equality exacta).
+) -> anyhow::Result<MatchResult> {
     let rows = sqlx::query_as::<_, SimBriefFlight>(
         r#"
         SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
                origin_icao, origin_name, origin_lat, origin_lon,
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units
+               pax_count, cargo_kg, fuel_burn_kg, units,
+               aircraft_reg, plan_ramp_kg
         FROM simbrief_flights
         WHERE UPPER(origin_icao) = UPPER(?1)
           AND (
@@ -275,40 +321,151 @@ pub async fn find_matching_for_flight(
     .fetch_all(pool)
     .await?;
 
-    // Sin info de aircraft → devolvemos el más reciente (legacy
-    // behavior, pero ya filtrado por unconsumed).
-    let Some(plane_atc) = aircraft_atc else {
-        return Ok(rows.into_iter().next());
-    };
-    let plane_norm = plane_atc.trim().to_ascii_uppercase();
-    if plane_norm.is_empty() {
-        return Ok(rows.into_iter().next());
+    if rows.is_empty() {
+        return Ok(MatchResult::NoMatch);
     }
 
-    // Aircraft match: comparamos primeros 3 chars del aircraft_icao
-    // del OFP contra los primeros 3 del ATC type del avión. Cubre:
-    //   · A319 vs A319  → match (3 chars iguales)
-    //   · A319 vs A20N  → no match (A31 vs A20)
-    //   · B738 vs B73X  → match (B73)
-    //   · "Boeing 737-800" → solo si SimBrief lo reporta como "B738"
-    //                       (caso normal); si reporta "Boeing 737-800"
-    //                       el primer slug no matchea — aceptable, en
-    //                       ese caso skip y dejamos pax/cargo en NULL.
-    let plane_prefix: String = plane_norm.chars().take(3).collect();
-    for ofp in &rows {
-        let ofp_ac = match ofp.aircraft_icao.as_deref() {
-            Some(s) => s.trim().to_ascii_uppercase(),
-            None => continue,
+    let plane_atc_norm: Option<String> = aircraft_atc
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty());
+    let plane_reg_norm: Option<String> = aircraft_reg
+        .map(normalize_reg)
+        .filter(|s| !s.is_empty());
+    let fuel_loaded_kg: Option<f64> = fuel_loaded_lb.map(|lb| lb * 0.4535924);
+
+    // Score cada candidato.
+    let mut scored: Vec<ScoredOfp> = Vec::with_capacity(rows.len());
+    for ofp in rows.into_iter() {
+        let mut score: i32 = 0;
+        let mut breakdown: Vec<(String, i32)> = Vec::new();
+
+        // 1. Registration match
+        let reg_pts = match (plane_reg_norm.as_deref(), ofp.aircraft_reg.as_deref()) {
+            (Some(plane), Some(ofp_reg)) => {
+                let ofp_norm = normalize_reg(ofp_reg);
+                if !ofp_norm.is_empty() && ofp_norm == plane {
+                    50
+                } else if ofp_norm.is_empty() {
+                    0
+                } else {
+                    -30
+                }
+            }
+            _ => 0,
         };
-        if ofp_ac.is_empty() {
-            continue;
-        }
-        let ofp_prefix: String = ofp_ac.chars().take(3).collect();
-        if ofp_prefix == plane_prefix {
-            return Ok(Some(ofp.clone()));
-        }
+        breakdown.push(("reg".to_string(), reg_pts));
+        score += reg_pts;
+
+        // 2. Aircraft type match (3-char prefix)
+        let type_pts = match (plane_atc_norm.as_deref(), ofp.aircraft_icao.as_deref()) {
+            (Some(plane), Some(ofp_ac)) => {
+                let plane_prefix: String = plane.chars().take(3).collect();
+                let ofp_prefix: String = ofp_ac.trim().to_ascii_uppercase().chars().take(3).collect();
+                if !plane_prefix.is_empty() && plane_prefix == ofp_prefix {
+                    15
+                } else if ofp_prefix.is_empty() || plane_prefix.is_empty() {
+                    0
+                } else {
+                    -25
+                }
+            }
+            _ => 0,
+        };
+        breakdown.push(("type".to_string(), type_pts));
+        score += type_pts;
+
+        // 3. Fuel match
+        let fuel_pts = match (fuel_loaded_kg, ofp.plan_ramp_kg) {
+            (Some(loaded), Some(planned)) if planned > 0 => {
+                let delta_pct = ((loaded - planned as f64).abs() / planned as f64) * 100.0;
+                if delta_pct < 10.0 {
+                    20
+                } else if delta_pct < 25.0 {
+                    5
+                } else {
+                    -10
+                }
+            }
+            _ => 0,
+        };
+        breakdown.push(("fuel".to_string(), fuel_pts));
+        score += fuel_pts;
+
+        // 4. Freshness — lineal de 20 (0h viejo) a 0 (24h viejo)
+        let fresh_pts = ofp
+            .generated_at
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|gen_ts| {
+                let now_ts = chrono::Utc::now().timestamp();
+                let age_h = ((now_ts - gen_ts).max(0)) as f64 / 3600.0;
+                ((20.0 - age_h * 20.0 / 24.0).max(0.0)) as i32
+            })
+            .unwrap_or(0);
+        breakdown.push(("freshness".to_string(), fresh_pts));
+        score += fresh_pts;
+
+        // Log estructurado por candidato.
+        tracing::info!(
+            target: "simbrief",
+            "score ofp_id={} pilot={} reg={:?} ac={:?} score={} breakdown={:?}",
+            ofp.ofp_id,
+            ofp.pilot_id,
+            ofp.aircraft_reg,
+            ofp.aircraft_icao,
+            score,
+            breakdown,
+        );
+
+        scored.push(ScoredOfp { ofp, score, breakdown });
     }
-    Ok(None)
+
+    // Ordenar por score desc.
+    scored.sort_by(|a, b| b.score.cmp(&a.score));
+
+    // Filtrar viables.
+    let viable: Vec<ScoredOfp> = scored
+        .into_iter()
+        .filter(|s| s.score >= SCORE_THRESHOLD)
+        .collect();
+
+    if viable.is_empty() {
+        return Ok(MatchResult::NoMatch);
+    }
+
+    // Único viable → Auto.
+    if viable.len() == 1 {
+        let top = viable.into_iter().next().unwrap();
+        return Ok(MatchResult::Auto {
+            ofp: top.ofp,
+            score: top.score,
+            breakdown: top.breakdown,
+        });
+    }
+
+    // Múltiples viables → checar dominancia.
+    let top_score = viable[0].score;
+    let runner_score = viable[1].score;
+    if top_score - runner_score >= SCORE_DOMINANCE_GAP {
+        let top = viable.into_iter().next().unwrap();
+        return Ok(MatchResult::Auto {
+            ofp: top.ofp,
+            score: top.score,
+            breakdown: top.breakdown,
+        });
+    }
+
+    // Ambiguous — UI debe pedir confirmación.
+    Ok(MatchResult::Ambiguous { candidates: viable })
+}
+
+/// Normaliza una matrícula: uppercase, sin espacios ni guiones. Cubre
+/// formatos `PT-TMC` / `PT TMC` / `pttmc` → `PTTMC`.
+fn normalize_reg(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase()
 }
 
 pub async fn delete_flight(pool: &SqlitePool, ofp_id: &str) -> anyhow::Result<()> {
@@ -386,10 +543,23 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
     let destination_name = inner_tag(dest_block, "name");
 
     // Aircraft block puede no estar — fallback a None.
-    let aircraft_icao = TAG_AIRCRAFT
+    let aircraft_block = TAG_AIRCRAFT
         .captures(xml)
         .and_then(|c| c.get(1))
-        .and_then(|m| inner_tag(m.as_str(), "icao_code"));
+        .map(|m| m.as_str().to_string());
+    let aircraft_icao = aircraft_block
+        .as_deref()
+        .and_then(|b| inner_tag(b, "icao_code"));
+    // (v4.0.0 P7.5b) Matrícula "Custom Tail" del piloto. SimBrief lo
+    // expone como `<reg>` dentro del bloque `<aircraft>`. Si el piloto
+    // no lo configura en sus preferencias, queda vacío o como un valor
+    // genérico (ej. ICAO genérico del tipo). Normalizamos a uppercase y
+    // strip espacios/guiones para comparar contra `ATC ID` del sim.
+    let aircraft_reg = aircraft_block
+        .as_deref()
+        .and_then(|b| inner_tag(b, "reg"))
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty());
 
     let ofp_id = first_tag(&TAG_OFP_ID, xml).unwrap_or_else(|| {
         // Sin request_id no podemos deduplicar — usamos hash del
@@ -434,18 +604,27 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
 
     // Fuel block — `enroute_burn + taxi` es la mejor aproximación al
     // "fuel quemado durante el bloque" que GSX usa.
-    let fuel_burn_kg = TAG_FUEL
+    // (v4.0.0 P7.5b) Adicionalmente extraemos `plan_ramp` (total fuel
+    // al bloque planificado = enroute + taxi + reserve + alternate +
+    // extra). Esto se compara contra el FUEL TOTAL QUANTITY WEIGHT del
+    // sim al OUT — si delta < 10%, es el OFP del piloto que cargó.
+    let fuel_block_str = TAG_FUEL
         .captures(xml)
         .and_then(|c| c.get(1))
-        .and_then(|m| {
-            let block = m.as_str();
-            let enroute = inner_tag(block, "enroute_burn")
-                .and_then(|s| s.trim().parse::<i64>().ok())?;
-            let taxi = inner_tag(block, "taxi")
-                .and_then(|s| s.trim().parse::<i64>().ok())
-                .unwrap_or(0);
-            Some(convert(enroute + taxi))
-        });
+        .map(|m| m.as_str().to_string());
+    let fuel_burn_kg = fuel_block_str.as_deref().and_then(|block| {
+        let enroute = inner_tag(block, "enroute_burn")
+            .and_then(|s| s.trim().parse::<i64>().ok())?;
+        let taxi = inner_tag(block, "taxi")
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+        Some(convert(enroute + taxi))
+    });
+    let plan_ramp_kg = fuel_block_str.as_deref().and_then(|block| {
+        inner_tag(block, "plan_ramp")
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .map(convert)
+    });
 
     Some(SimBriefFlight {
         ofp_id,
@@ -471,6 +650,8 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
         cargo_kg,
         fuel_burn_kg,
         units,
+        aircraft_reg,
+        plan_ramp_kg,
     })
 }
 

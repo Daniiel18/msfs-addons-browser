@@ -148,63 +148,28 @@ pub async fn start_flight(
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
 
-    // (v3.6.0 Phase H — Epic A/C) Cross-match con SimBrief OFP por
-    // origen para popular flight_number / callsign / airline_icao en el
-    // momento del start. El OFP típicamente se descarga ANTES del
-    // pushback (el piloto lo descarga mientras hace el cold&dark setup),
-    // así que cuando llegamos acá el OFP ya está en DB.
+    // (v4.0.0 — P7.5b) start_flight ya NO hace cross-match con SimBrief.
     //
-    // Ventana 48h — cubre vuelos planificados varias horas antes y
-    // descarta OFPs viejos del mismo aeropuerto que no son este vuelo.
+    // Motivación: en cuenta SimBrief compartida ("vuelan juntos"), el
+    // matching requiere `aircraft_reg` y `fuel_loaded_lb` para discriminar
+    // — datos que al OUT no están todavía (el dispatch de meta puede no
+    // haber llegado, y `FUEL TOTAL QUANTITY WEIGHT` lo capturamos al
+    // OUT pero el watcher no pasa por start_flight directamente).
     //
-    // (v4.0.0 — P7.6) Pasamos `aircraft_atc` al matcher para evitar
-    // que un OFP del compañero (cuando se comparte cuenta SimBrief) se
-    // atribuya a este vuelo. Si el aircraft type no match, no se
-    // hereda metadata. También filtramos OFPs ya consumidos por otros
-    // vuelos cerrados — el mismo OFP no puede ser reusado.
-    let (flight_number, callsign, airline_icao, ofp_id_matched) = match nearest.as_ref() {
-        Some(n) => match crate::simbrief::find_matching_for_flight(
-            pool, &n.icao, aircraft_atc, 48,
-        ).await {
-            Ok(Some(ofp)) => {
-                let fn_ = ofp.flight_number.clone();
-                let cs = ofp.callsign.clone();
-                let icao = derive_airline_icao(cs.as_deref());
-                tracing::info!(
-                    target: "flight_log",
-                    "start_flight: matched SimBrief OFP {} for {} (aircraft_atc={:?} → ofp_aircraft={:?}) → fn={:?} cs={:?} icao={:?}",
-                    ofp.ofp_id, n.icao, aircraft_atc, ofp.aircraft_icao, fn_, cs, icao,
-                );
-                (fn_, cs, icao, Some(ofp.ofp_id.clone()))
-            }
-            Ok(None) => {
-                tracing::info!(
-                    target: "flight_log",
-                    "start_flight: no matching SimBrief OFP for {} (aircraft_atc={:?}) — leaving VA meta NULL",
-                    n.icao, aircraft_atc,
-                );
-                (None, None, None, None)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "flight_log",
-                    "start_flight: SimBrief lookup failed for {}: {} — continuing sin VA meta",
-                    n.icao, e,
-                );
-                (None, None, None, None)
-            }
-        },
-        None => (None, None, None, None),
-    };
-
+    // El matching definitivo lo hace `populate_simbrief_async` 2s después
+    // del OUT con la info completa (aircraft_atc + aircraft_reg +
+    // fuel_loaded). Eso permite scoring multi-factor real.
+    //
+    // start_flight crea la fila con VA meta NULL — la UI muestra "—" en
+    // flight_number por ~2s hasta que el populate corre. Trade-off
+    // aceptable contra matching incorrecto.
     let result = sqlx::query(
         r#"
         INSERT INTO flight_log (
             started_at, origin_lat, origin_lon, origin_icao, origin_name,
-            aircraft_title, aircraft_atc_type, departure_gate, source,
-            flight_number, callsign, airline_icao, simbrief_ofp_id
+            aircraft_title, aircraft_atc_type, departure_gate, source
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'simconnect', ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'simconnect')
         "#,
     )
     .bind(&started_at)
@@ -214,10 +179,6 @@ pub async fn start_flight(
     .bind(nearest.as_ref().map(|n| n.name.as_str()))
     .bind(aircraft_title)
     .bind(aircraft_atc)
-    .bind(flight_number.as_deref())
-    .bind(callsign.as_deref())
-    .bind(airline_icao.as_deref())
-    .bind(ofp_id_matched.as_deref())
     .execute(pool)
     .await?;
 

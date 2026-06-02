@@ -2400,19 +2400,28 @@ mod windows_simconnect {
                         // no bloquea el watcher. Ventana 7 días (era 48h
                         // que el usuario reportó como demasiado estricta;
                         // los OFPs viejos también deberían contar).
-                        // (v4.0.0 P7.6) populate_simbrief_async hace
-                        // cross-match con aircraft_atc y persiste el
-                        // simbrief_ofp_id link en la fila.
+                        // (v4.0.0 P7.5b) populate_simbrief_async hace
+                        // scoring multi-factor: reg + aircraft + fuel +
+                        // freshness. Pasamos el fuel_lb capturado AL OUT
+                        // (justo arriba) para usarlo como discriminador.
                         let pool_b = pool_c.clone();
+                        let app_b = app_c.clone();
+                        let fuel_lb_at_out = fuel_lb;
                         tokio::spawn(async move {
-                            // Pequeño delay para que update_aircraft_meta
-                            // tenga tiempo de poblar aircraft_atc_type en
-                            // el DB antes de hacer el matching. El dispatch
+                            // Delay 2s para que update_aircraft_meta tenga
+                            // tiempo de poblar aircraft_atc_type y
+                            // aircraft_registration en el DB. El dispatch
                             // de meta llega típicamente 1-3s después del
-                            // OUT (FLAG_DEFAULT = 1s polling). 2s es un
-                            // compromiso entre rapidez y precisión.
+                            // OUT (FLAG_DEFAULT = 1s polling).
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                            populate_simbrief_async(&pool_b, id, lat_c, lon_c).await;
+                            populate_simbrief_async(
+                                &pool_b,
+                                &app_b,
+                                id,
+                                lat_c,
+                                lon_c,
+                                Some(fuel_lb_at_out),
+                            ).await;
                         });
                     } else {
                         tracing::error!(
@@ -2701,7 +2710,12 @@ mod windows_simconnect {
                                     // los pax/cargo/fuel se completan.
                                     // update_entry ignora None, así que
                                     // sólo escribe los nuevos.
-                                    populate_simbrief_async(&pool_c, id, lat_c, lon_c).await;
+                                    // (v4.0.0 P7.5b) Pasamos None para fuel
+                                    // — al IN ya el fuel cambió por consumo,
+                                    // no es comparable con plan_ramp. El
+                                    // scorer cae al match por reg+type+
+                                    // freshness, que ya es robusto.
+                                    populate_simbrief_async(&pool_c, &app_c, id, lat_c, lon_c, None).await;
                                     let _ = app_c.emit("flightlog://changed", ());
 
                                     // (v3.6.0 Phase H — H13) Cierra el
@@ -3259,118 +3273,71 @@ mod windows_simconnect {
     /// vuelos sin valores cuando el OFP estaba en otro horario.
     pub(crate) async fn populate_simbrief_async(
         pool: &SqlitePool,
+        app: &AppHandle,
         flight_id: i64,
         lat: f64,
         lon: f64,
+        fuel_loaded_lb: Option<f64>,
     ) {
-        // (v4.0.0 P7.6) Leemos meta del vuelo. `aircraft_atc_type`
-        // viene del dispatch SimConnect (update_aircraft_meta), que
-        // puede haber llegado o no para cuando esta función corre.
-        let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT origin_icao, aircraft_atc_type, simbrief_ofp_id FROM flight_log WHERE id = ?1"
+        // (v4.0.0 P7.5b) Leemos meta del vuelo incluyendo
+        // aircraft_registration que update_aircraft_meta poblaró por
+        // dispatch SimConnect (ATC ID simvar).
+        let row: Option<(
+            Option<String>,    // origin_icao
+            Option<String>,    // aircraft_atc_type
+            Option<String>,    // aircraft_registration
+            Option<String>,    // simbrief_ofp_id
+        )> = sqlx::query_as(
+            "SELECT origin_icao, aircraft_atc_type, aircraft_registration, simbrief_ofp_id FROM flight_log WHERE id = ?1"
         )
         .bind(flight_id)
         .fetch_optional(pool)
         .await
         .ok()
         .flatten();
-        let (origin_from_db, aircraft_atc_from_db, ofp_id_from_db) = match row {
-            Some((a, b, c)) => (a, b, c),
-            None => (None, None, None),
+        let (origin_from_db, aircraft_atc_from_db, aircraft_reg_from_db, ofp_id_from_db) = match row {
+            Some((a, b, c, d)) => (a, b, c, d),
+            None => (None, None, None, None),
         };
 
-        // (v4.0.0 P7.6) Si start_flight ya linkeó un OFP, RE-VALIDAMOS
-        // que ese OFP matchee el aircraft type actual (ya disponible
-        // gracias al dispatch de meta). Si no matchea, lo desligamos y
-        // re-evaluamos contra todos los OFPs no-consumidos. Esto cubre
-        // el caso de cuenta SimBrief compartida: start_flight pudo
-        // haber agarrado el OFP del compañero antes de saber el
-        // aircraft real.
+        // (v4.0.0 P7.5b) Si ya hay OFP linked, hacemos re-scoring
+        // (no solo aircraft type) — si el score no llega a viable,
+        // lo deslinkamos. Esto cubre el caso de start_flight pre-v3.11
+        // que pudo haber linkeado por matching legacy.
         if let Some(linked_ofp_id) =
             ofp_id_from_db.as_deref().filter(|s| !s.is_empty())
         {
-            let linked_ofp: Option<crate::simbrief::SimBriefFlight> = sqlx::query_as(
-                r#"
-                SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
-                       origin_icao, origin_name, origin_lat, origin_lon,
-                       destination_icao, destination_name, destination_lat, destination_lon,
-                       route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-                       pax_count, cargo_kg, fuel_burn_kg, units
-                FROM simbrief_flights
-                WHERE ofp_id = ?1
-                LIMIT 1
-                "#,
-            )
-            .bind(linked_ofp_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-
-            let aircraft_ok = match (
-                linked_ofp.as_ref().and_then(|o| o.aircraft_icao.as_deref()),
+            // Re-validamos: si la decisión inicial sigue siendo el top
+            // ganador del scorer actual, la respetamos. Si no, deslinkamos.
+            let candidates_result = crate::simbrief::score_simbrief_candidates(
+                pool,
+                origin_from_db.as_deref().unwrap_or(""),
                 aircraft_atc_from_db.as_deref(),
-            ) {
-                (Some(ofp_ac), Some(plane_atc)) => {
-                    let a: String = ofp_ac
-                        .trim()
-                        .to_ascii_uppercase()
-                        .chars()
-                        .take(3)
-                        .collect();
-                    let b: String = plane_atc
-                        .trim()
-                        .to_ascii_uppercase()
-                        .chars()
-                        .take(3)
-                        .collect();
-                    !a.is_empty() && a == b
+                aircraft_reg_from_db.as_deref(),
+                fuel_loaded_lb,
+                7 * 24,
+            ).await;
+            let still_valid = match &candidates_result {
+                Ok(crate::simbrief::MatchResult::Auto { ofp, .. }) => {
+                    ofp.ofp_id == linked_ofp_id
                 }
-                // Si falta una de las dos puntas, no podemos validar →
-                // asumimos OK (no romper vuelos pre-P7.6 donde no hay
-                // aircraft meta capturado).
-                _ => true,
+                Ok(crate::simbrief::MatchResult::Ambiguous { candidates }) => {
+                    candidates.iter().any(|c| c.ofp.ofp_id == linked_ofp_id)
+                }
+                _ => false,
             };
-
-            if let (Some(ofp), true) = (linked_ofp.as_ref(), aircraft_ok) {
-                // Match OK — populamos pax/cargo/fuel del linked OFP.
-                let input = crate::flight_log::UpdateEntryInput {
-                    passengers: ofp.pax_count,
-                    cargo_kg: ofp.cargo_kg,
-                    fuel_used_kg: ofp.fuel_burn_kg,
-                    ..Default::default()
-                };
-                match crate::flight_log::update_entry(pool, flight_id, &input).await {
-                    Ok(_) => tracing::info!(
-                        target: "simconnect",
-                        "OFP {} re-validado para vuelo id={} (aircraft_atc={:?} ofp_aircraft={:?}) — pax={:?} cargo={:?}kg fuel={:?}kg",
-                        ofp.ofp_id,
-                        flight_id,
-                        aircraft_atc_from_db,
-                        ofp.aircraft_icao,
-                        ofp.pax_count,
-                        ofp.cargo_kg,
-                        ofp.fuel_burn_kg,
-                    ),
-                    Err(e) => tracing::warn!(
-                        target: "simconnect",
-                        "pre-populate del linked OFP {} falló: {e:#}",
-                        linked_ofp_id
-                    ),
-                }
+            if still_valid {
+                tracing::info!(
+                    target: "simbrief",
+                    "linked ofp_id={} validado para flight_id={} — manteniendo link",
+                    linked_ofp_id, flight_id
+                );
                 return;
             }
-
-            // Mismatch o OFP eliminado — limpiamos los campos VA que
-            // start_flight set (pueden ser de otro piloto si hay cuenta
-            // compartida) y re-matchearemos abajo.
             tracing::warn!(
-                target: "simconnect",
-                "OFP {} linked al vuelo id={} NO matchea aircraft_atc={:?} (ofp_aircraft={:?}) — cleared, re-matching",
-                linked_ofp_id,
-                flight_id,
-                aircraft_atc_from_db,
-                linked_ofp.as_ref().and_then(|o| o.aircraft_icao.as_deref()),
+                target: "simbrief",
+                "linked ofp_id={} no pasa scoring actual para flight_id={} — desligando",
+                linked_ofp_id, flight_id
             );
             let _ = sqlx::query(
                 "UPDATE flight_log SET simbrief_ofp_id = NULL, flight_number = NULL, callsign = NULL, airline_icao = NULL WHERE id = ?1"
@@ -3380,9 +3347,8 @@ mod windows_simconnect {
             .await;
         }
 
-        // Re-match con aircraft_atc (puede ser None — el matcher cae a
-        // legacy behavior si no hay aircraft).
-        let icao = match origin_from_db {
+        // Resolver origen para el query.
+        let icao = match origin_from_db.clone() {
             Some(s) if !s.is_empty() => s,
             _ => {
                 match crate::flight_log::nearest_airport_with_coords(pool, lat, lon)
@@ -3393,15 +3359,32 @@ mod windows_simconnect {
                 }
             }
         };
-        match crate::simbrief::find_matching_for_flight(
+
+        // Score multi-factor (P7.5b).
+        let scored = match crate::simbrief::score_simbrief_candidates(
             pool,
             &icao,
             aircraft_atc_from_db.as_deref(),
+            aircraft_reg_from_db.as_deref(),
+            fuel_loaded_lb,
             7 * 24,
-        ).await {
-            Ok(Some(ofp)) => {
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    target: "simbrief",
+                    "score_simbrief_candidates falló: {e:#}"
+                );
+                return;
+            }
+        };
+
+        match scored {
+            crate::simbrief::MatchResult::Auto { ofp, score, breakdown } => {
                 let derived_airline = crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
-                if let Err(e) = sqlx::query(
+                let res = sqlx::query(
                     r#"
                     UPDATE flight_log
                     SET simbrief_ofp_id  = ?1,
@@ -3423,40 +3406,47 @@ mod windows_simconnect {
                 .bind(ofp.fuel_burn_kg)
                 .bind(flight_id)
                 .execute(pool)
-                .await
-                {
-                    tracing::warn!(
-                        target: "simconnect",
-                        "linkear+populate OFP {} → flight_id={} falló: {e:#}",
+                .await;
+                match res {
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "simbrief",
+                            "AUTO-LINK ofp_id={} → flight_id={} score={} breakdown={:?} reg_sim={:?} ac_sim={:?} fuel_sim_lb={:?} fn={:?} cs={:?}",
+                            ofp.ofp_id, flight_id, score, breakdown,
+                            aircraft_reg_from_db, aircraft_atc_from_db, fuel_loaded_lb,
+                            ofp.flight_number, ofp.callsign
+                        );
+                        let _ = app.emit("flightlog://changed", ());
+                    }
+                    Err(e) => tracing::warn!(
+                        target: "simbrief",
+                        "AUTO-LINK UPDATE falló para ofp_id={} flight_id={}: {e:#}",
                         ofp.ofp_id, flight_id
-                    );
-                } else {
-                    tracing::info!(
-                        target: "simconnect",
-                        "OFP {} matched + linked al vuelo id={} (aircraft_atc={:?} ofp_aircraft={:?}) → fn={:?} cs={:?} pax={:?} cargo={:?}kg fuel={:?}kg",
-                        ofp.ofp_id,
-                        flight_id,
-                        aircraft_atc_from_db,
-                        ofp.aircraft_icao,
-                        ofp.flight_number,
-                        ofp.callsign,
-                        ofp.pax_count,
-                        ofp.cargo_kg,
-                        ofp.fuel_burn_kg,
-                    );
+                    ),
                 }
             }
-            Ok(None) => {
-                tracing::info!(
-                    target: "simconnect",
-                    "sin OFP de SimBrief que matchee {} + aircraft={:?} — pax/cargo/fuel/flight_number queda NULL",
-                    icao, aircraft_atc_from_db
+            crate::simbrief::MatchResult::Ambiguous { candidates } => {
+                tracing::warn!(
+                    target: "simbrief",
+                    "AMBIGUOUS — {} candidatos viables para flight_id={} reg_sim={:?} ac_sim={:?} — UI debe pedir confirmación",
+                    candidates.len(), flight_id, aircraft_reg_from_db, aircraft_atc_from_db
+                );
+                #[derive(serde::Serialize, Clone)]
+                #[serde(rename_all = "camelCase")]
+                struct AmbiguousPayload {
+                    flight_id: i64,
+                    candidates: Vec<crate::simbrief::ScoredOfp>,
+                }
+                let _ = app.emit(
+                    "simbrief://ambiguous",
+                    AmbiguousPayload { flight_id, candidates },
                 );
             }
-            Err(e) => {
-                tracing::warn!(
-                    target: "simconnect",
-                    "find_matching_for_flight falló: {e:#}"
+            crate::simbrief::MatchResult::NoMatch => {
+                tracing::info!(
+                    target: "simbrief",
+                    "NO MATCH para flight_id={} icao={} reg_sim={:?} ac_sim={:?} — VA meta queda NULL",
+                    flight_id, icao, aircraft_reg_from_db, aircraft_atc_from_db
                 );
             }
         }

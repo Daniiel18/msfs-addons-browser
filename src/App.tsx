@@ -33,6 +33,7 @@ import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
+import { SimBriefAmbiguityToast } from "./components/SimBriefAmbiguityToast";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsModal } from "./components/SettingsModal";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
@@ -757,6 +758,7 @@ export default function App() {
       <DragDropOverlay />
       <UpdateWizard />
       <Toaster />
+      <SimBriefAmbiguityToast />
     </div>
   );
 }

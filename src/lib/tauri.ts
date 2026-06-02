@@ -268,6 +268,7 @@ interface Api {
   refreshSimbrief: () => Promise<SimBriefRefreshResult>;
   listSimbriefFlights: () => Promise<SimBriefFlight[]>;
   deleteSimbriefFlight: (ofpId: string) => Promise<void>;
+  linkSimbriefOfp: (flightId: number, ofpId: string) => Promise<void>;
 
   // Dismiss de updates
   dismissUpdate: (folderName: string) => Promise<void>;
@@ -496,6 +497,8 @@ const realApi: Api = {
   listSimbriefFlights: () => invoke<SimBriefFlight[]>("list_simbrief_flights"),
   deleteSimbriefFlight: (ofpId) =>
     invoke<void>("delete_simbrief_flight", { ofpId }),
+  linkSimbriefOfp: (flightId, ofpId) =>
+    invoke<void>("link_simbrief_ofp", { flightId, ofpId }),
 
   dismissUpdate: (folderName) => invoke<void>("dismiss_update", { folderName }),
   dismissAllUpdates: () => invoke<void>("dismiss_all_updates"),
@@ -1146,6 +1149,7 @@ const demoApi: Api = {
     return [];
   },
   async deleteSimbriefFlight() {},
+  async linkSimbriefOfp() {},
   async fetchChangelog(pageUrl) {
     return {
       sourceUrl: pageUrl,
