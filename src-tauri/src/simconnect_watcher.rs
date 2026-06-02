@@ -494,6 +494,15 @@ mod windows_simconnect {
         is_lat_lon_freeze: f64,
         is_altitude_freeze: f64,
         is_attitude_freeze: f64,
+        // (v4.0.0 P7.8) Altura sobre el terreno (AGL). El rubric de
+        // scoring define sus fases por bandas AGL:
+        //   takeoff_accel    0..1000 ft AGL
+        //   initial_climb    1000..10000 ft AGL
+        //   final_approach   < 1800 ft AGL
+        // `PLANE ALTITUDE` (MSL) no sirve para esto — un aeropuerto a
+        // 5000ft MSL tiene el avión a 6000 MSL cuando está a 1000 AGL.
+        // Por eso capturamos AGL explícitamente para `derive_scoring_phase`.
+        alt_above_ground_ft: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -1082,6 +1091,8 @@ mod windows_simconnect {
             ("IS LATITUDE LONGITUDE FREEZE ON", units_bool.as_c_str()),
             ("IS ALTITUDE FREEZE ON", units_bool.as_c_str()),
             ("IS ATTITUDE FREEZE ON", units_bool.as_c_str()),
+            // (v4.0.0 P7.8) AGL para derive_scoring_phase.
+            ("PLANE ALT ABOVE GROUND", units_feet.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -3427,12 +3438,27 @@ mod windows_simconnect {
         // resolución cubre el caso "phase cambia y dura segundos"
         // (pushback → taxi → takeoff suelen tomar varios segundos cada
         // uno, así que el muestreo es suficiente).
+        //
+        // (v4.0.0 P7.8) Persistimos el SCORING phase (nombres del
+        // rubric, bandas AGL) — NO el label del badge UI. Antes
+        // persistíamos `phase_label` ("climbing"/"approach") que el
+        // rubric no reconocía → "No data to evaluate" en Cruise /
+        // Final Approach. Ahora derive_scoring_phase genera
+        // initial_climb / final_approach / pre_departure / etc.
         if *ticks_since_persist == 0 {
             let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
-            if let (Some(id), Some(label)) = (
-                id_opt,
-                state.try_lock().ok().and_then(|g| g.status.phase_label.clone()),
-            ) {
+            let scoring_phase = derive_scoring_phase(
+                *phase,
+                on_ground,
+                gs,
+                data.alt_above_ground_ft,
+                vs,
+                any_engine_running,
+                *passed_taxi_threshold,
+                in_pushback,
+                *engines_seen_running,
+            );
+            if let (Some(id), Some(label)) = (id_opt, scoring_phase) {
                 let pool_c = pool.clone();
                 let label_c = label.clone();
                 tokio::spawn(async move {
@@ -4198,6 +4224,126 @@ mod windows_simconnect {
                     "taxi_in".to_string()
                 } else {
                     "parking".to_string()
+                }
+            }
+        }
+    }
+
+    /// (v4.0.0 P7.8) Deriva la fase de SCORING — los nombres EXACTOS
+    /// que el rubric (`scoring::rubric::Phase::as_str`) busca, usando
+    /// bandas de altitud AGL.
+    ///
+    /// Esto es DISTINTO de `derive_phase_label` (que alimenta el badge
+    /// UI con labels amigables "climbing"/"approach"). El bug que esto
+    /// arregla: el watcher persistía el label del badge a
+    /// `flight_log_phase`, pero el rubric busca nombres diferentes
+    /// (`initial_climb`, `final_approach`, `pre_departure`, etc.) y por
+    /// bandas AGL — resultado: "No data to evaluate" en Cruise / Final
+    /// Approach / etc.
+    ///
+    /// Nombres generados (deben coincidir 1:1 con `Phase::as_str`):
+    ///   pre_departure | pushback | taxi_out | takeoff | takeoff_accel |
+    ///   initial_climb | climb | cruise | descent | initial_approach |
+    ///   final_approach | landing | taxi_in | arrived
+    ///
+    /// Bandas AGL (del rubric):
+    ///   takeoff_accel    0..1000 ft AGL  (subiendo)
+    ///   initial_climb    1000..10000 ft AGL (subiendo)
+    ///   final_approach   < 1800 ft AGL (bajando)
+    ///   initial_approach 1800..10000 ft AGL (bajando)
+    #[allow(clippy::too_many_arguments)]
+    fn derive_scoring_phase(
+        phase: FlightPhase,
+        on_ground: bool,
+        gs: f64,
+        agl_ft: f64,
+        vs_fpm: f64,
+        any_engine_running: bool,
+        passed_taxi_threshold: bool,
+        in_pushback: bool,
+        engines_seen_running: bool,
+    ) -> Option<String> {
+        // Takeoff roll: gs alto en pista (o recién levantado).
+        if matches!(phase, FlightPhase::BlockOut | FlightPhase::Airborne)
+            && gs >= 60.0
+            && (on_ground || agl_ft < 50.0)
+        {
+            return Some("takeoff".to_string());
+        }
+
+        let gsx_towing = matches!(phase, FlightPhase::OnGround)
+            && on_ground
+            && !any_engine_running
+            && gs > 0.3;
+        if (in_pushback || gsx_towing)
+            && matches!(phase, FlightPhase::OnGround | FlightPhase::BlockOut)
+        {
+            return Some("pushback".to_string());
+        }
+
+        match phase {
+            // Antes de despegar: pre_departure (incluye preflight,
+            // engine start, gate). El rubric agrupa todo lo previo al
+            // pushback acá.
+            FlightPhase::Disconnected => None,
+            FlightPhase::OnGround => {
+                // Si ya voló (engines_seen + Landed antes) → arrived.
+                if engines_seen_running && !any_engine_running {
+                    Some("arrived".to_string())
+                } else {
+                    Some("pre_departure".to_string())
+                }
+            }
+            FlightPhase::BlockOut => {
+                if passed_taxi_threshold {
+                    Some("taxi_out".to_string())
+                } else {
+                    Some("pushback".to_string())
+                }
+            }
+            FlightPhase::Airborne => {
+                let climbing = vs_fpm > 300.0;
+                let descending = vs_fpm < -300.0;
+                if climbing {
+                    if agl_ft < 1000.0 {
+                        Some("takeoff_accel".to_string())
+                    } else if agl_ft < 10_000.0 {
+                        Some("initial_climb".to_string())
+                    } else {
+                        Some("climb".to_string())
+                    }
+                } else if descending {
+                    if agl_ft < 1800.0 {
+                        Some("final_approach".to_string())
+                    } else if agl_ft < 10_000.0 {
+                        Some("initial_approach".to_string())
+                    } else {
+                        Some("descent".to_string())
+                    }
+                } else {
+                    // vs ≈ 0
+                    if agl_ft < 1800.0 {
+                        // Nivelado bajo = final approach (steady glide).
+                        Some("final_approach".to_string())
+                    } else if agl_ft >= 10_000.0 {
+                        Some("cruise".to_string())
+                    } else {
+                        // 1800..10000 nivelado — transición, lo más
+                        // útil para scoring es initial_approach si
+                        // veníamos bajando, pero sin historial lo
+                        // dejamos cruise (banda intermedia).
+                        Some("cruise".to_string())
+                    }
+                }
+            }
+            FlightPhase::Landed => {
+                if gs >= 40.0 {
+                    // Rollout justo tras el touchdown.
+                    Some("landing".to_string())
+                } else if gs >= 3.0 {
+                    Some("taxi_in".to_string())
+                } else {
+                    Some("arrived".to_string())
                 }
             }
         }
