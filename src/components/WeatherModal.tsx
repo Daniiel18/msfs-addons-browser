@@ -205,8 +205,11 @@ export function WeatherModal({
         source: "wx-route",
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "line-color": "#10b981",
-          "line-width": 2,
+          // (v4.0.0 P7.9b iter2) Ruta en ÁMBAR para distinguirla
+          // claramente de las barbas de viento (tonos fríos). Antes
+          // era verde y se confundía con el viento suave (celeste/verde).
+          "line-color": "#f59e0b",
+          "line-width": 3,
         },
       });
 
@@ -682,6 +685,33 @@ export function WeatherModal({
               <div className="absolute left-3 top-3 max-w-xs rounded-lg bg-slate-950/80 px-3 py-2 text-[11px] text-slate-300 ring-1 ring-slate-700 backdrop-blur">
                 {activeLayer === "clouds" && t("fb.weather.note.clouds")}
                 {activeLayer === "precip" && t("fb.weather.note.precip")}
+              </div>
+            )}
+
+            {/* (v4.0.0 P7.9b iter2) Leyenda de la capa de viento —
+                explica qué son las líneas para que no se confundan
+                con la ruta. */}
+            {activeLayer === "wind" && hasWeather && mapReady && (
+              <div className="absolute bottom-3 left-3 rounded-lg bg-slate-950/85 px-3 py-2.5 text-[10px] text-slate-300 ring-1 ring-slate-700 backdrop-blur">
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
+                  {t("fb.weather.legend.title")}
+                </div>
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="inline-block h-0.5 w-5 rounded bg-amber-500" />
+                  <span>{t("fb.weather.legend.route")}</span>
+                </div>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span className="text-sky-300">➛</span>
+                  <span>{t("fb.weather.legend.wind")}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-sm bg-[#38bdf8]" />
+                  <span className="text-slate-500">&lt;20</span>
+                  <span className="h-2 w-2 rounded-sm bg-[#22c55e]" />
+                  <span className="h-2 w-2 rounded-sm bg-[#facc15]" />
+                  <span className="h-2 w-2 rounded-sm bg-[#ef4444]" />
+                  <span className="text-slate-500">&gt;50 kt</span>
+                </div>
               </div>
             )}
           </div>
