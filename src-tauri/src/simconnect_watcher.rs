@@ -1768,53 +1768,85 @@ mod windows_simconnect {
                             && matches!(phase, FlightPhase::Airborne)
                             && radio_alt < 50.0
                         {
-                            // Buscamos el MIN de VS en el buffer — el
-                            // frame exacto del impacto suele leer vs=0
-                            // porque el avión ya está sobre el tren.
-                            // El min de los últimos ~500ms da el VS
-                            // real del descenso justo antes del touch.
-                            let min_vs = stream_b_recent_vs
-                                .iter()
-                                .copied()
-                                .filter(|v| v.is_finite())
-                                .fold(f64::INFINITY, f64::min);
-                            let fpm_candidate = if min_vs.is_finite() && min_vs < 0.0 {
-                                Some(min_vs as i64)
-                            } else if vs_now.is_finite() && vs_now < 0.0 {
+                            // (v4.0.0 P7.6b iter 2) ESTRATEGIA QUE
+                            // COINCIDE CON LANDING TOAST:
+                            //
+                            // LandingToast usa el `live_vs` del frame
+                            // exacto donde SIM_ON_GROUND transita 0→1
+                            // — verificado vs nuestro log:
+                            //   STREAM-B fpm=-614 (live_vs=-525.7)
+                            //   LandingToast reportó -525.
+                            //
+                            // El min(buffer) era MÁS negativo (-614)
+                            // porque incluía la pendiente del descenso
+                            // pre-flare. La convención aeronáutica
+                            // (FAA, LandingToast, VA platforms) usa
+                            // el VS exacto AL TOQUE, no el peak del
+                            // descenso → cambiamos a `live_vs`.
+                            //
+                            // Fallback al min(buffer_tail=5) si el live
+                            // vs en este frame es 0 o positivo (caso
+                            // raro donde el gear ya absorbió y vs ya
+                            // está cero/positivo en el flank exacto).
+                            let fpm_candidate: Option<i64> = if vs_now.is_finite()
+                                && vs_now < -0.01
+                            {
                                 Some(vs_now as i64)
                             } else {
-                                None
+                                // Fallback: min de los últimos 5
+                                // frames (~80ms) — captura el VS justo
+                                // antes del touch sin agarrar la
+                                // pendiente lejana del descenso.
+                                let tail_min = stream_b_recent_vs
+                                    .iter()
+                                    .rev()
+                                    .take(5)
+                                    .copied()
+                                    .filter(|v| v.is_finite())
+                                    .fold(f64::INFINITY, f64::min);
+                                if tail_min.is_finite() && tail_min < 0.0 {
+                                    Some(tail_min as i64)
+                                } else {
+                                    None
+                                }
                             };
 
                             if let Some(fpm_val) = fpm_candidate {
-                                // Sobrescribe captured_landing_fpm con
-                                // el valor frame-exacto. Esto tiene
-                                // PRIORIDAD sobre el del Stream A que
-                                // se calcule luego en handle_aircraft_data.
-                                captured_landing_fpm = Some(fpm_val);
-                                touchdown_g_force = Some(g);
+                                // (v4.0.0 P7.6b iter 2) Política
+                                // "most negative wins" — si hay rebote
+                                // posterior con valor menos negativo,
+                                // CONSERVAMOS el peor (primer touch real).
+                                let should_update = match captured_landing_fpm {
+                                    None => true,
+                                    Some(prev) => fpm_val < prev,
+                                };
 
                                 tracing::info!(
                                     target: "simconnect",
-                                    "STREAM-B TOUCHDOWN frame-exact: fpm={} (min_vs_buf={:.1} live_vs={:.1}) radio_alt={:.1}ft g={:.2}",
-                                    fpm_val, min_vs, vs_now, radio_alt, g
+                                    "STREAM-B TOUCHDOWN: live_vs={:.1}fpm radio_alt={:.1}ft g={:.2} → candidate={} (prev_captured={:?} update={})",
+                                    vs_now, radio_alt, g, fpm_val, captured_landing_fpm, should_update
                                 );
 
-                                let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
-                                if let Some(id) = id_opt {
-                                    let pool_c = pool.clone();
-                                    tokio::spawn(async move {
-                                        let _ = crate::flight_log::touch_landing(
-                                            &pool_c, id, fpm_val,
-                                        )
-                                        .await;
-                                    });
+                                if should_update {
+                                    captured_landing_fpm = Some(fpm_val);
+                                    touchdown_g_force = Some(g);
+
+                                    let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+                                    if let Some(id) = id_opt {
+                                        let pool_c = pool.clone();
+                                        tokio::spawn(async move {
+                                            let _ = crate::flight_log::touch_landing(
+                                                &pool_c, id, fpm_val,
+                                            )
+                                            .await;
+                                        });
+                                    }
                                 }
                             } else {
                                 tracing::warn!(
                                     target: "simconnect",
-                                    "STREAM-B TOUCHDOWN detectado pero buffer VS sin valores negativos (min_vs={:.1} live={:.1})",
-                                    min_vs, vs_now
+                                    "STREAM-B TOUCHDOWN sin VS válido (live={:.1})",
+                                    vs_now
                                 );
                             }
                         }
@@ -2786,14 +2818,41 @@ mod windows_simconnect {
                     if let Some(v) = fpm {
                         tracing::info!(
                             target: "simconnect",
-                            "TOUCHDOWN landing_fpm={} (simvar_fps={:.3} → {} fpm) (fallback_min_vs={:?})",
+                            "STREAM-A TOUCHDOWN candidate={} (simvar_fps={:.3} → {} fpm) (fallback_min_vs={:?})",
                             v,
                             touchdown_fps_raw,
                             touchdown_fpm.unwrap_or(0),
                             fallback_fpm
                         );
                     }
-                    *captured_landing_fpm = fpm;
+                    // (v4.0.0 P7.6b iter 2) NO sobrescribir si Stream B
+                    // ya capturó algo más negativo. Stream B corre a
+                    // SIM_FRAME interval=1 (60Hz) y es frame-exacto.
+                    // Stream A corre a interval=15 (~4Hz) y puede
+                    // disparar 19s después del touchdown REAL (cuando
+                    // gs<50 — fin del landing roll). Si llegamos acá
+                    // con captured_landing_fpm ya seteado por Stream B,
+                    // ese valor ya es el verdadero.
+                    let should_update_from_a = match (*captured_landing_fpm, fpm) {
+                        (None, Some(_)) => true,
+                        (Some(prev), Some(new_v)) => new_v < prev,
+                        _ => false,
+                    };
+                    if should_update_from_a {
+                        *captured_landing_fpm = fpm;
+                        let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+                        if let Some(id) = id_opt {
+                            if let Some(fpm_val) = fpm {
+                                let pool_c = pool.clone();
+                                tokio::spawn(async move {
+                                    let _ = crate::flight_log::touch_landing(
+                                        &pool_c, id, fpm_val,
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
+                    }
                     // (v4.0.0 P7.5) Abrir window de observación post-
                     // touchdown — 12 ticks ≈ 3s a 4Hz. Durante ese
                     // window seguimos leyendo el simvar y `vs` en
@@ -2803,27 +2862,10 @@ mod windows_simconnect {
                     // simvar todavía no estaba listo al ingresar a
                     // Landed (Fenix A319 / aviones third-party).
                     *post_touchdown_ticks_remaining = 12;
-                    let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
-                    if let Some(id) = id_opt {
-                        if let Some(fpm_val) = fpm {
-                            // Persistimos inmediatamente. Si la app
-                            // muere entre touchdown y shutdown,
-                            // conservamos al menos el FPM (perdemos
-                            // sólo el gate exacto y los ~minutos de
-                            // taxi).
-                            let pool_c = pool.clone();
-                            tokio::spawn(async move {
-                                let _ = crate::flight_log::touch_landing(
-                                    &pool_c, id, fpm_val,
-                                )
-                                .await;
-                            });
-                        }
-                    }
                     tracing::info!(
                         target: "simconnect",
-                        "TOUCHDOWN — landing_fpm={:?} (taxi pendiente, esperando engine shutdown, obs window=12 ticks)",
-                        fpm
+                        "TOUCHDOWN (phase transition Airborne→Landed) — captured_landing_fpm={:?} (stream_a_proposed={:?} updated={})",
+                        *captured_landing_fpm, fpm, should_update_from_a
                     );
                     *idle_ticks_in_landed = 0;
                 }
