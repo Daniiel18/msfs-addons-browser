@@ -509,6 +509,25 @@ mod windows_simconnect {
         }
     }
 
+    /// (v4.0.0 P7.6b) Struct minimal del stream de touchdown. Mismo
+    /// orden de fields que el `AddToDataDefinition` que registra abajo:
+    ///   1. SIM ON GROUND      (bool)
+    ///   2. VERTICAL SPEED     (feet per minute)
+    ///   3. RADIO HEIGHT       (feet)
+    ///   4. G FORCE            (number)
+    ///
+    /// Sólo 4 doubles = 32 bytes. El dispatch handler lo decodifica
+    /// frame-by-frame y detecta `flank 0→1` de on_ground para capturar
+    /// el VS exacto del touchdown.
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy, Default)]
+    struct TouchdownData {
+        on_ground: f64,
+        vertical_speed_fpm: f64,
+        radio_height_ft: f64,
+        g_force: f64,
+    }
+
     /// Lee una cstring de un buffer de 256 bytes — corta en el
     /// primer NUL, trim, retorna None si queda vacío. SimConnect
     /// rellena el buffer con NULs después del string real.
@@ -529,6 +548,23 @@ mod windows_simconnect {
     /// con periodo SECOND + FLAG_CHANGED (sólo emite cuando cambia).
     const DEFINE_ID_AIRCRAFT_META: u32 = 2;
     const REQUEST_ID_AIRCRAFT_META: u32 = 2;
+    /// (v4.0.0 P7.6b) Stream de touchdown — frame-exacto.
+    ///
+    /// El stream principal (DEFINE_ID_AIRCRAFT) corre a SIM_FRAME pero
+    /// con `interval=15` (cada 15 frames ≈ 4Hz). A esa resolución, el
+    /// touchdown puede caer entre dos samples y perdemos el VS exacto.
+    ///
+    /// Este stream es minimal (32 bytes: SIM_ON_GROUND, VERTICAL_SPEED,
+    /// RADIO_HEIGHT, G_FORCE) y se suscribe con `interval=1` — cada
+    /// frame. A 60fps = 16ms de resolución. Es lo que usa LandingToast.
+    ///
+    /// Costo: ~3-5% CPU extra (Q4 del kickoff = aceptado). El struct es
+    /// 4 doubles = 32 bytes × 60 Hz = ~2 KB/s de tráfico SimConnect.
+    /// El handler en dispatch sólo detecta flanco 0→1 de SIM_ON_GROUND
+    /// y guarda el VS instantáneo — el resto de frames se ignora con
+    /// un return temprano.
+    const DEFINE_ID_TOUCHDOWN: u32 = 3;
+    const REQUEST_ID_TOUCHDOWN: u32 = 3;
     /// ID local arbitrario para el evento "Pause" — sólo nosotros
     /// usamos esta ID dentro del proceso, no choca con nada.
     const EVENT_ID_PAUSE: u32 = 100;
@@ -1142,6 +1178,76 @@ mod windows_simconnect {
             }
         }
 
+        // (v4.0.0 P7.6b) Stream B — touchdown frame-exacto.
+        //
+        // 4 vars en un struct minimal (32 bytes). Subscribed con
+        // `interval=1` → cada frame del simulador. A 60fps = 16ms
+        // resolución, suficiente para capturar el flank exacto de
+        // SIM ON GROUND y leer el VS instantáneo del touchdown.
+        //
+        // Este stream se procesa en una rama separada del dispatch
+        // handler (check `request_id == REQUEST_ID_TOUCHDOWN`).
+        let touchdown_names: &[(&str, &std::ffi::CStr)] = &[
+            ("SIM ON GROUND", units_bool.as_c_str()),
+            ("VERTICAL SPEED", units_fpm.as_c_str()),
+            ("RADIO HEIGHT", units_feet.as_c_str()),
+            ("G FORCE", units_number.as_c_str()),
+        ];
+        let mut touchdown_defs_ok = true;
+        for (name, unit) in touchdown_names.iter() {
+            let cname = sc::cstr(name);
+            let hr = unsafe {
+                (lib.AddToDataDefinition)(
+                    handle,
+                    DEFINE_ID_TOUCHDOWN,
+                    cname.as_ptr(),
+                    unit.as_ptr(),
+                    sc::SIMCONNECT_DATATYPE_FLOAT64,
+                    0.0,
+                    std::u32::MAX,
+                )
+            };
+            if !sc::succeeded(hr) {
+                tracing::warn!(
+                    target: "simconnect",
+                    "AddToDataDefinition touchdown '{}' falló (0x{:08x}); stream B deshabilitado",
+                    name, hr
+                );
+                touchdown_defs_ok = false;
+                break;
+            }
+        }
+        if touchdown_defs_ok {
+            // SIM_FRAME interval=1 — emit cada frame. Flag DEFAULT
+            // (emit always, no filter por changes — SIM ON GROUND
+            // cambia raras veces, queremos el flanco exacto).
+            let hr = unsafe {
+                (lib.RequestDataOnSimObject)(
+                    handle,
+                    REQUEST_ID_TOUCHDOWN,
+                    DEFINE_ID_TOUCHDOWN,
+                    SIMCONNECT_OBJECT_ID_USER,
+                    SIMCONNECT_PERIOD_SIM_FRAME,
+                    SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
+                    0,
+                    1, // interval=1 → cada frame
+                    0,
+                )
+            };
+            if !sc::succeeded(hr) {
+                tracing::warn!(
+                    target: "simconnect",
+                    "RequestDataOnSimObject touchdown falló (0x{:08x})",
+                    hr
+                );
+            } else {
+                tracing::info!(
+                    target: "simconnect",
+                    "Touchdown stream subscribed (SIM_FRAME interval=1) — frame-exact FPM capture"
+                );
+            }
+        }
+
         // (v0.1.25) Subscribe al evento "Pause" para no contar el
         // tiempo pausado dentro del block-time del vuelo. El evento
         // dispara con dwData = 1 al pausar y 0 al despausar.
@@ -1403,6 +1509,16 @@ mod windows_simconnect {
         // MIN (más negativo). Reset a 0 cuando salimos de Landed o
         // cuando se vence el window.
         let mut post_touchdown_ticks_remaining: u32 = 0;
+        // (v4.0.0 P7.6b) State del Stream B (touchdown frame-exact).
+        // `prev_on_ground` recuerda el valor previo para detectar el
+        // flanco 0→1. `stream_b_recent_vs` es un buffer corto (~500ms
+        // a 60fps = 30 frames) para agarrar el min VS justo antes del
+        // touchdown (el frame mismo del impacto suele leer vs=0 porque
+        // el avión ya está sobre el tren).
+        let mut prev_on_ground: Option<bool> = None;
+        let mut stream_b_recent_vs: std::collections::VecDeque<f64> =
+            std::collections::VecDeque::with_capacity(30);
+        let mut touchdown_g_force: Option<f64> = None;
         // True si vimos al menos un motor encendido durante este
         // vuelo. Sin esto, la condición "todos los motores apagados"
         // sería trivialmente cierta al arrancar el sim antes de
@@ -1607,6 +1723,105 @@ mod windows_simconnect {
                     // marker `[DWORD; 1]`).
                     let header = p_data as *const sc::SIMCONNECT_RECV_SIMOBJECT_DATA;
                     let request_id = unsafe { (*header).dwRequestID };
+
+                    // (v4.0.0 P7.6b) Stream B — touchdown frame-exacto.
+                    // Procesa SOLO la detección de flanco 0→1 de
+                    // SIM_ON_GROUND para capturar el VS exacto del
+                    // touchdown. NO ejecuta state machine — ese sigue
+                    // en el Stream A (4Hz). Performance: ~60 events/s
+                    // pero solo guardamos VS en buffer + detectamos
+                    // flanco (operaciones O(1)).
+                    if request_id == REQUEST_ID_TOUCHDOWN {
+                        let data_ptr = unsafe {
+                            let header_size =
+                                std::mem::size_of::<sc::SIMCONNECT_RECV_SIMOBJECT_DATA>();
+                            let base = p_data as *const u8;
+                            base.add(header_size - 4) as *const TouchdownData
+                        };
+                        if data_ptr.is_null() {
+                            continue;
+                        }
+                        let td = unsafe { *data_ptr };
+                        let on_ground_now = td.on_ground >= 0.5;
+                        let vs_now = td.vertical_speed_fpm;
+                        let radio_alt = td.radio_height_ft;
+                        let g = td.g_force;
+
+                        // Mantener buffer ~30 frames (~500ms a 60fps).
+                        if vs_now.is_finite() {
+                            if stream_b_recent_vs.len() >= 30 {
+                                stream_b_recent_vs.pop_front();
+                            }
+                            stream_b_recent_vs.push_back(vs_now);
+                        }
+
+                        // Detección de flanco 0→1 = touchdown REAL.
+                        // Solo dispara cuando:
+                        //   1. Estamos en Airborne (no en taxi previo)
+                        //   2. RADIO HEIGHT está bajo (≤30 ft típico
+                        //      en touchdown — los aviones reportan
+                        //      gear-to-ground height aquí)
+                        //   3. El estado previo era false (no on_ground)
+                        let prev = prev_on_ground.unwrap_or(false);
+                        if !prev
+                            && on_ground_now
+                            && matches!(phase, FlightPhase::Airborne)
+                            && radio_alt < 50.0
+                        {
+                            // Buscamos el MIN de VS en el buffer — el
+                            // frame exacto del impacto suele leer vs=0
+                            // porque el avión ya está sobre el tren.
+                            // El min de los últimos ~500ms da el VS
+                            // real del descenso justo antes del touch.
+                            let min_vs = stream_b_recent_vs
+                                .iter()
+                                .copied()
+                                .filter(|v| v.is_finite())
+                                .fold(f64::INFINITY, f64::min);
+                            let fpm_candidate = if min_vs.is_finite() && min_vs < 0.0 {
+                                Some(min_vs as i64)
+                            } else if vs_now.is_finite() && vs_now < 0.0 {
+                                Some(vs_now as i64)
+                            } else {
+                                None
+                            };
+
+                            if let Some(fpm_val) = fpm_candidate {
+                                // Sobrescribe captured_landing_fpm con
+                                // el valor frame-exacto. Esto tiene
+                                // PRIORIDAD sobre el del Stream A que
+                                // se calcule luego en handle_aircraft_data.
+                                captured_landing_fpm = Some(fpm_val);
+                                touchdown_g_force = Some(g);
+
+                                tracing::info!(
+                                    target: "simconnect",
+                                    "STREAM-B TOUCHDOWN frame-exact: fpm={} (min_vs_buf={:.1} live_vs={:.1}) radio_alt={:.1}ft g={:.2}",
+                                    fpm_val, min_vs, vs_now, radio_alt, g
+                                );
+
+                                let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+                                if let Some(id) = id_opt {
+                                    let pool_c = pool.clone();
+                                    tokio::spawn(async move {
+                                        let _ = crate::flight_log::touch_landing(
+                                            &pool_c, id, fpm_val,
+                                        )
+                                        .await;
+                                    });
+                                }
+                            } else {
+                                tracing::warn!(
+                                    target: "simconnect",
+                                    "STREAM-B TOUCHDOWN detectado pero buffer VS sin valores negativos (min_vs={:.1} live={:.1})",
+                                    min_vs, vs_now
+                                );
+                            }
+                        }
+                        prev_on_ground = Some(on_ground_now);
+                        // No procesar nada más para REQUEST_ID_TOUCHDOWN
+                        continue;
+                    }
 
                     // (v3.5.0) Meta strings de la aeronave — caché +
                     // persist a DB si hay vuelo abierto.

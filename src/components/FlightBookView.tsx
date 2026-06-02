@@ -959,12 +959,19 @@ function SelectedFlightPanel({
           // pre-v3.10.0 guardó valores positivos por el bug del
           // filtro `abs()`. Force-negate en el render sin tocar la DB.
           const fpm = -Math.abs(entry.landingFpm);
+          // (v4.0.0 P7.6b) Escala de aviación real:
+          //   > -100  → cyan (flotado / float landing)
+          //   -100..-299 → verde (aterrizaje óptimo)
+          //   -300..-399 → amarillo (duro / al límite)
+          //   ≤ -400  → rojo (peligroso / estructural)
           const color =
-            fpm > -200
-              ? "text-emerald-300"
-              : fpm > -500
-                ? "text-slate-200"
-                : "text-rose-300";
+            fpm > -100
+              ? "text-cyan-300"
+              : fpm > -300
+                ? "text-emerald-300"
+                : fpm > -400
+                  ? "text-amber-300"
+                  : "text-rose-400 font-semibold";
           return (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
               <span className="text-slate-500">{t("fb.block.touchdown")}:</span>
