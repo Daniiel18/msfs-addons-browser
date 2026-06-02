@@ -150,17 +150,17 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
           removed === 0
             ? t("pkg.not_on_disk")
             : removed === 1
-              ? "Desinstalado de 1 ubicación"
-              : `Desinstalado de ${removed} ubicaciones`,
+              ? t("pkg.uninstalled_one")
+              : t("pkg.uninstalled_many", { n: removed }),
         message:
           removed > 0
             ? report.removedPaths.join(" · ")
-            : "Limpiamos sólo las filas de la base de datos.",
+            : t("pkg.uninstalled_db_only"),
       });
       if (report.failedPaths.length > 0) {
         pushToast({
           kind: "error",
-          title: `${report.failedPaths.length} ubicación(es) con error`,
+          title: t("pkg.uninstall_failed", { n: report.failedPaths.length }),
           message: report.failedPaths
             .map((f) => `${f.path}: ${f.error}`)
             .join(" · "),

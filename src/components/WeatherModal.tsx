@@ -129,15 +129,6 @@ const WIND_RAMP: (number | string)[] = [
   35, "#facc15",
   50, "#ef4444",
 ];
-// (v3.19.0 P7.9c) Cobertura de nubes 0..100% — despejado (celeste) →
-// cubierto (gris). Distinto de temp (azul→rojo) y visibilidad (rojo→azul).
-const CLOUD_RAMP: (number | string)[] = [
-  0, "#38bdf8",
-  25, "#bae6fd",
-  50, "#cbd5e1",
-  75, "#94a3b8",
-  100, "#475569",
-];
 
 /**
  * (v4.0.0 — P7 iter 3) Weather modal del FlightBook.
@@ -201,9 +192,6 @@ export function WeatherModal({
   // (v4.0.0 P7.9b) Weather samples capturados durante el vuelo.
   const [weather, setWeather] = useState<WeatherSample[] | null>(null);
   const hasWeather = (weather?.length ?? 0) > 0;
-  // (v3.19.0 P7.9c) ¿Capturó nubes reales (Open-Meteo)? Independiente
-  // del AMBIENT del sim — un vuelo puede tener nubes pero no wind/oat.
-  const hasCloud = weather?.some((w) => w.cloudCoverPct != null) ?? false;
 
   // Carga el track del vuelo para dibujar la ruta en el mapa.
   const [trackCoords, setTrackCoords] = useState<[number, number][] | null>(
@@ -243,26 +231,64 @@ export function WeatherModal({
   // Inicializa el mapa una sola vez.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
+
+    // (v3.20.0 P7.9e) Fecha para la imagen satelital NASA. Usamos el día
+    // del vuelo (UTC). GIBS procesa la pasada del día con ~unas horas de
+    // retraso, así que para vuelos de HOY (o futuros por desfase de reloj)
+    // caemos a AYER, que siempre está disponible. Para vuelos pasados
+    // (el caso normal al revisar) usamos el día exacto.
+    const flightDay = (entry.endedAt ?? entry.startedAt ?? "").slice(0, 10);
+    const yesterday = new Date(Date.now() - 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const gibsDate =
+      flightDay && flightDay < yesterday ? flightDay : yesterday;
+
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: {
         version: 8,
         sources: {
-          "carto-dark": {
+          // (v3.19.0 P7.9d) Basemap SATELITAL (Esri World Imagery —
+          // gratis, sin API key) para todo el Weather modal.
+          satellite: {
             type: "raster",
             tiles: [
-              "https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}.png",
-              "https://b.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}.png",
+              "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
             ],
             tileSize: 256,
-            attribution: "© OpenStreetMap · © CARTO",
+            attribution: "© Esri · Maxar · Earthstar Geographics",
+          },
+          // (v3.20.0 P7.9e) NASA GIBS — imagen satelital REAL del día del
+          // vuelo (VIIRS true-color). Se ven las nubes reales de ese día,
+          // como una foto desde el espacio. Gratis, sin API key, histórico.
+          // Donde GIBS no tenga dato (hoy sin procesar, noche) se ve el
+          // satélite Esri de abajo. Máx zoom nativo ~nivel 8.
+          "nasa-gibs": {
+            type: "raster",
+            tiles: [
+              `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${gibsDate}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`,
+            ],
+            tileSize: 256,
+            maxzoom: 8,
+            attribution: "NASA EOSDIS GIBS",
           },
         },
         layers: [
           {
             id: "basemap",
             type: "raster",
-            source: "carto-dark",
+            source: "satellite",
+          },
+          // Capa de nubes NASA — encima del satélite base, debajo de la
+          // ruta y overlays (que se añaden en `load`). Oculta salvo en
+          // la pestaña Clouds.
+          {
+            id: "wx-gibs-layer",
+            type: "raster",
+            source: "nasa-gibs",
+            layout: { visibility: "none" },
+            paint: { "raster-opacity": 1 },
           },
         ],
         glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
@@ -379,19 +405,10 @@ export function WeatherModal({
         },
       });
 
-      // (v3.19.0 P7.9c) Nubes REALES (Open-Meteo) capturadas durante el
-      // vuelo — cinta coloreada por cobertura % (despejado→cubierto).
-      map.addSource("wx-cloud", { type: "geojson", data: empty });
-      map.addLayer({
-        id: "wx-cloud-line",
-        type: "line",
-        source: "wx-cloud",
-        layout: { "line-cap": "round", "line-join": "round", visibility: "none" },
-        paint: {
-          "line-width": 5,
-          "line-color": ["interpolate", ["linear"], ["get", "val"], ...CLOUD_RAMP] as never,
-        },
-      });
+      // (v3.20.0 P7.9e) Las nubes ya NO se dibujan acá: la pestaña Clouds
+      // usa la capa raster `wx-gibs-layer` (imagen satelital NASA del día
+      // del vuelo), declarada en el style inicial para quedar debajo de
+      // la ruta. Acá sólo quedan las cintas derivadas (temp/vis/icing).
 
       // Visibilidad — cinta coloreada (roja=baja, azul=excelente).
       map.addSource("wx-vis", { type: "geojson", data: empty });
@@ -612,7 +629,6 @@ export function WeatherModal({
       if (src) src.setData(buildValueSegments(weather, getVal));
     };
     setSeg("wx-temp", (w) => w.oatC);
-    setSeg("wx-cloud", (w) => w.cloudCoverPct);
     setSeg("wx-vis", (w) =>
       w.visibilityM != null ? Math.min(w.visibilityM, 20000) : null,
     );
@@ -632,8 +648,8 @@ export function WeatherModal({
         /* layer puede no existir aún */
       }
     };
-    // (v3.19.0 P7.9c) Nubes = cinta de cobertura REAL capturada (Open-Meteo).
-    vis("wx-cloud-line", activeLayer === "clouds");
+    // (v3.20.0 P7.9e) Nubes = imagen satelital NASA del día (raster GIBS).
+    vis("wx-gibs-layer", activeLayer === "clouds");
     // Precip: radar RainViewer en vivo, segmentos derivados en pasado.
     vis("wx-precip-layer", activeLayer === "precip" && isLiveFlight);
     vis("wx-precip-pts-line", activeLayer === "precip" && !isLiveFlight);
@@ -688,10 +704,10 @@ export function WeatherModal({
     map.resize();
   }, [size.width, size.height, mapReady]);
 
-  // (v4.0.0 P7.9b iter3) Disponibilidad por capa.
+  // (v3.19.0 P7.9d) Disponibilidad por capa.
   //   · Derivadas (wind/temp/visibility/icing) → necesitan samples.
   //   · precip → samples (pasado) o RainViewer (live).
-  //   · clouds → sólo live (RainViewer no tiene histórico).
+  //   · clouds → nubes REALES capturadas (Open-Meteo) por sample.
   const layerAvailable = (key: LayerKey): boolean => {
     switch (key) {
       case "wind":
@@ -702,9 +718,10 @@ export function WeatherModal({
       case "precip":
         return hasWeather || isLiveFlight;
       case "clouds":
-        // (v3.19.0 P7.9c) Nubes REALES capturadas (Open-Meteo). Ya no
-        // dependen de tiles en vivo — funcionan como histórico.
-        return hasCloud;
+        // (v3.20.0 P7.9e) Imagen satelital NASA del día — funciona para
+        // CUALQUIER vuelo (incluso viejos sin weather), porque se basa en
+        // la fecha, no en samples capturados.
+        return true;
       default:
         return false;
     }
@@ -722,7 +739,7 @@ export function WeatherModal({
     const first = sidebarLayers.find((l) => layerAvailable(l.key));
     if (first) setActiveLayer(first.key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasWeather, hasCloud, isLiveFlight, activeLayer]);
+  }, [hasWeather, isLiveFlight, activeLayer]);
 
   // (v4.0.0 P7.9b) Resumen de weather para el panel lateral.
   const wxSummary = (() => {
@@ -915,11 +932,10 @@ export function WeatherModal({
                 <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
                   {t("fb.weather.legend.title")}
                 </div>
-                {/* La ruta queda visible (ámbar) salvo en temp/visibilidad/
-                    nubes, donde la cinta de color RECOLOREA la ruta entera. */}
-                {activeLayer !== "temp" &&
-                  activeLayer !== "visibility" &&
-                  activeLayer !== "clouds" && (
+                {/* La ruta queda visible (ámbar) salvo en temp/visibilidad,
+                    donde la cinta RECOLOREA la ruta entera. En nubes el
+                    manto flota POR ENCIMA, así que la ruta sigue visible. */}
+                {activeLayer !== "temp" && activeLayer !== "visibility" && (
                   <div className="mb-1.5 flex items-center gap-2">
                     <span className="inline-block h-0.5 w-5 rounded bg-amber-500" />
                     <span>{t("fb.weather.legend.route")}</span>
@@ -1052,14 +1068,9 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
   }
   if (layer === "clouds") {
     return (
-      <>
-        <div className="mb-1.5">{t("fb.weather.legend.clouds")}</div>
-        <GradientBar
-          colors={["#38bdf8", "#bae6fd", "#cbd5e1", "#94a3b8", "#475569"]}
-          left={`0% ${t("fb.weather.legend.clear")}`}
-          right={`100% ${t("fb.weather.legend.overcast")}`}
-        />
-      </>
+      <div className="max-w-[12rem] leading-snug text-slate-400">
+        {t("fb.weather.legend.clouds_nasa")}
+      </div>
     );
   }
   return null;

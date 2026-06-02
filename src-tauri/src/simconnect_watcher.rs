@@ -2538,14 +2538,27 @@ mod windows_simconnect {
         let lat_lon_frozen = data.is_lat_lon_freeze >= 0.5;
         let altitude_frozen = data.is_altitude_freeze >= 0.5;
         let attitude_frozen = data.is_attitude_freeze >= 0.5;
-        let externally_controlled = lat_lon_frozen || altitude_frozen || attitude_frozen;
+        // (v3.20.0) GSX hace el pushback congelando lat/lon + altitud +
+        // actitud del avión EN TIERRA, y algunos handlers además activan
+        // slew brevemente. Eso disparaba un FALSO "replay/slew" en cada
+        // pushback. Un replay real (Flight Recorder, replay nativo de
+        // MSFS) reproduce el vuelo EN EL AIRE. Por eso las señales de
+        // freeze y slew sólo cuentan como replay cuando el avión está
+        // EN VUELO. En tierra, freeze/slew = ops normales (GSX, jetway,
+        // reposicionar) y se ignoran. `sim_rate` y `time_regress` siguen
+        // contando siempre (GSX no los causa).
+        let on_ground = data.on_ground >= 0.5;
+        let airborne = !on_ground;
+        let externally_controlled =
+            airborne && (lat_lon_frozen || altitude_frozen || attitude_frozen);
+        let slew_replay = airborne && slew_active;
         let is_replay_now =
-            rate_abnormal || slew_active || time_regressed || externally_controlled;
+            rate_abnormal || slew_replay || time_regressed || externally_controlled;
 
         // Determinar la causa primaria para el payload UI.
         let cause = if externally_controlled {
             "external_replay"
-        } else if slew_active {
+        } else if slew_replay {
             "slew"
         } else if time_regressed {
             "time_regress"

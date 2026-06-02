@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AirlineTag, FlightLogEntry, FlightStatus } from "../lib/types";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 
 /**
  * (v4.0.0 — P1 fix flicker) Merger inteligente para `FlightStatus`
@@ -295,11 +296,11 @@ async function notifyImportDone(imported: number, updated: number) {
     if (Notification.permission !== "granted") {
       return;
     }
-    const title = "SimFleet — Importación completa";
+    const title = t("import.notify.title");
     const body =
       imported === 0 && updated === 0
-        ? "No había vuelos nuevos para importar."
-        : `${imported} vuelos importados · ${updated} actualizados`;
+        ? t("import.notify.none")
+        : t("import.notify.done", { imported, updated });
     new Notification(title, {
       body,
       tag: "simfleet-vas-import-done", // reemplaza notificación previa si existe
