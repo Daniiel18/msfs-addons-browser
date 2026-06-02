@@ -513,6 +513,10 @@ mod windows_simconnect {
         ambient_pressure_mbar: f64,
         ambient_visibility_m: f64,
         ambient_precip_state: f64,
+        // (v3.21.0) STALL WARNING (bool 0/1) — para la regla "Stall
+        // never indicated" del Flight Evaluation. Debe ir AL FINAL del
+        // struct (y de AddToDataDefinition) para no mover offsets.
+        stall_warning: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -1113,6 +1117,8 @@ mod windows_simconnect {
             ("AMBIENT PRESSURE", units_millibars.as_c_str()),
             ("AMBIENT VISIBILITY", units_meters.as_c_str()),
             ("AMBIENT PRECIP STATE", units_number.as_c_str()),
+            // (v3.21.0) Stall warning — al final, igual que en el struct.
+            ("STALL WARNING", units_bool.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -3379,6 +3385,8 @@ mod windows_simconnect {
                 let cloud_low_c = cloud.low_pct;
                 let cloud_mid_c = cloud.mid_pct;
                 let cloud_high_c = cloud.high_pct;
+                // (v3.21.0) Stall warning del sim (bool) para el scoring.
+                let stall_warning_c = data.stall_warning >= 0.5;
                 let alt_c = alt as i64;
                 let gs_c = gs as i64;
                 // (v3.7.0 — Phase O) Snapshot de todos los simvars
@@ -3492,6 +3500,7 @@ mod windows_simconnect {
                         cloud_low_pct: cloud_low_c,
                         cloud_mid_pct: cloud_mid_c,
                         cloud_high_pct: cloud_high_c,
+                        stall_warning: Some(stall_warning_c),
                     };
                     if let Err(e) = crate::flight_log::insert_track_point_full(
                         &pool_c, id, pt,

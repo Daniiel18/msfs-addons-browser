@@ -574,11 +574,29 @@ fn skip(rule: &Rule, reason: &str) -> ScoreItem {
 // Helpers — slices del track por sub-phase derivada
 // =============================================================================
 
-/// Samples durante la phase "takeoff" del watcher con alt < 1000 ft AGL.
-/// Equivalente a "Take-Off Acceleration" del VAS.
+// (v3.21.0) FIX CRÍTICO de fases: para vuelos con `scoring_phase`
+// canónico por-sample (todos los del watcher SimConnect + ACARS nuevos)
+// filtramos DIRECTO por el nombre de fase del rubric
+// (initial_climb / final_approach / pre_departure / arrived / …). Antes
+// estos helpers consultaban los labels VIEJOS del badge ("climbing" /
+// "approach" / "parking") que el watcher YA no persiste → todas esas
+// fases salían "No data to evaluate". Para vuelos legacy (sin tag
+// por-sample) caemos a la vía vieja (badge + banda AGL) preservando el
+// scoring de los imports VAS.
+
+/// Pre-Departure (antes del pushback).
+fn samples_pre_departure<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("pre_departure");
+    }
+    ctx.samples_in_phase("preflight")
+}
+
+/// Take-Off Acceleration (0..1000 ft AGL).
 fn samples_takeoff_accel<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
-    let base = ctx.origin_lat.is_finite();
-    let _ = base;
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("takeoff_accel");
+    }
     ctx.samples_in_phase("takeoff")
         .into_iter()
         .chain(ctx.samples_in_phase("climbing").into_iter())
@@ -586,16 +604,22 @@ fn samples_takeoff_accel<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
         .collect()
 }
 
-/// Samples durante climbing con alt 1000..10000 ft AGL.
+/// Initial Climb (1000..10000 ft AGL).
 fn samples_initial_climb<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("initial_climb");
+    }
     ctx.samples_in_phase("climbing")
         .into_iter()
         .filter(|s| s.alt_ft.map(|a| (1000..10000).contains(&a)).unwrap_or(false))
         .collect()
 }
 
-/// Samples durante approach con alt > 1800 ft (Initial Approach).
+/// Initial Approach (1800..10000 ft, descending).
 fn samples_initial_approach<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("initial_approach");
+    }
     ctx.samples_in_phase("approach")
         .into_iter()
         .chain(ctx.samples_in_phase("descent").into_iter())
@@ -603,24 +627,33 @@ fn samples_initial_approach<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> 
         .collect()
 }
 
-/// Samples durante approach con alt ≤ 1800 ft (Final Approach).
+/// Final Approach (below 1800 ft AGL).
 fn samples_final_approach<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("final_approach");
+    }
     ctx.samples_in_phase("approach")
         .into_iter()
         .filter(|s| s.alt_ft.map(|a| a <= 1800).unwrap_or(false))
         .collect()
 }
 
-/// Samples durante taxi_in (post-landing).
+/// Taxi-In (post-landing).
 fn samples_taxi_in<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("taxi_in");
+    }
     ctx.samples_in_phase("taxi_in")
         .into_iter()
         .chain(ctx.samples_in_phase("landed_rollout").into_iter())
         .collect()
 }
 
-/// Samples post-arrival (engines off / parking / deboarding).
+/// Arrived (engines off / parking / deboarding).
 fn samples_arrived<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    if ctx.has_scoring_phase() {
+        return ctx.samples_in_phase("arrived");
+    }
     ctx.samples_in_phase("parking")
         .into_iter()
         .chain(ctx.samples_in_phase("deboarding").into_iter())
@@ -781,11 +814,23 @@ fn eval_no_overspeed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
-fn eval_no_stall(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // Stall warning no se persiste en el track (sería un simvar más).
-    // Por ahora todos pasan — placeholder honesto que la UI etiqueta
-    // como "info" pero no penaliza. Pendiente: capturar STALL WARNING.
-    skip(rule, "stall_indicator_not_captured")
+fn eval_no_stall(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // (v3.21.0) STALL WARNING ahora se captura por sample. Si ningún
+    // sample lo tiene (vuelo viejo / VAS import), skip honesto.
+    let track: Vec<&TrackSample> = ctx.track.iter().collect();
+    if !any_present(&track, |s| s.stall_warning) {
+        return skip(rule, "stall_indicator_not_captured");
+    }
+    let stalls = track
+        .iter()
+        .filter(|s| s.stall_warning == Some(true))
+        .count();
+    let evidence = json!({ "stall_warning_samples": stalls });
+    match stalls {
+        0 => pass(rule, evidence),
+        1..=2 => partial(rule, rule.points_max / 2, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
 }
 
 fn eval_max_service_ceiling(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
@@ -808,7 +853,7 @@ fn eval_max_service_ceiling(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 // =============================================================================
 
 fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("preflight");
+    let samples = samples_pre_departure(ctx);
     if !any_present(&samples, |s| s.parking_brake) {
         return skip(rule, "no_parking_brake_data");
     }
@@ -823,14 +868,29 @@ fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
-fn eval_predep_engines_off(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // No persistimos engines N2 por sample. Si en el futuro lo hacemos,
-    // este eval lee de samples_in_phase("preflight"). Por ahora skip.
-    skip(rule, "engine_n2_per_sample_not_captured")
+fn eval_predep_engines_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // (v3.21.0) Usamos el N1 por sample (ya capturado). Durante
+    // pre-departure (antes de arrancar) el N1 debe ser ~0. <5% ≈ off.
+    let samples = samples_pre_departure(ctx);
+    if samples.is_empty() {
+        return skip(rule, "no_pre_departure_phase");
+    }
+    if !any_present(&samples, |s| s.eng_n1_max) {
+        return skip(rule, "no_engine_data");
+    }
+    let max_n1 = max_f64(&samples, |s| s.eng_n1_max).unwrap_or(0.0);
+    let evidence = json!({ "max_n1_pct_pre_departure": max_n1 });
+    if max_n1 < 5.0 {
+        pass(rule, evidence)
+    } else if max_n1 < 20.0 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
 }
 
 fn eval_predep_flaps_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("preflight");
+    let samples = samples_pre_departure(ctx);
     if !any_present(&samples, |s| s.flaps_pct) {
         return skip(rule, "no_flaps_data");
     }
@@ -844,7 +904,7 @@ fn eval_predep_flaps_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 fn eval_predep_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("preflight");
+    let samples = samples_pre_departure(ctx);
     if !any_present(&samples, |s| s.spoilers_pct) {
         return skip(rule, "no_spoilers_data");
     }
@@ -860,7 +920,11 @@ fn eval_predep_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 fn eval_predep_ample_time(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     // Duración de la phase preflight (entered_at..exited_at). Si dura
     // ≥ 5 min, pass. Menos, partial; nada, skip.
-    let Some(range) = ctx.phases.iter().find(|p| p.phase == "preflight") else {
+    let Some(range) = ctx
+        .phases
+        .iter()
+        .find(|p| p.phase == "pre_departure" || p.phase == "preflight")
+    else {
         return skip(rule, "no_preflight_phase");
     };
     let entered = chrono::DateTime::parse_from_rfc3339(&range.entered_at).ok();
@@ -923,8 +987,29 @@ fn eval_pushback_beacon_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
-fn eval_pushback_engines_off_at_start(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    skip(rule, "engine_n2_per_sample_not_captured")
+fn eval_pushback_engines_off_at_start(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // (v3.21.0) N1 al INICIO del pushback (primer sample con dato). Lo
+    // correcto es empezar el pushback con motores apagados (<5%).
+    let samples = ctx.samples_in_phase("pushback");
+    if samples.is_empty() {
+        return skip(rule, "no_pushback_phase");
+    }
+    if !any_present(&samples, |s| s.eng_n1_max) {
+        return skip(rule, "no_engine_data");
+    }
+    let first_n1 = samples
+        .iter()
+        .filter_map(|s| s.eng_n1_max)
+        .next()
+        .unwrap_or(0.0);
+    let evidence = json!({ "n1_pct_at_pushback_start": first_n1 });
+    if first_n1 < 5.0 {
+        pass(rule, evidence)
+    } else if first_n1 < 25.0 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
 }
 
 fn eval_pushback_doors_closed(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {

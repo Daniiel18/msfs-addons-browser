@@ -110,6 +110,12 @@ pub struct TrackSample {
     /// hace que las fases cortas (initial_climb, final_approach) no se
     /// pierdan.
     pub scoring_phase: Option<String>,
+    /// (v3.21.0) Máximo N1 entre los 4 motores en este sample (%). Lo
+    /// usan las reglas "engines off" (pre-departure / pushback): N1 < 5%
+    /// ≈ motores apagados. None para vuelos sin datos de motor.
+    pub eng_n1_max: Option<f64>,
+    /// (v3.21.0) STALL WARNING del sim (bool). None si no se capturó.
+    pub stall_warning: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +126,16 @@ pub struct PhaseRange {
 }
 
 impl FlightContext {
+    /// (v3.21.0) True si AL MENOS un sample tiene `scoring_phase`
+    /// poblado — i.e. es un vuelo capturado por el watcher (o un VAS
+    /// import que ya derivó fases por-sample). Los helpers del rubric lo
+    /// usan para decidir entre la vía canónica (filtrar por scoring_phase
+    /// con nombres `initial_climb` / `final_approach` / …) y la vía
+    /// legacy (labels viejos del badge + banda AGL) para vuelos antiguos.
+    pub fn has_scoring_phase(&self) -> bool {
+        self.track.iter().any(|s| s.scoring_phase.is_some())
+    }
+
     /// Devuelve las muestras del track que cayeron dentro de la
     /// ventana temporal de la phase. Si la phase no está registrada,
     /// devuelve un slice vacío — la regla decide cómo manejarlo (ej.
@@ -189,6 +205,11 @@ struct TrackRow {
     parking_brake: Option<i64>,
     transponder_code: Option<i64>,
     scoring_phase: Option<String>,
+    eng_n1_1: Option<f64>,
+    eng_n1_2: Option<f64>,
+    eng_n1_3: Option<f64>,
+    eng_n1_4: Option<f64>,
+    stall_warning: Option<i64>,
 }
 
 /// Row helper para `sqlx::query_as` — sqlx no implementa FromRow para
@@ -245,7 +266,8 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
                ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
                flaps_pct, gear_down, spoilers_pct,
                light_nav, light_beacon, light_taxi, light_landing, light_strobe,
-               parking_brake, transponder_code, scoring_phase
+               parking_brake, transponder_code, scoring_phase,
+               eng_n1_1, eng_n1_2, eng_n1_3, eng_n1_4, stall_warning
         FROM flight_log_track
         WHERE flight_id = ?1
         ORDER BY ts
@@ -314,6 +336,11 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
                     parking_brake: b(r.parking_brake),
                     transponder_code: r.transponder_code,
                     scoring_phase: r.scoring_phase,
+                    eng_n1_max: [r.eng_n1_1, r.eng_n1_2, r.eng_n1_3, r.eng_n1_4]
+                        .into_iter()
+                        .flatten()
+                        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v)))),
+                    stall_warning: b(r.stall_warning),
                 }
             })
             .collect(),

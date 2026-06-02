@@ -277,6 +277,7 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     // candidatos legacy).
     let ps_command = format!(
         r#"$origExe = '{esc}'
+$startTime = Get-Date
 $tempLog = Join-Path $env:TEMP 'simfleet-relaunch.log'
 $origDir = Split-Path -Parent $origExe
 $appLog = Join-Path $origDir 'data\logs\simfleet.log'
@@ -306,21 +307,28 @@ $candidates += Join-Path $origDir 'SimFleet.exe'
 $candidates += Join-Path $env:LOCALAPPDATA "Programs\$origLeaf"
 $candidates = $candidates | Where-Object {{ $_ -ne $null -and $_ -ne '' }} | Select-Object -Unique
 
-$deadline = (Get-Date).AddSeconds(90)
+$deadline = (Get-Date).AddSeconds(120)
 $launched = $null
+# (v3.21.0) FIX del auto-relaunch: lanzar SÓLO el exe que el instalador
+# YA reescribió (LastWriteTime POSTERIOR al arranque del helper). El
+# bug viejo (`age > 3`) lanzaba la copia VIEJA al instante — el
+# instalador NSIS la mataba al reemplazar archivos y la app nunca
+# reabría. Comparar contra $startTime garantiza abrir la versión NUEVA
+# recién instalada.
 while ((Get-Date) -lt $deadline -and $launched -eq $null) {{
   foreach ($exe in $candidates) {{
     if (Test-Path -LiteralPath $exe) {{
       try {{
         $item = Get-Item -LiteralPath $exe -ErrorAction Stop
-        $age = ((Get-Date) - $item.LastWriteTime).TotalSeconds
-        if ($age -gt 3) {{
-          WriteAll ("ready exe='{{0}}' age={{1:N1}}s — launching" -f $exe, $age)
+        if ($item.LastWriteTime -gt $startTime) {{
+          # settle: dar 2s a que el installer termine de escribir.
+          Start-Sleep -Seconds 2
+          WriteAll ("fresh exe='{{0}}' written={{1:o}} — launching" -f $exe, $item.LastWriteTime)
           $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
           $launched = $proc
           break
         }} else {{
-          WriteAll ("waiting exe='{{0}}' (age={{1:N1}}s)" -f $exe, $age)
+          WriteAll ("stale exe='{{0}}' written={{1:o}} (<= start) — waiting" -f $exe, $item.LastWriteTime)
         }}
       }} catch {{
         WriteAll ("error getting item '{{0}}': {{1}}" -f $exe, $_)
@@ -328,6 +336,21 @@ while ((Get-Date) -lt $deadline -and $launched -eq $null) {{
     }}
   }}
   if ($launched -eq $null) {{ Start-Sleep -Seconds 2 }}
+}}
+
+# Safety net: si en el deadline nada se reescribió (install atípico),
+# abrir igual el primer candidato existente — mejor que no abrir nada.
+if ($launched -eq $null) {{
+  foreach ($exe in $candidates) {{
+    if (Test-Path -LiteralPath $exe) {{
+      try {{
+        WriteAll ("deadline fallback — launching '{{0}}'" -f $exe)
+        $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
+        $launched = $proc
+        break
+      }} catch {{ WriteAll ("fallback launch failed '{{0}}': {{1}}" -f $exe, $_) }}
+    }}
+  }}
 }}
 
 if ($launched -ne $null) {{
