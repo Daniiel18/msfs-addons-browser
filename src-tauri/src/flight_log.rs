@@ -99,6 +99,11 @@ pub struct FlightLogEntry {
     /// (v3.6.0) Grade derivada — 'A' (95-100%), 'B' (85-95%),
     /// 'C' (70-85%), 'D' (50-70%), 'F' (<50%).
     pub score_grade: Option<String>,
+    /// (v4.0.0 P7.6b iter 3) Flag de rebote — `true` si el avión
+    /// rebotó en el aterrizaje (Stream B detectó 2+ flancos 0→1 de
+    /// SIM_ON_GROUND con radio_alt < 50ft). La UI lo marca como
+    /// "Bouncing Detected" al lado del FPM.
+    pub bounced: bool,
 }
 
 /// Resultado del lookup de aeropuerto más cercano. Incluye
@@ -1056,7 +1061,8 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                passengers, cargo_kg, fuel_used_kg, paused_seconds,
                source,
                flight_number, callsign, airline_icao, status,
-               score_total, score_max, score_grade
+               score_total, score_max, score_grade,
+               COALESCE(bounced, 0) AS bounced
         FROM flight_log
         WHERE status = 'completed'
         ORDER BY started_at DESC

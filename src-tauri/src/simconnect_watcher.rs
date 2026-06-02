@@ -1821,10 +1821,35 @@ mod windows_simconnect {
                                     Some(prev) => fpm_val < prev,
                                 };
 
+                                // (v4.0.0 P7.6b iter 3) Detección de
+                                // rebote — si ya teníamos un FPM
+                                // capturado y volvió a disparar el
+                                // flanco 0→1, es porque el avión
+                                // saltó del piso y volvió a tocar.
+                                // LandingToast lo señala como
+                                // "Bouncing Detected". Persistimos a
+                                // DB para que UI lo dibuje al lado
+                                // del FPM (Q del usuario v3.13.3).
+                                let is_bounce = captured_landing_fpm.is_some();
+                                if is_bounce {
+                                    let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+                                    if let Some(id) = id_opt {
+                                        let pool_c = pool.clone();
+                                        tokio::spawn(async move {
+                                            let _ = sqlx::query(
+                                                "UPDATE flight_log SET bounced = 1 WHERE id = ?1"
+                                            )
+                                            .bind(id)
+                                            .execute(&pool_c)
+                                            .await;
+                                        });
+                                    }
+                                }
+
                                 tracing::info!(
                                     target: "simconnect",
-                                    "STREAM-B TOUCHDOWN: live_vs={:.1}fpm radio_alt={:.1}ft g={:.2} → candidate={} (prev_captured={:?} update={})",
-                                    vs_now, radio_alt, g, fpm_val, captured_landing_fpm, should_update
+                                    "STREAM-B TOUCHDOWN: live_vs={:.1}fpm radio_alt={:.1}ft g={:.2} → candidate={} (prev_captured={:?} update={} bounce={})",
+                                    vs_now, radio_alt, g, fpm_val, captured_landing_fpm, should_update, is_bounce
                                 );
 
                                 if should_update {

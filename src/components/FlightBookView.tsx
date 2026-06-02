@@ -978,6 +978,14 @@ function SelectedFlightPanel({
               <span className={`font-mono ${color}`}>
                 {fpm} fpm
               </span>
+              {entry.bounced && (
+                <span
+                  className="rounded-md border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300"
+                  title={t("fb.block.bounce_tooltip")}
+                >
+                  ↑ {t("fb.block.bounce_detected")}
+                </span>
+              )}
             </div>
           );
         })()}

@@ -286,6 +286,14 @@ export interface FlightLogEntry {
   scoreMax: number | null;
   /** (v3.6.0) Grade derivada del %: 'A'|'B'|'C'|'D'|'F'. */
   scoreGrade: string | null;
+  /**
+   * (v4.0.0 P7.6b iter 3) `true` si el aterrizaje tuvo rebote
+   * (Stream B detectó 2+ flancos 0→1 de SIM_ON_GROUND con
+   * radio_alt < 50ft). La UI lo marca con un badge "Bouncing
+   * Detected" al lado del FPM. Coincide con la detección de
+   * LandingToast.
+   */
+  bounced: boolean;
 }
 
 /** (v3.6.0 Phase H — Epic E) Reporte de scoring para un vuelo. */

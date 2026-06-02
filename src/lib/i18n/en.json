@@ -417,6 +417,8 @@
   "fb.weather.layer.turbulence": "Turbulence",
   "fb.weather.layer.icing": "Icing",
   "fb.weather.layer.jetstream": "Jet Stream",
+  "fb.block.bounce_detected": "Bouncing detected",
+  "fb.block.bounce_tooltip": "Aircraft bounced on landing: 2+ runway contacts before settling.",
   "simbrief.ambiguity.title": "Ambiguous SimBrief OFP",
   "simbrief.ambiguity.body": "2+ OFPs could match this flight. Pick yours:",
   "simbrief.ambiguity.dismiss": "Dismiss",

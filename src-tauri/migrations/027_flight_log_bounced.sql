@@ -1,0 +1,12 @@
+-- (v4.0.0 P7.6b iter 3) Flag de rebote en el aterrizaje.
+--
+-- Stream B detecta cada flanco 0->1 de SIM_ON_GROUND. Si el flanco
+-- dispara MAS DE UNA VEZ durante el mismo vuelo (mientras phase ==
+-- Airborne y radio_alt < 50ft), significa que el avion rebotó: tocó
+-- pista, despegó por reactividad del tren, y volvió a tocar.
+--
+-- LandingToast reporta esto como "Bouncing Detected". El watcher
+-- conserva el FPM del PRIMER touch (mas severo en general — el
+-- impacto inicial), pero ahora también marca `bounced = 1` para que
+-- la UI lo señale al lado del FPM.
+ALTER TABLE flight_log ADD COLUMN bounced INTEGER NOT NULL DEFAULT 0;

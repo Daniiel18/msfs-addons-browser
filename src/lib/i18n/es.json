@@ -417,6 +417,8 @@
   "fb.weather.layer.turbulence": "Turbulencia",
   "fb.weather.layer.icing": "Engelamiento",
   "fb.weather.layer.jetstream": "Jet Stream",
+  "fb.block.bounce_detected": "Rebote detectado",
+  "fb.block.bounce_tooltip": "El avión rebotó en el aterrizaje: 2+ contactos con la pista antes de quedar en tierra.",
   "simbrief.ambiguity.title": "OFP ambiguo de SimBrief",
   "simbrief.ambiguity.body": "Hay 2+ OFPs que podrían ser este vuelo. Elegí cuál es tuyo:",
   "simbrief.ambiguity.dismiss": "Descartar",
