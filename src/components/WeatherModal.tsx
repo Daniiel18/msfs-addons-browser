@@ -13,10 +13,30 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import type { FlightLogEntry } from "../lib/types";
+import type { FlightLogEntry, WeatherSample } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { buildTerminatorPolygon } from "../lib/terminator";
+
+/** (v4.0.0 P7.9b) Destino de una "barba" de viento: dado un punto y
+ *  el viento (dir DESDE donde sopla + velocidad), calcula el extremo
+ *  de una flecha corta que apunta HACIA donde va el viento. La
+ *  longitud escala suave con la velocidad (clamp 5..60 kt → 0.04..0.30°). */
+function windArrowEnd(
+  lon: number,
+  lat: number,
+  fromDir: number,
+  speedKt: number,
+): [number, number] {
+  // El viento "viene de" fromDir; la flecha apunta hacia (fromDir+180).
+  const toDir = (fromDir + 180) % 360;
+  const rad = (toDir * Math.PI) / 180;
+  const len = 0.04 + Math.min(Math.max(speedKt, 5), 60) * 0.0043;
+  // Corrección de latitud para que la flecha se vea proporcional.
+  const dLat = Math.cos(rad) * len;
+  const dLon = (Math.sin(rad) * len) / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  return [lon + dLon, lat + dLat];
+}
 
 /**
  * (v4.0.0 — P7 iter 1) Weather modal del FlightBook.
@@ -74,6 +94,10 @@ export function WeatherModal({
   // Vuelo activo si todavía no terminó (sin ended_at).
   const isLiveFlight = entry.endedAt == null;
 
+  // (v4.0.0 P7.9b) Weather samples capturados durante el vuelo.
+  const [weather, setWeather] = useState<WeatherSample[] | null>(null);
+  const hasWeather = (weather?.length ?? 0) > 0;
+
   // Carga el track del vuelo para dibujar la ruta en el mapa.
   const [trackCoords, setTrackCoords] = useState<[number, number][] | null>(
     null,
@@ -90,6 +114,20 @@ export function WeatherModal({
         setTrackCoords(coords);
       })
       .catch(() => setTrackCoords([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.id]);
+
+  // (v4.0.0 P7.9b) Carga los weather samples del vuelo.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getFlightWeather(entry.id)
+      .then((ws) => {
+        if (!cancelled) setWeather(ws);
+      })
+      .catch(() => setWeather([]));
     return () => {
       cancelled = true;
     };
@@ -223,6 +261,48 @@ export function WeatherModal({
         layout: { visibility: "visible" },
       });
 
+      // (v4.0.0 P7.9b) Barbas de viento — LineStrings calculadas de
+      // los weather samples. Color por velocidad (azul→rojo). Una
+      // capa de halo + línea + cabeza de flecha (circle en el extremo).
+      map.addSource("wx-wind", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "wx-wind-line",
+        type: "line",
+        source: "wx-wind",
+        layout: { "line-cap": "round", visibility: "none" },
+        paint: {
+          "line-width": 1.6,
+          "line-color": [
+            "interpolate",
+            ["linear"],
+            ["get", "speed"],
+            5, "#38bdf8", // celeste — calmo
+            20, "#22c55e", // verde — moderado
+            35, "#facc15", // amarillo — fuerte
+            50, "#ef4444", // rojo — muy fuerte
+          ],
+        },
+      });
+      map.addLayer({
+        id: "wx-wind-head",
+        type: "circle",
+        source: "wx-wind",
+        filter: ["==", ["geometry-type"], "Point"],
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": 2.4,
+          "circle-color": [
+            "interpolate",
+            ["linear"],
+            ["get", "speed"],
+            5, "#38bdf8",
+            20, "#22c55e",
+            35, "#facc15",
+            50, "#ef4444",
+          ],
+        },
+      });
+
       // RainViewer radar tiles para precipitación.
       map.addSource("wx-precip", {
         type: "raster",
@@ -329,6 +409,40 @@ export function WeatherModal({
     entry.destinationLon,
   ]);
 
+  // (v4.0.0 P7.9b) Cuando llegan los weather samples, generamos las
+  // barbas de viento (una flecha cada N samples para no saturar) y
+  // las cargamos en la source wx-wind.
+  useEffect(() => {
+    if (!mapReady || !weather) return;
+    const map = mapRef.current;
+    if (!map) return;
+    const src = map.getSource("wx-wind") as GeoJSONSource | undefined;
+    if (!src) return;
+    const feats: GeoJSON.Feature[] = [];
+    // Muestreamos hasta ~40 barbas a lo largo del vuelo.
+    const withWind = weather.filter(
+      (w) => w.windSpeedKt != null && w.windDirDeg != null,
+    );
+    const step = Math.max(1, Math.floor(withWind.length / 40));
+    for (let i = 0; i < withWind.length; i += step) {
+      const w = withWind[i];
+      const speed = w.windSpeedKt ?? 0;
+      const dir = w.windDirDeg ?? 0;
+      const end = windArrowEnd(w.lon, w.lat, dir, speed);
+      feats.push({
+        type: "Feature",
+        properties: { speed },
+        geometry: { type: "LineString", coordinates: [[w.lon, w.lat], end] },
+      });
+      feats.push({
+        type: "Feature",
+        properties: { speed },
+        geometry: { type: "Point", coordinates: end },
+      });
+    }
+    src.setData({ type: "FeatureCollection", features: feats });
+  }, [weather, mapReady]);
+
   // Cambia qué capa raster está visible según el tab activo.
   useEffect(() => {
     if (!mapReady) return;
@@ -344,6 +458,9 @@ export function WeatherModal({
       "visibility",
       activeLayer === "precip" ? "visible" : "none",
     );
+    const windVis = activeLayer === "wind" ? "visible" : "none";
+    map.setLayoutProperty("wx-wind-line", "visibility", windVis);
+    map.setLayoutProperty("wx-wind-head", "visibility", windVis);
   }, [activeLayer, mapReady]);
 
   // Resize handlers (mismo patrón que PerformanceModal).
@@ -390,9 +507,37 @@ export function WeatherModal({
   }, [size.width, size.height, mapReady]);
 
   const layerAvailable = (key: LayerKey): boolean => {
+    // (v4.0.0 P7.9b) Wind disponible si el vuelo capturó weather
+    // (live o pasado). Clouds/precip siguen siendo LIVE-only (tiles
+    // RainViewer no tienen histórico).
+    if (key === "wind") return hasWeather;
     if (key === "clouds" || key === "precip") return isLiveFlight;
-    return false; // todas las demás son "próximamente" en esta iter
+    return false; // tropopause/sigmet/turbulence/icing/jetstream → P7.10+
   };
+
+  // (v4.0.0 P7.9b) Para vuelos pasados con weather, auto-seleccionamos
+  // la tab Wind (la única con data histórica). Para vuelos live se
+  // queda en clouds (RainViewer).
+  useEffect(() => {
+    if (!isLiveFlight && hasWeather) setActiveLayer("wind");
+  }, [isLiveFlight, hasWeather]);
+
+  // (v4.0.0 P7.9b) Resumen de weather para el panel lateral.
+  const wxSummary = (() => {
+    if (!hasWeather || !weather) return null;
+    const winds = weather.map((w) => w.windSpeedKt).filter((v): v is number => v != null);
+    const temps = weather.map((w) => w.oatC).filter((v): v is number => v != null);
+    const baros = weather.map((w) => w.baroHpa).filter((v): v is number => v != null);
+    const maxWind = winds.length ? Math.max(...winds) : null;
+    const avgWind = winds.length
+      ? Math.round(winds.reduce((a, b) => a + b, 0) / winds.length)
+      : null;
+    const minTemp = temps.length ? Math.round(Math.min(...temps)) : null;
+    const maxTemp = temps.length ? Math.round(Math.max(...temps)) : null;
+    const qnh = baros.length ? baros[0] : null;
+    const anyPrecip = weather.some((w) => (w.precipState ?? 0) >= 2);
+    return { maxWind, avgWind, minTemp, maxTemp, qnh, anyPrecip };
+  })();
 
   return (
     <motion.div
@@ -480,9 +625,57 @@ export function WeatherModal({
                 {t("fb.weather.loading_map")}
               </div>
             )}
-            {!isLiveFlight && (
+            {/* (v4.0.0 P7.9b) Banner "histórico no disponible" SOLO si
+                el vuelo pasado NO capturó weather (pre-v3.16.0 / VAS). */}
+            {!isLiveFlight && !hasWeather && (
               <div className="absolute right-3 top-3 max-w-xs rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 ring-1 ring-amber-500/30 backdrop-blur">
                 {t("fb.weather.historical_unavailable")}
+              </div>
+            )}
+
+            {/* (v4.0.0 P7.9b) Panel resumen de weather del vuelo. */}
+            {wxSummary && mapReady && (
+              <div className="absolute right-3 top-3 w-44 rounded-lg bg-slate-950/85 px-3 py-2.5 text-[11px] text-slate-200 ring-1 ring-slate-700 backdrop-blur">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
+                  <Wind className="h-3 w-3" />
+                  {t("fb.weather.summary.title")}
+                </div>
+                <dl className="space-y-1">
+                  {wxSummary.avgWind != null && (
+                    <div className="flex justify-between">
+                      <dt className="text-slate-400">{t("fb.weather.summary.wind_avg")}</dt>
+                      <dd className="font-mono">{wxSummary.avgWind} kt</dd>
+                    </div>
+                  )}
+                  {wxSummary.maxWind != null && (
+                    <div className="flex justify-between">
+                      <dt className="text-slate-400">{t("fb.weather.summary.wind_max")}</dt>
+                      <dd className="font-mono">{wxSummary.maxWind} kt</dd>
+                    </div>
+                  )}
+                  {wxSummary.minTemp != null && wxSummary.maxTemp != null && (
+                    <div className="flex justify-between">
+                      <dt className="text-slate-400">{t("fb.weather.summary.temp")}</dt>
+                      <dd className="font-mono">
+                        {wxSummary.minTemp}…{wxSummary.maxTemp}°C
+                      </dd>
+                    </div>
+                  )}
+                  {wxSummary.qnh != null && (
+                    <div className="flex justify-between">
+                      <dt className="text-slate-400">{t("fb.weather.summary.qnh")}</dt>
+                      <dd className="font-mono">{wxSummary.qnh} hPa</dd>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <dt className="text-slate-400">{t("fb.weather.summary.precip")}</dt>
+                    <dd className={wxSummary.anyPrecip ? "text-sky-300" : "text-slate-500"}>
+                      {wxSummary.anyPrecip
+                        ? t("fb.weather.summary.precip_yes")
+                        : t("fb.weather.summary.precip_no")}
+                    </dd>
+                  </div>
+                </dl>
               </div>
             )}
             {isLiveFlight && mapReady && (

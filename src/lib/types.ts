@@ -514,6 +514,22 @@ export interface FlightTrackPoint {
   ts: string;
 }
 
+/** (v4.0.0 P7.9b) Weather capturado por sample durante el vuelo.
+ *  Lo lee el Weather modal para dibujar viento/temp/precip reales
+ *  de vuelos pasados sin depender de APIs de clima histórico. */
+export interface WeatherSample {
+  ts: string;
+  lat: number;
+  lon: number;
+  altFt: number | null;
+  windDirDeg: number | null;
+  windSpeedKt: number | null;
+  oatC: number | null;
+  baroHpa: number | null;
+  visibilityM: number | null;
+  precipState: number | null;
+}
+
 /** (v4.0.0 — P5) Punto completo con telemetría extendida para el
  *  Performance modal. Incluye attitude, lights/gear/flaps y 6
  *  métricas × 4 engine slots. Para vuelos VAS imports muchos

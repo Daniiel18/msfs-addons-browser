@@ -988,6 +988,48 @@ pub async fn list_track_for_flight(
     Ok(rows)
 }
 
+/// (v4.0.0 P7.9b) Sample de weather para el Weather modal. Sólo las
+/// posiciones que tienen AL MENOS un campo de clima poblado — el
+/// frontend dibuja barbas de viento + colorea por temp/precip.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeatherSample {
+    pub ts: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_ft: Option<i64>,
+    pub wind_dir_deg: Option<i64>,
+    pub wind_speed_kt: Option<i64>,
+    pub oat_c: Option<f64>,
+    pub baro_hpa: Option<i64>,
+    pub visibility_m: Option<i64>,
+    pub precip_state: Option<i64>,
+}
+
+/// (v4.0.0 P7.9b) Lee los samples con weather de un vuelo. Devuelve
+/// vacío si el vuelo no capturó weather (vuelos pre-v3.16.0 / VAS
+/// imports) — el frontend cae al fallback Open-Meteo en ese caso.
+pub async fn list_weather_for_flight(
+    pool: &SqlitePool,
+    flight_id: i64,
+) -> anyhow::Result<Vec<WeatherSample>> {
+    let rows = sqlx::query_as::<_, WeatherSample>(
+        r#"
+        SELECT ts, lat, lon, alt_ft,
+               wind_dir_deg, wind_speed_kt, oat_c, baro_hpa,
+               visibility_m, precip_state
+        FROM flight_log_track
+        WHERE flight_id = ?1
+          AND (wind_speed_kt IS NOT NULL OR oat_c IS NOT NULL)
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(flight_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// (v4.0.0 — P5) Sample completo del track para el Performance modal.
 /// Lee todos los campos que el modal puede graficar: posición,
 /// altitud, velocidades, attitude, lights, gear/flaps/spoilers y

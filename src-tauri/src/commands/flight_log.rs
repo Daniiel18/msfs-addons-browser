@@ -52,6 +52,19 @@ pub async fn get_flight_track_full(
         .map_err(|e| e.to_string())
 }
 
+/// (v4.0.0 P7.9b) Weather samples de un vuelo — viento/temp/presión/
+/// precipitación capturados por sample. Vacío si el vuelo no tiene
+/// weather (pre-v3.16.0 / VAS) → el frontend cae al fallback.
+#[tauri::command]
+pub async fn get_flight_weather(
+    flight_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<flight_log::WeatherSample>, String> {
+    flight_log::list_weather_for_flight(&state.db, flight_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_flight_log_entry(
     id: i64,

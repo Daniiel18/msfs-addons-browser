@@ -23,6 +23,7 @@ import type {
   FlightStatus,
   FlightTrackPoint,
   FlightTrackFullPoint,
+  WeatherSample,
   DownloadMethod,
   CloudConfig,
   CloudOauthCompletedEvent,
@@ -316,6 +317,9 @@ interface Api {
    *  Performance modal: ALT/GS/IAS/VS, attitude (pitch/bank/g),
    *  flaps/gear/spoilers y 6 métricas × 4 engine slots. */
   getFlightTrackFull: (flightId: number) => Promise<FlightTrackFullPoint[]>;
+  /** (v4.0.0 P7.9b) Weather samples (viento/temp/presión/precip) de un
+   *  vuelo, capturados por sample. Vacío si el vuelo no tiene weather. */
+  getFlightWeather: (flightId: number) => Promise<WeatherSample[]>;
   /** Edita campos manualmente — `null` deja sin tocar la columna.
    *  Usado por el modal "Editar" del panel de detalle. */
   updateFlightLogEntry: (id: number, input: UpdateFlightInput) => Promise<void>;
@@ -511,6 +515,8 @@ const realApi: Api = {
     invoke<FlightTrackPoint[]>("get_flight_track", { flightId }),
   getFlightTrackFull: (flightId) =>
     invoke<FlightTrackFullPoint[]>("get_flight_track_full", { flightId }),
+  getFlightWeather: (flightId) =>
+    invoke<WeatherSample[]>("get_flight_weather", { flightId }),
   updateFlightLogEntry: (id, input) =>
     invoke<void>("update_flight_log_entry", { id, input }),
   deleteFlightLogEntry: (id) => invoke<void>("delete_flight_log_entry", { id }),
@@ -1227,6 +1233,9 @@ const demoApi: Api = {
     return [];
   },
   async getFlightTrackFull() {
+    return [];
+  },
+  async getFlightWeather() {
     return [];
   },
   async deleteFlightLogEntry() {

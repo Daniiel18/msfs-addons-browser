@@ -166,6 +166,7 @@ pub fn run() {
             commands::flight_log::get_flight_status,
             commands::flight_log::get_flight_track,
             commands::flight_log::get_flight_track_full,
+            commands::flight_log::get_flight_weather,
             commands::flight_log::update_flight_log_entry,
             commands::flight_log::msfs_logbook_detect,
             commands::flight_log::msfs_logbook_import,
