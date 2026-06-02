@@ -465,6 +465,21 @@ mod windows_simconnect {
         eng_oil_press_2: f64,
         eng_oil_press_3: f64,
         eng_oil_press_4: f64,
+        // ==========================================================
+        // (v4.0.0 P7.7) Replay/Slew detection.
+        //
+        // - `SIMULATION RATE`: 1.0 normal, 0.25/0.5/2.0/4.0/16.0 etc.
+        //   en replay forward, ~0 al pausar. Float.
+        // - `IS SLEW ACTIVE`: 1 cuando el usuario está moviendo el
+        //   avión con el modo Slew (teleport, mover libremente con
+        //   teclado). Bool.
+        // - `ABSOLUTE TIME`: segundos desde 1/1/0001. Monotónicamente
+        //   creciente salvo durante slew/replay backward, que es la
+        //   señal más confiable. Float (precisión ~1ms).
+        // ==========================================================
+        simulation_rate: f64,
+        is_slew_active: f64,
+        absolute_time_s: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -938,6 +953,8 @@ mod windows_simconnect {
         let units_celsius = sc::cstr("celsius");
         let units_pph = sc::cstr("pounds per hour");
         let units_psi = sc::cstr("psi");
+        // (v4.0.0 P7.7) "seconds" para ABSOLUTE TIME (replay detection).
+        let units_seconds = sc::cstr("seconds");
 
         let names: &[(&str, &std::ffi::CStr)] = &[
             ("PLANE LATITUDE", units_deg.as_c_str()),
@@ -1040,6 +1057,13 @@ mod windows_simconnect {
             ("ENG OIL PRESSURE:2", units_psi.as_c_str()),
             ("ENG OIL PRESSURE:3", units_psi.as_c_str()),
             ("ENG OIL PRESSURE:4", units_psi.as_c_str()),
+            // ----------------------------------------------------------
+            // (v4.0.0 P7.7) Replay/Slew detection. Mismo orden que los
+            // campos del struct AircraftData.
+            // ----------------------------------------------------------
+            ("SIMULATION RATE", units_number.as_c_str()),
+            ("IS SLEW ACTIVE", units_bool.as_c_str()),
+            ("ABSOLUTE TIME", units_seconds.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -1519,6 +1543,28 @@ mod windows_simconnect {
         let mut stream_b_recent_vs: std::collections::VecDeque<f64> =
             std::collections::VecDeque::with_capacity(30);
         let mut touchdown_g_force: Option<f64> = None;
+
+        // (v4.0.0 P7.7) Replay/Slew detection state.
+        //
+        // `in_replay_mode`: true mientras el watcher debe IGNORAR todo
+        // input del sim (no persistir track, no transicionar phases,
+        // no spawn de events OOOI). Se vuelve true cuando detectamos
+        // cualquiera de:
+        //   - SIMULATION RATE != 1.0
+        //   - IS SLEW ACTIVE == 1 (Q14 del kickoff: slew cuenta igual)
+        //   - ABSOLUTE TIME retrocede vs el sample anterior
+        //
+        // `replay_stable_ticks_normal`: ticks consecutivos en
+        // condiciones normales. Necesitamos 20 ticks (~5s a 4Hz) de
+        // operación normal sostenida antes de SALIR de replay mode.
+        // Sin esto, un mini-blip del sim (resume desde replay) podría
+        // dispararnos en una transición a media-replay.
+        //
+        // `prev_absolute_time_s`: para detectar retroceso temporal —
+        // la señal más confiable de replay/slew según docs SimConnect.
+        let mut in_replay_mode: bool = false;
+        let mut replay_stable_ticks_normal: u32 = 0;
+        let mut prev_absolute_time_s: Option<f64> = None;
         // True si vimos al menos un motor encendido durante este
         // vuelo. Sin esto, la condición "todos los motores apagados"
         // sería trivialmente cierta al arrancar el sim antes de
@@ -1996,6 +2042,9 @@ mod windows_simconnect {
                         &mut initial_fuel_lb,
                         &mut paused_seconds_total,
                         &mut passed_taxi_threshold,
+                        &mut in_replay_mode,
+                        &mut replay_stable_ticks_normal,
+                        &mut prev_absolute_time_s,
                     );
                     // (v0.1.26) Si la transición acabó de marcar OUT
                     // o entró en Landed (touchdown), disparamos la
@@ -2382,7 +2431,99 @@ mod windows_simconnect {
         initial_fuel_lb: &mut Option<f64>,
         paused_seconds_total: &mut u64,
         passed_taxi_threshold: &mut bool,
+        in_replay_mode: &mut bool,
+        replay_stable_ticks_normal: &mut u32,
+        prev_absolute_time_s: &mut Option<f64>,
     ) {
+        // (v4.0.0 P7.7) Replay/Slew detection FIRST — antes de
+        // procesar cualquier otra lógica del state machine.
+        //
+        // Tres señales:
+        //   1. SIMULATION RATE != 1.0 (replay forward/backward o
+        //      tiempo acelerado). Tolerancia: 0.95..1.05 normal.
+        //   2. IS SLEW ACTIVE == 1 (Q14: slew cuenta como replay).
+        //   3. ABSOLUTE TIME retrocede vs sample anterior.
+        //      → la señal más fuerte; con replay forward se puede
+        //      confundir con un blip pero el retroceso es indiscutible.
+        //
+        // Entrada al replay mode: instantánea (1 tick basta).
+        // Salida del replay mode: 20 ticks (~5s a 4Hz) sostenidos
+        //   de condiciones normales. Sin esto, podríamos salir
+        //   prematuramente en un tick aislado de SIMULATION RATE=1.
+        let sim_rate = data.simulation_rate;
+        let slew_active = data.is_slew_active >= 0.5;
+        let abs_time = data.absolute_time_s;
+        let time_regressed = match *prev_absolute_time_s {
+            Some(prev) if abs_time.is_finite() && prev.is_finite() => {
+                abs_time + 0.001 < prev
+            }
+            _ => false,
+        };
+        *prev_absolute_time_s = if abs_time.is_finite() { Some(abs_time) } else { None };
+        let rate_abnormal = sim_rate.is_finite() && (sim_rate < 0.95 || sim_rate > 1.05);
+        let is_replay_now = rate_abnormal || slew_active || time_regressed;
+
+        if is_replay_now {
+            if !*in_replay_mode {
+                tracing::warn!(
+                    target: "simconnect",
+                    "REPLAY/SLEW DETECTADO — sim_rate={:.2} slew={} time_regressed={} — freezing state machine",
+                    sim_rate, slew_active, time_regressed
+                );
+                *in_replay_mode = true;
+                // Emit a la UI para que muestre el badge "REPLAY DETECTADO".
+                #[derive(serde::Serialize, Clone)]
+                #[serde(rename_all = "camelCase")]
+                struct ReplayPayload {
+                    active: bool,
+                    sim_rate: f64,
+                    is_slew: bool,
+                }
+                let _ = app.emit("flight://replay", ReplayPayload {
+                    active: true,
+                    sim_rate,
+                    is_slew: slew_active,
+                });
+            }
+            *replay_stable_ticks_normal = 0;
+        } else if *in_replay_mode {
+            *replay_stable_ticks_normal = replay_stable_ticks_normal.saturating_add(1);
+            // 20 ticks @ 4Hz ≈ 5s sostenidos de condiciones normales.
+            if *replay_stable_ticks_normal >= 20 {
+                tracing::info!(
+                    target: "simconnect",
+                    "REPLAY/SLEW desactivado — operación normal sostenida {}s, resumiendo state machine",
+                    *replay_stable_ticks_normal / 4
+                );
+                *in_replay_mode = false;
+                *replay_stable_ticks_normal = 0;
+                #[derive(serde::Serialize, Clone)]
+                #[serde(rename_all = "camelCase")]
+                struct ReplayPayload {
+                    active: bool,
+                    sim_rate: f64,
+                    is_slew: bool,
+                }
+                let _ = app.emit("flight://replay", ReplayPayload {
+                    active: false,
+                    sim_rate,
+                    is_slew: false,
+                });
+            }
+        }
+
+        // Mientras estemos en replay, NO procesamos nada. Salimos.
+        // Esto previene:
+        //   · Persistencia de track samples con coords del replay.
+        //   · Transiciones OOOI (OUT/OFF/ON/IN) falsas.
+        //   · Updates de max_altitude / max_gs con valores re-vividos.
+        //   · Captura de touchdown FPM durante replay (Stream B sigue
+        //     pero no escribe porque captured_landing_fpm es leído
+        //     desde Stream A, que no ejecuta este path).
+        if *in_replay_mode {
+            return;
+        }
+
         let lat = data.latitude_deg;
         let lon = data.longitude_deg;
         let alt = data.altitude_ft;

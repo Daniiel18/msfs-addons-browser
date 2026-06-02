@@ -34,6 +34,7 @@ import { UpdateWizard } from "./components/UpdateWizard";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
 import { SimBriefAmbiguityToast } from "./components/SimBriefAmbiguityToast";
+import { ReplayBanner } from "./components/ReplayBanner";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsModal } from "./components/SettingsModal";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
@@ -759,6 +760,7 @@ export default function App() {
       <UpdateWizard />
       <Toaster />
       <SimBriefAmbiguityToast />
+      <ReplayBanner />
     </div>
   );
 }
