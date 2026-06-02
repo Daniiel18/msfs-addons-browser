@@ -827,6 +827,13 @@ pub struct TrackPointInsert {
     /// El evaluador filtra por esta columna en vez de hacer un JOIN
     /// temporal frágil contra flight_log_phase. None para rutas legacy.
     pub scoring_phase: Option<String>,
+    /// (v4.0.0 P7.9) Weather AMBIENT capturado en este sample.
+    pub wind_dir_deg: Option<i64>,
+    pub wind_speed_kt: Option<i64>,
+    pub oat_c: Option<f64>,
+    pub baro_hpa: Option<i64>,
+    pub visibility_m: Option<i64>,
+    pub precip_state: Option<i64>,
 }
 
 /// Inserta un punto en la traza del vuelo. Compat wrapper —
@@ -882,7 +889,8 @@ pub async fn insert_track_point_full(
             eng_ff_pph_1, eng_ff_pph_2, eng_ff_pph_3, eng_ff_pph_4,
             eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
             eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4,
-            scoring_phase
+            scoring_phase,
+            wind_dir_deg, wind_speed_kt, oat_c, baro_hpa, visibility_m, precip_state
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
@@ -896,7 +904,8 @@ pub async fn insert_track_point_full(
             ?34, ?35, ?36, ?37,
             ?38, ?39, ?40, ?41,
             ?42, ?43, ?44, ?45,
-            ?46
+            ?46,
+            ?47, ?48, ?49, ?50, ?51, ?52
         )
         "#,
     )
@@ -947,6 +956,13 @@ pub async fn insert_track_point_full(
     .bind(pt.eng_oil_press[2])
     .bind(pt.eng_oil_press[3])
     .bind(pt.scoring_phase.as_deref())
+    // (v4.0.0 P7.9) Weather AMBIENT — 6 binds.
+    .bind(pt.wind_dir_deg)
+    .bind(pt.wind_speed_kt)
+    .bind(pt.oat_c)
+    .bind(pt.baro_hpa)
+    .bind(pt.visibility_m)
+    .bind(pt.precip_state)
     .execute(pool)
     .await?;
     Ok(())

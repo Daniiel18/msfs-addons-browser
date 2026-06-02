@@ -503,6 +503,16 @@ mod windows_simconnect {
         // 5000ft MSL tiene el avión a 6000 MSL cuando está a 1000 AGL.
         // Por eso capturamos AGL explícitamente para `derive_scoring_phase`.
         alt_above_ground_ft: f64,
+        // (v4.0.0 P7.9) Weather AMBIENT — el sim sabe el clima real en
+        // la posición del avión. Se persiste por track sample para que
+        // el Weather modal dibuje viento/temp/nubes/lluvia REALES del
+        // vuelo sin depender de APIs de clima histórico de pago.
+        ambient_wind_dir_deg: f64,
+        ambient_wind_vel_kt: f64,
+        ambient_temp_c: f64,
+        ambient_pressure_mbar: f64,
+        ambient_visibility_m: f64,
+        ambient_precip_state: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -978,6 +988,9 @@ mod windows_simconnect {
         let units_psi = sc::cstr("psi");
         // (v4.0.0 P7.7) "seconds" para ABSOLUTE TIME (replay detection).
         let units_seconds = sc::cstr("seconds");
+        // (v4.0.0 P7.9) Units para weather AMBIENT.
+        let units_millibars = sc::cstr("millibars");
+        let units_meters = sc::cstr("meters");
 
         let names: &[(&str, &std::ffi::CStr)] = &[
             ("PLANE LATITUDE", units_deg.as_c_str()),
@@ -1093,6 +1106,13 @@ mod windows_simconnect {
             ("IS ATTITUDE FREEZE ON", units_bool.as_c_str()),
             // (v4.0.0 P7.8) AGL para derive_scoring_phase.
             ("PLANE ALT ABOVE GROUND", units_feet.as_c_str()),
+            // (v4.0.0 P7.9) Weather AMBIENT — orden = campos del struct.
+            ("AMBIENT WIND DIRECTION", units_deg.as_c_str()),
+            ("AMBIENT WIND VELOCITY", units_knots.as_c_str()),
+            ("AMBIENT TEMPERATURE", units_celsius.as_c_str()),
+            ("AMBIENT PRESSURE", units_millibars.as_c_str()),
+            ("AMBIENT VISIBILITY", units_meters.as_c_str()),
+            ("AMBIENT PRECIP STATE", units_number.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -3326,6 +3346,16 @@ mod windows_simconnect {
                     in_pushback,
                     *engines_seen_running,
                 );
+                // (v4.0.0 P7.9) Snapshot weather AMBIENT del sim. NaN
+                // guard: SimConnect ocasionalmente emite NaN durante
+                // carga; lo convertimos a None para no escribir basura.
+                let fin = |v: f64| if v.is_finite() { Some(v) } else { None };
+                let wind_dir_c = fin(data.ambient_wind_dir_deg).map(|v| v.round() as i64);
+                let wind_speed_c = fin(data.ambient_wind_vel_kt).map(|v| v.round() as i64);
+                let oat_c_c = fin(data.ambient_temp_c);
+                let baro_hpa_c = fin(data.ambient_pressure_mbar).map(|v| v.round() as i64);
+                let visibility_c = fin(data.ambient_visibility_m).map(|v| v.round() as i64);
+                let precip_c = fin(data.ambient_precip_state).map(|v| v as i64);
                 let alt_c = alt as i64;
                 let gs_c = gs as i64;
                 // (v3.7.0 — Phase O) Snapshot de todos los simvars
@@ -3429,6 +3459,12 @@ mod windows_simconnect {
                         eng_oil_temp: eng_oil_temp_c.map(Some),
                         eng_oil_press: eng_oil_press_c.map(Some),
                         scoring_phase: scoring_phase_c,
+                        wind_dir_deg: wind_dir_c,
+                        wind_speed_kt: wind_speed_c,
+                        oat_c: oat_c_c,
+                        baro_hpa: baro_hpa_c,
+                        visibility_m: visibility_c,
+                        precip_state: precip_c,
                     };
                     if let Err(e) = crate::flight_log::insert_track_point_full(
                         &pool_c, id, pt,
