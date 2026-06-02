@@ -23,6 +23,9 @@ interface ReplayPayload {
   active: boolean;
   simRate: number;
   isSlew: boolean;
+  isExternalReplay: boolean;
+  /** "external_replay" | "slew" | "time_regress" | "sim_rate" | "normal" */
+  cause: string;
 }
 
 export function ReplayBanner() {
@@ -63,9 +66,13 @@ export function ReplayBanner() {
             <PauseCircle size={14} className="text-rose-300" />
             <span>{t("flight.replay.banner")}</span>
             <span className="rounded bg-rose-900/80 px-1.5 py-0.5 font-mono text-[10px] text-rose-100">
-              {state.isSlew
-                ? "SLEW"
-                : `${state.simRate.toFixed(2)}×`}
+              {state.isExternalReplay
+                ? "REPLAY"
+                : state.isSlew
+                  ? "SLEW"
+                  : state.cause === "time_regress"
+                    ? "TIME"
+                    : `${state.simRate.toFixed(2)}×`}
             </span>
           </div>
         </motion.div>

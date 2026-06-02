@@ -480,6 +480,20 @@ mod windows_simconnect {
         simulation_rate: f64,
         is_slew_active: f64,
         absolute_time_s: f64,
+        // (v4.0.0 P7.7 iter 2) Freeze flags. Apps de terceros tipo
+        // "Flight Recorder" (SAMMaster) usan estos events SimConnect:
+        //   - FREEZE_LATITUDE_LONGITUDE_SET
+        //   - FREEZE_ALTITUDE_SET
+        //   - FREEZE_ATTITUDE_SET
+        // Durante playback, congelan el avión y le inyectan posiciones
+        // pre-grabadas. Como el SIM corre normal (sim_rate=1, !slew,
+        // abs_time avanza), mi P7.7 iter 1 NO detectaba esto.
+        //
+        // Estas simvars reportan si CUALQUIERA de los freezes está
+        // activo — son la firma directa de un replay externo.
+        is_lat_lon_freeze: f64,
+        is_altitude_freeze: f64,
+        is_attitude_freeze: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -1064,6 +1078,10 @@ mod windows_simconnect {
             ("SIMULATION RATE", units_number.as_c_str()),
             ("IS SLEW ACTIVE", units_bool.as_c_str()),
             ("ABSOLUTE TIME", units_seconds.as_c_str()),
+            // (v4.0.0 P7.7 iter 2) Replay externo (Flight Recorder 3rd-party).
+            ("IS LATITUDE LONGITUDE FREEZE ON", units_bool.as_c_str()),
+            ("IS ALTITUDE FREEZE ON", units_bool.as_c_str()),
+            ("IS ATTITUDE FREEZE ON", units_bool.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -2461,34 +2479,59 @@ mod windows_simconnect {
         };
         *prev_absolute_time_s = if abs_time.is_finite() { Some(abs_time) } else { None };
         let rate_abnormal = sim_rate.is_finite() && (sim_rate < 0.95 || sim_rate > 1.05);
-        let is_replay_now = rate_abnormal || slew_active || time_regressed;
+        // (v4.0.0 P7.7 iter 2) Detección de replay externo.
+        let lat_lon_frozen = data.is_lat_lon_freeze >= 0.5;
+        let altitude_frozen = data.is_altitude_freeze >= 0.5;
+        let attitude_frozen = data.is_attitude_freeze >= 0.5;
+        let externally_controlled = lat_lon_frozen || altitude_frozen || attitude_frozen;
+        let is_replay_now =
+            rate_abnormal || slew_active || time_regressed || externally_controlled;
+
+        // Determinar la causa primaria para el payload UI.
+        let cause = if externally_controlled {
+            "external_replay"
+        } else if slew_active {
+            "slew"
+        } else if time_regressed {
+            "time_regress"
+        } else if rate_abnormal {
+            "sim_rate"
+        } else {
+            "normal"
+        };
 
         if is_replay_now {
             if !*in_replay_mode {
                 tracing::warn!(
                     target: "simconnect",
-                    "REPLAY/SLEW DETECTADO — sim_rate={:.2} slew={} time_regressed={} — freezing state machine",
-                    sim_rate, slew_active, time_regressed
+                    "REPLAY/SLEW DETECTADO — cause={} sim_rate={:.2} slew={} time_regressed={} ll_freeze={} alt_freeze={} att_freeze={} — freezing state machine",
+                    cause, sim_rate, slew_active, time_regressed,
+                    lat_lon_frozen, altitude_frozen, attitude_frozen
                 );
                 *in_replay_mode = true;
-                // Emit a la UI para que muestre el badge "REPLAY DETECTADO".
                 #[derive(serde::Serialize, Clone)]
                 #[serde(rename_all = "camelCase")]
                 struct ReplayPayload {
                     active: bool,
                     sim_rate: f64,
                     is_slew: bool,
+                    is_external_replay: bool,
+                    cause: String,
                 }
-                let _ = app.emit("flight://replay", ReplayPayload {
-                    active: true,
-                    sim_rate,
-                    is_slew: slew_active,
-                });
+                let _ = app.emit(
+                    "flight://replay",
+                    ReplayPayload {
+                        active: true,
+                        sim_rate,
+                        is_slew: slew_active,
+                        is_external_replay: externally_controlled,
+                        cause: cause.to_string(),
+                    },
+                );
             }
             *replay_stable_ticks_normal = 0;
         } else if *in_replay_mode {
             *replay_stable_ticks_normal = replay_stable_ticks_normal.saturating_add(1);
-            // 20 ticks @ 4Hz ≈ 5s sostenidos de condiciones normales.
             if *replay_stable_ticks_normal >= 20 {
                 tracing::info!(
                     target: "simconnect",
@@ -2503,12 +2546,19 @@ mod windows_simconnect {
                     active: bool,
                     sim_rate: f64,
                     is_slew: bool,
+                    is_external_replay: bool,
+                    cause: String,
                 }
-                let _ = app.emit("flight://replay", ReplayPayload {
-                    active: false,
-                    sim_rate,
-                    is_slew: false,
-                });
+                let _ = app.emit(
+                    "flight://replay",
+                    ReplayPayload {
+                        active: false,
+                        sim_rate,
+                        is_slew: false,
+                        is_external_replay: false,
+                        cause: "normal".to_string(),
+                    },
+                );
             }
         }
 
