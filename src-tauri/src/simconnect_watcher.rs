@@ -3356,6 +3356,16 @@ mod windows_simconnect {
                 let baro_hpa_c = fin(data.ambient_pressure_mbar).map(|v| v.round() as i64);
                 let visibility_c = fin(data.ambient_visibility_m).map(|v| v.round() as i64);
                 let precip_c = fin(data.ambient_precip_state).map(|v| v as i64);
+                // (v3.19.0 P7.9c) Nubes de la VIDA REAL (Open-Meteo) en la
+                // posición actual. MSFS 2020 no las expone por SimConnect,
+                // así que tomamos el dato real cacheado (refresco en
+                // background cada ~3 min / 20 NM — no bloquea el watcher) y
+                // lo estampamos en este sample para mostrarlo como histórico.
+                let cloud = crate::openmeteo::cloud_for_position(lat, lon);
+                let cloud_cover_c = cloud.total_pct;
+                let cloud_low_c = cloud.low_pct;
+                let cloud_mid_c = cloud.mid_pct;
+                let cloud_high_c = cloud.high_pct;
                 let alt_c = alt as i64;
                 let gs_c = gs as i64;
                 // (v3.7.0 — Phase O) Snapshot de todos los simvars
@@ -3465,6 +3475,10 @@ mod windows_simconnect {
                         baro_hpa: baro_hpa_c,
                         visibility_m: visibility_c,
                         precip_state: precip_c,
+                        cloud_cover_pct: cloud_cover_c,
+                        cloud_low_pct: cloud_low_c,
+                        cloud_mid_pct: cloud_mid_c,
+                        cloud_high_pct: cloud_high_c,
                     };
                     if let Err(e) = crate::flight_log::insert_track_point_full(
                         &pool_c, id, pt,

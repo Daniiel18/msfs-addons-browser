@@ -834,6 +834,12 @@ pub struct TrackPointInsert {
     pub baro_hpa: Option<i64>,
     pub visibility_m: Option<i64>,
     pub precip_state: Option<i64>,
+    /// (v3.19.0 P7.9c) Cobertura de nubes REAL (Open-Meteo) %, 0..100.
+    /// Total + capas baja/media/alta. None si no se obtuvo dato.
+    pub cloud_cover_pct: Option<i64>,
+    pub cloud_low_pct: Option<i64>,
+    pub cloud_mid_pct: Option<i64>,
+    pub cloud_high_pct: Option<i64>,
 }
 
 /// Inserta un punto en la traza del vuelo. Compat wrapper —
@@ -890,7 +896,8 @@ pub async fn insert_track_point_full(
             eng_oil_temp_1, eng_oil_temp_2, eng_oil_temp_3, eng_oil_temp_4,
             eng_oil_press_1, eng_oil_press_2, eng_oil_press_3, eng_oil_press_4,
             scoring_phase,
-            wind_dir_deg, wind_speed_kt, oat_c, baro_hpa, visibility_m, precip_state
+            wind_dir_deg, wind_speed_kt, oat_c, baro_hpa, visibility_m, precip_state,
+            cloud_cover_pct, cloud_low_pct, cloud_mid_pct, cloud_high_pct
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
@@ -905,7 +912,8 @@ pub async fn insert_track_point_full(
             ?38, ?39, ?40, ?41,
             ?42, ?43, ?44, ?45,
             ?46,
-            ?47, ?48, ?49, ?50, ?51, ?52
+            ?47, ?48, ?49, ?50, ?51, ?52,
+            ?53, ?54, ?55, ?56
         )
         "#,
     )
@@ -963,6 +971,11 @@ pub async fn insert_track_point_full(
     .bind(pt.baro_hpa)
     .bind(pt.visibility_m)
     .bind(pt.precip_state)
+    // (v3.19.0 P7.9c) Nubes reales — 4 binds.
+    .bind(pt.cloud_cover_pct)
+    .bind(pt.cloud_low_pct)
+    .bind(pt.cloud_mid_pct)
+    .bind(pt.cloud_high_pct)
     .execute(pool)
     .await?;
     Ok(())
@@ -1004,11 +1017,17 @@ pub struct WeatherSample {
     pub baro_hpa: Option<i64>,
     pub visibility_m: Option<i64>,
     pub precip_state: Option<i64>,
+    /// (v3.19.0 P7.9c) Cobertura de nubes REAL (Open-Meteo) %, 0..100.
+    pub cloud_cover_pct: Option<i64>,
+    pub cloud_low_pct: Option<i64>,
+    pub cloud_mid_pct: Option<i64>,
+    pub cloud_high_pct: Option<i64>,
 }
 
 /// (v4.0.0 P7.9b) Lee los samples con weather de un vuelo. Devuelve
 /// vacío si el vuelo no capturó weather (vuelos pre-v3.16.0 / VAS
-/// imports) — el frontend cae al fallback Open-Meteo en ese caso.
+/// imports). Incluye filas con SÓLO nubes (cloud_cover_pct) aunque no
+/// haya AMBIENT del sim — clave para que la capa de nubes reales se vea.
 pub async fn list_weather_for_flight(
     pool: &SqlitePool,
     flight_id: i64,
@@ -1017,10 +1036,12 @@ pub async fn list_weather_for_flight(
         r#"
         SELECT ts, lat, lon, alt_ft,
                wind_dir_deg, wind_speed_kt, oat_c, baro_hpa,
-               visibility_m, precip_state
+               visibility_m, precip_state,
+               cloud_cover_pct, cloud_low_pct, cloud_mid_pct, cloud_high_pct
         FROM flight_log_track
         WHERE flight_id = ?1
-          AND (wind_speed_kt IS NOT NULL OR oat_c IS NOT NULL)
+          AND (wind_speed_kt IS NOT NULL OR oat_c IS NOT NULL
+               OR cloud_cover_pct IS NOT NULL)
         ORDER BY id ASC
         "#,
     )

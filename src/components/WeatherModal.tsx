@@ -129,6 +129,15 @@ const WIND_RAMP: (number | string)[] = [
   35, "#facc15",
   50, "#ef4444",
 ];
+// (v3.19.0 P7.9c) Cobertura de nubes 0..100% — despejado (celeste) →
+// cubierto (gris). Distinto de temp (azul→rojo) y visibilidad (rojo→azul).
+const CLOUD_RAMP: (number | string)[] = [
+  0, "#38bdf8",
+  25, "#bae6fd",
+  50, "#cbd5e1",
+  75, "#94a3b8",
+  100, "#475569",
+];
 
 /**
  * (v4.0.0 — P7 iter 3) Weather modal del FlightBook.
@@ -180,7 +189,7 @@ export function WeatherModal({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [activeLayer, setActiveLayer] = useState<LayerKey>("wind");
+  const [activeLayer, setActiveLayer] = useState<LayerKey>("clouds");
   const [size, setSize] = useState({ width: 880, height: 560 });
   const resizingRef = useRef<{ startX: number; startY: number; w: number; h: number } | null>(
     null,
@@ -192,6 +201,9 @@ export function WeatherModal({
   // (v4.0.0 P7.9b) Weather samples capturados durante el vuelo.
   const [weather, setWeather] = useState<WeatherSample[] | null>(null);
   const hasWeather = (weather?.length ?? 0) > 0;
+  // (v3.19.0 P7.9c) ¿Capturó nubes reales (Open-Meteo)? Independiente
+  // del AMBIENT del sim — un vuelo puede tener nubes pero no wind/oat.
+  const hasCloud = weather?.some((w) => w.cloudCoverPct != null) ?? false;
 
   // Carga el track del vuelo para dibujar la ruta en el mapa.
   const [trackCoords, setTrackCoords] = useState<[number, number][] | null>(
@@ -335,23 +347,7 @@ export function WeatherModal({
         },
       });
 
-      // === Capas raster LIVE (RainViewer) ===
-      map.addSource("wx-clouds", {
-        type: "raster",
-        tiles: [
-          "https://tilecache.rainviewer.com/v2/satellite/0/256/{z}/{x}/{y}/0/0_0.png",
-        ],
-        tileSize: 256,
-        attribution: "© RainViewer",
-      });
-      map.addLayer({
-        id: "wx-clouds-layer",
-        type: "raster",
-        source: "wx-clouds",
-        paint: { "raster-opacity": 0.7 },
-        layout: { visibility: "none" },
-      });
-
+      // === Capa raster LIVE de precipitación (RainViewer, sólo en vivo) ===
       map.addSource("wx-precip", {
         type: "raster",
         tiles: [
@@ -380,6 +376,20 @@ export function WeatherModal({
         paint: {
           "line-width": 4,
           "line-color": ["interpolate", ["linear"], ["get", "val"], ...TEMP_RAMP] as never,
+        },
+      });
+
+      // (v3.19.0 P7.9c) Nubes REALES (Open-Meteo) capturadas durante el
+      // vuelo — cinta coloreada por cobertura % (despejado→cubierto).
+      map.addSource("wx-cloud", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "wx-cloud-line",
+        type: "line",
+        source: "wx-cloud",
+        layout: { "line-cap": "round", "line-join": "round", visibility: "none" },
+        paint: {
+          "line-width": 5,
+          "line-color": ["interpolate", ["linear"], ["get", "val"], ...CLOUD_RAMP] as never,
         },
       });
 
@@ -602,6 +612,7 @@ export function WeatherModal({
       if (src) src.setData(buildValueSegments(weather, getVal));
     };
     setSeg("wx-temp", (w) => w.oatC);
+    setSeg("wx-cloud", (w) => w.cloudCoverPct);
     setSeg("wx-vis", (w) =>
       w.visibilityM != null ? Math.min(w.visibilityM, 20000) : null,
     );
@@ -621,7 +632,8 @@ export function WeatherModal({
         /* layer puede no existir aún */
       }
     };
-    vis("wx-clouds-layer", activeLayer === "clouds");
+    // (v3.19.0 P7.9c) Nubes = cinta de cobertura REAL capturada (Open-Meteo).
+    vis("wx-cloud-line", activeLayer === "clouds");
     // Precip: radar RainViewer en vivo, segmentos derivados en pasado.
     vis("wx-precip-layer", activeLayer === "precip" && isLiveFlight);
     vis("wx-precip-pts-line", activeLayer === "precip" && !isLiveFlight);
@@ -690,18 +702,19 @@ export function WeatherModal({
       case "precip":
         return hasWeather || isLiveFlight;
       case "clouds":
-        return isLiveFlight;
+        // (v3.19.0 P7.9c) Nubes REALES capturadas (Open-Meteo). Ya no
+        // dependen de tiles en vivo — funcionan como histórico.
+        return hasCloud;
       default:
         return false;
     }
   };
 
-  // El sidebar muestra las 5 capas derivadas siempre (deshabilitadas
-  // con tooltip si el vuelo no capturó weather), y Clouds sólo cuando
-  // el vuelo está en vivo (RainViewer). Así no hay tabs muertos.
-  const sidebarLayers = LAYERS.filter(
-    (l) => l.key !== "clouds" || isLiveFlight,
-  );
+  // El sidebar muestra todas las capas; cada una se habilita según los
+  // datos que el vuelo capturó (tooltip explica si falta). Así no hay
+  // tabs muertos para vuelos con weather, y los viejos sin datos lo
+  // dicen claramente.
+  const sidebarLayers = LAYERS;
 
   // Si la capa activa no está disponible, saltamos a la primera que sí.
   useEffect(() => {
@@ -709,7 +722,7 @@ export function WeatherModal({
     const first = sidebarLayers.find((l) => layerAvailable(l.key));
     if (first) setActiveLayer(first.key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasWeather, isLiveFlight, activeLayer]);
+  }, [hasWeather, hasCloud, isLiveFlight, activeLayer]);
 
   // (v4.0.0 P7.9b) Resumen de weather para el panel lateral.
   const wxSummary = (() => {
@@ -718,6 +731,9 @@ export function WeatherModal({
     const temps = weather.map((w) => w.oatC).filter((v): v is number => v != null);
     const baros = weather.map((w) => w.baroHpa).filter((v): v is number => v != null);
     const viss = weather.map((w) => w.visibilityM).filter((v): v is number => v != null);
+    const cloudsArr = weather
+      .map((w) => w.cloudCoverPct)
+      .filter((v): v is number => v != null);
     const maxWind = winds.length ? Math.max(...winds) : null;
     const avgWind = winds.length
       ? Math.round(winds.reduce((a, b) => a + b, 0) / winds.length)
@@ -725,12 +741,15 @@ export function WeatherModal({
     const minTemp = temps.length ? Math.round(Math.min(...temps)) : null;
     const maxTemp = temps.length ? Math.round(Math.max(...temps)) : null;
     const minVis = viss.length ? Math.round(Math.min(...viss)) : null;
+    const avgCloud = cloudsArr.length
+      ? Math.round(cloudsArr.reduce((a, b) => a + b, 0) / cloudsArr.length)
+      : null;
     const qnh = baros.length ? baros[0] : null;
     // FIX: 2 = SIN precipitación; lluvia=4, nieve=8.
     const anyPrecip = weather.some(
       (w) => w.precipState === 4 || w.precipState === 8,
     );
-    return { maxWind, avgWind, minTemp, maxTemp, minVis, qnh, anyPrecip };
+    return { maxWind, avgWind, minTemp, maxTemp, minVis, avgCloud, qnh, anyPrecip };
   })();
 
   return (
@@ -829,6 +848,12 @@ export function WeatherModal({
                   {t("fb.weather.summary.title")}
                 </div>
                 <dl className="space-y-1">
+                  {wxSummary.avgCloud != null && (
+                    <div className="flex justify-between">
+                      <dt className="text-slate-400">{t("fb.weather.summary.clouds")}</dt>
+                      <dd className="font-mono">{wxSummary.avgCloud}%</dd>
+                    </div>
+                  )}
                   {wxSummary.avgWind != null && (
                     <div className="flex justify-between">
                       <dt className="text-slate-400">{t("fb.weather.summary.wind_avg")}</dt>
@@ -890,9 +915,11 @@ export function WeatherModal({
                 <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
                   {t("fb.weather.legend.title")}
                 </div>
-                {/* La ruta queda visible (ámbar) salvo en temp/visibilidad,
-                    donde la cinta de color RECOLOREA la ruta entera. */}
-                {activeLayer !== "temp" && activeLayer !== "visibility" && (
+                {/* La ruta queda visible (ámbar) salvo en temp/visibilidad/
+                    nubes, donde la cinta de color RECOLOREA la ruta entera. */}
+                {activeLayer !== "temp" &&
+                  activeLayer !== "visibility" &&
+                  activeLayer !== "clouds" && (
                   <div className="mb-1.5 flex items-center gap-2">
                     <span className="inline-block h-0.5 w-5 rounded bg-amber-500" />
                     <span>{t("fb.weather.legend.route")}</span>
@@ -1023,17 +1050,28 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
       </>
     );
   }
-  // clouds — RainViewer, sin escala propia.
+  if (layer === "clouds") {
+    return (
+      <>
+        <div className="mb-1.5">{t("fb.weather.legend.clouds")}</div>
+        <GradientBar
+          colors={["#38bdf8", "#bae6fd", "#cbd5e1", "#94a3b8", "#475569"]}
+          left={`0% ${t("fb.weather.legend.clear")}`}
+          right={`100% ${t("fb.weather.legend.overcast")}`}
+        />
+      </>
+    );
+  }
   return null;
 }
 
 type LayerKey = "wind" | "temp" | "precip" | "visibility" | "icing" | "clouds";
 
 const LAYERS: { key: LayerKey; labelKey: string; Icon: typeof Cloud }[] = [
+  { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud },
+  { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain },
   { key: "wind", labelKey: "fb.weather.layer.wind", Icon: Wind },
   { key: "temp", labelKey: "fb.weather.layer.temp", Icon: Thermometer },
-  { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain },
   { key: "visibility", labelKey: "fb.weather.layer.visibility", Icon: Eye },
   { key: "icing", labelKey: "fb.weather.layer.icing", Icon: Snowflake },
-  { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud },
 ];

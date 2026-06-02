@@ -12,6 +12,7 @@ pub mod gsx_parking;
 pub mod install;
 pub mod logger;
 pub mod msfs_logbook;
+pub mod openmeteo;
 pub mod package_ops;
 pub mod parser;
 pub mod pmdg_liveries;

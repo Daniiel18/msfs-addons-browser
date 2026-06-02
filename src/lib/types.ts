@@ -528,6 +528,12 @@ export interface WeatherSample {
   baroHpa: number | null;
   visibilityM: number | null;
   precipState: number | null;
+  /** (v3.19.0 P7.9c) Cobertura de nubes REAL (Open-Meteo) %, 0..100.
+   *  Capturada durante el vuelo en la posición del avión. */
+  cloudCoverPct: number | null;
+  cloudLowPct: number | null;
+  cloudMidPct: number | null;
+  cloudHighPct: number | null;
 }
 
 /** (v4.0.0 — P5) Punto completo con telemetría extendida para el
