@@ -212,7 +212,7 @@ pub async fn install_update(
                 .strip_prefix(r"\\?\")
                 .unwrap_or(&exe_str)
                 .to_string();
-            if let Err(e) = launch_relaunch_helper(&exe_clean) {
+            if let Err(e) = launch_relaunch_helper(&exe_clean, env!("CARGO_PKG_VERSION")) {
                 tracing::warn!(
                     target: "updater",
                     "no se pudo lanzar el helper de relaunch (no fatal): {}",
@@ -258,13 +258,14 @@ pub async fn install_update(
 /// El proceso sobrevive al `exit(0)` de la app gracias a
 /// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`.
 #[cfg(target_os = "windows")]
-fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
+fn launch_relaunch_helper(exe_path: &str, old_version: &str) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let escaped = exe_path.replace('\'', "''");
+    let ver_escaped = old_version.replace('\'', "''");
     // (v3.4.0) **UN SOLO log path activo**. Antes (v3.3.0) el helper
     // escribía a 4 candidatos a la vez para cubrir migraciones — pero
     // si dos coincidían (ej. portable `<exe>\data\logs\` Y legacy
@@ -278,6 +279,7 @@ fn launch_relaunch_helper(exe_path: &str) -> std::io::Result<()> {
     let ps_command = format!(
         r#"$origExe = '{esc}'
 $startTime = Get-Date
+$oldVer = '{ver}'
 $tempLog = Join-Path $env:TEMP 'simfleet-relaunch.log'
 $origDir = Split-Path -Parent $origExe
 $appLog = Join-Path $origDir 'data\logs\simfleet.log'
@@ -293,7 +295,20 @@ function WriteAll($msg) {{
     try {{ Add-Content -Path $appLog -Value $line }} catch {{ }}
   }}
 }}
-WriteAll ("=== relaunch helper start exe={0}" -f $origExe)
+WriteAll ("=== relaunch helper start exe={{0}} oldVer={{1}}" -f $origExe, $oldVer)
+
+# (v3.22.0) Normaliza una versión a "major.minor.patch" para comparar.
+# El exe instalado reporta ProductVersion (ej. "3.22.0" o "3.22.0.0");
+# lo recortamos a 3 componentes para compararlo contra la versión que
+# lanzó el update.
+function NormVer($v) {{
+  if (-not $v) {{ return '' }}
+  $p = ($v.ToString().Trim() -split '\.')
+  if ($p.Count -ge 3) {{ return ($p[0..2] -join '.') }}
+  return $v.ToString().Trim()
+}}
+$oldNorm = NormVer $oldVer
+WriteAll ("old version normalized = {0}" -f $oldNorm)
 
 # (v3.0.0) Lista de candidatos: el path original + variantes con el
 # nuevo productName "SimFleet" en per-user y per-machine.
@@ -320,15 +335,23 @@ while ((Get-Date) -lt $deadline -and $launched -eq $null) {{
     if (Test-Path -LiteralPath $exe) {{
       try {{
         $item = Get-Item -LiteralPath $exe -ErrorAction Stop
-        if ($item.LastWriteTime -gt $startTime) {{
-          # settle: dar 2s a que el installer termine de escribir.
+        # Señal PRIMARIA: el exe reporta una versión DISTINTA a la que
+        # lanzó el update = el installer ya lo reemplazó. Robusto aunque
+        # NSIS preserve el timestamp de compilación (por eso el check de
+        # LastWriteTime solo no alcanzaba). SECUNDARIA: mtime posterior
+        # al arranque del helper (por si no se pudo leer la versión).
+        $verNorm = NormVer $item.VersionInfo.ProductVersion
+        $isNewVer = ($verNorm -ne '' -and $oldNorm -ne '' -and $verNorm -ne $oldNorm)
+        $isFresh = ($item.LastWriteTime -gt $startTime)
+        if ($isNewVer -or $isFresh) {{
+          # settle: 2s para que el installer termine de escribir.
           Start-Sleep -Seconds 2
-          WriteAll ("fresh exe='{{0}}' written={{1:o}} — launching" -f $exe, $item.LastWriteTime)
+          WriteAll ("ready exe='{{0}}' ver='{{1}}' old='{{2}}' fresh={{3}} — launching" -f $exe, $verNorm, $oldNorm, $isFresh)
           $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
           $launched = $proc
           break
         }} else {{
-          WriteAll ("stale exe='{{0}}' written={{1:o}} (<= start) — waiting" -f $exe, $item.LastWriteTime)
+          WriteAll ("waiting exe='{{0}}' ver='{{1}}' old='{{2}}' (sin cambio aun)" -f $exe, $verNorm, $oldNorm)
         }}
       }} catch {{
         WriteAll ("error getting item '{{0}}': {{1}}" -f $exe, $_)
@@ -369,6 +392,7 @@ if ($launched -ne $null) {{
   WriteAll 'TIMEOUT — ningún candidato quedó disponible en 90s'
 }}"#,
         esc = escaped,
+        ver = ver_escaped,
     );
 
     std::process::Command::new("powershell")
@@ -386,7 +410,7 @@ if ($launched -ne $null) {{
 }
 
 #[cfg(not(target_os = "windows"))]
-fn launch_relaunch_helper(_exe_path: &str) -> std::io::Result<()> {
+fn launch_relaunch_helper(_exe_path: &str, _old_version: &str) -> std::io::Result<()> {
     Ok(())
 }
 

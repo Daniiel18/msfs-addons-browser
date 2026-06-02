@@ -37,6 +37,55 @@ function windArrowEnd(
   return [lon + dLon, lat + dLat];
 }
 
+/** Distancia aproximada en millas náuticas entre dos `[lon, lat]`. */
+function nmBetween(a: [number, number], b: [number, number]): number {
+  const R = 3440.065;
+  const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+  const dLon = ((b[0] - a[0]) * Math.PI) / 180;
+  const la1 = (a[1] * Math.PI) / 180;
+  const la2 = (b[1] * Math.PI) / 180;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** (v3.22.0) Limpia la ruta antes de dibujarla: descarta null-island
+ *  (0,0) y los "spikes" — un punto lejos de AMBOS vecinos = glitch de
+ *  GPS. Vuelos viejos / importados a veces traen estos puntos, que
+ *  dibujaban una línea recta larga cruzando el mapa Y disparaban un
+ *  fitBounds gigante (la Tierra se veía como una bola negra al alejar).
+ *  Un hueco legítimo (app cerrada a mitad de vuelo) NO se descarta
+ *  porque ahí prev→next también es grande. */
+function sanitizeRouteCoords(coords: [number, number][]): [number, number][] {
+  const valid = coords.filter(
+    ([lon, lat]) =>
+      Number.isFinite(lat) &&
+      Number.isFinite(lon) &&
+      Math.abs(lat) <= 90 &&
+      Math.abs(lon) <= 180 &&
+      !(Math.abs(lat) < 0.05 && Math.abs(lon) < 0.05),
+  );
+  const kept: [number, number][] = [];
+  for (let i = 0; i < valid.length; i++) {
+    const cur = valid[i];
+    const prev = kept[kept.length - 1];
+    const next = valid[i + 1];
+    if (prev && next) {
+      const dPrev = nmBetween(prev, cur);
+      const dNext = nmBetween(cur, next);
+      const dBridge = nmBetween(prev, next);
+      // Outlier aislado: el desvío hasta `cur` y de vuelta es enorme
+      // frente a ir derecho prev→next → es un glitch, lo saltamos.
+      if (dPrev > 40 && dNext > 40 && dBridge < Math.min(dPrev, dNext)) {
+        continue;
+      }
+    }
+    kept.push(cur);
+  }
+  return kept;
+}
+
 /**
  * (v4.0.0 P7.9b iter3) Construye segmentos LineString consecutivos a lo
  * largo del track, cada uno con una propiedad numérica `val`. Sólo se
@@ -203,9 +252,12 @@ export function WeatherModal({
       .getFlightTrack(entry.id)
       .then((pts) => {
         if (cancelled) return;
-        const coords = pts
-          .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
-          .map((p) => [p.lon, p.lat] as [number, number]);
+        // (v3.22.0) Sanitiza: quita null-island y spikes (glitches GPS)
+        // que dibujaban una línea recta cruzando el mapa y reventaban el
+        // encuadre. Aplica a TODOS los vuelos (incluso viejos/importados).
+        const coords = sanitizeRouteCoords(
+          pts.map((p) => [p.lon, p.lat] as [number, number]),
+        );
         setTrackCoords(coords);
       })
       .catch(() => setTrackCoords([]));
