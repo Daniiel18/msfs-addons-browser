@@ -124,6 +124,12 @@
 
   "settings.language.title": "Idioma · Language",
   "settings.language.description": "«Auto» usa el idioma del sistema operativo. Al cambiar manualmente la app pedirá reiniciar para aplicar los textos.",
+  "settings.units.title": "Unidades",
+  "settings.units.description": "Sistema de medida en todo el FlightBook: altitud, velocidad, distancia, peso y presión. El cambio es inmediato.",
+  "settings.units.imperial": "Imperial",
+  "settings.units.metric": "Métrico",
+  "settings.temp.title": "Temperatura",
+  "settings.temp.description": "Unidad de temperatura para el clima y la telemetría de motores.",
   "settings.language.auto": "Auto (sistema)",
   "settings.language.es": "Español",
   "settings.language.en": "English",

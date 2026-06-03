@@ -208,6 +208,11 @@ export interface AppSettings {
   /** (v3.1.0) Idioma de la UI: "auto" | "es" | "en". Auto resuelve
    *  contra `navigator.language` al primer arranque. */
   language: string;
+  /** (v3.28.0 P7.11) Sistema de unidades: "imperial" | "metric".
+   *  Reactivo en toda la UI (FlightBook, Weather, Performance, badge). */
+  unitSystem: string;
+  /** (v3.28.0 P7.11) Unidad de temperatura: "C" | "F". */
+  tempUnit: string;
   autostartEnabled: boolean;
   simbriefPilotId: string | null;
   communityPath: string | null;

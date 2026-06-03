@@ -15,6 +15,7 @@ import {
 import type { FlightLogEntry, WeatherSample } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { useUnits } from "../lib/units";
 import { buildTerminatorPolygon } from "../lib/terminator";
 import { segmentTrackCoords } from "../lib/smooth";
 
@@ -178,6 +179,15 @@ export function WeatherModal({
   entry: FlightLogEntry;
   onClose: () => void;
 }) {
+  const u = useUnits();
+  // Visibilidad: métrica en km, imperial en millas terrestres (sm) —
+  // el estándar de aviación en EE.UU. (METAR US usa SM).
+  const fmtVis = (m: number): string => {
+    if (u.system === "metric") {
+      return m >= 9999 ? "10+ km" : `${(m / 1000).toFixed(1)} km`;
+    }
+    return m >= 9999 ? "6+ sm" : `${(m / 1609.34).toFixed(1)} sm`;
+  };
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [mapReady, setMapReady] = useState(false);
@@ -882,37 +892,33 @@ export function WeatherModal({
                   {wxSummary.avgWind != null && (
                     <div className="flex justify-between">
                       <dt className="text-slate-400">{t("fb.weather.summary.wind_avg")}</dt>
-                      <dd className="font-mono">{wxSummary.avgWind} kt</dd>
+                      <dd className="font-mono">{u.fmt.speed(wxSummary.avgWind)}</dd>
                     </div>
                   )}
                   {wxSummary.maxWind != null && (
                     <div className="flex justify-between">
                       <dt className="text-slate-400">{t("fb.weather.summary.wind_max")}</dt>
-                      <dd className="font-mono">{wxSummary.maxWind} kt</dd>
+                      <dd className="font-mono">{u.fmt.speed(wxSummary.maxWind)}</dd>
                     </div>
                   )}
                   {wxSummary.minTemp != null && wxSummary.maxTemp != null && (
                     <div className="flex justify-between">
                       <dt className="text-slate-400">{t("fb.weather.summary.temp")}</dt>
                       <dd className="font-mono">
-                        {wxSummary.minTemp}…{wxSummary.maxTemp}°C
+                        {Math.round(u.conv.temp(wxSummary.minTemp))}…{u.fmt.temp(wxSummary.maxTemp)}
                       </dd>
                     </div>
                   )}
                   {wxSummary.minVis != null && (
                     <div className="flex justify-between">
                       <dt className="text-slate-400">{t("fb.weather.summary.visibility")}</dt>
-                      <dd className="font-mono">
-                        {wxSummary.minVis >= 9999
-                          ? "10+ km"
-                          : `${(wxSummary.minVis / 1000).toFixed(1)} km`}
-                      </dd>
+                      <dd className="font-mono">{fmtVis(wxSummary.minVis)}</dd>
                     </div>
                   )}
                   {wxSummary.qnh != null && (
                     <div className="flex justify-between">
                       <dt className="text-slate-400">{t("fb.weather.summary.qnh")}</dt>
-                      <dd className="font-mono">{wxSummary.qnh} hPa</dd>
+                      <dd className="font-mono">{u.fmt.pressure(wxSummary.qnh)}</dd>
                     </div>
                   )}
                   <div className="flex justify-between">
@@ -1004,6 +1010,7 @@ function GradientBar({
 
 /** Leyenda específica de la capa activa. */
 function LayerLegend({ layer }: { layer: LayerKey }) {
+  const u = useUnits();
   if (layer === "wind") {
     return (
       <>
@@ -1013,8 +1020,8 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
         </div>
         <GradientBar
           colors={["#38bdf8", "#22c55e", "#facc15", "#ef4444"]}
-          left="<20"
-          right=">50 kt"
+          left={`<${Math.round(u.conv.speed(20))}`}
+          right={`>${Math.round(u.conv.speed(50))} ${u.unit.speed}`}
         />
       </>
     );
@@ -1025,8 +1032,8 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
         <div className="mb-1.5">{t("fb.weather.legend.temp")}</div>
         <GradientBar
           colors={["#4338ca", "#38bdf8", "#5eead4", "#22c55e", "#f59e0b", "#ef4444"]}
-          left="-50"
-          right="+40 °C"
+          left={`${Math.round(u.conv.temp(-50))}`}
+          right={`${Math.round(u.conv.temp(40))} ${u.unit.temp}`}
         />
       </>
     );
@@ -1038,7 +1045,7 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
         <GradientBar
           colors={["#ef4444", "#f97316", "#facc15", "#22c55e", "#38bdf8"]}
           left={`0 (${t("fb.weather.legend.low")})`}
-          right="10+ km"
+          right={u.system === "metric" ? "10+ km" : "6+ sm"}
         />
       </>
     );

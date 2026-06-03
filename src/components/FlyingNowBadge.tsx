@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { Plane, Radio } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
+import { useUnits } from "../lib/units";
 
 /**
  * Badge "Volando ahora" — visible en el header cuando MSFS
@@ -23,6 +24,8 @@ import { useSimBriefStore } from "../stores/useSimBriefStore";
 export function FlyingNowBadge() {
   const status = useFlightLogStore((s) => s.status);
   const flights = useSimBriefStore((s) => s.flights);
+  // (v3.28.0 P7.11) Unidades reactivas. Hook ANTES de cualquier return.
+  const u = useUnits();
 
   // (v3.4.13) Guard reforzado: además de simRunning, requerimos
   // que el watcher ya haya resuelto la posición real del avión
@@ -99,12 +102,14 @@ export function FlyingNowBadge() {
       const fl = Math.round(status.currentAltFt / 100);
       return `FL${fl.toString().padStart(3, "0")}`;
     }
-    return `${status.currentAltFt.toLocaleString("en-US")}ft`;
+    // (v3.28.0 P7.11) Bajo FL100 mostramos altitud cruda en la unidad
+    // elegida (ft o m). FL es universal (centenas de pies) y no cambia.
+    return `${Math.round(u.conv.altitude(status.currentAltFt)).toLocaleString("en-US")}${u.unit.altitude}`;
   })();
 
   const gsFmt =
     status.currentGroundSpeedKt != null && status.currentGroundSpeedKt > 0
-      ? `${status.currentGroundSpeedKt}kt`
+      ? `${Math.round(u.conv.speed(status.currentGroundSpeedKt))}${u.unit.speed}`
       : null;
 
   const onGround = !!status.onGround;
@@ -175,7 +180,7 @@ export function FlyingNowBadge() {
       {/* En vuelo: NM restantes + ETA. */}
       {live && nmRemaining != null && !onGround && (
         <span className={`font-mono text-[10px] ${phase.subClass}`}>
-          · {Math.round(nmRemaining)}nm
+          · {Math.round(u.conv.distance(nmRemaining))}{u.unit.distance}
         </span>
       )}
       {live && etaLocal && !onGround && (
@@ -199,7 +204,7 @@ export function FlyingNowBadge() {
       {/* Sin SimConnect: distancia total del plan. */}
       {!live && status.distanceNm != null && hasFlight && (
         <span className="text-[10px] text-emerald-300/70">
-          · {status.distanceNm}nm
+          · {Math.round(u.conv.distance(status.distanceNm))}{u.unit.distance}
         </span>
       )}
     </motion.div>

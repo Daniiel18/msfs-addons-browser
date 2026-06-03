@@ -124,6 +124,12 @@
 
   "settings.language.title": "Language · Idioma",
   "settings.language.description": "\"Auto\" uses the operating system language. Manual changes require a restart to fully apply.",
+  "settings.units.title": "Units",
+  "settings.units.description": "Measurement system across the FlightBook: altitude, speed, distance, weight and pressure. Applies instantly.",
+  "settings.units.imperial": "Imperial",
+  "settings.units.metric": "Metric",
+  "settings.temp.title": "Temperature",
+  "settings.temp.description": "Temperature unit for weather and engine telemetry.",
   "settings.language.auto": "Auto (system)",
   "settings.language.es": "Español",
   "settings.language.en": "English",

@@ -1189,6 +1189,8 @@ const demoApi: Api = {
       defaultView: "dashboard",
       theme: "dark",
       language: "auto",
+      unitSystem: "imperial",
+      tempUnit: "C",
       autostartEnabled: false,
       simbriefPilotId: null,
       communityPath: "C:/Demo/Community",

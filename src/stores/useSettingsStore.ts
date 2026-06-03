@@ -2,6 +2,11 @@ import { create } from "zustand";
 import type { AppSettings } from "../lib/types";
 import { api } from "../lib/tauri";
 import { persistLocale, setActiveLocale } from "../lib/i18n";
+import {
+  loadStoredUnitSystem,
+  loadStoredTempUnit,
+  persistUnits,
+} from "../lib/unitsStorage";
 
 /**
  * Settings de la app — preferencias persistidas + autostart con
@@ -29,6 +34,8 @@ interface SettingsState {
   ) => Promise<void>;
   setDefaultView: (view: string) => Promise<void>;
   setLanguage: (lang: "auto" | "es" | "en") => Promise<void>;
+  setUnitSystem: (system: "imperial" | "metric") => Promise<void>;
+  setTempUnit: (unit: "C" | "F") => Promise<void>;
   setAutostart: (enabled: boolean) => Promise<void>;
   setMinimizeToTray: (enabled: boolean) => Promise<void>;
   setOnboardingCompleted: (done: boolean) => Promise<void>;
@@ -45,6 +52,8 @@ const DEFAULTS: AppSettings = {
   defaultView: "dashboard",
   theme: "dark",
   language: "auto",
+  unitSystem: "imperial",
+  tempUnit: "C",
   autostartEnabled: false,
   simbriefPilotId: null,
   communityPath: null,
@@ -60,11 +69,20 @@ const KEY_MAP: Record<string, string> = {
   onboardingCompleted: "pref_onboarding_completed",
   defaultView: "pref_default_view",
   language: "pref_language",
+  unitSystem: "pref_unit_system",
+  tempUnit: "pref_temp_unit",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   loaded: false,
-  settings: DEFAULTS,
+  // (v3.28.0 P7.11) Sembramos unidades desde localStorage para que el
+  // cold-start pinte en el sistema correcto ANTES del bootstrap async
+  // de la DB (mismo patrón que el idioma con preloadLocale).
+  settings: {
+    ...DEFAULTS,
+    unitSystem: loadStoredUnitSystem(),
+    tempUnit: loadStoredTempUnit(),
+  },
   lastError: null,
 
   async bootstrap() {
@@ -80,6 +98,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const lang = (s.language ?? "auto") as "auto" | "es" | "en";
       persistLocale(lang);
       setActiveLocale(lang);
+      // (v3.28.0 P7.11) Espejo de unidades a localStorage — la DB es la
+      // fuente de verdad; esto sincroniza el cold-start y el caso de
+      // cloud sync que bajó prefs de otra PC.
+      persistUnits(s.unitSystem ?? "imperial", s.tempUnit ?? "C");
     } catch (e) {
       console.warn("settings bootstrap failed:", e);
       // Aun en error marcamos `loaded:true` para que la UI no se
@@ -135,6 +157,32 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       console.warn("setLanguage failed:", e);
       set({ lastError: String(e) });
       throw e;
+    }
+  },
+
+  async setUnitSystem(system) {
+    // (v3.28.0 P7.11) Optimista + persiste + espeja. Reactivo: los
+    // componentes que usan `useUnits()` se re-renderizan al instante.
+    const prev = get().settings;
+    set({ settings: { ...prev, unitSystem: system } });
+    persistUnits(system, prev.tempUnit);
+    try {
+      await api.setAppSetting(KEY_MAP.unitSystem, system);
+    } catch (e) {
+      set({ settings: prev, lastError: String(e) });
+      persistUnits(prev.unitSystem, prev.tempUnit);
+    }
+  },
+
+  async setTempUnit(unit) {
+    const prev = get().settings;
+    set({ settings: { ...prev, tempUnit: unit } });
+    persistUnits(prev.unitSystem, unit);
+    try {
+      await api.setAppSetting(KEY_MAP.tempUnit, unit);
+    } catch (e) {
+      set({ settings: prev, lastError: String(e) });
+      persistUnits(prev.unitSystem, prev.tempUnit);
     }
   },
 

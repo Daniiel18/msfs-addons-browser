@@ -53,6 +53,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const setBoolean = useSettingsStore((s) => s.setBoolean);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const setMinimizeToTray = useSettingsStore((s) => s.setMinimizeToTray);
+  const setUnitSystem = useSettingsStore((s) => s.setUnitSystem);
+  const setTempUnit = useSettingsStore((s) => s.setTempUnit);
   const clearCaches = useSettingsStore((s) => s.clearCaches);
   const resetSettings = useSettingsStore((s) => s.resetSettings);
 
@@ -271,6 +273,26 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   current={settings.language}
                   onChange={(l) => void setLanguage(l)}
                   onRequestRestart={() => setShowRestartHint(true)}
+                />
+                <SegmentRow
+                  title={t("settings.units.title")}
+                  description={t("settings.units.description")}
+                  current={settings.unitSystem}
+                  options={[
+                    { value: "imperial", label: t("settings.units.imperial") },
+                    { value: "metric", label: t("settings.units.metric") },
+                  ]}
+                  onChange={(v) => void setUnitSystem(v as "imperial" | "metric")}
+                />
+                <SegmentRow
+                  title={t("settings.temp.title")}
+                  description={t("settings.temp.description")}
+                  current={settings.tempUnit}
+                  options={[
+                    { value: "C", label: "°C" },
+                    { value: "F", label: "°F" },
+                  ]}
+                  onChange={(v) => void setTempUnit(v as "C" | "F")}
                 />
                 <Toggle
                   label={t("settings.autostart.title")}
@@ -641,6 +663,48 @@ export function LanguageRow({
         >
           EN
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** (v3.28.0 P7.11) Fila genérica con un control segmentado (estilo
+ *  igual al selector de idioma). Usada para Unidades y Temperatura.
+ *  A diferencia del idioma, NO requiere reinicio — el cambio es
+ *  reactivo en toda la UI vía `useUnits()`. */
+function SegmentRow({
+  title,
+  description,
+  current,
+  options,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  current: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-slate-200">{title}</div>
+        <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
+      </div>
+      <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
+        {options.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className={`rounded px-2.5 py-1 text-[11px] ${
+              current === opt.value
+                ? "bg-slate-700/80 text-slate-100"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
     </div>
   );

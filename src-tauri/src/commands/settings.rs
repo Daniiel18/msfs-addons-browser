@@ -43,6 +43,16 @@ pub struct AppSettings {
     pub theme: String,
     /// (v3.1.0) Idioma de la UI: "auto" | "es" | "en". Default "auto".
     pub language: String,
+    /// (v3.28.0 P7.11) Sistema de unidades global: "imperial" (ft, kt,
+    /// nm, fpm, lb, inHg) | "metric" (m, km/h, km, m/s, kg, hPa).
+    /// Default "imperial" — son las unidades reales de aviación, así
+    /// los usuarios actuales no ven ningún cambio salvo que opten por
+    /// métrico. Reactivo (no requiere reinicio).
+    pub unit_system: String,
+    /// (v3.28.0 P7.11) Unidad de temperatura: "C" | "F". Separada del
+    /// sistema porque algunos usuarios imperiales quieren °C de todas
+    /// formas (estándar METAR mundial). Default "C".
+    pub temp_unit: String,
     pub autostart_enabled: bool,
     pub simbrief_pilot_id: Option<String>,
     /// Carpeta Community detectada — la mostramos en read-only para
@@ -65,6 +75,8 @@ impl Default for AppSettings {
             default_view: "dashboard".to_string(),
             theme: "dark".to_string(),
             language: "auto".to_string(),
+            unit_system: "imperial".to_string(),
+            temp_unit: "C".to_string(),
             autostart_enabled: false,
             simbrief_pilot_id: None,
             community_path: None,
@@ -119,6 +131,16 @@ pub async fn get_app_settings(
             .get("pref_language")
             .cloned()
             .unwrap_or_else(|| "auto".to_string()),
+        unit_system: kv
+            .get("pref_unit_system")
+            .filter(|s| matches!(s.as_str(), "imperial" | "metric"))
+            .cloned()
+            .unwrap_or_else(|| "imperial".to_string()),
+        temp_unit: kv
+            .get("pref_temp_unit")
+            .filter(|s| matches!(s.as_str(), "C" | "F"))
+            .cloned()
+            .unwrap_or_else(|| "C".to_string()),
         autostart_enabled,
         simbrief_pilot_id: kv
             .get("simbrief_pilot_id")
@@ -224,6 +246,9 @@ fn is_valid_key(key: &str) -> bool {
             | "pref_theme"
             // (v3.1.0) Idioma de la UI: "auto" | "es" | "en".
             | "pref_language"
+            // (v3.28.0 P7.11) Unidades globales.
+            | "pref_unit_system"
+            | "pref_temp_unit"
     )
 }
 

@@ -22,6 +22,7 @@ import {
 import type { FlightTrackFullPoint } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { useUnits, type Units } from "../lib/units";
 
 /**
  * (v4.0.0 — P5) Performance modal del FlightBook.
@@ -66,6 +67,7 @@ export function PerformanceModal({
   flightId: number;
   onClose: () => void;
 }) {
+  const u = useUnits();
   const [points, setPoints] = useState<FlightTrackFullPoint[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>("alt");
@@ -146,14 +148,39 @@ export function PerformanceModal({
   // no tiene `ts` parseable, lo dropeamos.
   const data = useMemo(() => {
     if (!points) return [] as ChartRow[];
+    // (v3.28.0 P7.11) Convertimos a la unidad elegida AL construir las
+    // series — los ejes/tooltips muestran sólo el sufijo. Sólo se
+    // convierten métricas con equivalente útil: altitud, velocidad,
+    // temperatura (EGT/aceite) y flujo de combustible. N1/N2 (%) y
+    // presión de aceite (psi, universal en aviación) quedan igual.
+    const c = (n: number | null, f: (x: number) => number): number | null =>
+      n == null ? null : f(n);
     const out: ChartRow[] = [];
     for (const p of points) {
       const tms = new Date(p.ts).getTime();
       if (!Number.isFinite(tms)) continue;
-      out.push({ tms, ...p });
+      out.push({
+        tms,
+        ...p,
+        altFt: c(p.altFt, u.conv.altitude),
+        gsKt: c(p.gsKt, u.conv.speed),
+        iasKt: c(p.iasKt, u.conv.speed),
+        engEgt1: c(p.engEgt1, u.conv.temp),
+        engEgt2: c(p.engEgt2, u.conv.temp),
+        engEgt3: c(p.engEgt3, u.conv.temp),
+        engEgt4: c(p.engEgt4, u.conv.temp),
+        engOilTemp1: c(p.engOilTemp1, u.conv.temp),
+        engOilTemp2: c(p.engOilTemp2, u.conv.temp),
+        engOilTemp3: c(p.engOilTemp3, u.conv.temp),
+        engOilTemp4: c(p.engOilTemp4, u.conv.temp),
+        engFfPph1: c(p.engFfPph1, u.conv.fuelFlow),
+        engFfPph2: c(p.engFfPph2, u.conv.fuelFlow),
+        engFfPph3: c(p.engFfPph3, u.conv.fuelFlow),
+        engFfPph4: c(p.engFfPph4, u.conv.fuelFlow),
+      });
     }
     return out;
-  }, [points]);
+  }, [points, u]);
 
   // ¿Existe data para cada tab? Si no, el tab se etiqueta como
   // "Sin datos" y el chart muestra empty state.
@@ -241,7 +268,7 @@ export function PerformanceModal({
               </div>
             )}
             {points && (
-              <ChartForTab tab={tab} data={data} availability={availability} />
+              <ChartForTab tab={tab} data={data} availability={availability} u={u} />
             )}
           </div>
         </div>
@@ -353,10 +380,12 @@ function ChartForTab({
   tab,
   data,
   availability,
+  u,
 }: {
   tab: TabKey;
   data: ChartRow[];
   availability: Availability;
+  u: Units;
 }) {
   if (!availability[tab]) {
     return (
@@ -368,9 +397,9 @@ function ChartForTab({
 
   switch (tab) {
     case "alt":
-      return <AltChart data={data} />;
+      return <AltChart data={data} unit={u.unit.altitude} />;
     case "spd":
-      return <SpdChart data={data} />;
+      return <SpdChart data={data} unit={u.unit.speed} />;
     case "eng":
       return (
         <DualEngineChart
@@ -387,7 +416,7 @@ function ChartForTab({
       return (
         <DualEngineChart
           data={data}
-          unit="°C"
+          unit={u.unit.temp}
           domain={["auto", "auto"]}
           stack1={(r) => [r.engEgt1, r.engEgt2, r.engEgt3, r.engEgt4]}
           stack2={(r) => [
@@ -404,7 +433,7 @@ function ChartForTab({
       return (
         <EngineMultilineChart
           data={data}
-          unit="pph"
+          unit={u.unit.fuelFlow}
           domain={[0, "auto"]}
           picker={(r) => [r.engFfPph1, r.engFfPph2, r.engFfPph3, r.engFfPph4]}
           labelPrefix={t("fb.performance.series.ff")}
@@ -456,7 +485,7 @@ function formatTime(tms: number): string {
     .padStart(2, "0")}`;
 }
 
-function AltChart({ data }: { data: ChartRow[] }) {
+function AltChart({ data, unit }: { data: ChartRow[]; unit: string }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
@@ -473,12 +502,12 @@ function AltChart({ data }: { data: ChartRow[] }) {
         <YAxis
           tick={AXIS_TICK_PROPS}
           stroke={GRID_STROKE}
-          tickFormatter={(v) => `${v.toLocaleString()} ft`}
+          tickFormatter={(v) => `${v.toLocaleString()} ${unit}`}
         />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
           labelFormatter={(l) => formatTime(l as number)}
-          formatter={(v) => `${(v as number).toLocaleString()} ft`}
+          formatter={(v) => `${(v as number).toLocaleString()} ${unit}`}
         />
         <Line
           type="monotone"
@@ -494,7 +523,7 @@ function AltChart({ data }: { data: ChartRow[] }) {
   );
 }
 
-function SpdChart({ data }: { data: ChartRow[] }) {
+function SpdChart({ data, unit }: { data: ChartRow[]; unit: string }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
@@ -511,7 +540,7 @@ function SpdChart({ data }: { data: ChartRow[] }) {
         <YAxis
           tick={AXIS_TICK_PROPS}
           stroke={GRID_STROKE}
-          tickFormatter={(v) => `${v} kt`}
+          tickFormatter={(v) => `${v} ${unit}`}
         />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}

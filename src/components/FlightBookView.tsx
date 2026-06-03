@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
+import { useUnits } from "../lib/units";
 import type { FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
@@ -651,6 +652,8 @@ function SelectedFlightPanel({
 }) {
   const [editing, setEditing] = useState(false);
   const reload = useFlightLogStore((s) => s.reload);
+  // (v3.28.0 P7.11) Formateadores de unidades reactivos.
+  const u = useUnits();
 
   // (v3.3.0) Re-renderiza con animación al cambiar de vuelo.
   return (
@@ -767,11 +770,7 @@ function SelectedFlightPanel({
               )}
             </span>
           } />
-          <BlockRow label={t("fb.route.distance")} value={
-            entry.distanceNm !== null
-              ? `${Math.round(entry.distanceNm).toLocaleString("en-US")} nm`
-              : "—"
-          } />
+          <BlockRow label={t("fb.route.distance")} value={u.fmt.distance(entry.distanceNm)} />
           {/* (v3.4.0) Gates SIEMPRE visibles aún sin datos —
               el usuario pidió que el panel de detalle muestre los gates
               de salida y llegada obligatoriamente. Cuando el watcher no
@@ -851,19 +850,11 @@ function SelectedFlightPanel({
           />
           <BlockRow
             label={t("fb.load.cargo")}
-            value={
-              entry.cargoKg != null
-                ? `${entry.cargoKg.toLocaleString("en-US")} kg`
-                : "—"
-            }
+            value={u.fmt.weight(entry.cargoKg)}
           />
           <BlockRow
             label={t("fb.load.fuel_used")}
-            value={
-              entry.fuelUsedKg != null
-                ? `${entry.fuelUsedKg.toLocaleString("en-US")} kg`
-                : "—"
-            }
+            value={u.fmt.weight(entry.fuelUsedKg)}
           />
         </DetailBlock>
 
@@ -929,13 +920,13 @@ function SelectedFlightPanel({
               {entry.maxAltitudeFt !== null && (
                 <span className="font-mono text-slate-200">
                   <span className="text-slate-400">ALT</span>{" "}
-                  {entry.maxAltitudeFt.toLocaleString("en-US")} ft
+                  {u.fmt.altitude(entry.maxAltitudeFt)}
                 </span>
               )}
               {entry.maxGroundSpeedKt !== null && (
                 <span className="font-mono text-slate-200">
                   <span className="text-slate-400">GS</span>{" "}
-                  {entry.maxGroundSpeedKt} kt
+                  {u.fmt.speed(entry.maxGroundSpeedKt)}
                 </span>
               )}
             </div>
@@ -981,7 +972,7 @@ function SelectedFlightPanel({
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
               <span className="text-slate-500">{t("fb.block.touchdown")}:</span>
               <span className={`font-mono ${color}`}>
-                {fpm} fpm
+                {u.fmt.vs(fpm)}
               </span>
               {entry.bounced && (
                 <span
@@ -1326,6 +1317,7 @@ function StatsWidget({
     fpmFlightCount: number;
   };
 }) {
+  const u = useUnits();
   const fpmColor =
     stats.avgLandingFpm == null
       ? "text-slate-200"
@@ -1355,7 +1347,7 @@ function StatsWidget({
         <CompactRow
           icon={<Ruler className="h-3 w-3 text-violet-300" />}
           label={t("fb.stat.distance")}
-          value={`${Math.round(stats.totalDistance).toLocaleString("en-US")} nm`}
+          value={u.fmt.distance(stats.totalDistance)}
         />
         <CompactRow
           icon={<Users className="h-3 w-3 text-emerald-300" />}
@@ -1387,9 +1379,7 @@ function StatsWidget({
         <CompactRow
           icon={<Plane className="h-3 w-3 text-amber-300" />}
           label={t("fb.stat.avg_landing_fpm")}
-          value={
-            stats.avgLandingFpm !== null ? `${stats.avgLandingFpm} fpm` : "—"
-          }
+          value={u.fmt.vs(stats.avgLandingFpm)}
           valueClassName={fpmColor}
         />
       </div>
