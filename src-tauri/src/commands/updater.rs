@@ -15,15 +15,20 @@ use crate::AppState;
 /// mid-execution. Resultado observado por el usuario: "se queda
 /// congelado, nunca finaliza la instalación real" (log v3.3.0).
 ///
+/// (v3.25.0) Este dir además aloja el **orquestador de update** (.ps1)
+/// y su log: tiene que vivir en un disco/dir que el instalador NO toque,
+/// porque el usuario instala SimFleet en `D:\...\AppData\Local\SimFleet`
+/// (¡disco D:!) y el TEMP heredado por el helper apuntaba dentro de esa
+/// carpeta — NSIS la borra/reemplaza mid-install y el log/script
+/// desaparecían (por eso los relaunch fallaban silenciosamente).
+///
 /// Estrategia (en orden de preferencia):
 ///   1. `%LOCALAPPDATA%\SimFleet\updater-cache\` — user-scoped, fuera
 ///      del install dir, escritible sin admin.
 ///   2. `%USERPROFILE%\AppData\Local\SimFleet\updater-cache\` — fallback
 ///      cuando `LOCALAPPDATA` no está expuesta (raro en Windows
 ///      moderno pero defensivo).
-///   3. `%TEMP%` (la sobrescrita) — último recurso. Sigue funcionando
-///      en la mayoría de casos donde el install dir no se limpia
-///      agresivamente (ej. NSIS sólo reemplaza archivos cambiados).
+///   3. `%TEMP%` (la sobrescrita) — último recurso.
 fn updater_cache_dir() -> PathBuf {
     let candidates = [
         std::env::var_os("LOCALAPPDATA")
@@ -81,28 +86,31 @@ pub struct UpdateProgress {
     pub total_bytes: Option<u64>,
 }
 
-/// Descarga el instalador del release y lo lanza en modo **silent**
-/// (`/S` para NSIS / `/quiet` para MSI). Inmediatamente después
-/// cierra la app actual para que el installer pueda reemplazar los
-/// archivos en disco — Windows no deja sobreescribir un .exe que
-/// está corriendo.
+/// Descarga el instalador del release y delega TODO el resto a un
+/// **único proceso orquestador** (PowerShell detached). Después cierra
+/// la app para que el instalador pueda reemplazar el `.exe` en disco.
 ///
-/// La cadena:
-///   1. `GET <asset_url>` con streaming → escribe a
-///      `%TEMP%\msfs-addons-browser-update.<ext>`.
-///   2. Emite `updater://progress` cada chunk para que el banner
-///      muestre porcentaje real.
-///   3. `Command::new(installer).arg("/S").spawn()` con flags
-///      `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (Windows) —
-///      eso hace que el proceso del installer sobreviva al `exit(0)`
-///      que ejecutamos a renglón seguido.
-///   4. `app.exit(0)` — la app desaparece; NSIS termina la
-///      instalación; el "Run after install" del setup la abre con
-///      la versión nueva.
+/// (v3.25.0) **Reescritura del relaunch** — antes lanzábamos el
+/// instalador NSIS y, en paralelo, un helper que adivinaba con
+/// timestamps cuándo había terminado. Eso fallaba por 3 causas raíz
+/// confirmadas con los logs del usuario:
+///   1. La app está instalada en `D:\...\AppData\Local\SimFleet`, pero
+///      el helper buscaba el exe en rutas hardcodeadas de `C:`
+///      (`%LOCALAPPDATA%\Programs\...`) que no existen.
+///   2. El helper heredaba el `TEMP` redirigido al data dir portable
+///      (DENTRO del install dir en D:) y escribía su log/temporales ahí
+///      — NSIS borra esa carpeta mid-install, así que el log nunca
+///      llegaba a disco (aparecía "no existe") y no había forma de
+///      diagnosticar.
+///   3. Lanzar instalador + helper en paralelo = race: el helper podía
+///      abrir el exe VIEJO justo cuando NSIS lo mataba.
 ///
-/// Errores: cualquier fallo de descarga, escritura o spawn aborta y
-/// devuelve un string al frontend; **no** cerramos la app si algo
-/// salió mal, así el usuario puede ver el mensaje y reintentar.
+/// El orquestador nuevo resuelve las 3:
+///   · Vive y loguea en `updater-cache` (C:, fuera del install dir).
+///   · Recibe el `current_exe()` real (autoridad, sea C: o D:) + el PID.
+///   · Es SECUENCIAL con esperas reales: espera a que la app cierre →
+///     corre el instalador con `-Wait` → confirma que el exe quedó en la
+///     versión nueva → lo relanza y lo trae al frente.
 #[tauri::command]
 pub async fn install_update(
     asset_url: String,
@@ -132,13 +140,6 @@ pub async fn install_update(
     }
     let total_bytes = resp.content_length();
 
-    // (v3.4.0) Path destino — **NO** usamos `std::env::temp_dir()`
-    // porque la TEMP del proceso está sobrescrita al data dir portable
-    // (lib.rs:init_state) que vive DENTRO del install dir. NSIS al
-    // ejecutar el setup desde ahí puede clobear el propio binario.
-    // En su lugar usamos `updater_cache_dir()` que devuelve
-    // `%LOCALAPPDATA%\SimFleet\updater-cache\` garantizado FUERA del
-    // install dir.
     let ext = pick_installer_extension(&asset_url);
     let cache_dir = updater_cache_dir();
     let installer_path = cache_dir.join(format!("SimFleet-update.{ext}"));
@@ -170,8 +171,7 @@ pub async fn install_update(
         })?;
         downloaded += chunk.len() as u64;
 
-        // Emitir progreso. Si falla, no es fatal — sólo perdemos
-        // un tick de la barra. Lanzar `emit` panic-free: discard error.
+        // Emitir progreso. Si falla, no es fatal — sólo perdemos un tick.
         let _ = tauri::Emitter::emit(
             &app,
             "updater://progress",
@@ -190,228 +190,266 @@ pub async fn install_update(
         installer_path.display()
     );
 
-    // Lanzar instalador silencioso y desadjuntado.
-    launch_installer_detached(&installer_path, ext)
-        .map_err(|e| format!("no se pudo lanzar el instalador: {}", e))?;
+    // Path AUTORITATIVO del exe a relanzar: el que está corriendo AHORA.
+    // Resuelve correctamente sin importar el disco (C: o D:) porque viene
+    // de `std::env::current_exe()`, no de rutas adivinadas.
+    let current_exe = std::env::current_exe().map_err(|e| {
+        tracing::error!(target: "updater", "current_exe falló: {e}");
+        format!("no se pudo resolver el ejecutable actual: {}", e)
+    })?;
+    let exe_str = current_exe.to_string_lossy().into_owned();
+    let exe_clean = exe_str
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&exe_str)
+        .to_string();
 
-    // **Safety net** (v0.1.15): aunque NSIS Tauri-default debería
-    // relanzar la app post-install, los reports del usuario dicen
-    // que no siempre lo hace. Lanzamos también un `cmd.exe` helper
-    // detached que:
-    //   1. Espera 8 segundos (tiempo de install típico).
-    //   2. Lanza el `.exe` actual (mismo path) si existe.
-    // Si NSIS ya relanzó por su cuenta, Windows abre una segunda
-    // instancia que el `single_instance` plugin de Tauri rechazaría
-    // — pero en nuestra app no tenemos single_instance, así que
-    // simplemente se abrirá UNA ventana extra (raro pero no roto).
-    // Si NSIS NO relanzó, este helper sí. Net-neutral.
-    if auto_restart {
-        if let Ok(current_exe) = std::env::current_exe() {
-            let exe_str = current_exe.to_string_lossy().into_owned();
-            let exe_clean = exe_str
-                .strip_prefix(r"\\?\")
-                .unwrap_or(&exe_str)
-                .to_string();
-            if let Err(e) = launch_relaunch_helper(&exe_clean, env!("CARGO_PKG_VERSION")) {
-                tracing::warn!(
-                    target: "updater",
-                    "no se pudo lanzar el helper de relaunch (no fatal): {}",
-                    e
-                );
-            } else {
-                tracing::info!(
-                    target: "updater",
-                    "helper de relaunch agendado para {}",
-                    exe_clean
-                );
-            }
-        }
-    } else {
-        tracing::info!(
-            target: "updater",
-            "auto_restart=false — no se lanza helper. El usuario debe abrir la app manualmente."
-        );
-    }
+    // Lanzar el orquestador (instalar + esperar + relanzar) en un único
+    // proceso detached. Loguea en `cache_dir\relaunch.log`.
+    launch_update_orchestrator(
+        &cache_dir,
+        &installer_path,
+        ext,
+        &exe_clean,
+        std::process::id(),
+        env!("CARGO_PKG_VERSION"),
+        auto_restart,
+    )
+    .map_err(|e| {
+        tracing::error!(target: "updater", "no se pudo lanzar el orquestador: {e}");
+        format!("no se pudo lanzar el instalador: {}", e)
+    })?;
+    tracing::info!(
+        target: "updater",
+        "orquestador de update lanzado (exe={}, pid={}, auto_restart={})",
+        exe_clean,
+        std::process::id(),
+        auto_restart
+    );
 
-    // Un breve sleep para que el proceso del installer tenga tiempo
-    // de iniciarse antes de que cerremos. 800ms es generoso pero
-    // no perceptible para el usuario (ya vio la barra al 100%).
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    tracing::info!(target: "updater", "lanzando exit(0) para que el installer reemplace archivos");
+    // Breve margen para que el orquestador arranque y registre el PID
+    // antes de que cerremos. Luego cerramos para liberar el lock del .exe.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    tracing::info!(target: "updater", "exit(0) — el orquestador instala y relanza");
     app.exit(0);
     Ok(())
 }
 
-/// Lanza un proceso PowerShell detached que espera 8 segundos y
-/// luego abre el `.exe` indicado. Sirve como backup garantizado
-/// del auto-relaunch del NSIS Tauri (que no siempre dispara en
-/// silent mode).
+/// Escribe un script `.ps1` orquestador en `cache_dir` y lo lanza
+/// detached. El script:
+///   1. Espera a que el proceso de la app (`$AppPid`) termine.
+///   2. Corre el instalador y **espera** a que finalice (`-Wait`).
+///   3. Verifica (poll) que el exe quedó en la versión nueva / reescrito.
+///   4. Lanza el exe nuevo y lo trae al frente.
 ///
-/// Usamos PowerShell en lugar de cmd porque:
-///   · `Start-Process` maneja paths con espacios sin parsing manual.
-///   · No depende del comportamiento de `cmd /c start ""` que
-///     fallaba con prefijo NT `\\?\` (bug reportado por usuario
-///     en v0.1.16, screenshot "Windows cannot find '\\\\'").
-///   · `Start-Sleep` es predecible; `timeout` de cmd tiene flags
-///     que varían según locale de Windows.
-///
-/// El proceso sobrevive al `exit(0)` de la app gracias a
-/// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`.
+/// Loguea cada paso en `cache_dir\relaunch.log` (C:, estable). El proceso
+/// sobrevive al `exit(0)` por `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+/// | CREATE_NO_WINDOW`, y lanzamos PowerShell con `TEMP`/`TMP` apuntando
+/// al `cache_dir` (override del TEMP heredado que apuntaba al install dir
+/// en D:).
 #[cfg(target_os = "windows")]
-fn launch_relaunch_helper(exe_path: &str, old_version: &str) -> std::io::Result<()> {
+fn launch_update_orchestrator(
+    cache_dir: &PathBuf,
+    installer: &PathBuf,
+    ext: &str,
+    exe_path: &str,
+    app_pid: u32,
+    old_version: &str,
+    auto_restart: bool,
+) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    let escaped = exe_path.replace('\'', "''");
-    let ver_escaped = old_version.replace('\'', "''");
-    // (v3.4.0) **UN SOLO log path activo**. Antes (v3.3.0) el helper
-    // escribía a 4 candidatos a la vez para cubrir migraciones — pero
-    // si dos coincidían (ej. portable `<exe>\data\logs\` Y legacy
-    // `%APPDATA%\org.n0xful...\logs\` ambos existían), la MISMA línea
-    // entraba dos veces y el usuario reportó "cada línea se escribe
-    // exactamente dos veces". Como desde v3.2.0 la arquitectura es
-    // portable + estable, hardcodeamos a UN solo path: el resuelto
-    // de `<exe_dir>\data\logs\simfleet.log`. Si por alguna razón el
-    // dir no es escribible, caemos sólo al temp log (no a otros
-    // candidatos legacy).
-    let ps_command = format!(
-        r#"$origExe = '{esc}'
-$startTime = Get-Date
-$oldVer = '{ver}'
-$tempLog = Join-Path $env:TEMP 'simfleet-relaunch.log'
-$origDir = Split-Path -Parent $origExe
-$appLog = Join-Path $origDir 'data\logs\simfleet.log'
+    let log_path = cache_dir.join("relaunch.log");
+    let script_path = cache_dir.join("simfleet-update.ps1");
 
-function WriteAll($msg) {{
-  $line = "$(Get-Date -Format o) [updater] $msg"
-  # Siempre al temp log (garantizado escribible).
-  try {{ Add-Content -Path $tempLog -Value $line }} catch {{ }}
-  # Sólo al simfleet.log activo si su parent dir existe. UN solo
-  # archivo — evita los duplicados de líneas reportados en v3.3.0.
-  $parent = Split-Path -Parent $appLog
-  if (Test-Path -LiteralPath $parent) {{
-    try {{ Add-Content -Path $appLog -Value $line }} catch {{ }}
-  }}
+    // Escapado para strings PowerShell single-quoted: ' → ''.
+    let esc = |s: &str| s.replace('\'', "''");
+    let installer_s = esc(&installer.to_string_lossy());
+    let exe_s = esc(exe_path);
+    let log_s = esc(&log_path.to_string_lossy());
+    let old_s = esc(old_version);
+    let relaunch_lit = if auto_restart { "$true" } else { "$false" };
+
+    // Valores horneados como variables PowerShell al inicio del script —
+    // evita el quoting frágil de pasar args a `-File`.
+    let script = format!(
+        r#"$ErrorActionPreference = 'Continue'
+$AppPid = {pid}
+$Installer = '{installer}'
+$Ext = '{ext}'
+$ExePath = '{exe}'
+$OldVer = '{old}'
+$Relaunch = {relaunch}
+$LogPath = '{log}'
+
+function Log($m) {{
+  try {{ "$(Get-Date -Format o) [updater] $m" | Add-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue }} catch {{ }}
 }}
-WriteAll ("=== relaunch helper start exe={{0}} oldVer={{1}}" -f $origExe, $oldVer)
+Log ("=== orchestrator start pid={{0}} ext={{1}} exe='{{2}}' oldVer={{3}} relaunch={{4}}" -f $AppPid, $Ext, $ExePath, $OldVer, $Relaunch)
 
-# (v3.22.0) Normaliza una versión a "major.minor.patch" para comparar.
-# El exe instalado reporta ProductVersion (ej. "3.22.0" o "3.22.0.0");
-# lo recortamos a 3 componentes para compararlo contra la versión que
-# lanzó el update.
+# 1) Esperar a que la app cierre (libera el lock del .exe).
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline) {{
+  if (-not (Get-Process -Id $AppPid -ErrorAction SilentlyContinue)) {{ break }}
+  Start-Sleep -Milliseconds 300
+}}
+if (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) {{
+  Log 'WARN: la app sigue viva tras 30s; continuo igual'
+}} else {{
+  Log 'app cerrada'
+}}
+
+# 2) Correr el instalador y ESPERAR a que termine.
+$startInstall = Get-Date
+try {{
+  if ($Ext -eq 'msi') {{
+    $proc = Start-Process 'msiexec.exe' -ArgumentList @('/i', ('"' + $Installer + '"'), '/quiet', '/norestart') -Wait -PassThru -ErrorAction Stop
+  }} else {{
+    $proc = Start-Process -FilePath $Installer -ArgumentList '/S' -Wait -PassThru -ErrorAction Stop
+  }}
+  Log ("instalador terminó exitCode={{0}}" -f $proc.ExitCode)
+}} catch {{
+  Log ("ERROR lanzando instalador: {{0}}" -f $_)
+}}
+
+if (-not $Relaunch) {{
+  Log 'relaunch deshabilitado por el usuario; fin'
+  return
+}}
+
+# 3) Confirmar que el exe quedó en la versión NUEVA (o reescrito). NSIS a
+#    veces retorna del -Wait antes de soltar el archivo, o se relanza a sí
+#    mismo; este poll cubre ambos casos.
 function NormVer($v) {{
   if (-not $v) {{ return '' }}
   $p = ($v.ToString().Trim() -split '\.')
   if ($p.Count -ge 3) {{ return ($p[0..2] -join '.') }}
   return $v.ToString().Trim()
 }}
-$oldNorm = NormVer $oldVer
-WriteAll ("old version normalized = {0}" -f $oldNorm)
+$oldNorm = NormVer $OldVer
+$waitExe = (Get-Date).AddSeconds(90)
+$ready = $false
+while ((Get-Date) -lt $waitExe) {{
+  if (Test-Path -LiteralPath $ExePath) {{
+    try {{
+      $item = Get-Item -LiteralPath $ExePath -ErrorAction Stop
+      $verNorm = NormVer $item.VersionInfo.ProductVersion
+      $isNew = ($verNorm -ne '' -and $oldNorm -ne '' -and $verNorm -ne $oldNorm)
+      $isFresh = ($item.LastWriteTime -gt $startInstall)
+      if ($isNew -or $isFresh) {{
+        $ready = $true
+        Log ("exe listo ver='{{0}}' old='{{1}}' fresh={{2}}" -f $verNorm, $oldNorm, $isFresh)
+        break
+      }}
+    }} catch {{ Log ("error get-item: {{0}}" -f $_) }}
+  }}
+  Start-Sleep -Milliseconds 500
+}}
+if (-not $ready) {{ Log 'WARN: no detecté el exe actualizado en 90s; intento lanzar igual' }}
 
-# (v3.0.0) Lista de candidatos: el path original + variantes con el
-# nuevo productName "SimFleet" en per-user y per-machine.
-$candidates = @($origExe)
-$origDir = Split-Path -Parent $origExe
-$origLeaf = Split-Path -Leaf $origExe
-$candidates += Join-Path $env:LOCALAPPDATA 'Programs\SimFleet\SimFleet.exe'
-$candidates += Join-Path $env:ProgramFiles 'SimFleet\SimFleet.exe'
-$candidates += Join-Path ${{env:ProgramFiles(x86)}} 'SimFleet\SimFleet.exe'
-$candidates += Join-Path $origDir 'SimFleet.exe'
-$candidates += Join-Path $env:LOCALAPPDATA "Programs\$origLeaf"
-$candidates = $candidates | Where-Object {{ $_ -ne $null -and $_ -ne '' }} | Select-Object -Unique
+# settle: dar 1.5s a NSIS para soltar el lock del archivo recién escrito.
+Start-Sleep -Milliseconds 1500
 
-$deadline = (Get-Date).AddSeconds(120)
-$launched = $null
-# (v3.21.0) FIX del auto-relaunch: lanzar SÓLO el exe que el instalador
-# YA reescribió (LastWriteTime POSTERIOR al arranque del helper). El
-# bug viejo (`age > 3`) lanzaba la copia VIEJA al instante — el
-# instalador NSIS la mataba al reemplazar archivos y la app nunca
-# reabría. Comparar contra $startTime garantiza abrir la versión NUEVA
-# recién instalada.
-while ((Get-Date) -lt $deadline -and $launched -eq $null) {{
-  foreach ($exe in $candidates) {{
-    if (Test-Path -LiteralPath $exe) {{
-      try {{
-        $item = Get-Item -LiteralPath $exe -ErrorAction Stop
-        # Señal PRIMARIA: el exe reporta una versión DISTINTA a la que
-        # lanzó el update = el installer ya lo reemplazó. Robusto aunque
-        # NSIS preserve el timestamp de compilación (por eso el check de
-        # LastWriteTime solo no alcanzaba). SECUNDARIA: mtime posterior
-        # al arranque del helper (por si no se pudo leer la versión).
-        $verNorm = NormVer $item.VersionInfo.ProductVersion
-        $isNewVer = ($verNorm -ne '' -and $oldNorm -ne '' -and $verNorm -ne $oldNorm)
-        $isFresh = ($item.LastWriteTime -gt $startTime)
-        if ($isNewVer -or $isFresh) {{
-          # settle: 2s para que el installer termine de escribir.
-          Start-Sleep -Seconds 2
-          WriteAll ("ready exe='{{0}}' ver='{{1}}' old='{{2}}' fresh={{3}} — launching" -f $exe, $verNorm, $oldNorm, $isFresh)
-          $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
-          $launched = $proc
-          break
-        }} else {{
-          WriteAll ("waiting exe='{{0}}' ver='{{1}}' old='{{2}}' (sin cambio aun)" -f $exe, $verNorm, $oldNorm)
+# 4) Lanzar el exe nuevo. Candidatos: el path original + el
+#    InstallLocation del registro (por si el dir cambió).
+$targets = New-Object System.Collections.Generic.List[string]
+$targets.Add($ExePath)
+try {{
+  $unKeys = @(
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+  )
+  foreach ($base in $unKeys) {{
+    if (Test-Path $base) {{
+      Get-ChildItem $base -ErrorAction SilentlyContinue | ForEach-Object {{
+        $pp = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        if ($pp -and $pp.DisplayName -eq 'SimFleet' -and $pp.InstallLocation) {{
+          $loc = $pp.InstallLocation.Trim().Trim('"')
+          $cand = Join-Path $loc 'simfleet.exe'
+          if (-not $targets.Contains($cand)) {{ $targets.Add($cand) }}
         }}
-      }} catch {{
-        WriteAll ("error getting item '{{0}}': {{1}}" -f $exe, $_)
       }}
     }}
   }}
-  if ($launched -eq $null) {{ Start-Sleep -Seconds 2 }}
-}}
+}} catch {{ Log ("registro fallback falló: {{0}}" -f $_) }}
 
-# Safety net: si en el deadline nada se reescribió (install atípico),
-# abrir igual el primer candidato existente — mejor que no abrir nada.
-if ($launched -eq $null) {{
-  foreach ($exe in $candidates) {{
-    if (Test-Path -LiteralPath $exe) {{
-      try {{
-        WriteAll ("deadline fallback — launching '{{0}}'" -f $exe)
-        $proc = Start-Process -FilePath $exe -PassThru -ErrorAction Stop
-        $launched = $proc
-        break
-      }} catch {{ WriteAll ("fallback launch failed '{{0}}': {{1}}" -f $exe, $_) }}
-    }}
+$launched = $null
+foreach ($t in $targets) {{
+  if (Test-Path -LiteralPath $t) {{
+    try {{
+      $np = Start-Process -FilePath $t -PassThru -ErrorAction Stop
+      $launched = $np
+      Log ("relanzado '{{0}}' pid={{1}}" -f $t, $np.Id)
+      break
+    }} catch {{ Log ("fallo lanzar '{{0}}': {{1}}" -f $t, $_) }}
+  }} else {{
+    Log ("candidato no existe: '{{0}}'" -f $t)
   }}
 }}
 
 if ($launched -ne $null) {{
-  # Esperar a que el main window aparezca y traerlo al front.
-  # Sin esto, en perfiles con muchas ventanas, la app puede arrancar
-  # detrás de otras y el usuario no la ve.
-  Start-Sleep -Seconds 3
+  # Traer la ventana al frente (sin esto puede arrancar detrás de otras).
+  Start-Sleep -Seconds 2
   try {{
     Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue
     [Microsoft.VisualBasic.Interaction]::AppActivate($launched.Id) | Out-Null
-    WriteAll ("foreground OK pid={{0}}" -f $launched.Id)
+    Log ("foreground OK pid={{0}}" -f $launched.Id)
   }} catch {{
-    WriteAll ("foreground falló pid={{0}}: {{1}}" -f $launched.Id, $_)
+    Log ("foreground falló pid={{0}}: {{1}}" -f $launched.Id, $_)
   }}
 }} else {{
-  WriteAll 'TIMEOUT — ningún candidato quedó disponible en 90s'
-}}"#,
-        esc = escaped,
-        ver = ver_escaped,
+  Log 'ERROR: ningún candidato se pudo relanzar'
+}}
+Log '=== orchestrator fin'
+"#,
+        pid = app_pid,
+        installer = installer_s,
+        ext = ext,
+        exe = exe_s,
+        old = old_s,
+        relaunch = relaunch_lit,
+        log = log_s,
     );
 
-    std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            &ps_command,
-        ])
-        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-        .spawn()
-        .map(|_| ())
+    // Escribir el script (UTF-8). Si falla, propagamos el error.
+    std::fs::write(&script_path, script)?;
+
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+    ])
+    .arg(&script_path)
+    // Override del TEMP heredado (apuntaba al install dir en D:, que NSIS
+    // borra). El cache_dir vive en C:\…\SimFleet\updater-cache, estable.
+    .env("TEMP", cache_dir)
+    .env("TMP", cache_dir)
+    .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    cmd.spawn().map(|_| ())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn launch_relaunch_helper(_exe_path: &str, _old_version: &str) -> std::io::Result<()> {
-    Ok(())
+fn launch_update_orchestrator(
+    _cache_dir: &PathBuf,
+    _installer: &PathBuf,
+    _ext: &str,
+    _exe_path: &str,
+    _app_pid: u32,
+    _old_version: &str,
+    _auto_restart: bool,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "auto-install sólo soportado en Windows",
+    ))
 }
 
 fn pick_installer_extension(url: &str) -> &'static str {
@@ -423,77 +461,4 @@ fn pick_installer_extension(url: &str) -> &'static str {
     } else {
         "exe"
     }
-}
-
-#[cfg(target_os = "windows")]
-fn launch_installer_detached(installer: &PathBuf, ext: &str) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
-
-    // (v3.5.0) Hardening: CREATE_NO_WINDOW añadido a los 3 paths.
-    // Antes el NSIS y el MSIX podían flashear brevemente una consola
-    // durante la fase de extracción/replace — esto la suprime
-    // completamente. El usuario reportó "flash de ventana negra al
-    // instalar".
-    //
-    // CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS: el hijo sobrevive
-    // a nuestro exit(0). Sin esto, cerrar la app mataría también al
-    // installer.
-    // CREATE_NO_WINDOW: ningún console window asociado al proceso —
-    // suprime el flash en NSIS y oculta el shell de PowerShell del
-    // path MSIX (que antes era visible).
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW;
-
-    match ext {
-        // NSIS (Tauri default): `/S` silent + `/NCRC` skip CRC check
-        // (acelera; el archivo ya fue validado por sha256 al
-        // descargar) + sin ventana.
-        "exe" => std::process::Command::new(installer)
-            .args(["/S", "/NCRC"])
-            .creation_flags(flags)
-            .spawn()
-            .map(|_| ()),
-        // MSI vía msiexec con /quiet (sin UI) y /norestart (no
-        // forzar reboot). Sin ventana de consola.
-        "msi" => std::process::Command::new("msiexec")
-            .args(["/i"])
-            .arg(installer)
-            .args(["/quiet", "/norestart"])
-            .creation_flags(flags)
-            .spawn()
-            .map(|_| ()),
-        // MSIX/MSIXBUNDLE — Add-AppxPackage via PowerShell. (v3.5.0)
-        // Añadido `-WindowStyle Hidden` + `-NonInteractive` para que
-        // la consola de PowerShell no aparezca en pantalla mientras
-        // dura la instalación (segundos visibles antes).
-        "msix" | "msixbundle" => std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-            ])
-            .arg(format!(
-                "Add-AppxPackage -Path '{}' -ForceUpdateFromAnyVersion",
-                installer.display()
-            ))
-            .creation_flags(flags)
-            .spawn()
-            .map(|_| ()),
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("extensión no soportada: {}", ext),
-        )),
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn launch_installer_detached(_installer: &PathBuf, _ext: &str) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "auto-install sólo soportado en Windows",
-    ))
 }

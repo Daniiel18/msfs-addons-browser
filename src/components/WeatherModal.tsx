@@ -848,9 +848,18 @@ export function WeatherModal({
                 {t("fb.weather.loading_map")}
               </div>
             )}
-            {/* Banner "histórico no disponible" SOLO si el vuelo pasado
-                NO capturó weather (pre-v3.16.0 / VAS). */}
-            {!isLiveFlight && !hasWeather && mapReady && (
+            {/* (v3.25.0) Mientras se reconstruye el clima real del día desde
+                Open-Meteo Archive (vuelos sin captura AMBIENT). Evita el
+                flash del banner "no disponible" durante la carga. */}
+            {!isLiveFlight && weather === null && mapReady && (
+              <div className="absolute right-3 top-3 flex max-w-xs items-center gap-2 rounded-lg bg-sky-500/10 px-3 py-2 text-[11px] text-sky-200 ring-1 ring-sky-500/30 backdrop-blur">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t("fb.weather.reconstructing")}
+              </div>
+            )}
+            {/* Banner sólo si YA cargó y de verdad no hay datos (sin internet
+                para reconstruir desde el archivo real). */}
+            {!isLiveFlight && weather !== null && !hasWeather && mapReady && (
               <div className="absolute right-3 top-3 max-w-xs rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 ring-1 ring-amber-500/30 backdrop-blur">
                 {t("fb.weather.historical_unavailable")}
               </div>

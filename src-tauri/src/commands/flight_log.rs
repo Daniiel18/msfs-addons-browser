@@ -53,16 +53,87 @@ pub async fn get_flight_track_full(
 }
 
 /// (v4.0.0 P7.9b) Weather samples de un vuelo — viento/temp/presión/
-/// precipitación capturados por sample. Vacío si el vuelo no tiene
-/// weather (pre-v3.16.0 / VAS) → el frontend cae al fallback.
+/// precipitación capturados por sample durante el vuelo.
+///
+/// (v3.25.0) **Fallback Open-Meteo Archive**: si el vuelo NO capturó
+/// weather AMBIENT (vuelos viejos pre-captura / imports VAS), reconstruimos
+/// el clima REAL del día del vuelo desde Open-Meteo Archive usando el track
+/// real. Así TODAS las capas (viento, temperatura, nubes, precipitación,
+/// visibilidad) funcionan para cualquier vuelo, con datos de la vida real
+/// —no del simulador— que es justo lo que pidió el usuario. Si el archivo
+/// falla (sin internet, etc.) devolvemos lo que haya capturado.
 #[tauri::command]
 pub async fn get_flight_weather(
     flight_id: i64,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<flight_log::WeatherSample>, String> {
-    flight_log::list_weather_for_flight(&state.db, flight_id)
+    let captured = flight_log::list_weather_for_flight(&state.db, flight_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // ¿Tiene weather AMBIENT real (viento/temp), no sólo nubes? Si sí, ese
+    // es el dato del propio vuelo y lo preferimos.
+    let has_ambient = captured
+        .iter()
+        .any(|w| w.wind_speed_kt.is_some() || w.oat_c.is_some());
+    if has_ambient {
+        return Ok(captured);
+    }
+
+    // Fallback: reconstruir el clima real del día desde Open-Meteo Archive
+    // con el track del vuelo.
+    let track = match flight_log::list_track_for_flight(&state.db, flight_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(target: "weather", "fallback: no se pudo leer track de {flight_id}: {e:#}");
+            return Ok(captured);
+        }
+    };
+    let pts: Vec<(f64, f64, String)> = track
+        .iter()
+        .map(|p| (p.lat, p.lon, p.ts.clone()))
+        .collect();
+    if pts.is_empty() {
+        return Ok(captured);
+    }
+
+    match crate::openmeteo::reconstruct_weather_from_archive(&pts).await {
+        Ok(arch) => {
+            let mapped: Vec<flight_log::WeatherSample> = arch
+                .into_iter()
+                .map(|a| flight_log::WeatherSample {
+                    ts: a.ts,
+                    lat: a.lat,
+                    lon: a.lon,
+                    alt_ft: a.alt_ft,
+                    wind_dir_deg: a.wind_dir_deg,
+                    wind_speed_kt: a.wind_speed_kt,
+                    oat_c: a.oat_c,
+                    baro_hpa: a.baro_hpa,
+                    visibility_m: a.visibility_m,
+                    precip_state: a.precip_state,
+                    cloud_cover_pct: a.cloud_cover_pct,
+                    cloud_low_pct: a.cloud_low_pct,
+                    cloud_mid_pct: a.cloud_mid_pct,
+                    cloud_high_pct: a.cloud_high_pct,
+                })
+                .collect();
+            tracing::info!(
+                target: "weather",
+                "vuelo {} sin AMBIENT — clima real reconstruido del archivo: {} samples",
+                flight_id,
+                mapped.len()
+            );
+            Ok(mapped)
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "weather",
+                "fallback archive falló para vuelo {flight_id}: {e:#}"
+            );
+            Ok(captured)
+        }
+    }
 }
 
 #[tauri::command]
