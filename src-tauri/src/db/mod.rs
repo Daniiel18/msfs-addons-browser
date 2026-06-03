@@ -63,7 +63,39 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
             return Err(e.into());
         }
     }
+
+    // (v3.24.0) Tras el dedup masivo de track points (migración 033) la
+    // DB queda con muchas páginas libres. Las recuperamos con VACUUM —
+    // que NO puede correr dentro de una transacción, por eso va acá
+    // (fuera de la migración sqlx) y no dentro del .sql.
+    if let Err(e) = vacuum_if_bloated(&pool).await {
+        tracing::warn!("db: vacuum_if_bloated falló (no fatal): {e:#}");
+    }
+
     Ok(pool)
+}
+
+/// (v3.24.0) Corre `VACUUM` una sola vez si el archivo tiene mucho
+/// espacio libre (típico tras el dedup masivo de la migración 033 que
+/// borró los track points duplicados). Sólo se dispara con freelist
+/// grande (~40 MB); tras compactar, el freelist baja y no se repite en
+/// arranques siguientes, así que no penaliza el inicio normal.
+async fn vacuum_if_bloated(pool: &SqlitePool) -> anyhow::Result<()> {
+    let freelist: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    const THRESHOLD_PAGES: i64 = 10_000; // ~40 MB con páginas de 4 KB
+    if freelist > THRESHOLD_PAGES {
+        tracing::info!(
+            "db: {} páginas libres (> {}) → VACUUM para recuperar disco",
+            freelist,
+            THRESHOLD_PAGES
+        );
+        sqlx::query("VACUUM").execute(pool).await?;
+        tracing::info!("db: VACUUM completado");
+    }
+    Ok(())
 }
 
 /// (v3.7.1 hotfix) Normaliza los checksums de `_sqlx_migrations` para

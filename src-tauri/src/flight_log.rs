@@ -885,7 +885,7 @@ pub async fn insert_track_point_full(
     let b = |o: Option<bool>| o.map(|v| if v { 1_i64 } else { 0_i64 });
     sqlx::query(
         r#"
-        INSERT INTO flight_log_track (
+        INSERT OR IGNORE INTO flight_log_track (
             flight_id, lat, lon, alt_ft, gs_kt, ts,
             ias_kt, vs_fpm, pitch_deg, bank_deg, g_force,
             flaps_pct, gear_down, spoilers_pct,

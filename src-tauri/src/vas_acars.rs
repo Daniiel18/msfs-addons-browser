@@ -2128,7 +2128,7 @@ async fn insert_track_points(
         let alt_ft = sample.altitude_ft();
         let gs_kt = sample.ground_speed_kt.map(|v| v as i64);
         sqlx::query(
-            "INSERT INTO flight_log_track (flight_id, lat, lon, alt_ft, gs_kt, ts)
+            "INSERT OR IGNORE INTO flight_log_track (flight_id, lat, lon, alt_ft, gs_kt, ts)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(flight_id)
