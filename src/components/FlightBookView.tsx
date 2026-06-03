@@ -287,9 +287,9 @@ export function FlightBookView() {
             : "none";
 
   return (
-    <section className="flex h-[calc(100vh-7rem)] flex-col gap-3 overflow-hidden">
-      <header className="flex shrink-0 items-center justify-between gap-3">
-        <div className="min-w-0">
+    <section className="flex h-[calc(100vh-13rem)] flex-col gap-3 overflow-hidden">
+      <header className="flex shrink-0 items-center gap-3">
+        <div className="min-w-0 shrink-0">
           <h1 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
             <Plane className="h-5 w-5 text-emerald-300" />
             {t("fb.title")}
@@ -307,7 +307,17 @@ export function FlightBookView() {
               : t("fb.subtitle.list")}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* (v3.32.0) Tags de aerolíneas INLINE en el header, flex-1:
+            ocupan el hueco entre el título y el botón "Volver al globo" y
+            se EXPANDEN a todo el ancho libre cuando ese botón no está (sin
+            vuelo seleccionado). Antes vivían en una fila aparte que robaba
+            altura → subir el grid (sidebar+mapa) elimina el scroll de la
+            pantalla. Se autoocultan si no hay aerolíneas. min-w-0 deja que
+            su propio scroll horizontal (#15) funcione sin empujar el botón. */}
+        <div className="min-w-0 flex-1">
+          <AirlineTagFilter />
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
           {selectedFlight ? (
             <button
               onClick={() => setSelectedFlightId(null)}
@@ -328,16 +338,6 @@ export function FlightBookView() {
           <span>{lastError}</span>
         </div>
       )}
-
-      {/* (v3.31.0 #10) Tags de aerolíneas en fila full-width SOBRE el grid
-          — antes vivían DENTRO de la columna del mapa y lo empujaban hacia
-          abajo (el mapa arrancaba más bajo que el sidebar). Ahora el grid
-          (sidebar + mapa) arranca a la misma altura y los chips suben.
-          `shrink-0` para que no los aplaste el flex; se autoocultan si no
-          hay aerolíneas. Filtran a la vez la lista y el mapa. */}
-      <div className="shrink-0">
-        <AirlineTagFilter />
-      </div>
 
       {/* (v3.5.0 — redesign minimalista) **Mapa como hero + glass overlay**:
           · Sidebar izquierda compacta (~300px): lista densificada con
