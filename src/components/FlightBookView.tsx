@@ -29,6 +29,7 @@ import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
 import { PerformanceModal } from "./PerformanceModal";
 import { WeatherModal } from "./WeatherModal";
+import { NotamsModal } from "./NotamsModal";
 import { DamageBadge } from "./DamageBadge";
 import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
@@ -73,6 +74,8 @@ export function FlightBookView() {
   const [performanceOpen, setPerformanceOpen] = useState(false);
   // (v4.0.0 — P7) Estado del Weather modal.
   const [weatherOpen, setWeatherOpen] = useState(false);
+  // (v3.32.0 #6) Estado del NOTAMs modal (SimBrief OFP).
+  const [notamsOpen, setNotamsOpen] = useState(false);
   // (v3.6.1 fix I6) Colapso del SelectedFlightPanel. Cuando true,
   // sólo se muestra el header con la ruta y el grade — el resto del
   // mapa queda visible para que el usuario pueda ver la trayectoria
@@ -130,6 +133,14 @@ export function FlightBookView() {
       setWeatherOpen(false);
     }
   }, [selectedFlightId, selectedFlight?.source, weatherOpen]);
+
+  // (v3.32.0 #6) Cierra el NOTAMs modal al volver al globo. NO se gatea
+  // por source: NOTAMs aplican a cualquier vuelo cuyo OFP actual matchee.
+  useEffect(() => {
+    if (selectedFlightId == null && notamsOpen) {
+      setNotamsOpen(false);
+    }
+  }, [selectedFlightId, notamsOpen]);
 
   // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
   // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
@@ -422,6 +433,8 @@ export function FlightBookView() {
               performanceOpen={performanceOpen && selectedFlightId != null}
               onToggleWeather={() => setWeatherOpen((v) => !v)}
               weatherOpen={weatherOpen && selectedFlightId != null}
+              onToggleNotams={() => setNotamsOpen((v) => !v)}
+              notamsOpen={notamsOpen && selectedFlightId != null}
             />
           )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
@@ -460,6 +473,16 @@ export function FlightBookView() {
               <WeatherModal
                 entry={selectedFlight}
                 onClose={() => setWeatherOpen(false)}
+              />
+            )}
+
+            {/* (v3.32.0 #6) NOTAMs modal — del OFP de SimBrief. Disponible
+                para cualquier vuelo; el modal resuelve si el OFP actual
+                matchea (si no, estado vacío). */}
+            {notamsOpen && selectedFlight != null && (
+              <NotamsModal
+                entry={selectedFlight}
+                onClose={() => setNotamsOpen(false)}
               />
             )}
 
@@ -1784,6 +1807,8 @@ function DetailActionsBar({
   performanceOpen,
   onToggleWeather,
   weatherOpen,
+  onToggleNotams,
+  notamsOpen,
 }: {
   selectedFlightId: number | null;
   selectedFlightSource: string | null;
@@ -1793,6 +1818,8 @@ function DetailActionsBar({
   performanceOpen: boolean;
   onToggleWeather: () => void;
   weatherOpen: boolean;
+  onToggleNotams: () => void;
+  notamsOpen: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
   // (v4.0.0 — P3 + P3.2) Tabs gated por source del vuelo:
@@ -1841,13 +1868,15 @@ function DetailActionsBar({
       active: weatherOpen,
     },
     {
+      // (v3.32.0 #6) NOTAMs del OFP de SimBrief. Habilitado para cualquier
+      // vuelo seleccionado; el modal resuelve si el OFP actual matchea.
       key: "notams" as const,
       icon: <AlertTriangle className="h-3.5 w-3.5" />,
       label: t("fb.tabs.notams"),
       dot: "bg-rose-400",
-      enabled: false,
-      onClick: () => {},
-      active: false,
+      enabled: !checklistDisabled,
+      onClick: onToggleNotams,
+      active: notamsOpen,
     },
   ];
   const tabs = allTabs.filter((t) => {

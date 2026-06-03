@@ -99,6 +99,27 @@ export interface InstallerPayload {
 /** Vuelo persistido del historial SimBrief. La app va acumulando
  *  uno por refresh contra la API pública (que solo expone el
  *  último OFP). El mapa pinta una LineString por cada uno. */
+/** (v3.32.0 #4/#6) Briefing del OFP más reciente de SimBrief: METAR/TAF
+ *  reales (vida real) de origen/destino/alterno + NOTAMs. Efímero: se
+ *  pide on-demand y sólo se muestra si matchea origen+destino del vuelo. */
+export interface SimBriefNotam {
+  location: string | null;
+  text: string;
+}
+export interface SimBriefBriefing {
+  originIcao: string | null;
+  destinationIcao: string | null;
+  alternateIcao: string | null;
+  origMetar: string | null;
+  origTaf: string | null;
+  destMetar: string | null;
+  destTaf: string | null;
+  altnMetar: string | null;
+  altnTaf: string | null;
+  notams: SimBriefNotam[];
+  generatedAt: string | null;
+}
+
 export interface SimBriefFlight {
   ofpId: string;
   pilotId: string;

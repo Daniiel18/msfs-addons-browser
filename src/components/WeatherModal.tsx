@@ -12,7 +12,7 @@ import {
   Wind,
   X,
 } from "lucide-react";
-import type { FlightLogEntry, WeatherSample } from "../lib/types";
+import type { FlightLogEntry, WeatherSample, SimBriefBriefing } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useUnits } from "../lib/units";
@@ -243,6 +243,37 @@ export function WeatherModal({
       cancelled = true;
     };
   }, [entry.id]);
+
+  // (v3.32.0 #4) Briefing de SimBrief (METAR/TAF reales de la vida real).
+  // On-demand; se muestra SÓLO si el OFP actual matchea origen+destino de
+  // este vuelo (si no, no es su clima → no lo mostramos). Falla en
+  // silencio si no hay Pilot ID configurado.
+  const [briefing, setBriefing] = useState<SimBriefBriefing | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .simbriefBriefing()
+      .then((b) => {
+        if (!cancelled) setBriefing(b);
+      })
+      .catch(() => {
+        if (!cancelled) setBriefing(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.id]);
+  const briefingWx = (() => {
+    if (!briefing) return null;
+    const norm = (s: string | null | undefined) => (s ?? "").trim().toUpperCase();
+    const matches =
+      norm(briefing.originIcao) === norm(entry.originIcao) &&
+      norm(briefing.destinationIcao) === norm(entry.destinationIcao) &&
+      norm(entry.originIcao) !== "";
+    if (!matches) return null;
+    if (!briefing.origMetar && !briefing.destMetar) return null;
+    return briefing;
+  })();
 
   // Inicializa el mapa una sola vez.
   useEffect(() => {
@@ -929,6 +960,40 @@ export function WeatherModal({
                         : t("fb.weather.summary.precip_no")}
                     </dd>
                   </div>
+                </dl>
+              </div>
+            )}
+
+            {/* (v3.32.0 #4) Briefing SimBrief — METAR REAL de origen y
+                destino del OFP vinculado. Panel abajo-centro (libre de la
+                leyenda@izq y el resize@der). Sólo si el OFP matchea. */}
+            {briefingWx && mapReady && (
+              <div className="absolute bottom-3 left-1/2 z-[1] max-h-[42%] w-[min(30rem,calc(100%-7rem))] -translate-x-1/2 overflow-y-auto rounded-lg bg-slate-950/90 px-3 py-2 text-[10px] text-slate-200 ring-1 ring-sky-700/50 backdrop-blur">
+                <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
+                  <Cloud className="h-3 w-3" />
+                  {t("fb.weather.simbrief.title")}
+                </div>
+                <dl className="space-y-1.5">
+                  {briefingWx.origMetar && (
+                    <div>
+                      <dt className="font-mono text-[10px] font-semibold text-sky-200">
+                        {t("fb.weather.simbrief.dep")} {briefingWx.originIcao ?? ""}
+                      </dt>
+                      <dd className="whitespace-pre-wrap break-words font-mono leading-relaxed text-slate-200">
+                        {briefingWx.origMetar}
+                      </dd>
+                    </div>
+                  )}
+                  {briefingWx.destMetar && (
+                    <div>
+                      <dt className="font-mono text-[10px] font-semibold text-sky-200">
+                        {t("fb.weather.simbrief.dest")} {briefingWx.destinationIcao ?? ""}
+                      </dt>
+                      <dd className="whitespace-pre-wrap break-words font-mono leading-relaxed text-slate-200">
+                        {briefingWx.destMetar}
+                      </dd>
+                    </div>
+                  )}
                 </dl>
               </div>
             )}

@@ -81,6 +81,36 @@ pub struct SimBriefRefreshResult {
     pub flight: Option<SimBriefFlight>,
 }
 
+/// (v3.32.0 #4/#6) Briefing meteorológico + NOTAMs del OFP más reciente.
+/// **Efímero** — NO se persiste: SimBrief sólo guarda el último OFP y el
+/// clima/NOTAMs son del momento de generación. Se obtiene on-demand al
+/// abrir Weather/NOTAMs y la UI lo muestra sólo si el OFP matchea
+/// origen+destino del vuelo seleccionado (si no, usa el fallback actual /
+/// estado vacío). Es clima de la VIDA REAL (METAR/TAF), no del simulador.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimBriefBriefing {
+    pub origin_icao: Option<String>,
+    pub destination_icao: Option<String>,
+    pub alternate_icao: Option<String>,
+    pub orig_metar: Option<String>,
+    pub orig_taf: Option<String>,
+    pub dest_metar: Option<String>,
+    pub dest_taf: Option<String>,
+    pub altn_metar: Option<String>,
+    pub altn_taf: Option<String>,
+    pub notams: Vec<SimBriefNotam>,
+    pub generated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimBriefNotam {
+    /// ICAO de la localización del NOTAM (origen/destino/alterno/FIR).
+    pub location: Option<String>,
+    pub text: String,
+}
+
 const API_BASE: &str = "https://www.simbrief.com/api/xml.fetcher.php";
 
 /// Descarga el último OFP del piloto y lo persiste. Devuelve si
@@ -555,6 +585,11 @@ static TAG_AIRCRAFT: Lazy<Regex> = Lazy::new(|| tag_re("aircraft"));
 static TAG_WEIGHTS: Lazy<Regex> = Lazy::new(|| tag_re("weights"));
 static TAG_FUEL: Lazy<Regex> = Lazy::new(|| tag_re("fuel"));
 static TAG_PARAMS: Lazy<Regex> = Lazy::new(|| tag_re("params"));
+// (v3.32.0 #4/#6) Weather + alterno + NOTAMs.
+static TAG_WEATHER: Lazy<Regex> = Lazy::new(|| tag_re("weather"));
+static TAG_ALTERNATE: Lazy<Regex> = Lazy::new(|| tag_re("alternate"));
+static TAG_NOTAMS: Lazy<Regex> = Lazy::new(|| tag_re("notams"));
+static TAG_NOTAMDREC: Lazy<Regex> = Lazy::new(|| tag_re("notamdrec"));
 
 /// Parser principal. Devuelve `None` si faltan los campos
 /// imprescindibles (origen, destino con lat/lon).
@@ -683,6 +718,92 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
         aircraft_reg,
         plan_ramp_kg,
     })
+}
+
+/// (v3.32.0 #4/#6) Baja el OFP más reciente del piloto y extrae SÓLO el
+/// briefing (weather + NOTAMs). No toca la DB — es on-demand y efímero.
+pub async fn fetch_briefing(
+    http: &reqwest::Client,
+    pilot_id: &str,
+) -> anyhow::Result<SimBriefBriefing> {
+    let url = format!("{}?userid={}", API_BASE, pilot_id);
+    tracing::info!(target: "simbrief", "briefing: fetching {}", url);
+    let xml = http
+        .get(&url)
+        .header("User-Agent", "SimFleet/3.0")
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(parse_briefing_xml(&xml))
+}
+
+/// Extrae `<weather>` (METAR/TAF de origen/destino/alterno) + NOTAMs del
+/// OFP. Degradación elegante: cualquier campo ausente → None / lista vacía.
+pub fn parse_briefing_xml(xml: &str) -> SimBriefBriefing {
+    let origin_block = TAG_ORIGIN
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+    let dest_block = TAG_DEST
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+    let altn_block = TAG_ALTERNATE
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+    let weather_block = TAG_WEATHER
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+
+    let icao = |b: &Option<String>| b.as_deref().and_then(|x| inner_tag(x, "icao_code"));
+    let wx = |tag: &str| weather_block.as_deref().and_then(|w| inner_tag(w, tag));
+
+    SimBriefBriefing {
+        origin_icao: icao(&origin_block),
+        destination_icao: icao(&dest_block),
+        alternate_icao: icao(&altn_block),
+        orig_metar: wx("orig_metar"),
+        orig_taf: wx("orig_taf"),
+        dest_metar: wx("dest_metar"),
+        dest_taf: wx("dest_taf"),
+        altn_metar: wx("altn_metar"),
+        altn_taf: wx("altn_taf"),
+        notams: parse_notams(xml),
+        generated_at: first_tag(&TAG_TIME_GENERATED, xml),
+    }
+}
+
+/// NOTAMs del OFP (best-effort). SimBrief los expone en `<notams>` con
+/// hijos `<notamdrec>` SÓLO si el usuario activa NOTAMs en su layout; si
+/// no, la lista queda vacía y la UI muestra estado vacío. De cada registro
+/// tomamos el ICAO de localización y el texto, probando varios nombres de
+/// campo por compat entre versiones del schema.
+fn parse_notams(xml: &str) -> Vec<SimBriefNotam> {
+    let Some(block) = TAG_NOTAMS
+        .captures(xml)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for cap in TAG_NOTAMDREC.captures_iter(&block) {
+        let rec = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let location = inner_tag(rec, "location_icao")
+            .or_else(|| inner_tag(rec, "location_id"))
+            .or_else(|| inner_tag(rec, "location"));
+        let text = inner_tag(rec, "notam_text")
+            .or_else(|| inner_tag(rec, "all"))
+            .or_else(|| inner_tag(rec, "notam_html"));
+        if let Some(text) = text {
+            out.push(SimBriefNotam { location, text });
+        }
+    }
+    out
 }
 
 fn first_tag(re: &Regex, s: &str) -> Option<String> {

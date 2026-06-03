@@ -157,6 +157,7 @@ pub fn run() {
             commands::simbrief::get_simbrief_pilot_id,
             commands::simbrief::set_simbrief_pilot_id,
             commands::simbrief::refresh_simbrief,
+            commands::simbrief::simbrief_briefing,
             commands::simbrief::list_simbrief_flights,
             commands::simbrief::delete_simbrief_flight,
             commands::simbrief::link_simbrief_ofp,

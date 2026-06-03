@@ -1,4 +1,4 @@
-use crate::simbrief::{self, SimBriefFlight, SimBriefRefreshResult};
+use crate::simbrief::{self, SimBriefBriefing, SimBriefFlight, SimBriefRefreshResult};
 use crate::AppState;
 
 #[tauri::command]
@@ -36,6 +36,23 @@ pub async fn refresh_simbrief(
             "Configura tu SimBrief Pilot ID antes de refrescar.".to_string()
         })?;
     simbrief::refresh_latest(&state.db, &state.http, &pilot_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v3.32.0 #4/#6) Briefing on-demand del OFP más reciente: METAR/TAF de
+/// origen/destino/alterno + NOTAMs. La UI lo pide al abrir Weather/NOTAMs
+/// y sólo lo muestra si el OFP matchea origen+destino del vuelo. No
+/// persiste nada (clima de la vida real al momento del OFP).
+#[tauri::command]
+pub async fn simbrief_briefing(
+    state: tauri::State<'_, AppState>,
+) -> Result<SimBriefBriefing, String> {
+    let pilot_id = simbrief::get_pilot_id(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Configura tu SimBrief Pilot ID para ver el briefing.".to_string())?;
+    simbrief::fetch_briefing(&state.http, &pilot_id)
         .await
         .map_err(|e| e.to_string())
 }

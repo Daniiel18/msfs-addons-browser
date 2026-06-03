@@ -50,6 +50,7 @@ import type {
   PmdgLivery,
   RefreshSummary,
   ScanReport,
+  SimBriefBriefing,
   SimBriefFlight,
   SimBriefRefreshResult,
   SourceDescriptor,
@@ -268,6 +269,9 @@ interface Api {
   getSimbriefPilotId: () => Promise<string | null>;
   setSimbriefPilotId: (pilotId: string) => Promise<void>;
   refreshSimbrief: () => Promise<SimBriefRefreshResult>;
+  /** (v3.32.0 #4/#6) Briefing on-demand del OFP más reciente: METAR/TAF
+   *  reales + NOTAMs. La UI lo muestra si matchea origen+destino del vuelo. */
+  simbriefBriefing: () => Promise<SimBriefBriefing>;
   listSimbriefFlights: () => Promise<SimBriefFlight[]>;
   deleteSimbriefFlight: (ofpId: string) => Promise<void>;
   linkSimbriefOfp: (flightId: number, ofpId: string) => Promise<void>;
@@ -501,6 +505,7 @@ const realApi: Api = {
   setSimbriefPilotId: (pilotId) =>
     invoke<void>("set_simbrief_pilot_id", { pilotId }),
   refreshSimbrief: () => invoke<SimBriefRefreshResult>("refresh_simbrief"),
+  simbriefBriefing: () => invoke<SimBriefBriefing>("simbrief_briefing"),
   listSimbriefFlights: () => invoke<SimBriefFlight[]>("list_simbrief_flights"),
   deleteSimbriefFlight: (ofpId) =>
     invoke<void>("delete_simbrief_flight", { ofpId }),
@@ -1155,6 +1160,21 @@ const demoApi: Api = {
   async setSimbriefPilotId() {},
   async refreshSimbrief() {
     return { added: 0, alreadyKnown: true, flight: null };
+  },
+  async simbriefBriefing() {
+    return {
+      originIcao: null,
+      destinationIcao: null,
+      alternateIcao: null,
+      origMetar: null,
+      origTaf: null,
+      destMetar: null,
+      destTaf: null,
+      altnMetar: null,
+      altnTaf: null,
+      notams: [],
+      generatedAt: null,
+    };
   },
   async listSimbriefFlights() {
     return [];
