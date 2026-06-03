@@ -241,11 +241,14 @@ pub async fn install_update(
 ///   3. Verifica (poll) que el exe quedó en la versión nueva / reescrito.
 ///   4. Lanza el exe nuevo y lo trae al frente.
 ///
-/// Loguea cada paso en `cache_dir\relaunch.log` (C:, estable). El proceso
-/// sobrevive al `exit(0)` por `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-/// | CREATE_NO_WINDOW`, y lanzamos PowerShell con `TEMP`/`TMP` apuntando
-/// al `cache_dir` (override del TEMP heredado que apuntaba al install dir
-/// en D:).
+/// Loguea cada paso en `cache_dir\relaunch.log` (C:, estable). Se lanza con
+/// `-EncodedCommand` (inmune a ExecutionPolicy restrictiva por GPO) y con
+/// stdin/stdout/stderr a **null** — sin esto PowerShell hereda los handles
+/// inválidos de la app GUI (sin consola) y MUERE al inicializar sus streams
+/// (el proceso se creaba pero moría antes de ejecutar; era la causa de que
+/// el relaunch fallara en cualquier equipo). Sobrevive al `exit(0)` con
+/// `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`. `TEMP`/`TMP` → `cache_dir`
+/// (el heredado apuntaba al install dir en D:, que NSIS borra).
 #[cfg(target_os = "windows")]
 fn launch_update_orchestrator(
     cache_dir: &PathBuf,
@@ -257,7 +260,10 @@ fn launch_update_orchestrator(
     auto_restart: bool,
 ) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    // (v3.27.0) SIN DETACHED_PROCESS: combinado con CREATE_NO_WINDOW rompía
+    // el arranque de powershell.exe (el proceso se creaba pero moría antes
+    // de ejecutar — ni dejaba log). CREATE_NO_WINDOW ya lo oculta; el hijo
+    // sobrevive al exit(0) porque Windows no mata hijos al cerrar el padre.
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -414,8 +420,20 @@ Log '=== orchestrator fin'
         log = log_s,
     );
 
-    // Escribir el script (UTF-8). Si falla, propagamos el error.
-    std::fs::write(&script_path, script)?;
+    // Escribir el script a disco (respaldo + diagnóstico manual).
+    std::fs::write(&script_path, &script)?;
+
+    // (v3.27.0) Lanzar vía -EncodedCommand (base64 de UTF-16LE) en vez de
+    // -File: inmune a ExecutionPolicy restrictiva por GPO (equipos de otros
+    // usuarios) y a cualquier problema de encoding/BOM del .ps1.
+    let encoded = {
+        use base64::Engine;
+        let utf16: Vec<u8> = script
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        base64::engine::general_purpose::STANDARD.encode(utf16)
+    };
 
     let mut cmd = std::process::Command::new("powershell");
     cmd.args([
@@ -423,16 +441,19 @@ Log '=== orchestrator fin'
         "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
-        "-WindowStyle",
-        "Hidden",
-        "-File",
+        "-EncodedCommand",
     ])
-    .arg(&script_path)
+    .arg(&encoded)
     // Override del TEMP heredado (apuntaba al install dir en D:, que NSIS
     // borra). El cache_dir vive en C:\…\SimFleet\updater-cache, estable.
     .env("TEMP", cache_dir)
     .env("TMP", cache_dir)
-    .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    // CRÍTICO: null en los 3 streams. SimFleet es una app GUI sin consola;
+    // sin esto PowerShell hereda handles inválidos y muere al inicializar.
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     cmd.spawn().map(|_| ())
 }
 
