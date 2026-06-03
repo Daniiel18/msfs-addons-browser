@@ -379,7 +379,7 @@ pub static RULES: &[Rule] = &[
     },
     Rule {
         id: "initial_approach_ias_limit",
-        label: "Indicated airspeed ≤ 200 kt",
+        label: "Indicated airspeed ≤ 250 kt (below 10,000 ft)",
         phase: Phase::InitialApproach,
         points_max: 30,
         evaluator: eval_initial_approach_ias_limit,
@@ -424,7 +424,7 @@ pub static RULES: &[Rule] = &[
     },
     Rule {
         id: "final_approach_ias_limit",
-        label: "Indicated airspeed ≤ 250 kt",
+        label: "Indicated airspeed ≤ 250 kt (below 10,000 ft)",
         phase: Phase::FinalApproach,
         points_max: 100,
         evaluator: eval_final_approach_ias_limit,
@@ -434,7 +434,7 @@ pub static RULES: &[Rule] = &[
     // ============================================================
     Rule {
         id: "landing_smooth",
-        label: "Vertical speed at touchdown ≤ -1000 fpm",
+        label: "Smooth touchdown (firm > -400, hard > -600 fpm)",
         phase: Phase::Landing,
         points_max: 50,
         evaluator: eval_landing_smooth,
@@ -764,12 +764,29 @@ fn eval_pitch_down_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 fn eval_bank_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    if !any_present(&ctx.track.iter().collect::<Vec<_>>(), |s| s.bank_deg) {
+    let track: Vec<&TrackSample> = ctx.track.iter().collect();
+    if !any_present(&track, |s| s.bank_deg) {
         return skip(rule, "no_bank_data");
     }
-    let max_bank = max_abs_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.bank_deg).unwrap_or(0.0);
-    let evidence = json!({ "max_bank_deg": max_bank });
-    match max_bank {
+    // (v3.29.0 #8) Robustez: medimos el alabeo SOSTENIDO con el
+    // percentil 98 de |bank|, no el máximo absoluto. El usuario reportó
+    // que la regla era poco fiable: un único sample espurio (glitch del
+    // simvar o un alabeo de medio segundo en un viraje normal) tumbaba
+    // los puntos. El p98 ignora 1-2 picos aislados y refleja el alabeo
+    // real del vuelo. Guardamos también el máximo en la evidencia para
+    // que el usuario vea ambos números.
+    let mut banks: Vec<f64> = track
+        .iter()
+        .filter_map(|s| s.bank_deg.map(f64::abs))
+        .collect();
+    banks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((banks.len() as f64 * 0.98).ceil() as usize)
+        .saturating_sub(1)
+        .min(banks.len() - 1);
+    let p98 = banks[idx];
+    let max_bank = banks.last().copied().unwrap_or(0.0);
+    let evidence = json!({ "bank_p98_deg": p98 as i64, "max_bank_deg": max_bank as i64 });
+    match p98 {
         v if v <= 30.0 => pass(rule, evidence),
         v if v <= 45.0 => partial(rule, (rule.points_max * 2) / 3, evidence),
         v if v <= 60.0 => partial(rule, rule.points_max / 3, evidence),
@@ -1239,13 +1256,19 @@ fn eval_initial_climb_landing_light_off(ctx: &FlightContext, rule: &Rule) -> Sco
     if !any_present(&samples, |s| s.light_landing) {
         return skip(rule, "no_light_landing_data");
     }
-    // En el último sample (~10k ft), landing_light=false.
+    // (v3.29.0 #8) Banda de gracia: NO fallar en seco en el borde de los
+    // 10.000 ft. El corte real es ~10k con margen práctico hasta ~11k.
+    // La fase initial_climb tope a 10.000 ft AGL, así que si en su tope
+    // la landing light SIGUE encendida damos un WARN parcial, no un fail
+    // (el enforcement duro por encima de 10k lo hace la regla de cruise,
+    // que además tolera el apagado tardío vía porcentaje). Si ya está
+    // apagada, pase completo.
     let last_ll = samples.last().and_then(|s| s.light_landing).unwrap_or(true);
-    let evidence = json!({ "landing_light_at_10k": last_ll });
+    let evidence = json!({ "landing_light_on_at_top_of_climb": last_ll });
     if !last_ll {
         pass(rule, evidence)
     } else {
-        fail(rule, "fail", 0, evidence)
+        partial(rule, rule.points_max / 2, evidence)
     }
 }
 
@@ -1360,10 +1383,14 @@ fn eval_initial_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreIte
         return skip(rule, "no_ias_data");
     }
     let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
-    let evidence = json!({ "max_ias_kt_initial_approach": max_ias });
+    let evidence = json!({ "max_ias_kt_initial_approach": max_ias, "limit_kt": 250 });
+    // (v3.29.0 #8) Límite REAL sub-10.000 ft = 250 kt (FAR 91.117 / regla
+    // estándar). Antes ≤200 penalizaba approaches normales. El piloto
+    // puede ir a la velocidad que necesite mientras respete 250 kt < 10k.
     match max_ias {
-        n if n <= 200 => pass(rule, evidence),
-        n if n <= 230 => partial(rule, rule.points_max / 2, evidence),
+        n if n <= 250 => pass(rule, evidence),
+        n if n <= 270 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        n if n <= 290 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
@@ -1476,11 +1503,15 @@ fn eval_final_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem 
         return skip(rule, "no_ias_data");
     }
     let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
-    let evidence = json!({ "max_ias_kt_final_approach": max_ias });
+    let evidence = json!({ "max_ias_kt_final_approach": max_ias, "limit_kt": 250 });
+    // (v3.29.0 #8) Igual que initial approach: el techo objetivo es
+    // 250 kt sub-10k. En corta final la velocidad real será mucho menor
+    // (Vref+aditivos), pero NO penalizamos por ir rápido mientras se
+    // respete 250 kt — eso es decisión del piloto, no una falta.
     match max_ias {
-        n if n <= 200 => pass(rule, evidence),
-        n if n <= 250 => partial(rule, (rule.points_max * 2) / 3, evidence),
-        n if n <= 280 => partial(rule, rule.points_max / 3, evidence),
+        n if n <= 250 => pass(rule, evidence),
+        n if n <= 270 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        n if n <= 290 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
@@ -1493,12 +1524,26 @@ fn eval_landing_smooth(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let Some(fpm) = ctx.landing_fpm else {
         return skip(rule, "no_landing_fpm");
     };
-    let evidence = json!({ "landing_fpm": fpm });
+    // (v3.29.0 #8) Banda + categoría legible en la evidencia para que el
+    // usuario entienda por qué ganó/perdió puntos.
+    let category = match fpm {
+        f if f > -240 => "smooth",
+        f if f > -400 => "firm",
+        f if f > -600 => "hard",
+        f if f > -1000 => "very_hard",
+        _ => "structural_damage",
+    };
+    let evidence = json!({ "landing_fpm": fpm, "category": category });
+    // Escala alineada con aviación real y con el color del FlightBook:
+    //   suave  ≳ -240 fpm       → pase completo
+    //   firme   -240..-400      → 3/4
+    //   duro    -400..-600      → 1/2
+    //   muy duro -600..-1000    → 1/5 (probable daño)
+    //   peor que -1000          → 0 (daño estructural)
     match fpm {
-        f if f > -200 => pass(rule, evidence),
-        f if f > -400 => partial(rule, (rule.points_max * 4) / 5, evidence),
-        f if f > -600 => partial(rule, (rule.points_max * 3) / 5, evidence),
-        f if f > -800 => partial(rule, (rule.points_max * 2) / 5, evidence),
+        f if f > -240 => pass(rule, evidence),
+        f if f > -400 => partial(rule, (rule.points_max * 3) / 4, evidence),
+        f if f > -600 => partial(rule, rule.points_max / 2, evidence),
         f if f > -1000 => partial(rule, rule.points_max / 5, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
@@ -1604,12 +1649,20 @@ fn eval_arrived_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if !any_present(&samples, |s| s.parking_brake) {
         return skip(rule, "no_parking_brake_data");
     }
+    // (v3.29.0 #8) El requisito es "freno de parking aplicado AL LLEGAR",
+    // no "mantenido el 100% de la fase". Flujo real: el piloto pone el
+    // freno, apaga motores y luego pone calzos (chocks); tras los calzos,
+    // SOLTAR el freno es legítimo. Basta con que el freno haya estado
+    // puesto en CUALQUIER momento de la llegada para dar el pase. Antes,
+    // el % sobre toda la fase fallaba en falso al soltar tras calzos.
+    let any_set = samples.iter().any(|s| s.parking_brake == Some(true));
     let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
-    let evidence = json!({ "parking_brake_set_pct": (pct * 100.0) as i32 });
-    if pct >= 0.9 {
+    let evidence = json!({
+        "parking_brake_applied_at_arrival": any_set,
+        "parking_brake_set_pct": (pct * 100.0) as i32
+    });
+    if any_set {
         pass(rule, evidence)
-    } else if pct >= 0.5 {
-        partial(rule, rule.points_max / 2, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
     }

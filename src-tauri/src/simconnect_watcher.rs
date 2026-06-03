@@ -2563,16 +2563,42 @@ mod windows_simconnect {
         // contando siempre (GSX no los causa).
         let on_ground = data.on_ground >= 0.5;
         let airborne = !on_ground;
-        let externally_controlled =
-            airborne && (lat_lon_frozen || altitude_frozen || attitude_frozen);
-        let slew_replay = airborne && slew_active;
-        let is_replay_now =
-            rate_abnormal || slew_replay || time_regressed || externally_controlled;
+        let any_freeze = lat_lon_frozen || altitude_frozen || attitude_frozen;
+        // (v3.29.0 #1) HISTÉRESIS entrar/permanecer en replay.
+        //
+        // Señales "duras" (rate de sim anormal, tiempo que retrocede) las
+        // causa SÓLO un replay/slew — GSX nunca las produce. Cuentan
+        // siempre, en aire o en tierra.
+        //
+        // Señales "blandas" (freeze de lat-lon/alt/actitud, slew activo):
+        //   · Para ENTRAR exigimos `airborne`. GSX hace el pushback
+        //     congelando el avión EN TIERRA; sin el gate, cada pushback
+        //     daría un falso "replay".
+        //   · Para PERMANECER NO exigimos airborne. Un replay (nativo o
+        //     Flight Recorder) que YA aterrizó sigue congelado en tierra.
+        //     El bug previo: al tocar pista el avión pasaba a on_ground,
+        //     `airborne` caía a false, las señales blandas se anulaban y
+        //     el watcher SALÍA de replay justo en el touchdown → procesaba
+        //     un aterrizaje FALSO. Manteniendo las señales blandas activas
+        //     en tierra mientras ya estamos en replay, el replay sigue
+        //     detectado durante y después del aterrizaje.
+        let hard_signal = rate_abnormal || time_regressed;
+        let soft_signal = any_freeze || slew_active;
+        let is_replay_enter = hard_signal || (airborne && soft_signal);
+        let is_replay_stay = hard_signal || soft_signal;
+        let is_replay_now = if *in_replay_mode {
+            is_replay_stay
+        } else {
+            is_replay_enter
+        };
 
-        // Determinar la causa primaria para el payload UI.
-        let cause = if externally_controlled {
+        // Determinar la causa primaria para el payload UI. En tierra sólo
+        // etiquetamos freeze/slew como causa si YA estamos en replay
+        // (coherente con la histéresis de arriba).
+        let soft_counts = airborne || *in_replay_mode;
+        let cause = if any_freeze && soft_counts {
             "external_replay"
-        } else if slew_replay {
+        } else if slew_active && soft_counts {
             "slew"
         } else if time_regressed {
             "time_regress"
@@ -2614,7 +2640,7 @@ mod windows_simconnect {
                         active: true,
                         sim_rate,
                         is_slew: slew_active,
-                        is_external_replay: externally_controlled,
+                        is_external_replay: any_freeze,
                         cause: cause.to_string(),
                     },
                 );
