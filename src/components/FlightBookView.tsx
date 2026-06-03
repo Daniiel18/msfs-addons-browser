@@ -329,6 +329,16 @@ export function FlightBookView() {
         </div>
       )}
 
+      {/* (v3.31.0 #10) Tags de aerolíneas en fila full-width SOBRE el grid
+          — antes vivían DENTRO de la columna del mapa y lo empujaban hacia
+          abajo (el mapa arrancaba más bajo que el sidebar). Ahora el grid
+          (sidebar + mapa) arranca a la misma altura y los chips suben.
+          `shrink-0` para que no los aplaste el flex; se autoocultan si no
+          hay aerolíneas. Filtran a la vez la lista y el mapa. */}
+      <div className="shrink-0">
+        <AirlineTagFilter />
+      </div>
+
       {/* (v3.5.0 — redesign minimalista) **Mapa como hero + glass overlay**:
           · Sidebar izquierda compacta (~300px): lista densificada con
             filtro, click selecciona vuelo.
@@ -394,10 +404,6 @@ export function FlightBookView() {
               · DetailActionsBar (sólo cuando hay vuelo seleccionado).
               · Map canvas con glass overlays. */}
         <div className="flex min-h-0 flex-col gap-2">
-          {/* (v3.6.3 fix J4) Tags FUERA del mapa — comparten la fila
-              donde antes vivían los tabs. Los chips se ocultan
-              automáticamente si no hay airlines en el historial. */}
-          <AirlineTagFilter />
           {/* (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo. */}
           {selectedFlightId != null && (
             <DamageBadge flightId={selectedFlightId} />
@@ -2091,7 +2097,18 @@ function AirlineTagFilter() {
   const visible = airlines.filter((a) => a.flightCount > 0);
   if (visible.length === 0) return null;
   return (
-    <div className="flex w-full items-center gap-1.5 overflow-x-auto rounded-full border border-slate-700/70 bg-slate-950/65 px-2 py-1.5 ring-1 ring-slate-800/70" style={{ scrollbarWidth: "none" }}>
+    <div
+      // (v3.31.0 #15) Scroll horizontal usable: la rueda VERTICAL del
+      // mouse se traduce a desplazamiento horizontal (los trackpads y el
+      // touch ya hacen swipe lateral con overflow-x-auto). Antes no había
+      // forma de ver los tags que se salían por la derecha con un mouse.
+      onWheel={(e) => {
+        if (e.deltaY !== 0) {
+          e.currentTarget.scrollLeft += e.deltaY;
+        }
+      }}
+      className="flex w-full items-center gap-1.5 overflow-x-auto rounded-full border border-slate-700/70 bg-slate-950/65 px-2 py-1.5 ring-1 ring-slate-800/70 [scrollbar-width:thin]"
+    >
       <button
         onClick={() => setSelected(null)}
         className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${

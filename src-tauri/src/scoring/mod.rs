@@ -555,6 +555,11 @@ pub async fn finalize_after_finish(
         flight_id, report.total, report.max, report.percentage, report.grade
     );
     let _ = app.emit("score:done", &report);
+    // (v3.31.0 #9) El grade A/B/C acaba de persistirse en flight_log.
+    // Emitimos `flightlog://changed` para que el store del FlightBook
+    // recargue la lista y el grade aparezca AL INSTANTE en el sidebar,
+    // sin tener que cambiar de pantalla y volver (bug reportado).
+    let _ = app.emit("flightlog://changed", ());
 
     // Auto-upload to cloud (non-blocking — spawn detached). Toma el
     // reqwest::Client del AppState compartido (Manager::state).
