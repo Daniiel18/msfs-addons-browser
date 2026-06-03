@@ -886,6 +886,21 @@ pub async fn insert_track_point_full(
     let now = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+    insert_track_point_full_at(pool, flight_id, &now, pt).await
+}
+
+/// (v3.30.0 #2) Igual que `insert_track_point_full` pero con `ts`
+/// explícito. Lo usa el flush del buffer pre-departure del watcher: las
+/// muestras cold-and-dark se capturan ANTES de que exista la fila del
+/// vuelo y se vuelcan al crearse (OUT), conservando su timestamp
+/// ORIGINAL — no el del flush — para preservar el orden cronológico y
+/// permitir que la regla "ample pre-departure time" mida la duración real.
+pub async fn insert_track_point_full_at(
+    pool: &SqlitePool,
+    flight_id: i64,
+    ts: &str,
+    pt: TrackPointInsert,
+) -> anyhow::Result<()> {
     let b = |o: Option<bool>| o.map(|v| if v { 1_i64 } else { 0_i64 });
     sqlx::query(
         r#"
@@ -932,7 +947,7 @@ pub async fn insert_track_point_full(
     .bind(pt.lon)
     .bind(pt.alt_ft)
     .bind(pt.gs_kt)
-    .bind(&now)
+    .bind(ts)
     .bind(pt.ias_kt)
     .bind(pt.vs_fpm)
     .bind(pt.pitch_deg)

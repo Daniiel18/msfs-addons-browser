@@ -1628,6 +1628,19 @@ mod windows_simconnect {
         let mut in_replay_mode: bool = false;
         let mut replay_stable_ticks_normal: u32 = 0;
         let mut prev_absolute_time_s: Option<f64> = None;
+        // (v3.30.0 #2) Buffer de muestras PRE-DEPARTURE (cold-and-dark).
+        // El track sólo se persiste cuando ya existe flight_id (post-OUT),
+        // así que las reglas de pre-departure salían "No data to evaluate".
+        // Aquí bufferizamos un snapshot MÍNIMO (lo que leen esas reglas:
+        // freno/N1/flaps/spoilers) en cada ciclo de persist mientras NO
+        // hay flight_id y el avión está en tierra; al crearse el vuelo
+        // (OUT) se vuelca conservando el ts original y se registra el
+        // rango de fase pre_departure. Cap acotado (en handle_aircraft_data)
+        // para no crecer en preflights largos.
+        let mut predeparture_buffer: std::collections::VecDeque<(
+            String,
+            crate::flight_log::TrackPointInsert,
+        )> = std::collections::VecDeque::new();
         // True si vimos al menos un motor encendido durante este
         // vuelo. Sin esto, la condición "todos los motores apagados"
         // sería trivialmente cierta al arrancar el sim antes de
@@ -2132,6 +2145,7 @@ mod windows_simconnect {
                         &mut in_replay_mode,
                         &mut replay_stable_ticks_normal,
                         &mut prev_absolute_time_s,
+                        &mut predeparture_buffer,
                     );
                     // (v0.1.26) Si la transición acabó de marcar OUT
                     // o entró en Landed (touchdown), disparamos la
@@ -2521,6 +2535,10 @@ mod windows_simconnect {
         in_replay_mode: &mut bool,
         replay_stable_ticks_normal: &mut u32,
         prev_absolute_time_s: &mut Option<f64>,
+        predeparture_buffer: &mut std::collections::VecDeque<(
+            String,
+            crate::flight_log::TrackPointInsert,
+        )>,
     ) {
         // (v4.0.0 P7.7) Replay/Slew detection FIRST — antes de
         // procesar cualquier otra lógica del state machine.
@@ -3380,6 +3398,107 @@ mod windows_simconnect {
         if *ticks_since_persist >= PERSIST_INTERVAL_TICKS {
             *ticks_since_persist = 0;
             let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+            // (v3.30.0 #2) Captura/flush PRE-DEPARTURE (cold-and-dark).
+            match id_opt {
+                None => {
+                    // Sin vuelo todavía. Bufferizamos un snapshot MÍNIMO
+                    // (lo que leen las reglas pre-departure) SÓLO en tierra
+                    // y con posición plausible (evita basura de menús /
+                    // lat-lon 0,0). No crea filas en DB — sólo memoria.
+                    if on_ground
+                        && lat.is_finite()
+                        && lon.is_finite()
+                        && !(lat.abs() < 0.01 && lon.abs() < 0.01)
+                    {
+                        const PREDEP_BUFFER_CAP: usize = 240; // ~40min @ 10s
+                        let now_ts = chrono::Utc::now()
+                            .format("%Y-%m-%dT%H:%M:%SZ")
+                            .to_string();
+                        let n1_max = [
+                            data.eng_n1_1,
+                            data.eng_n1_2,
+                            data.eng_n1_3,
+                            data.eng_n1_4,
+                        ]
+                        .into_iter()
+                        .filter(|v| v.is_finite())
+                        .fold(None, |acc: Option<f64>, v| {
+                            Some(acc.map_or(v, |a| a.max(v)))
+                        });
+                        let pt = crate::flight_log::TrackPointInsert {
+                            lat,
+                            lon,
+                            alt_ft: Some(alt as i64),
+                            gs_kt: Some(gs as i64),
+                            parking_brake: Some(data.parking_brake >= 0.5),
+                            flaps_pct: Some(
+                                (data.flaps_handle_pct * 100.0).round() as i64,
+                            ),
+                            spoilers_pct: Some(
+                                (data.spoilers_handle_pct * 100.0).round() as i64,
+                            ),
+                            eng_n1: [n1_max, None, None, None],
+                            scoring_phase: Some("pre_departure".to_string()),
+                            ..Default::default()
+                        };
+                        if predeparture_buffer.len() >= PREDEP_BUFFER_CAP {
+                            predeparture_buffer.pop_front();
+                        }
+                        predeparture_buffer.push_back((now_ts, pt));
+                    }
+                }
+                Some(id) => {
+                    // Ya hay flight_id (post-OUT). Volcamos el buffer
+                    // cold-and-dark conservando los ts ORIGINALES y
+                    // registramos UN rango de fase pre_departure cerrado
+                    // (para la regla "ample pre-departure time"). drain()
+                    // garantiza que se hace una sola vez.
+                    if !predeparture_buffer.is_empty() {
+                        let drained: Vec<(String, crate::flight_log::TrackPointInsert)> =
+                            predeparture_buffer.drain(..).collect();
+                        let pool_f = pool.clone();
+                        tokio::spawn(async move {
+                            let first_ts = drained.first().map(|(t, _)| t.clone());
+                            let last_ts = drained.last().map(|(t, _)| t.clone());
+                            let n = drained.len();
+                            for (ts, pt) in drained {
+                                if let Err(e) =
+                                    crate::flight_log::insert_track_point_full_at(
+                                        &pool_f, id, &ts, pt,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        target: "simconnect",
+                                        "flush pre-departure: insert falló: {e:#}"
+                                    );
+                                }
+                            }
+                            if let (Some(a), Some(b)) = (first_ts, last_ts) {
+                                if let Err(e) = sqlx::query(
+                                    "INSERT INTO flight_log_phase (flight_id, phase, entered_at, exited_at) VALUES (?1, 'pre_departure', ?2, ?3)",
+                                )
+                                .bind(id)
+                                .bind(&a)
+                                .bind(&b)
+                                .execute(&pool_f)
+                                .await
+                                {
+                                    tracing::warn!(
+                                        target: "simconnect",
+                                        "flush pre-departure: phase range falló: {e:#}"
+                                    );
+                                }
+                            }
+                            tracing::info!(
+                                target: "simconnect",
+                                "pre-departure: volcadas {} muestras cold-and-dark al vuelo {}",
+                                n, id
+                            );
+                        });
+                    }
+                }
+            }
             if let Some(id) = id_opt {
                 let pool_c = pool.clone();
                 let lat_c = lat;
