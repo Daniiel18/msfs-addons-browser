@@ -447,6 +447,8 @@
   "fb.weather.note.visibility": "Visibility along the route. Red = low, blue = excellent.",
   "fb.weather.note.icing": "Corridors with icing risk (OAT between +2 and −20 °C with visible moisture).",
   "fb.weather.note.clouds": "REAL NASA satellite imagery of the flight day (VIIRS). The actual clouds of that day, seen from space — not the simulator's. For flights from today it may take a few hours to become available.",
+  "fb.weather.note.windy": "Interactive Windy map with real layers (wind, rain, clouds, temperature, pressure) and a timeline. Switch layers with its controls. Shows current/forecast weather, not the exact historical weather of an old flight.",
+  "fb.weather.layer.windy": "Windy",
   "fb.weather.layer.clouds": "Clouds",
   "fb.weather.layer.precip": "Precipitation",
   "fb.weather.layer.wind": "Wind",

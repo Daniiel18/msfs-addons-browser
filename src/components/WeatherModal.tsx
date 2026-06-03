@@ -6,6 +6,7 @@ import {
   Cloud,
   CloudRain,
   Eye,
+  Layers,
   Loader2,
   Snowflake,
   Thermometer,
@@ -191,7 +192,7 @@ export function WeatherModal({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [activeLayer, setActiveLayer] = useState<LayerKey>("clouds");
+  const [activeLayer, setActiveLayer] = useState<LayerKey>("windy");
   const [size, setSize] = useState({ width: 880, height: 560 });
   const resizingRef = useRef<{ startX: number; startY: number; w: number; h: number } | null>(
     null,
@@ -263,6 +264,41 @@ export function WeatherModal({
       cancelled = true;
     };
   }, [entry.id]);
+  // (v3.33.0 #4) URL del embed de Windy centrado en el punto medio de la
+  // ruta (o el origen si no hay destino). Capas REALES conmutables por el
+  // usuario (viento/lluvia/nubes/temp/presión) + timeline. metricWind=kt y
+  // metricTemp=°C por coherencia con aviación.
+  const windyUrl = (() => {
+    const lat =
+      entry.destinationLat != null
+        ? (entry.originLat + entry.destinationLat) / 2
+        : entry.originLat;
+    const lon =
+      entry.destinationLon != null
+        ? (entry.originLon + entry.destinationLon) / 2
+        : entry.originLon;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    const p = new URLSearchParams({
+      lat: lat.toFixed(3),
+      lon: lon.toFixed(3),
+      detailLat: lat.toFixed(3),
+      detailLon: lon.toFixed(3),
+      zoom: "5",
+      level: "surface",
+      overlay: "wind",
+      menu: "",
+      message: "true",
+      marker: "true",
+      calendar: "now",
+      type: "map",
+      location: "coordinates",
+      metricWind: "kt",
+      metricTemp: "°C",
+      radarRange: "-1",
+    });
+    return `https://embed.windy.com/embed2.html?${p.toString()}`;
+  })();
+
   const briefingWx = (() => {
     if (!briefing) return null;
     const norm = (s: string | null | undefined) => (s ?? "").trim().toUpperCase();
@@ -750,6 +786,10 @@ export function WeatherModal({
   //   · clouds → nubes REALES capturadas (Open-Meteo) por sample.
   const layerAvailable = (key: LayerKey): boolean => {
     switch (key) {
+      case "windy":
+        // (v3.33.0 #4) Windy funciona para cualquier vuelo con coords
+        // (clima en vivo/pronóstico, no depende de samples capturados).
+        return true;
       case "wind":
       case "temp":
       case "visibility":
@@ -883,6 +923,22 @@ export function WeatherModal({
           {/* Map area */}
           <div className="relative min-h-0 flex-1">
             <div ref={containerRef} className="absolute inset-0" />
+
+            {/* (v3.33.0 #4) Windy embebido — capa REAL interactiva. Cubre
+                el mapa MapLibre (z-20) cuando la pestaña Windy está activa;
+                trae su propio selector de capas + timeline. Clima en vivo/
+                pronóstico (no el histórico exacto de vuelos viejos). Las
+                otras pestañas siguen mostrando los overlays del propio
+                vuelo (clima capturado AMBIENT). */}
+            {activeLayer === "windy" && windyUrl && (
+              <iframe
+                title="Windy"
+                src={windyUrl}
+                className="absolute inset-0 z-20 h-full w-full border-0"
+                loading="lazy"
+              />
+            )}
+
             {!mapReady && (
               <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60 text-xs text-slate-400">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1156,9 +1212,13 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
   return null;
 }
 
-type LayerKey = "wind" | "temp" | "precip" | "visibility" | "icing" | "clouds";
+type LayerKey = "windy" | "wind" | "temp" | "precip" | "visibility" | "icing" | "clouds";
 
 const LAYERS: { key: LayerKey; labelKey: string; Icon: typeof Cloud }[] = [
+  // (v3.33.0 #4) Windy embebido — mapa interactivo de capas REALES
+  // (viento/lluvia/nubes/temp/presión + timeline). Es la vista por
+  // defecto; las demás son overlays derivados del clima del propio vuelo.
+  { key: "windy", labelKey: "fb.weather.layer.windy", Icon: Layers },
   { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud },
   { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain },
   { key: "wind", labelKey: "fb.weather.layer.wind", Icon: Wind },
