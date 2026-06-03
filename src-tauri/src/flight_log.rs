@@ -842,6 +842,10 @@ pub struct TrackPointInsert {
     pub cloud_high_pct: Option<i64>,
     /// (v3.21.0) STALL WARNING del sim (bool) — regla "no stall".
     pub stall_warning: Option<bool>,
+    /// (v3.26.0 P7.10) Warnings de daño/forzado del avión (bool):
+    /// sobrevelocidad (Vmo/Mmo) y presión de aceite fuera de rango.
+    pub overspeed_warning: Option<bool>,
+    pub oil_press_warning: Option<bool>,
 }
 
 /// Inserta un punto en la traza del vuelo. Compat wrapper —
@@ -900,7 +904,8 @@ pub async fn insert_track_point_full(
             scoring_phase,
             wind_dir_deg, wind_speed_kt, oat_c, baro_hpa, visibility_m, precip_state,
             cloud_cover_pct, cloud_low_pct, cloud_mid_pct, cloud_high_pct,
-            stall_warning
+            stall_warning,
+            overspeed_warning, oil_press_warning
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
@@ -917,7 +922,8 @@ pub async fn insert_track_point_full(
             ?46,
             ?47, ?48, ?49, ?50, ?51, ?52,
             ?53, ?54, ?55, ?56,
-            ?57
+            ?57,
+            ?58, ?59
         )
         "#,
     )
@@ -982,6 +988,9 @@ pub async fn insert_track_point_full(
     .bind(pt.cloud_high_pct)
     // (v3.21.0) Stall warning.
     .bind(b(pt.stall_warning))
+    // (v3.26.0 P7.10) Warnings de daño/forzado.
+    .bind(b(pt.overspeed_warning))
+    .bind(b(pt.oil_press_warning))
     .execute(pool)
     .await?;
     Ok(())

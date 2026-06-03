@@ -24,6 +24,7 @@ import type {
   FlightTrackPoint,
   FlightTrackFullPoint,
   WeatherSample,
+  DamageReport,
   DownloadMethod,
   CloudConfig,
   CloudOauthCompletedEvent,
@@ -320,6 +321,8 @@ interface Api {
   /** (v4.0.0 P7.9b) Weather samples (viento/temp/presión/precip) de un
    *  vuelo, capturados por sample. Vacío si el vuelo no tiene weather. */
   getFlightWeather: (flightId: number) => Promise<WeatherSample[]>;
+  /** (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo. */
+  analyzeFlightDamage: (flightId: number) => Promise<DamageReport>;
   /** Edita campos manualmente — `null` deja sin tocar la columna.
    *  Usado por el modal "Editar" del panel de detalle. */
   updateFlightLogEntry: (id: number, input: UpdateFlightInput) => Promise<void>;
@@ -517,6 +520,8 @@ const realApi: Api = {
     invoke<FlightTrackFullPoint[]>("get_flight_track_full", { flightId }),
   getFlightWeather: (flightId) =>
     invoke<WeatherSample[]>("get_flight_weather", { flightId }),
+  analyzeFlightDamage: (flightId) =>
+    invoke<DamageReport>("analyze_flight_damage", { flightId }),
   updateFlightLogEntry: (id, input) =>
     invoke<void>("update_flight_log_entry", { id, input }),
   deleteFlightLogEntry: (id) => invoke<void>("delete_flight_log_entry", { id }),
@@ -1237,6 +1242,18 @@ const demoApi: Api = {
   },
   async getFlightWeather() {
     return [];
+  },
+  async analyzeFlightDamage() {
+    return {
+      verdict: "no_data" as const,
+      hasData: false,
+      overspeedSamples: 0,
+      stallSamples: 0,
+      oilPressSamples: 0,
+      maxG: null,
+      minG: null,
+      reasons: [],
+    };
   },
   async deleteFlightLogEntry() {
     /* no-op demo */

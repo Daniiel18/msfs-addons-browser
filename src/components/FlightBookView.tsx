@@ -28,6 +28,7 @@ import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
 import { PerformanceModal } from "./PerformanceModal";
 import { WeatherModal } from "./WeatherModal";
+import { DamageBadge } from "./DamageBadge";
 import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
 /**
@@ -396,6 +397,10 @@ export function FlightBookView() {
               donde antes vivían los tabs. Los chips se ocultan
               automáticamente si no hay airlines en el historial. */}
           <AirlineTagFilter />
+          {/* (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo. */}
+          {selectedFlightId != null && (
+            <DamageBadge flightId={selectedFlightId} />
+          )}
           {/* (v3.6.3 fix J5) Tabs (Checklist / Performance / Weather /
               NOTAMs) SOLO con vuelo seleccionado. Antes siempre se
               renderizaban — el usuario no podía hacer nada útil con

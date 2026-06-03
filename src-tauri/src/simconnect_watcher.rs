@@ -517,6 +517,10 @@ mod windows_simconnect {
         // never indicated" del Flight Evaluation. Debe ir AL FINAL del
         // struct (y de AddToDataDefinition) para no mover offsets.
         stall_warning: f64,
+        // (v3.26.0 P7.10) Warnings de daño/forzado — TAMBIÉN al final
+        // (tras stall_warning), mismo orden en AddToDataDefinition.
+        overspeed_warning: f64,
+        oil_press_warning: f64,
     }
 
     /// (v3.5.0) Struct compañero a `AircraftData` con los simvars
@@ -1119,6 +1123,10 @@ mod windows_simconnect {
             ("AMBIENT PRECIP STATE", units_number.as_c_str()),
             // (v3.21.0) Stall warning — al final, igual que en el struct.
             ("STALL WARNING", units_bool.as_c_str()),
+            // (v3.26.0 P7.10) Warnings de daño/forzado — mismo orden que
+            // los campos overspeed_warning / oil_press_warning del struct.
+            ("OVERSPEED WARNING", units_bool.as_c_str()),
+            ("WARNING OIL PRESSURE", units_bool.as_c_str()),
         ];
 
         for (name, units) in names {
@@ -3387,6 +3395,9 @@ mod windows_simconnect {
                 let cloud_high_c = cloud.high_pct;
                 // (v3.21.0) Stall warning del sim (bool) para el scoring.
                 let stall_warning_c = data.stall_warning >= 0.5;
+                // (v3.26.0 P7.10) Warnings de daño/forzado (bool).
+                let overspeed_warning_c = data.overspeed_warning >= 0.5;
+                let oil_press_warning_c = data.oil_press_warning >= 0.5;
                 let alt_c = alt as i64;
                 let gs_c = gs as i64;
                 // (v3.7.0 — Phase O) Snapshot de todos los simvars
@@ -3501,6 +3512,8 @@ mod windows_simconnect {
                         cloud_mid_pct: cloud_mid_c,
                         cloud_high_pct: cloud_high_c,
                         stall_warning: Some(stall_warning_c),
+                        overspeed_warning: Some(overspeed_warning_c),
+                        oil_press_warning: Some(oil_press_warning_c),
                     };
                     if let Err(e) = crate::flight_log::insert_track_point_full(
                         &pool_c, id, pt,

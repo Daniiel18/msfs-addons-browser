@@ -136,6 +136,20 @@ pub async fn get_flight_weather(
     }
 }
 
+/// (v3.26.0 — P7.10) Analiza la traza del vuelo y devuelve el veredicto
+/// de daños (LIMPIO / FORZADO / DAÑADO) según sobrevelocidad, pérdida,
+/// presión de aceite y fuerza-G. "no_data" para vuelos viejos / VAS que
+/// no capturaron estos simvars.
+#[tauri::command]
+pub async fn analyze_flight_damage(
+    flight_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::damage::DamageReport, String> {
+    crate::damage::analyze(&state.db, flight_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_flight_log_entry(
     id: i64,

@@ -536,6 +536,18 @@ export interface WeatherSample {
   cloudHighPct: number | null;
 }
 
+/** (v3.26.0 — P7.10) Veredicto de daños/forzado del vuelo. */
+export interface DamageReport {
+  verdict: "clean" | "forced" | "damaged" | "no_data";
+  hasData: boolean;
+  overspeedSamples: number;
+  stallSamples: number;
+  oilPressSamples: number;
+  maxG: number | null;
+  minG: number | null;
+  reasons: string[];
+}
+
 /** (v4.0.0 — P5) Punto completo con telemetría extendida para el
  *  Performance modal. Incluye attitude, lights/gear/flaps y 6
  *  métricas × 4 engine slots. Para vuelos VAS imports muchos

@@ -3,6 +3,7 @@ pub mod cloud_sync;
 pub mod commands;
 pub mod community;
 pub mod community_scanner;
+pub mod damage;
 pub mod db;
 pub mod drop_install;
 pub mod download;
@@ -168,6 +169,7 @@ pub fn run() {
             commands::flight_log::get_flight_track,
             commands::flight_log::get_flight_track_full,
             commands::flight_log::get_flight_weather,
+            commands::flight_log::analyze_flight_damage,
             commands::flight_log::update_flight_log_entry,
             commands::flight_log::msfs_logbook_detect,
             commands::flight_log::msfs_logbook_import,
