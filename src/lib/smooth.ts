@@ -144,6 +144,58 @@ export function sanitizeTrackCoordsWithTs(
 }
 
 /**
+ * (v3.23.0) Segmenta el track en sub-trazas, CORTANDO donde hay un
+ * salto geométrico imposible (>`MAX_DEG_PER_SAMPLE`) o un gap temporal
+ * (>`MAX_TS_GAP_SECONDS`). Devuelve un array de segmentos (cada uno una
+ * lista de `[lon,lat]`). El render emite un **MultiLineString** para que
+ * las "costuras" entre tramos NO se dibujen como rectas cruzando el mapa.
+ *
+ * Por qué: algunos tracks viejos/importados (o vuelos re-restaurados)
+ * vienen con los puntos de varias sesiones concatenados, o con un punto
+ * teleportado. El saneador secuencial sólo descartaba 1 punto por
+ * costura, pero el bloque siguiente quedaba unido al anterior por una
+ * recta larga. Cortando en cada salto, cada bloque se dibuja por
+ * separado (se superponen visualmente = una ruta limpia) y los outliers
+ * aislados quedan en segmentos de 1 punto que no se renderizan.
+ */
+export function segmentTrackCoords(points: LngLatTs[]): LngLat[][] {
+  const segments: LngLat[][] = [];
+  let cur: LngLat[] = [];
+  let prev: { lon: number; lat: number; epoch: number | null } | null = null;
+  const flush = () => {
+    if (cur.length) {
+      segments.push(cur);
+      cur = [];
+    }
+  };
+  for (const p of points) {
+    if (!Number.isFinite(p.lon) || !Number.isFinite(p.lat)) continue;
+    if (p.lon < -180 || p.lon > 180 || p.lat < -90 || p.lat > 90) continue;
+    if (Math.abs(p.lon) < 0.05 && Math.abs(p.lat) < 0.05) continue;
+    const epoch = p.ts ? Date.parse(p.ts) : NaN;
+    const epochOk = Number.isFinite(epoch);
+    if (prev) {
+      const dlon = Math.abs(p.lon - prev.lon);
+      const dlat = Math.abs(p.lat - prev.lat);
+      const dlonNorm = dlon > 180 ? 360 - dlon : dlon;
+      const geoJump =
+        dlonNorm > MAX_DEG_PER_SAMPLE || dlat > MAX_DEG_PER_SAMPLE;
+      const tsGap =
+        epochOk &&
+        prev.epoch != null &&
+        (epoch - prev.epoch) / 1000 > MAX_TS_GAP_SECONDS;
+      if (geoJump || tsGap) {
+        flush(); // corta: el bloque siguiente arranca traza nueva.
+      }
+    }
+    cur.push([p.lon, p.lat]);
+    prev = { lon: p.lon, lat: p.lat, epoch: epochOk ? epoch : null };
+  }
+  flush();
+  return segments;
+}
+
+/**
  * Suaviza una lista de `points` lat/lon con una spline Catmull-Rom.
  * `segmentsPerStep` controla cuántos puntos intermedios se generan
  * entre cada par de puntos de entrada. Default 8 — buen balance entre

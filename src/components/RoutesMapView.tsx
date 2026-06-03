@@ -10,7 +10,7 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { greatCircleLine } from "../lib/greatCircle";
 import {
   smoothCatmullRom,
-  sanitizeTrackCoordsWithTs,
+  segmentTrackCoords,
 } from "../lib/smooth";
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
@@ -492,7 +492,7 @@ export function RoutesMapView({
   // GeoJSON del live track — añadimos la posición actual de
   // SimConnect (más fresca que el polling 10s) como último punto.
   const liveTrackGeojson = useMemo<
-    GeoJSON.FeatureCollection<GeoJSON.LineString>
+    GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
   >(() => {
     if (inFlightId == null) {
       return { type: "FeatureCollection", features: [] };
@@ -521,24 +521,22 @@ export function RoutesMapView({
         ts: new Date().toISOString(),
       });
     }
-    const sanitized = sanitizeTrackCoordsWithTs(rawPoints);
-    const coords: [number, number][] = sanitized.map(
-      (p) => [p.lon, p.lat] as [number, number],
-    );
-    if (coords.length < 2) {
+    // (v3.23.0) Segmentamos en saltos/gaps → MultiLineString (cada
+    // tramo suavizado por separado). Evita la recta larga cuando hay
+    // pausa/reconexión o un punto teleportado.
+    const lines = segmentTrackCoords(rawPoints)
+      .filter((seg) => seg.length >= 2)
+      .map((seg) => smoothCatmullRom(seg, 8));
+    if (lines.length === 0) {
       return { type: "FeatureCollection", features: [] };
     }
-    // (v2.2.0) Suavizado Catmull-Rom — el sample crudo cada 10s da
-    // un trazo poligonal en giros (approaches, holds). Pasamos por
-    // la spline antes de mandarlo a MapLibre.
-    const smooth = smoothCatmullRom(coords, 8);
     return {
       type: "FeatureCollection",
       features: [
         {
           type: "Feature",
           properties: { flightId: inFlightId, live: true },
-          geometry: { type: "LineString", coordinates: smooth },
+          geometry: { type: "MultiLineString", coordinates: lines },
         },
       ],
     };
@@ -603,39 +601,35 @@ export function RoutesMapView({
     simbriefFlights,
   ]);
 
-  // Geometría del track real — sólo se popula cuando hay selección
-  // con datos. LineString (no MultiLineString) porque es una traza
-  // continua, no varios segmentos.
+  // Geometría del track real del vuelo seleccionado.
   const trackGeojson = useMemo<
-    GeoJSON.FeatureCollection<GeoJSON.LineString>
+    GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
   >(() => {
     if (selectedFlightId == null || trackPoints.length < 2) {
       return { type: "FeatureCollection", features: [] };
     }
-    // (v3.4.0) Sanitizamos con timestamps para detectar pausas
-    // reales en el sampling, no sólo saltos geométricos. Sin esto
-    // un vuelo con sim pausado 5 min seguía mostrando línea recta
-    // entre los dos segmentos — ahora se corta.
-    const sanitized = sanitizeTrackCoordsWithTs(
+    // (v3.23.0) Segmentamos en saltos geométricos (>3°) y gaps
+    // temporales → MultiLineString. Antes era una sola LineString y los
+    // tracks corruptos/duplicados (varias sesiones concatenadas o un
+    // punto teleportado) dibujaban una recta larga cruzando el mapa /
+    // océano. Ahora cada tramo se dibuja por separado (se superponen =
+    // ruta limpia) y los outliers aislados quedan en segmentos de 1
+    // punto que no se renderizan. Cada tramo se suaviza con Catmull-Rom.
+    const lines = segmentTrackCoords(
       trackPoints.map((p) => ({ lon: p.lon, lat: p.lat, ts: p.ts })),
-    );
-    const coords: [number, number][] = sanitized.map(
-      (p) => [p.lon, p.lat] as [number, number],
-    );
-    if (coords.length < 2) {
+    )
+      .filter((seg) => seg.length >= 2)
+      .map((seg) => smoothCatmullRom(seg, 8));
+    if (lines.length === 0) {
       return { type: "FeatureCollection", features: [] };
     }
-    // (v2.2.0) Suavizado Catmull-Rom — antes el trazo se veía a
-    // poligonal en zonas de giro. Con la spline pasamos por los
-    // mismos puntos pero con interpolación cúbica entre ellos.
-    const smooth = smoothCatmullRom(coords, 8);
     return {
       type: "FeatureCollection",
       features: [
         {
           type: "Feature",
-          properties: { flightId: selectedFlightId, points: coords.length },
-          geometry: { type: "LineString", coordinates: smooth },
+          properties: { flightId: selectedFlightId, segments: lines.length },
+          geometry: { type: "MultiLineString", coordinates: lines },
         },
       ],
     };
@@ -984,9 +978,13 @@ export function RoutesMapView({
     const bounds = new maplibregl.LngLatBounds();
     if (detailMode) {
       // Fit a track real si lo hay, sino a la great-circle de fallback.
+      // (v3.23.0) trackGeojson ahora es MultiLineString → iteramos
+      // línea→punto (un nivel más de anidación).
       for (const feat of trackGeojson.features) {
-        for (const [lng, lat] of feat.geometry.coordinates) {
-          bounds.extend([lng, lat]);
+        for (const line of feat.geometry.coordinates) {
+          for (const [lng, lat] of line) {
+            bounds.extend([lng, lat]);
+          }
         }
       }
       if (bounds.isEmpty()) {
