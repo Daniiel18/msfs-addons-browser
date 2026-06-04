@@ -4,7 +4,6 @@
 //! desde la migración 001 y desde la 009 (`simbrief_pilot_id`);
 //! aquí añadimos las claves nuevas:
 //!
-//!   · `pref_show_simbrief_lines`     — bool ("1"/"0")
 //!   · `pref_show_simconnect_lines`   — bool
 //!   · `pref_check_updates_on_start`  — bool
 //!   · `pref_minimize_to_tray`        — bool (Cierre = ocultar)
@@ -31,7 +30,6 @@ use crate::AppState;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
-    pub show_simbrief_lines: bool,
     pub show_simconnect_lines: bool,
     pub check_updates_on_start: bool,
     pub minimize_to_tray: bool,
@@ -67,7 +65,6 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            show_simbrief_lines: true,
             show_simconnect_lines: true,
             check_updates_on_start: true,
             minimize_to_tray: false,
@@ -114,7 +111,6 @@ pub async fn get_app_settings(
             .into_owned()
     });
     Ok(AppSettings {
-        show_simbrief_lines: as_bool(&kv, "pref_show_simbrief_lines", true),
         show_simconnect_lines: as_bool(&kv, "pref_show_simconnect_lines", true),
         check_updates_on_start: as_bool(&kv, "pref_check_updates_on_start", true),
         minimize_to_tray: as_bool(&kv, "pref_minimize_to_tray", false),
@@ -235,8 +231,7 @@ pub async fn clear_caches(state: tauri::State<'_, AppState>) -> Result<u64, Stri
 fn is_valid_key(key: &str) -> bool {
     matches!(
         key,
-        "pref_show_simbrief_lines"
-            | "pref_show_simconnect_lines"
+        "pref_show_simconnect_lines"
             | "pref_check_updates_on_start"
             | "pref_minimize_to_tray"
             | "pref_onboarding_completed"

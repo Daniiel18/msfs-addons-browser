@@ -353,12 +353,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
               <Section title={t("settings.section.map_display")} icon={<Bell className="h-3.5 w-3.5" />}>
                 <Toggle
-                  label={t("settings.map.simbrief_lines")}
-                  hint={t("settings.map.simbrief_lines.hint")}
-                  checked={settings.showSimbriefLines}
-                  onChange={(v) => setBoolean("showSimbriefLines", v)}
-                />
-                <Toggle
                   label={t("settings.map.simconnect_lines")}
                   hint={t("settings.map.simconnect_lines.hint")}
                   checked={settings.showSimconnectLines}

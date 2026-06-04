@@ -218,7 +218,6 @@ export type ExportFormat = "csv" | "txt" | "json";
 /** Snapshot de las preferencias de la app. Lo devuelve
  *  `getAppSettings`; el frontend lo guarda en `useSettingsStore`. */
 export interface AppSettings {
-  showSimbriefLines: boolean;
   showSimconnectLines: boolean;
   checkUpdatesOnStart: boolean;
   minimizeToTray: boolean;

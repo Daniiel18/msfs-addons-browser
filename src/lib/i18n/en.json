@@ -151,8 +151,6 @@
   "settings.simbrief.refresh_tooltip": "Refresh the latest OFP",
   "settings.simbrief.simconnect_hint": "SimConnect (real flights): the watcher starts with the app and connects automatically when MSFS is running. Every recorded flight shows up in FlightBook.",
 
-  "settings.map.simbrief_lines": "SimBrief lines",
-  "settings.map.simbrief_lines.hint": "Planned flights (cyan, dashed) on the FlightBook map.",
   "settings.map.simconnect_lines": "SimConnect lines",
   "settings.map.simconnect_lines.hint": "Real recorded flights (green, solid) on the FlightBook map.",
 

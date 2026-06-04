@@ -27,7 +27,6 @@ interface SettingsState {
   bootstrap: () => Promise<void>;
   setBoolean: (
     key:
-      | "showSimbriefLines"
       | "showSimconnectLines"
       | "checkUpdatesOnStart",
     value: boolean,
@@ -44,7 +43,6 @@ interface SettingsState {
 }
 
 const DEFAULTS: AppSettings = {
-  showSimbriefLines: true,
   showSimconnectLines: true,
   checkUpdatesOnStart: true,
   minimizeToTray: false,
@@ -62,7 +60,6 @@ const DEFAULTS: AppSettings = {
 };
 
 const KEY_MAP: Record<string, string> = {
-  showSimbriefLines: "pref_show_simbrief_lines",
   showSimconnectLines: "pref_show_simconnect_lines",
   checkUpdatesOnStart: "pref_check_updates_on_start",
   minimizeToTray: "pref_minimize_to_tray",

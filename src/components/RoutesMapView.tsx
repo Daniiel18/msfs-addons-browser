@@ -31,7 +31,6 @@ const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" w
  *
  * A diferencia de `MapView` (que pinta los aeropuertos del catálogo
  * con clusters), este mapa muestra exclusivamente:
- *   · Líneas SimBrief (planes de vuelo) — color cyan/azul.
  *   · Líneas SimConnect (vuelos reales del flight_log) — color verde
  *     esmeralda con halo blanco para destacar.
  *   · Marcadores compactos en origen y destino de cada vuelo.
@@ -87,9 +86,6 @@ export function RoutesMapView({
   // este state queda vacío y el mapa vuelve a las great-circles.
   const [trackPoints, setTrackPoints] = useState<FlightTrackPoint[]>([]);
   const [loadingTrack, setLoadingTrack] = useState(false);
-  const showSimbriefLines = useSettingsStore(
-    (s) => s.settings.showSimbriefLines,
-  );
   const showSimconnectLines = useSettingsStore(
     (s) => s.settings.showSimconnectLines,
   );
@@ -178,26 +174,6 @@ export function RoutesMapView({
       features: [],
     };
     const initSources = () => {
-      // SimBrief — cyan tenue, glow + line dashed.
-      map.addSource("rt-simbrief", { type: "geojson", data: empty });
-      map.addLayer({
-        id: "rt-simbrief-line-glow",
-        type: "line",
-        source: "rt-simbrief",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": "#0ea5e9", "line-width": 3.5, "line-opacity": 0.25 },
-      });
-      map.addLayer({
-        id: "rt-simbrief-line",
-        type: "line",
-        source: "rt-simbrief",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#7dd3fc",
-          "line-width": 1.8,
-          "line-dasharray": [2, 2],
-        },
-      });
       // FlightLog — verde esmeralda con halo (vuelos reales).
       // (v3.6.3 fix J4) Vuelta a opacity fija — el filtro de aerolínea
       // ahora EXCLUYE features no-matching en lugar de atenuarlas.
@@ -709,35 +685,6 @@ export function RoutesMapView({
       selectedGreatCircleGeojson.features.length > 0 ||
       loadingTrack);
 
-  // SimBrief: cyan tenue (planes son aspiracionales, no reales).
-  // Se oculta en modo detalle para que sólo se vea la traza real.
-  const simbriefGeojson = useMemo<
-    GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
-  >(
-    () => ({
-      type: "FeatureCollection",
-      features: !showSimbriefLines || detailMode
-        ? []
-        : simbriefFlights.map((f) => ({
-            type: "Feature",
-            properties: {
-              ofpId: f.ofpId,
-              label: `${f.originIcao} → ${f.destinationIcao}`,
-            },
-            geometry: {
-              type: "MultiLineString",
-              coordinates: greatCircleLine(
-                f.originLon,
-                f.originLat,
-                f.destinationLon,
-                f.destinationLat,
-              ),
-            },
-          })),
-    }),
-    [simbriefFlights, showSimbriefLines, detailMode],
-  );
-
   // SimConnect: verde esmeralda con halo.
   // (v3.6.3 fix J4) Focus EXCLUSIVO: cuando hay airline activa, los
   // vuelos que NO matchean simplemente se EXCLUYEN del GeoJSON (antes
@@ -845,28 +792,9 @@ export function RoutesMapView({
         });
       }
     }
-    if (showSimbriefLines) {
-      for (const f of simbriefFlights) {
-        features.push({
-          type: "Feature",
-          properties: { kind: "plan", role: "origin", icao: f.originIcao },
-          geometry: { type: "Point", coordinates: [f.originLon, f.originLat] },
-        });
-        features.push({
-          type: "Feature",
-          properties: { kind: "plan", role: "dest", icao: f.destinationIcao },
-          geometry: {
-            type: "Point",
-            coordinates: [f.destinationLon, f.destinationLat],
-          },
-        });
-      }
-    }
     return { type: "FeatureCollection", features };
   }, [
     flightLogEntries,
-    simbriefFlights,
-    showSimbriefLines,
     showSimconnectLines,
     detailMode,
     selectedFlightId,
@@ -882,8 +810,6 @@ export function RoutesMapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
-    const simbriefSrc = map.getSource("rt-simbrief") as GeoJSONSource | undefined;
-    simbriefSrc?.setData(simbriefGeojson);
     const flightSrc = map.getSource("rt-flightlog") as GeoJSONSource | undefined;
     flightSrc?.setData(flightLogGeojson);
     const epSrc = map.getSource("rt-endpoints") as GeoJSONSource | undefined;
@@ -899,7 +825,6 @@ export function RoutesMapView({
     map.triggerRepaint();
   }, [
     mapReady,
-    simbriefGeojson,
     flightLogGeojson,
     endpointsGeojson,
     trackGeojson,
@@ -1007,10 +932,7 @@ export function RoutesMapView({
     }
     // Globo: respeta el "una vez" original.
     if (didAutoFitRef.current) return;
-    const allFeatures = [
-      ...simbriefGeojson.features,
-      ...flightLogGeojson.features,
-    ];
+    const allFeatures = [...flightLogGeojson.features];
     if (allFeatures.length === 0) return;
     for (const feat of allFeatures) {
       for (const segment of feat.geometry.coordinates) {
@@ -1029,7 +951,6 @@ export function RoutesMapView({
     }
   }, [
     mapReady,
-    simbriefGeojson,
     flightLogGeojson,
     trackGeojson,
     selectedGreatCircleGeojson,
@@ -1064,8 +985,7 @@ export function RoutesMapView({
   }, [mapReady, selectedAirline, flightLogGeojson, detailMode]);
 
   const totalReal = flightLogGeojson.features.length;
-  const totalPlan = simbriefGeojson.features.length;
-  const empty = !detailMode && totalReal === 0 && totalPlan === 0;
+  const empty = !detailMode && totalReal === 0;
 
   return (
     <div
@@ -1092,10 +1012,6 @@ export function RoutesMapView({
               <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-emerald-400 align-middle" />
               Reales <span className="text-emerald-300">({totalReal})</span>
             </span>
-            <span className="rounded-md bg-slate-950/80 px-2 py-1 ring-1 ring-sky-500/30">
-              <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-sky-300 align-middle" />
-              Plan <span className="text-sky-300">({totalPlan})</span>
-            </span>
           </>
         )}
       </div>
@@ -1113,7 +1029,7 @@ export function RoutesMapView({
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-500">
           Aún no hay rutas para mostrar.
           <br />
-          Vuela en MSFS o refresca SimBrief.
+          Vuela en MSFS para registrar tus vuelos.
         </div>
       )}
     </div>

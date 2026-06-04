@@ -1201,7 +1201,6 @@ const demoApi: Api = {
   },
   async getAppSettings() {
     return {
-      showSimbriefLines: true,
       showSimconnectLines: true,
       checkUpdatesOnStart: true,
       minimizeToTray: false,
