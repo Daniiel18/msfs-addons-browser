@@ -285,7 +285,7 @@ export function WeatherModal({
       detailLon: lon.toFixed(3),
       zoom: "5",
       level: "surface",
-      overlay: "wind",
+      overlay: LAYERS.find((l) => l.key === activeLayer)?.overlay ?? "wind",
       menu: "",
       message: "true",
       marker: "true",
@@ -784,28 +784,10 @@ export function WeatherModal({
   //   · Derivadas (wind/temp/visibility/icing) → necesitan samples.
   //   · precip → samples (pasado) o RainViewer (live).
   //   · clouds → nubes REALES capturadas (Open-Meteo) por sample.
-  const layerAvailable = (key: LayerKey): boolean => {
-    switch (key) {
-      case "windy":
-        // (v3.33.0 #4) Windy funciona para cualquier vuelo con coords
-        // (clima en vivo/pronóstico, no depende de samples capturados).
-        return true;
-      case "wind":
-      case "temp":
-      case "visibility":
-      case "icing":
-        return hasWeather;
-      case "precip":
-        return hasWeather || isLiveFlight;
-      case "clouds":
-        // (v3.20.0 P7.9e) Imagen satelital NASA del día — funciona para
-        // CUALQUIER vuelo (incluso viejos sin weather), porque se basa en
-        // la fecha, no en samples capturados.
-        return true;
-      default:
-        return false;
-    }
-  };
+  // (v3.34.0 #4) Todas las pestañas son ahora capas de Windy (overlays),
+  // siempre disponibles para cualquier vuelo con coordenadas. `hasWeather`
+  // / `isLiveFlight` se siguen usando en otros puntos del modal.
+  const layerAvailable = (_key: LayerKey): boolean => true;
 
   // El sidebar muestra todas las capas; cada una se habilita según los
   // datos que el vuelo capturó (tooltip explica si falta). Así no hay
@@ -922,20 +904,18 @@ export function WeatherModal({
 
           {/* Map area */}
           <div className="relative min-h-0 flex-1">
-            <div ref={containerRef} className="absolute inset-0" />
-
-            {/* (v3.33.0 #4) Windy embebido — capa REAL interactiva. Cubre
-                el mapa MapLibre (z-20) cuando la pestaña Windy está activa;
-                trae su propio selector de capas + timeline. Clima en vivo/
-                pronóstico (no el histórico exacto de vuelos viejos). Las
-                otras pestañas siguen mostrando los overlays del propio
-                vuelo (clima capturado AMBIENT). */}
-            {activeLayer === "windy" && windyUrl && (
+            {/* (v3.34.0 #4) Modal de Weather = Windy embebido. Cada pestaña
+                del sidebar cambia la CAPA (overlay) de Windy; el `key` por
+                capa fuerza recarga del iframe al cambiar. El mapa MapLibre
+                + overlays AMBIENT derivados se retiraron de la vista por
+                elección del usuario (el clima histórico capturado sigue en
+                la BD). Clima en vivo/pronóstico de Windy, capas reales. */}
+            {windyUrl && (
               <iframe
                 title="Windy"
+                key={activeLayer}
                 src={windyUrl}
                 className="absolute inset-0 z-20 h-full w-full border-0"
-                loading="lazy"
               />
             )}
 
@@ -1214,15 +1194,18 @@ function LayerLegend({ layer }: { layer: LayerKey }) {
 
 type LayerKey = "windy" | "wind" | "temp" | "precip" | "visibility" | "icing" | "clouds";
 
-const LAYERS: { key: LayerKey; labelKey: string; Icon: typeof Cloud }[] = [
-  // (v3.33.0 #4) Windy embebido — mapa interactivo de capas REALES
-  // (viento/lluvia/nubes/temp/presión + timeline). Es la vista por
-  // defecto; las demás son overlays derivados del clima del propio vuelo.
-  { key: "windy", labelKey: "fb.weather.layer.windy", Icon: Layers },
-  { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud },
-  { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain },
-  { key: "wind", labelKey: "fb.weather.layer.wind", Icon: Wind },
-  { key: "temp", labelKey: "fb.weather.layer.temp", Icon: Thermometer },
-  { key: "visibility", labelKey: "fb.weather.layer.visibility", Icon: Eye },
-  { key: "icing", labelKey: "fb.weather.layer.icing", Icon: Snowflake },
+// (v3.34.0 #4) Cada entrada del sidebar mapea a una CAPA (overlay) de
+// Windy. El usuario eligió que el sidebar controle las capas de Windy en
+// vez de los overlays derivados del vuelo. `overlay` = id de capa del
+// embed de Windy. Matches: Nubes→clouds, Precipitación→rain, Viento→wind,
+// Temperatura→temp, Visibilidad→visibility (la que pediste), Engelamiento
+// →icing ("Icing severity"), Windy→radar (vista general / radar).
+const LAYERS: { key: LayerKey; labelKey: string; Icon: typeof Cloud; overlay: string }[] = [
+  { key: "windy", labelKey: "fb.weather.layer.windy", Icon: Layers, overlay: "radar" },
+  { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud, overlay: "clouds" },
+  { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain, overlay: "rain" },
+  { key: "wind", labelKey: "fb.weather.layer.wind", Icon: Wind, overlay: "wind" },
+  { key: "temp", labelKey: "fb.weather.layer.temp", Icon: Thermometer, overlay: "temp" },
+  { key: "visibility", labelKey: "fb.weather.layer.visibility", Icon: Eye, overlay: "visibility" },
+  { key: "icing", labelKey: "fb.weather.layer.icing", Icon: Snowflake, overlay: "icing" },
 ];
