@@ -9,7 +9,6 @@ import {
   Clock,
   Cloud,
   Droplet,
-  Gauge,
   Globe,
   MapPin,
   Package,
@@ -27,7 +26,6 @@ import { useUnits } from "../lib/units";
 import type { FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
-import { PerformanceModal } from "./PerformanceModal";
 import { WeatherModal } from "./WeatherModal";
 import { NotamsModal } from "./NotamsModal";
 import { DamageBadge } from "./DamageBadge";
@@ -70,8 +68,6 @@ export function FlightBookView() {
   const [sidebarQuery, setSidebarQuery] = useState("");
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
-  // (v4.0.0 — P5) Estado del Performance modal.
-  const [performanceOpen, setPerformanceOpen] = useState(false);
   // (v4.0.0 — P7) Estado del Weather modal.
   const [weatherOpen, setWeatherOpen] = useState(false);
   // (v3.32.0 #6) Estado del NOTAMs modal (SimBrief OFP).
@@ -114,15 +110,6 @@ export function FlightBookView() {
       setChecklistOpen(false);
     }
   }, [selectedFlightId, selectedFlight?.source, checklistOpen]);
-
-  // (v4.0.0 — P5) Cierra el Performance modal al volver al globo.
-  // No depende del source — Performance funciona con VAS imports
-  // también (alt/gs solamente).
-  useEffect(() => {
-    if (selectedFlightId == null && performanceOpen) {
-      setPerformanceOpen(false);
-    }
-  }, [selectedFlightId, performanceOpen]);
 
   // (v4.0.0 — P7) Cierra el Weather modal al volver al globo, o si
   // se cambia a un vuelo VAS import (Weather no aplica para ellos).
@@ -419,18 +406,16 @@ export function FlightBookView() {
           {selectedFlightId != null && (
             <DamageBadge flightId={selectedFlightId} />
           )}
-          {/* (v3.6.3 fix J5) Tabs (Checklist / Performance / Weather /
-              NOTAMs) SOLO con vuelo seleccionado. Antes siempre se
-              renderizaban — el usuario no podía hacer nada útil con
-              ellos sin un vuelo activo. */}
+          {/* (v3.6.3 fix J5) Tabs (Checklist / Weather / NOTAMs) SOLO
+              con vuelo seleccionado. Antes siempre se renderizaban —
+              el usuario no podía hacer nada útil con ellos sin un
+              vuelo activo. */}
           {selectedFlightId != null && (
             <DetailActionsBar
               selectedFlightId={selectedFlightId}
               selectedFlightSource={selectedFlight?.source ?? null}
               onToggleChecklist={() => setChecklistOpen((v) => !v)}
               checklistOpen={checklistOpen && selectedFlightId != null}
-              onTogglePerformance={() => setPerformanceOpen((v) => !v)}
-              performanceOpen={performanceOpen && selectedFlightId != null}
               onToggleWeather={() => setWeatherOpen((v) => !v)}
               weatherOpen={weatherOpen && selectedFlightId != null}
               onToggleNotams={() => setNotamsOpen((v) => !v)}
@@ -452,17 +437,6 @@ export function FlightBookView() {
               <ChecklistWidget
                 flightId={selectedFlightId}
                 onClose={() => setChecklistOpen(false)}
-              />
-            )}
-
-            {/* (v4.0.0 — P5) Performance modal — flotante resizable
-                con Recharts. Se renderiza con z-40 por encima del
-                ChecklistWidget (z-30) para que abrirse no se vea
-                detrás. */}
-            {performanceOpen && selectedFlightId != null && (
-              <PerformanceModal
-                flightId={selectedFlightId}
-                onClose={() => setPerformanceOpen(false)}
               />
             )}
 
@@ -1788,8 +1762,8 @@ function colorFromString(s: string): string {
 }
 
 /** (v3.5.0) Tabs deshabilitadas que viven sobre la card de detalle.
- *  Placeholders para futuras secciones: Checklist (procedures), Performance
- *  (V-speeds, runway analysis), Weather (METAR / TAF), NOTAMs.
+ *  Secciones: Checklist (procedures), Weather (METAR / TAF + Windy),
+ *  NOTAMs (SimBrief OFP).
  *  Hoy renderizan opacas + cursor not-allowed; cada una muestra un dot
  *  de color para identificar visualmente la categoría. Cuando se
  *  implementen, se quitará el `disabled` y se conectará el handler.
@@ -1803,8 +1777,6 @@ function DetailActionsBar({
   selectedFlightSource,
   onToggleChecklist,
   checklistOpen,
-  onTogglePerformance,
-  performanceOpen,
   onToggleWeather,
   weatherOpen,
   onToggleNotams,
@@ -1814,8 +1786,6 @@ function DetailActionsBar({
   selectedFlightSource: string | null;
   onToggleChecklist: () => void;
   checklistOpen: boolean;
-  onTogglePerformance: () => void;
-  performanceOpen: boolean;
   onToggleWeather: () => void;
   weatherOpen: boolean;
   onToggleNotams: () => void;
@@ -1829,9 +1799,8 @@ function DetailActionsBar({
   //   · **Weather** — solo vuelos `simconnect`. Imports no tienen
   //     historical wind/clouds y las APIs gratuitas no permiten
   //     query histórica.
-  //   · Performance y NOTAMs siguen visibles (a la espera de
-  //     implementación en P5/P8 — VAS imports tendrán datos limitados
-  //     pero al menos los básicos del .bin alcanzan).
+  //   · **NOTAMs** sigue visible para cualquier vuelo seleccionado
+  //     (el modal resuelve si el OFP de SimBrief matchea).
   const isSimflownFlight = selectedFlightSource === "simconnect";
   const allTabs = [
     {
@@ -1842,19 +1811,6 @@ function DetailActionsBar({
       enabled: !checklistDisabled,
       onClick: onToggleChecklist,
       active: checklistOpen,
-    },
-    {
-      // (v4.0.0 — P5) Performance modal habilitado para TODOS los
-      // vuelos con un flight_id válido. Para VAS imports solo
-      // habrán datos de Vertical/Speed Profile — el resto de tabs
-      // se ocultan automáticamente en el modal.
-      key: "performance" as const,
-      icon: <Gauge className="h-3.5 w-3.5" />,
-      label: t("fb.tabs.performance"),
-      dot: "bg-sky-400",
-      enabled: !checklistDisabled,
-      onClick: onTogglePerformance,
-      active: performanceOpen,
     },
     {
       // (v4.0.0 — P7) Weather modal habilitado para vuelos SimConnect.
@@ -1884,15 +1840,17 @@ function DetailActionsBar({
     if (t.key === "checklist" && !isSimflownFlight) return false;
     return true;
   });
-  // Grid responsive: el ancho de los tabs se ajusta a 2/3/4 cols
-  // según cuántos sobreviven el filtrado. Para VAS imports quedan 2
-  // (Performance + NOTAMs), para SimFleet vuelos quedan 4.
+  // Grid responsive: el ancho de los tabs se ajusta según cuántos
+  // sobreviven el filtrado. Para VAS imports queda 1 (NOTAMs); para
+  // vuelos SimFleet quedan 3 (Checklist + Weather + NOTAMs).
   const gridCols =
-    tabs.length === 4
+    tabs.length >= 4
       ? "grid-cols-4"
       : tabs.length === 3
         ? "grid-cols-3"
-        : "grid-cols-2";
+        : tabs.length === 2
+          ? "grid-cols-2"
+          : "grid-cols-1";
   return (
     <div className={`grid ${gridCols} gap-1.5`}>
       {tabs.map((tab) => (
