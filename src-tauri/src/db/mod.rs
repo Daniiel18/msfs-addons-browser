@@ -64,6 +64,12 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
         }
     }
 
+    // (v4.0.2) Mantenimiento automático al arrancar — ventana segura
+    // (el watcher aún no escribe). NO destructivo: diagnóstico + libera
+    // el WAL (que llegaba a cientos de MB y hacía cada conexión lenta) +
+    // configura auto-checkpoint para que no vuelva a inflarse.
+    run_db_maintenance(&pool).await;
+
     // (v3.24.0) Tras el dedup masivo de track points (migración 033) la
     // DB queda con muchas páginas libres. Las recuperamos con VACUUM —
     // que NO puede correr dentro de una transacción, por eso va acá
@@ -73,6 +79,102 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
     }
 
     Ok(pool)
+}
+
+/// (v4.0.2) Mantenimiento automático de la base de datos al arrancar.
+///
+/// Corre en `init()`, ANTES de que el watcher de SimConnect empiece a
+/// escribir — ventana segura sin escritores concurrentes. Es **no
+/// destructivo**: no borra ni un solo vuelo ni track point del usuario.
+///
+///   1. **Diagnóstico**: tamaño real de la DB, espacio libre, filas por
+///      tabla y top vuelos por nº de track points. Esto revela QUÉ está
+///      inflando la DB (típicamente imports VAS-ACARS muy densos) para
+///      poder diseñar después una poda PRECISA y segura.
+///   2. **Checkpoint del WAL (TRUNCATE)**: vuelca el `.db-wal` al archivo
+///      principal y lo trunca a 0. El usuario tenía un WAL de ~211 MB que
+///      hacía que cada conexión del pool tardara >2 s en adquirirse
+///      (warnings `slow_acquire`). Esto también reduce la contención de
+///      disco con MSFS (que streamea escenario del mismo disco).
+///   3. **wal_autocheckpoint**: mantiene el WAL pequeño (~4 MB) de aquí
+///      en adelante para que no se vuelva a inflar.
+///   4. **optimize**: refresca estadísticas de índices.
+async fn run_db_maintenance(pool: &SqlitePool) {
+    if let Err(e) = log_db_diagnostics(pool).await {
+        tracing::warn!("db: diagnóstico falló (no fatal): {e:#}");
+    }
+    match sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => tracing::info!("db: WAL checkpoint(TRUNCATE) OK — WAL liberado"),
+        Err(e) => tracing::warn!("db: WAL checkpoint falló (no fatal): {e:#}"),
+    }
+    // ~1000 páginas × 4 KB ≈ 4 MB de WAL máximo antes de auto-checkpoint.
+    let _ = sqlx::query("PRAGMA wal_autocheckpoint = 1000")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("PRAGMA optimize").execute(pool).await;
+}
+
+/// (v4.0.2) Loguea métricas de tamaño de la DB y conteos por tabla.
+/// Pensado para que, viendo el `simfleet.log`, sepamos exactamente qué
+/// tabla/vuelo está inflando la base — sin adivinar ni borrar a ciegas.
+async fn log_db_diagnostics(pool: &SqlitePool) -> anyhow::Result<()> {
+    let page_count: i64 = sqlx::query_scalar("PRAGMA page_count")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let freelist: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    tracing::info!(
+        "db diag: tamaño={:.1} MB (page_count={}, page_size={}) · libre={:.1} MB ({} páginas)",
+        (page_count * page_size) as f64 / 1_048_576.0,
+        page_count,
+        page_size,
+        (freelist * page_size) as f64 / 1_048_576.0,
+        freelist,
+    );
+    for table in [
+        "flight_log",
+        "flight_log_track",
+        "flight_log_phase",
+        "score_item",
+        "addons",
+        "community_packages",
+    ] {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+        tracing::info!("db diag: {} → {} filas", table, n);
+    }
+    let top: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT flight_id, COUNT(*) c FROM flight_log_track GROUP BY flight_id ORDER BY c DESC LIMIT 5",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (fid, c) in top {
+        tracing::info!("db diag: vuelo {} → {} track points", fid, c);
+    }
+    // Muestra de timestamps — necesaria para conocer el formato exacto
+    // ANTES de cualquier poda por tiempo (evita borrar lo que no toca).
+    let sample: Vec<(String,)> =
+        sqlx::query_as("SELECT ts FROM flight_log_track ORDER BY id DESC LIMIT 3")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    for (ts,) in sample {
+        tracing::info!("db diag: muestra ts='{}'", ts);
+    }
+    Ok(())
 }
 
 /// (v3.24.0) Corre `VACUUM` una sola vez si el archivo tiene mucho
