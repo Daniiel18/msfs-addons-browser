@@ -8,6 +8,7 @@ import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { greatCircleLine } from "../lib/greatCircle";
+import { t } from "../lib/i18n";
 import {
   smoothCatmullRom,
   segmentTrackCoords,
@@ -1003,33 +1004,33 @@ export function RoutesMapView({
         {detailMode ? (
           <span className="rounded-md bg-slate-950/80 px-2 py-1 ring-1 ring-amber-500/30">
             <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-amber-400 align-middle" />
-            Ruta real{" "}
+            {t("fb.map.real_track")}{" "}
             <span className="text-amber-300">({trackPoints.length} pts)</span>
           </span>
         ) : (
           <>
             <span className="rounded-md bg-slate-950/80 px-2 py-1 ring-1 ring-emerald-500/30">
               <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-emerald-400 align-middle" />
-              Reales <span className="text-emerald-300">({totalReal})</span>
+              {t("fb.map.real_count")} <span className="text-emerald-300">({totalReal})</span>
             </span>
           </>
         )}
       </div>
       {loadingTrack && detailMode && (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center text-[10px] text-amber-300">
-          Cargando track…
+          {t("fb.map.loading_track")}
         </div>
       )}
       {detailMode && !loadingTrack && trackPoints.length < 2 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-400">
-          Este vuelo no tiene track grabado (versión anterior a la 0.1.23).
+          {t("fb.map.no_track")}
         </div>
       )}
       {empty && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-500">
-          Aún no hay rutas para mostrar.
+          {t("fb.map.empty_title")}
           <br />
-          Vuela en MSFS para registrar tus vuelos.
+          {t("fb.map.empty_hint")}
         </div>
       )}
     </div>

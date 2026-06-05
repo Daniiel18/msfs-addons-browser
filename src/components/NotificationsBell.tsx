@@ -282,14 +282,14 @@ export function NotificationsBell() {
                       <div className="flex flex-col items-center gap-1 px-2 py-3">
                         <button
                           onClick={() => focusOnMap(u.folderName)}
-                          title="Ver en el mapa"
+                          title={t("common.view_on_map")}
                           className="rounded-md border border-slate-800 p-1 text-slate-400 hover:border-brand-500/40 hover:text-slate-100"
                         >
                           <MapIcon className="h-3.5 w-3.5" />
                         </button>
                         <button
                           onClick={() => dismissUpdate(u.folderName)}
-                          title="Descartar"
+                          title={t("common.dismiss")}
                           className="rounded-md border border-slate-800 p-1 text-slate-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
                         >
                           <X className="h-3.5 w-3.5" />

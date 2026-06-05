@@ -73,7 +73,7 @@ export function DownloadsPanel({ open, onClose }: Props) {
               <button
                 onClick={onClose}
                 className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-                title="Cerrar"
+                title={t("common.close")}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -317,7 +317,7 @@ function JobRow({ job }: { job: DownloadJob }) {
             <button
               onClick={() => clear(job.id)}
               className="rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300"
-              title="Quitar de la lista"
+              title={t("common.remove_from_list")}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
