@@ -548,31 +548,85 @@ struct DriveList {
     files: Vec<DriveFile>,
 }
 
-/// (v2.0.1) Convierte un error HTTP de Drive en un mensaje accionable.
-/// 403 típicamente significa "API no activada en tu proyecto" — que
-/// es un paso oculto al crear el OAuth client. Devolvemos un mensaje
-/// con la URL exacta para activar.
+/// (v2.0.1 · v3.38.0 #12) Convierte un error HTTP de Drive (CON
+/// respuesta) en un mensaje accionable, clasificando por código y
+/// recortando el cuerpo de Google (a veces HTML/JSON largo).
 async fn drive_error_for_response(resp: reqwest::Response) -> anyhow::Error {
     let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if status.as_u16() == 403 {
-        return anyhow!(
-            "Google Drive API 403 Forbidden. Probablemente no activaste la \
-             Google Drive API en tu proyecto de Google Cloud. Abre \
-             https://console.cloud.google.com/apis/library/drive.googleapis.com, \
-             selecciona TU proyecto (arriba), y pulsa 'Enable'. Detalle: {}",
-            body
-        );
+    let code = status.as_u16();
+    let body = truncate_body(&resp.text().await.unwrap_or_default());
+    match code {
+        401 => anyhow!(
+            "Google Drive 401 (no autorizado). El access_token expiró o las \
+             credenciales son inválidas. Pulsa Desconectar y vuelve a Conectar. \
+             Detalle: {body}"
+        ),
+        403 => anyhow!(
+            "Google Drive 403 (prohibido). Lo más común: no activaste la Google \
+             Drive API en tu proyecto de Google Cloud. Ábrela en \
+             https://console.cloud.google.com/apis/library/drive.googleapis.com \
+             (selecciona TU proyecto, arriba) y pulsa 'Enable'. También puede ser \
+             cuota del proyecto excedida. Detalle: {body}"
+        ),
+        404 => anyhow!(
+            "Google Drive 404 (no encontrado). El archivo de sync remoto ya no \
+             existe (se borró o se purgó). Reintenta: se recreará solo. \
+             Detalle: {body}"
+        ),
+        429 => anyhow!(
+            "Google Drive 429 (demasiadas peticiones). Rate-limit/cuota excedido. \
+             Espera un momento y reintenta. Detalle: {body}"
+        ),
+        500..=599 => anyhow!(
+            "Google Drive {code} (error del servidor de Google — no es tu \
+             configuración). Reintenta en unos minutos. Detalle: {body}"
+        ),
+        _ => anyhow!("Google Drive {status}: {body}"),
     }
-    if status.as_u16() == 401 {
-        return anyhow!(
-            "Google Drive API 401 Unauthorized. El access_token expiró o las \
-             credenciales son inválidas. Pulsa Desconectar y vuelve a \
-             Conectar. Detalle: {}",
-            body
-        );
+}
+
+/// (v3.38.0 #12) Clasifica un error de TRANSPORTE de reqwest (ocurre
+/// ANTES de recibir una respuesta HTTP): timeout, conexión/DNS, TLS…
+/// en un mensaje accionable. Para errores CON respuesta se usa
+/// `drive_error_for_response`.
+fn transport_error(context: &str, e: reqwest::Error) -> anyhow::Error {
+    let kind = if e.is_timeout() {
+        "timeout — Google tardó demasiado en responder (revisa tu internet, o un \
+         firewall/proxy/antivirus que esté bloqueando la conexión)"
+    } else if e.is_connect() {
+        "no se pudo conectar con Google (sin internet, fallo de DNS, o un \
+         firewall/proxy bloqueando *.googleapis.com)"
+    } else if e.is_request() {
+        "no se pudo construir/enviar la petición"
+    } else if e.is_body() || e.is_decode() {
+        "fallo al leer/decodificar la respuesta de Google"
+    } else {
+        "error de red"
+    };
+    anyhow!("{context}: {kind}. (causa técnica: {e})")
+}
+
+/// (v3.38.0 #12) Acorta un fileId de Drive para logs/errores — no es
+/// secreto pero es ruido largo; mostramos los primeros 8 caracteres.
+fn sanitize_id(id: &str) -> String {
+    let head: String = id.chars().take(8).collect();
+    if id.chars().count() > 8 {
+        format!("{head}…")
+    } else {
+        head
     }
-    anyhow!("Google Drive {} : {}", status, body)
+}
+
+/// (v3.38.0 #12) Recorta el cuerpo de error de Google a algo legible.
+fn truncate_body(body: &str) -> String {
+    let trimmed = body.trim();
+    const MAX: usize = 300;
+    if trimmed.chars().count() > MAX {
+        let head: String = trimmed.chars().take(MAX).collect();
+        format!("{head}… (recortado)")
+    } else {
+        trimmed.to_string()
+    }
 }
 
 async fn find_sync_file(
@@ -588,7 +642,8 @@ async fn find_sync_file(
         .get(&url)
         .bearer_auth(access_token)
         .send()
-        .await?;
+        .await
+        .map_err(|e| transport_error("Buscando el snapshot en Drive", e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -621,11 +676,17 @@ async fn create_sync_file(
         )
         .body(body)
         .send()
-        .await?;
+        .await
+        .map_err(|e| transport_error("Creando el snapshot en Drive", e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
     let file: DriveFile = resp.json().await?;
+    crate::success!(
+        target: "cloud_sync",
+        "Snapshot creado en Drive (file {})",
+        sanitize_id(&file.id)
+    );
     Ok(file.id)
 }
 
@@ -644,10 +705,16 @@ async fn update_sync_file(
         .header("Content-Type", "application/json")
         .body(content.to_string())
         .send()
-        .await?;
+        .await
+        .map_err(|e| transport_error("Actualizando el snapshot en Drive", e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
+    crate::success!(
+        target: "cloud_sync",
+        "Snapshot actualizado en Drive (file {})",
+        sanitize_id(file_id)
+    );
     Ok(())
 }
 
@@ -665,7 +732,8 @@ async fn download_sync_file(
         ))
         .bearer_auth(access_token)
         .send()
-        .await?;
+        .await
+        .map_err(|e| transport_error("Descargando el snapshot de Drive", e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -702,7 +770,8 @@ async fn purge_cloud_snapshot(
             ))
             .bearer_auth(access_token)
             .send()
-            .await?;
+            .await
+            .map_err(|e| transport_error("Borrando el snapshot de Drive", e))?;
         if !resp.status().is_success() {
             return Err(drive_error_for_response(resp).await);
         }

@@ -8,14 +8,62 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{fmt, EnvFilter};
 
-/// (v3.2.0) Formatter custom para logs legibles.
+/// (v3.37.0 #11) Formatter custom para logs legibles.
 ///
-/// Output: `[INFO] 26/05/23 14:25:55 target:line message {fields}`
+/// Output: `[YYYY/MM/DD HH:MM:SS] [LEVEL]    [categoria] mensaje key=val`
 ///
-/// Reemplaza el RFC3339 con nanosegundos + offset TZ (`2026-05-23
-/// T11:27:15.486812800-04:00 INFO …`) que el usuario reportó como
-/// "feo, no se puede leer bien".
+/// · Fecha PRIMERO entre corchetes (año completo) — pedido del usuario.
+/// · `[LEVEL]` con padding a 9 chars para alinear columnas. Además de
+///   ERROR/WARN/INFO/DEBUG/TRACE soportamos un nivel sintético
+///   **SUCCESS**: se emite con `success!(...)` (un `info!` con el campo
+///   marcador `success = true`) y el formatter lo pinta como
+///   `[SUCCESS]` (el marcador NO se imprime como campo).
+/// · `[categoria]` = el `target` de tracing (último segmento si es un
+///   path de módulo): cmd, scan, download, cloud_sync, settings, …
 struct CompactFormat;
+
+/// (v3.37.0 #11) Visitor que separa el campo especial `message` (el
+/// texto del log) del resto de campos (`key=value`) y detecta el
+/// marcador `success`. Los tipos numéricos/error no se sobreescriben:
+/// el `Visit` por defecto los reenvía a `record_debug`.
+#[derive(Default)]
+struct EventVisitor {
+    message: String,
+    fields: String,
+    is_success: bool,
+}
+
+impl tracing::field::Visit for EventVisitor {
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        if field.name() == "success" {
+            self.is_success = self.is_success || value;
+            return;
+        }
+        use std::fmt::Write;
+        let _ = write!(self.fields, " {}={}", field.name(), value);
+    }
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message.push_str(value);
+            return;
+        }
+        use std::fmt::Write;
+        let _ = write!(self.fields, " {}={}", field.name(), value);
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        match field.name() {
+            "message" => {
+                let _ = write!(self.message, "{:?}", value);
+            }
+            // por si `success` llega como debug en vez de bool.
+            "success" => {}
+            name => {
+                let _ = write!(self.fields, " {}={:?}", name, value);
+            }
+        }
+    }
+}
 
 impl<S, N> FormatEvent<S, N> for CompactFormat
 where
@@ -29,27 +77,37 @@ where
         event: &Event<'_>,
     ) -> std::fmt::Result {
         let meta = event.metadata();
-        // [LEVEL] con padding fijo para alinear columnas.
-        let level_str = match *meta.level() {
-            tracing::Level::ERROR => "[ERROR]",
-            tracing::Level::WARN => "[WARN] ",
-            tracing::Level::INFO => "[INFO] ",
-            tracing::Level::DEBUG => "[DEBUG]",
-            tracing::Level::TRACE => "[TRACE]",
-        };
-        write!(writer, "{} ", level_str)?;
-        // YY/MM/DD HH:MM:SS local.
+        let mut visitor = EventVisitor::default();
+        event.record(&mut visitor);
+
+        // [YYYY/MM/DD HH:MM:SS] local — fecha primero, año completo.
         let now = chrono::Local::now();
-        write!(writer, "{} ", now.format("%y/%m/%d %H:%M:%S"))?;
-        // target:line
+        write!(writer, "[{}] ", now.format("%Y/%m/%d %H:%M:%S"))?;
+
+        // [LEVEL] con SUCCESS sintético; padding a 9 para alinear.
+        let level_str = if visitor.is_success {
+            "[SUCCESS]"
+        } else {
+            match *meta.level() {
+                tracing::Level::ERROR => "[ERROR]",
+                tracing::Level::WARN => "[WARN]",
+                tracing::Level::INFO => "[INFO]",
+                tracing::Level::DEBUG => "[DEBUG]",
+                tracing::Level::TRACE => "[TRACE]",
+            }
+        };
+        write!(writer, "{:<9} ", level_str)?;
+
+        // [categoria] — último segmento del target de tracing.
         let target = meta.target();
-        match meta.line() {
-            Some(line) => write!(writer, "{}:{} ", target, line)?,
-            None => write!(writer, "{} ", target)?,
-        }
-        // Mensaje + fields (los fields de tracing como `key=value`).
-        ctx.field_format()
-            .format_fields(writer.by_ref(), event)?;
+        let category = target.rsplit("::").next().unwrap_or(target);
+        write!(writer, "[{}] ", category)?;
+
+        // Mensaje + campos extra (key=value). El marcador `success` ya
+        // fue consumido por el visitor y no se imprime.
+        write!(writer, "{}", visitor.message)?;
+        write!(writer, "{}", visitor.fields)?;
+
         // Spans si los hay (info!() dentro de un span getea el nombre).
         if let Some(scope) = ctx.event_scope() {
             for span in scope.from_root() {
@@ -180,6 +238,21 @@ macro_rules! cmd_log {
     };
     ($cmd:literal, $($arg:tt)+) => {
         tracing::info!(target: "cmd", "▶ {} | {}", $cmd, format_args!($($arg)+));
+    };
+}
+
+/// (v3.37.0 #11) Loguea una línea de ÉXITO — nivel sintético SUCCESS.
+/// Es un `info!` con el campo marcador `success = true` que el
+/// `CompactFormat` pinta como `[SUCCESS]`. Uso idéntico a
+/// `tracing::info!`:
+///   `success!(target: "cloud_sync", "Subida OK: {}", id);`
+#[macro_export]
+macro_rules! success {
+    (target: $target:expr, $($arg:tt)+) => {
+        tracing::info!(target: $target, success = true, $($arg)+);
+    };
+    ($($arg:tt)+) => {
+        tracing::info!(success = true, $($arg)+);
     };
 }
 
