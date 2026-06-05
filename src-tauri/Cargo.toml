@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "4.0.0"
+version = "4.0.1"
 description = "SimFleet — flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -50,6 +50,10 @@ urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# (v4.0.1) gzip para comprimir el snapshot de cloud sync antes de
+# subirlo a Drive. La DB de tracks puede pesar cientos de MB; el JSON
+# comprime ~15-20x y evita el timeout de subida que el usuario reportó.
+flate2 = "1"
 # Walker recursivo para zip de la carpeta Community en backup —
 # evita el ruido de glob/find a mano y respeta enlaces simbólicos.
 walkdir = "2"

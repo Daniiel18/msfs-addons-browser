@@ -196,58 +196,106 @@ export function segmentTrackCoords(points: LngLatTs[]): LngLat[][] {
 }
 
 /**
- * Suaviza una lista de `points` lat/lon con una spline Catmull-Rom.
+ * Suaviza una lista de `points` lat/lon con una spline Catmull-Rom
+ * **centrípeta** (α = 0.5).
+ *
+ * (v4.0.1) Antes usábamos Catmull-Rom UNIFORME, que tiene un defecto
+ * conocido: en cambios de dirección bruscos hace *overshoot* y forma
+ * lazos/cúspides que se auto-intersectan. Eso producía el "doble
+ * trazado" que el usuario reportó al hacer **pushback**: el avión va
+ * hacia atrás y luego taxía hacia adelante (≈180° de reversa), y el
+ * spline uniforme dibujaba un bucle saliente que parecía una segunda
+ * línea.
+ *
+ * La variante CENTRÍPETA (Catmull-Rom, α = 0.5) está matemáticamente
+ * garantizada SIN lazos, cúspides ni auto-intersecciones — sigue
+ * pasando exactamente por cada punto de entrada. Implementación por la
+ * fórmula piramidal de Barry–Goldman.
+ *
  * `segmentsPerStep` controla cuántos puntos intermedios se generan
- * entre cada par de puntos de entrada. Default 8 — buen balance entre
- * suavidad y peso del GeoJSON.
+ * entre cada par de puntos de entrada. Default 8.
  */
 export function smoothCatmullRom(
   points: LngLat[],
   segmentsPerStep = 8,
 ): LngLat[] {
-  if (points.length < 3) return points.slice();
+  // Dedupe de puntos consecutivos (casi) idénticos. El avión parado
+  // (pushback en pausa, esperando en plataforma) genera puntos
+  // repetidos que harían el espaciado de knots degenerado (t_i==t_{i+1}).
+  const pts: LngLat[] = [];
+  for (const p of points) {
+    const last = pts[pts.length - 1];
+    if (
+      !last ||
+      Math.abs(last[0] - p[0]) > 1e-9 ||
+      Math.abs(last[1] - p[1]) > 1e-9
+    ) {
+      pts.push(p);
+    }
+  }
+  if (pts.length < 3) return pts.slice();
+
+  // Extremos REFLEJADOS (en vez de duplicados) para que la curva pase
+  // por start/end SIN crear un intervalo de knot de longitud cero.
+  const first: LngLat = [
+    2 * pts[0][0] - pts[1][0],
+    2 * pts[0][1] - pts[1][1],
+  ];
+  const n = pts.length;
+  const last: LngLat = [
+    2 * pts[n - 1][0] - pts[n - 2][0],
+    2 * pts[n - 1][1] - pts[n - 2][1],
+  ];
+  const ext: LngLat[] = [first, ...pts, last];
+
+  const ALPHA = 0.5; // centrípeta
+  const knot = (ti: number, a: LngLat, b: LngLat): number => {
+    const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    return ti + Math.pow(Math.max(d, 1e-9), ALPHA);
+  };
+
   const result: LngLat[] = [];
-  // Duplicamos extremos para mantener la curva pasando por start/end.
-  const extended: LngLat[] = [points[0], ...points, points[points.length - 1]];
-  for (let i = 1; i < extended.length - 2; i++) {
-    const p0 = extended[i - 1];
-    const p1 = extended[i];
-    const p2 = extended[i + 1];
-    const p3 = extended[i + 2];
-    for (let t = 0; t < segmentsPerStep; t++) {
-      const u = t / segmentsPerStep;
+  for (let i = 1; i < ext.length - 2; i++) {
+    const p0 = ext[i - 1];
+    const p1 = ext[i];
+    const p2 = ext[i + 1];
+    const p3 = ext[i + 2];
+    const t0 = 0;
+    const t1 = knot(t0, p0, p1);
+    const t2 = knot(t1, p1, p2);
+    const t3 = knot(t2, p2, p3);
+    for (let s = 0; s < segmentsPerStep; s++) {
+      const t = t1 + (s / segmentsPerStep) * (t2 - t1);
       result.push([
-        catmullRomComponent(p0[0], p1[0], p2[0], p3[0], u),
-        catmullRomComponent(p0[1], p1[1], p2[1], p3[1], u),
+        centripetalComponent(p0[0], p1[0], p2[0], p3[0], t0, t1, t2, t3, t),
+        centripetalComponent(p0[1], p1[1], p2[1], p3[1], t0, t1, t2, t3, t),
       ]);
     }
   }
-  // Asegurar el último punto exacto.
-  result.push(points[points.length - 1]);
+  result.push(pts[n - 1]); // último punto exacto
   return result;
 }
 
 /**
- * Componente escalar de la spline Catmull-Rom uniforme:
- *
- *   q(t) = 0.5 * [2*P1 + (-P0+P2)*t + (2*P0-5*P1+4*P2-P3)*t² + (-P0+3*P1-3*P2+P3)*t³]
- *
- * con `tension = 0.5` (la variante estándar Catmull-Rom).
+ * Componente escalar de la spline Catmull-Rom centrípeta vía la fórmula
+ * piramidal de Barry–Goldman, evaluada en el parámetro `t ∈ [t1, t2]`
+ * con knots no uniformes `t0 < t1 < t2 < t3`.
  */
-function catmullRomComponent(
+function centripetalComponent(
   p0: number,
   p1: number,
   p2: number,
   p3: number,
+  t0: number,
+  t1: number,
+  t2: number,
+  t3: number,
   t: number,
 ): number {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return (
-    0.5 *
-    (2 * p1 +
-      (-p0 + p2) * t +
-      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-      (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
-  );
+  const a1 = ((t1 - t) / (t1 - t0)) * p0 + ((t - t0) / (t1 - t0)) * p1;
+  const a2 = ((t2 - t) / (t2 - t1)) * p1 + ((t - t1) / (t2 - t1)) * p2;
+  const a3 = ((t3 - t) / (t3 - t2)) * p2 + ((t - t2) / (t3 - t2)) * p3;
+  const b1 = ((t2 - t) / (t2 - t0)) * a1 + ((t - t0) / (t2 - t0)) * a2;
+  const b2 = ((t3 - t) / (t3 - t1)) * a2 + ((t - t1) / (t3 - t1)) * a3;
+  return ((t2 - t) / (t2 - t1)) * b1 + ((t - t1) / (t2 - t1)) * b2;
 }

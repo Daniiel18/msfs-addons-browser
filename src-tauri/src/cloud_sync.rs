@@ -651,6 +651,41 @@ async fn find_sync_file(
     Ok(list.files.into_iter().next().map(|f| f.id))
 }
 
+/// Timeout generoso para las transferencias del snapshot a/desde Drive.
+/// La DB de tracks puede pesar cientos de MB; aunque la comprimimos con
+/// gzip, una subida lenta no debe morir por el timeout corto del cliente
+/// global. El usuario reportó "le di a upload y no hace nada" — la causa
+/// era exactamente esto (operation timed out en el log).
+const DRIVE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Comprime bytes con gzip (nivel por defecto). El snapshot JSON
+/// comprime ~15-20x — convierte cientos de MB en decenas, que sí caben
+/// en una subida con timeout razonable.
+fn gzip_bytes(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(data)?;
+    Ok(enc.finish()?)
+}
+
+/// Descomprime si los bytes son gzip (magic `1f 8b`); si no, los trata
+/// como texto plano UTF-8. Esto da compatibilidad hacia atrás con los
+/// snapshots VIEJOS que se subieron sin comprimir.
+fn maybe_gunzip_to_string(bytes: Vec<u8>) -> anyhow::Result<String> {
+    if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        let mut dec = GzDecoder::new(&bytes[..]);
+        let mut out = String::new();
+        dec.read_to_string(&mut out)?;
+        Ok(out)
+    } else {
+        Ok(String::from_utf8(bytes)?)
+    }
+}
+
 async fn create_sync_file(
     http: &reqwest::Client,
     access_token: &str,
@@ -660,13 +695,22 @@ async fn create_sync_file(
         "name": SYNC_FILE_NAME,
         "parents": ["appDataFolder"],
     });
+    // (v4.0.1) Subimos el payload COMPRIMIDO con gzip. Construimos el
+    // cuerpo multipart como bytes (no `format!`) porque la parte del
+    // archivo es binaria.
+    let gz = gzip_bytes(content.as_bytes())?;
     let boundary = "msfs_addons_boundary_42";
-    let body = format!(
-        "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{b}\r\nContent-Type: application/json\r\n\r\n{content}\r\n--{b}--",
-        b = boundary,
-        meta = metadata,
-        content = content,
+    let mut body: Vec<u8> = Vec::with_capacity(gz.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{b}\r\nContent-Type: application/gzip\r\n\r\n",
+            b = boundary,
+            meta = metadata,
+        )
+        .as_bytes(),
     );
+    body.extend_from_slice(&gz);
+    body.extend_from_slice(format!("\r\n--{b}--", b = boundary).as_bytes());
     let resp = http
         .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
         .bearer_auth(access_token)
@@ -674,6 +718,7 @@ async fn create_sync_file(
             "Content-Type",
             format!("multipart/related; boundary={}", boundary),
         )
+        .timeout(DRIVE_TRANSFER_TIMEOUT)
         .body(body)
         .send()
         .await
@@ -696,14 +741,19 @@ async fn update_sync_file(
     file_id: &str,
     content: &str,
 ) -> anyhow::Result<()> {
+    // (v4.0.1) Payload comprimido con gzip + timeout largo. Antes se
+    // subía el JSON crudo (cientos de MB) y la request moría por
+    // "operation timed out".
+    let gz = gzip_bytes(content.as_bytes())?;
     let resp = http
         .patch(format!(
             "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media",
             file_id
         ))
         .bearer_auth(access_token)
-        .header("Content-Type", "application/json")
-        .body(content.to_string())
+        .header("Content-Type", "application/gzip")
+        .timeout(DRIVE_TRANSFER_TIMEOUT)
+        .body(gz)
         .send()
         .await
         .map_err(|e| transport_error("Actualizando el snapshot en Drive", e))?;
@@ -731,13 +781,17 @@ async fn download_sync_file(
             file_id
         ))
         .bearer_auth(access_token)
+        .timeout(DRIVE_TRANSFER_TIMEOUT)
         .send()
         .await
         .map_err(|e| transport_error("Descargando el snapshot de Drive", e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
-    Ok(Some(resp.text().await?))
+    // (v4.0.1) El snapshot puede venir gzipeado (nuevo) o en texto plano
+    // (snapshots viejos). `maybe_gunzip_to_string` detecta por magic bytes.
+    let bytes = resp.bytes().await?.to_vec();
+    Ok(Some(maybe_gunzip_to_string(bytes)?))
 }
 
 /// Borra el snapshot file de Drive y empuja un snapshot VACÍO en su
@@ -1649,6 +1703,7 @@ pub async fn upload_all(
     pool: &SqlitePool,
     http: &reqwest::Client,
 ) -> anyhow::Result<UploadReport> {
+    tracing::info!(target: "cloud", "upload_all: construyendo snapshot local…");
     let access_token = fresh_access_token(pool, http).await?;
     let local = build_snapshot(pool).await?;
     let payload = serde_json::to_string(&local)?;
@@ -1657,6 +1712,14 @@ pub async fn upload_all(
         uploaded_tracks: local.flight_log_track.len(),
         uploaded_settings: local.settings.len(),
     };
+    tracing::info!(
+        target: "cloud",
+        "upload_all: snapshot listo — {} vuelos, {} tracks, {} settings · JSON {:.1} MB (se sube gzipeado)",
+        report.uploaded_flights,
+        report.uploaded_tracks,
+        report.uploaded_settings,
+        payload.len() as f64 / 1_048_576.0,
+    );
     if let Some(file_id) = find_sync_file(http, &access_token).await? {
         update_sync_file(http, &access_token, &file_id, &payload).await?;
     } else {
