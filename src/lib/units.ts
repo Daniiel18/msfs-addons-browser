@@ -1,48 +1,43 @@
 /**
- * (v3.28.0 — P7.11) Sistema de unidades global.
+ * (v3.28.0 P7.11 · v3.39.0 #3) Sistema de unidades — POR CATEGORÍA.
  *
- * Toda la telemetría se ALMACENA en unidades canónicas (las que
- * entrega SimConnect / la DB):
+ * Toda la telemetría se ALMACENA en unidades canónicas (las que entrega
+ * SimConnect / la DB): distancia=nm, altitud=ft, velocidad=kt,
+ * vert.speed=fpm, peso=kg, temperatura=°C, presión=hPa, flujo=pph.
  *
- *   · distancia  → millas náuticas (nm)
- *   · altitud    → pies (ft)
- *   · velocidad  → nudos (kt)
- *   · vert.speed → pies/min (fpm)
- *   · peso       → kilogramos (kg)   ← la app guarda cargo/fuel en kg
- *   · temperatura→ grados Celsius (°C)
- *   · presión    → hectopascales (hPa)
- *   · flujo comb.→ libras/hora (pph)
+ * Este módulo convierte ese valor canónico a la unidad elegida por el
+ * usuario SÓLO al mostrarlo. Nunca se re-escribe la DB — es puramente de
+ * presentación, así que cambiar una unidad es instantáneo y reversible.
  *
- * Este módulo convierte ESE valor canónico al sistema elegido por el
- * usuario SÓLO al mostrarlo. Nunca se re-escribe la DB — el toggle es
- * puramente de presentación, así que cambiarlo es instantáneo y
- * reversible.
- *
- * ## Reactividad
- *
- * `useUnits()` lee `unitSystem` + `tempUnit` de `useSettingsStore`
- * (zustand) → cualquier componente que lo use se re-renderiza al
- * cambiar el toggle, sin reinicio (a diferencia del idioma, que sí
- * requiere restart porque `t()` no es reactivo).
- *
- * ## Espejo en localStorage
- *
- * Igual que i18n: `preloadUnits()` lee el valor síncronamente antes
- * del primer render para que el cold-start ya pinte en el sistema
- * correcto, y la store espeja a localStorage al guardar / al
- * bootstrap (cubre el caso "cloud sync trajo prefs de otra PC").
+ * (v3.39.0 #3) Cada magnitud se elige por separado (peso, altitud,
+ * velocidad, V/S, distancia, presión, temperatura). `useUnits()` lee las
+ * 7 preferencias de `useSettingsStore` → cualquier componente que lo use
+ * se re-renderiza al cambiarlas, sin reinicio. El flujo de combustible
+ * sigue a la unidad de peso (kg→kg/h, lb→pph).
  */
 
 import { useMemo } from "react";
 import { useSettingsStore } from "../stores/useSettingsStore";
-import type { UnitSystem, TempUnit } from "./unitsStorage";
+import type { UnitPrefs, UnitSystem, TempUnit } from "./unitsStorage";
 
-export type { UnitSystem, TempUnit } from "./unitsStorage";
+export type {
+  UnitSystem,
+  TempUnit,
+  UnitPrefs,
+  WeightUnit,
+  AltitudeUnit,
+  SpeedUnit,
+  VsUnit,
+  DistanceUnit,
+  PressureUnit,
+} from "./unitsStorage";
 
 // Factores de conversión desde la unidad canónica.
 const NM_TO_KM = 1.852;
+const NM_TO_MI = 1.150779; // nm → millas terrestres
 const FT_TO_M = 0.3048;
 const KT_TO_KMH = 1.852;
+const KT_TO_MPH = 1.150779;
 const FPM_TO_MS = 0.00508; // 1 ft/min = 0.00508 m/s
 const KG_TO_LB = 2.2046226218;
 const HPA_TO_INHG = 0.0295299830714;
@@ -56,10 +51,12 @@ function group(n: number): string {
 const DASH = "—";
 
 export interface Units {
+  /** (compat) "metric"|"imperial" derivado de la altitud, para los
+   *  pocos sitios que aún razonan por "sistema" (p.ej. visibilidad). */
   system: UnitSystem;
   temp: TempUnit;
 
-  /** Etiquetas de unidad del sistema activo (para ejes de gráficos). */
+  /** Etiquetas de unidad activas (para ejes de gráficos). */
   unit: {
     altitude: string;
     speed: string;
@@ -71,8 +68,7 @@ export interface Units {
     fuelFlow: string;
   };
 
-  /** Convierte el valor canónico → número en la unidad activa (sin
-   *  formatear). Útil para ejes/series de Recharts. */
+  /** Convierte el valor canónico → número en la unidad activa. */
   conv: {
     altitude: (ft: number) => number;
     speed: (kt: number) => number;
@@ -84,8 +80,7 @@ export interface Units {
     fuelFlow: (pph: number) => number;
   };
 
-  /** Formateadores completos: número (redondeado + agrupado) + sufijo.
-   *  `null`/`undefined` → "—". */
+  /** Formateadores completos (número redondeado + sufijo). `null` → "—". */
   fmt: {
     altitude: (ft: number | null | undefined) => string;
     speed: (kt: number | null | undefined) => string;
@@ -97,32 +92,31 @@ export interface Units {
   };
 }
 
-/** Construye el set de conversores/formateadores para un sistema dado.
- *  Pura — sin React. Exportada por si se necesita fuera de un hook. */
-export function makeUnits(system: UnitSystem, temp: TempUnit): Units {
-  const metric = system === "metric";
-  const fahrenheit = temp === "F";
-
+/** Construye el set de conversores/formateadores para unas prefs dadas.
+ *  Pura — sin React. */
+export function makeUnits(p: UnitPrefs): Units {
   const conv = {
-    altitude: (ft: number) => (metric ? ft * FT_TO_M : ft),
-    speed: (kt: number) => (metric ? kt * KT_TO_KMH : kt),
-    distance: (nm: number) => (metric ? nm * NM_TO_KM : nm),
-    vs: (fpm: number) => (metric ? fpm * FPM_TO_MS : fpm),
-    weight: (kg: number) => (metric ? kg : kg * KG_TO_LB),
-    temp: (c: number) => (fahrenheit ? c * 1.8 + 32 : c),
-    pressure: (hpa: number) => (metric ? hpa : hpa * HPA_TO_INHG),
-    fuelFlow: (pph: number) => (metric ? pph * PPH_TO_KGH : pph),
+    altitude: (ft: number) => (p.altitude === "m" ? ft * FT_TO_M : ft),
+    speed: (kt: number) =>
+      p.speed === "kmh" ? kt * KT_TO_KMH : p.speed === "mph" ? kt * KT_TO_MPH : kt,
+    distance: (nm: number) =>
+      p.distance === "km" ? nm * NM_TO_KM : p.distance === "mi" ? nm * NM_TO_MI : nm,
+    vs: (fpm: number) => (p.vs === "ms" ? fpm * FPM_TO_MS : fpm),
+    weight: (kg: number) => (p.weight === "lb" ? kg * KG_TO_LB : kg),
+    temp: (c: number) => (p.temp === "F" ? c * 1.8 + 32 : c),
+    pressure: (hpa: number) => (p.pressure === "inHg" ? hpa * HPA_TO_INHG : hpa),
+    fuelFlow: (pph: number) => (p.weight === "kg" ? pph * PPH_TO_KGH : pph),
   };
 
   const unit = {
-    altitude: metric ? "m" : "ft",
-    speed: metric ? "km/h" : "kt",
-    distance: metric ? "km" : "nm",
-    vs: metric ? "m/s" : "fpm",
-    weight: metric ? "kg" : "lb",
-    temp: fahrenheit ? "°F" : "°C",
-    pressure: metric ? "hPa" : "inHg",
-    fuelFlow: metric ? "kg/h" : "pph",
+    altitude: p.altitude === "m" ? "m" : "ft",
+    speed: p.speed === "kmh" ? "km/h" : p.speed === "mph" ? "mph" : "kt",
+    distance: p.distance === "km" ? "km" : p.distance === "mi" ? "mi" : "nm",
+    vs: p.vs === "ms" ? "m/s" : "fpm",
+    weight: p.weight === "kg" ? "kg" : "lb",
+    temp: p.temp === "F" ? "°F" : "°C",
+    pressure: p.pressure === "inHg" ? "inHg" : "hPa",
+    fuelFlow: p.weight === "kg" ? "kg/h" : "pph",
   };
 
   const fmt = {
@@ -135,7 +129,7 @@ export function makeUnits(system: UnitSystem, temp: TempUnit): Units {
     vs: (fpm: number | null | undefined) =>
       fpm == null
         ? DASH
-        : metric
+        : p.vs === "ms"
           ? `${conv.vs(fpm).toFixed(1)} ${unit.vs}`
           : `${Math.round(fpm)} ${unit.vs}`,
     weight: (kg: number | null | undefined) =>
@@ -145,25 +139,43 @@ export function makeUnits(system: UnitSystem, temp: TempUnit): Units {
     pressure: (hpa: number | null | undefined) =>
       hpa == null
         ? DASH
-        : metric
-          ? `${Math.round(conv.pressure(hpa))} ${unit.pressure}`
-          : `${conv.pressure(hpa).toFixed(2)} ${unit.pressure}`,
+        : p.pressure === "inHg"
+          ? `${conv.pressure(hpa).toFixed(2)} ${unit.pressure}`
+          : `${Math.round(conv.pressure(hpa))} ${unit.pressure}`,
   };
 
-  return { system, temp, unit, conv, fmt };
+  // (compat) "sistema" derivado: la visibilidad del Weather y similares
+  // razonan por métrico/imperial; usamos la altitud como representante.
+  const system: UnitSystem = p.altitude === "m" ? "metric" : "imperial";
+
+  return { system, temp: p.temp, unit, conv, fmt };
 }
 
 // ────────────────────────────────────────────────────────────────────
 // Hook reactivo
 // ────────────────────────────────────────────────────────────────────
 
-/** Devuelve los formateadores ligados al sistema de unidades ACTUAL.
- *  Re-renderiza el componente cuando el usuario cambia el toggle. */
+/** Devuelve los formateadores ligados a las unidades ACTUALES.
+ *  Re-renderiza el componente cuando el usuario cambia cualquier unidad. */
 export function useUnits(): Units {
-  const system = useSettingsStore((s) => s.settings.unitSystem) as UnitSystem;
-  const temp = useSettingsStore((s) => s.settings.tempUnit) as TempUnit;
+  const weight = useSettingsStore((s) => s.settings.unitWeight);
+  const altitude = useSettingsStore((s) => s.settings.unitAltitude);
+  const speed = useSettingsStore((s) => s.settings.unitSpeed);
+  const vs = useSettingsStore((s) => s.settings.unitVs);
+  const distance = useSettingsStore((s) => s.settings.unitDistance);
+  const pressure = useSettingsStore((s) => s.settings.unitPressure);
+  const temp = useSettingsStore((s) => s.settings.tempUnit);
   return useMemo(
-    () => makeUnits(system === "metric" ? "metric" : "imperial", temp === "F" ? "F" : "C"),
-    [system, temp],
+    () =>
+      makeUnits({
+        weight: weight === "kg" ? "kg" : "lb",
+        altitude: altitude === "m" ? "m" : "ft",
+        speed: speed === "kmh" ? "kmh" : speed === "mph" ? "mph" : "kt",
+        vs: vs === "ms" ? "ms" : "fpm",
+        distance: distance === "km" ? "km" : distance === "mi" ? "mi" : "nm",
+        pressure: pressure === "hPa" ? "hPa" : "inHg",
+        temp: temp === "F" ? "F" : "C",
+      }),
+    [weight, altitude, speed, vs, distance, pressure, temp],
   );
 }

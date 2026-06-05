@@ -53,8 +53,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const setBoolean = useSettingsStore((s) => s.setBoolean);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const setMinimizeToTray = useSettingsStore((s) => s.setMinimizeToTray);
-  const setUnitSystem = useSettingsStore((s) => s.setUnitSystem);
-  const setTempUnit = useSettingsStore((s) => s.setTempUnit);
+  const setUnitPref = useSettingsStore((s) => s.setUnitPref);
+  const applyUnitPreset = useSettingsStore((s) => s.applyUnitPreset);
   const clearCaches = useSettingsStore((s) => s.clearCaches);
   const resetSettings = useSettingsStore((s) => s.resetSettings);
 
@@ -274,15 +274,85 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   onChange={(l) => void setLanguage(l)}
                   onRequestRestart={() => setShowRestartHint(true)}
                 />
+                {/* (v3.39.0 #3) Unidades POR CATEGORÍA + presets rápidos */}
+                <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+                  <div className="text-xs text-slate-200">{t("settings.units.title")}</div>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    {t("settings.units.description")}
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[11px] text-slate-400">
+                      {t("settings.units.preset")}:
+                    </span>
+                    <button
+                      onClick={() => void applyUnitPreset("imperial")}
+                      className="rounded border border-slate-700 bg-slate-950/50 px-2.5 py-1 text-[11px] text-slate-300 hover:text-slate-100"
+                    >
+                      {t("settings.units.imperial")}
+                    </button>
+                    <button
+                      onClick={() => void applyUnitPreset("metric")}
+                      className="rounded border border-slate-700 bg-slate-950/50 px-2.5 py-1 text-[11px] text-slate-300 hover:text-slate-100"
+                    >
+                      {t("settings.units.metric")}
+                    </button>
+                  </div>
+                </div>
                 <SegmentRow
-                  title={t("settings.units.title")}
-                  description={t("settings.units.description")}
-                  current={settings.unitSystem}
+                  title={t("settings.units.weight")}
+                  current={settings.unitWeight}
                   options={[
-                    { value: "imperial", label: t("settings.units.imperial") },
-                    { value: "metric", label: t("settings.units.metric") },
+                    { value: "kg", label: "kg" },
+                    { value: "lb", label: "lb" },
                   ]}
-                  onChange={(v) => void setUnitSystem(v as "imperial" | "metric")}
+                  onChange={(v) => void setUnitPref("unitWeight", v)}
+                />
+                <SegmentRow
+                  title={t("settings.units.altitude")}
+                  current={settings.unitAltitude}
+                  options={[
+                    { value: "ft", label: "ft" },
+                    { value: "m", label: "m" },
+                  ]}
+                  onChange={(v) => void setUnitPref("unitAltitude", v)}
+                />
+                <SegmentRow
+                  title={t("settings.units.speed")}
+                  current={settings.unitSpeed}
+                  options={[
+                    { value: "kt", label: "kt" },
+                    { value: "kmh", label: "km/h" },
+                    { value: "mph", label: "mph" },
+                  ]}
+                  onChange={(v) => void setUnitPref("unitSpeed", v)}
+                />
+                <SegmentRow
+                  title={t("settings.units.vs")}
+                  current={settings.unitVs}
+                  options={[
+                    { value: "fpm", label: "fpm" },
+                    { value: "ms", label: "m/s" },
+                  ]}
+                  onChange={(v) => void setUnitPref("unitVs", v)}
+                />
+                <SegmentRow
+                  title={t("settings.units.distance")}
+                  current={settings.unitDistance}
+                  options={[
+                    { value: "nm", label: "nm" },
+                    { value: "km", label: "km" },
+                    { value: "mi", label: "mi" },
+                  ]}
+                  onChange={(v) => void setUnitPref("unitDistance", v)}
+                />
+                <SegmentRow
+                  title={t("settings.units.pressure")}
+                  current={settings.unitPressure}
+                  options={[
+                    { value: "inHg", label: "inHg" },
+                    { value: "hPa", label: "hPa" },
+                  ]}
+                  onChange={(v) => void setUnitPref("unitPressure", v)}
                 />
                 <SegmentRow
                   title={t("settings.temp.title")}
@@ -292,7 +362,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     { value: "C", label: "°C" },
                     { value: "F", label: "°F" },
                   ]}
-                  onChange={(v) => void setTempUnit(v as "C" | "F")}
+                  onChange={(v) => void setUnitPref("tempUnit", v)}
                 />
                 <Toggle
                   label={t("settings.autostart.title")}
@@ -674,7 +744,7 @@ function SegmentRow({
   onChange,
 }: {
   title: string;
-  description: string;
+  description?: string;
   current: string;
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
@@ -683,7 +753,9 @@ function SegmentRow({
     <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="text-xs text-slate-200">{title}</div>
-        <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
+        {description ? (
+          <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
+        ) : null}
       </div>
       <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
         {options.map((opt) => (

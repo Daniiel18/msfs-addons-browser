@@ -3,10 +3,56 @@ import type { AppSettings } from "../lib/types";
 import { api } from "../lib/tauri";
 import { persistLocale, setActiveLocale } from "../lib/i18n";
 import {
-  loadStoredUnitSystem,
-  loadStoredTempUnit,
-  persistUnits,
+  loadStoredUnitPrefs,
+  persistUnitPrefs,
+  IMPERIAL_PREFS,
+  METRIC_PREFS,
+  type UnitPrefs,
 } from "../lib/unitsStorage";
+
+/** (v3.39.0 #3) Campos de unidad en `AppSettings` (clave del store). */
+type UnitField =
+  | "unitWeight"
+  | "unitAltitude"
+  | "unitSpeed"
+  | "unitVs"
+  | "unitDistance"
+  | "unitPressure"
+  | "tempUnit";
+
+/** Extrae las `UnitPrefs` (forma corta) desde el objeto de settings. */
+function prefsOf(s: {
+  unitWeight: string;
+  unitAltitude: string;
+  unitSpeed: string;
+  unitVs: string;
+  unitDistance: string;
+  unitPressure: string;
+  tempUnit: string;
+}): UnitPrefs {
+  return {
+    weight: s.unitWeight as UnitPrefs["weight"],
+    altitude: s.unitAltitude as UnitPrefs["altitude"],
+    speed: s.unitSpeed as UnitPrefs["speed"],
+    vs: s.unitVs as UnitPrefs["vs"],
+    distance: s.unitDistance as UnitPrefs["distance"],
+    pressure: s.unitPressure as UnitPrefs["pressure"],
+    temp: s.tempUnit as UnitPrefs["temp"],
+  };
+}
+
+/** Convierte `UnitPrefs` → los campos de unidad de `AppSettings`. */
+function unitFields(p: UnitPrefs) {
+  return {
+    unitWeight: p.weight,
+    unitAltitude: p.altitude,
+    unitSpeed: p.speed,
+    unitVs: p.vs,
+    unitDistance: p.distance,
+    unitPressure: p.pressure,
+    tempUnit: p.temp,
+  };
+}
 
 /**
  * Settings de la app — preferencias persistidas + autostart con
@@ -33,8 +79,8 @@ interface SettingsState {
   ) => Promise<void>;
   setDefaultView: (view: string) => Promise<void>;
   setLanguage: (lang: "auto" | "es" | "en") => Promise<void>;
-  setUnitSystem: (system: "imperial" | "metric") => Promise<void>;
-  setTempUnit: (unit: "C" | "F") => Promise<void>;
+  setUnitPref: (field: UnitField, value: string) => Promise<void>;
+  applyUnitPreset: (preset: "imperial" | "metric") => Promise<void>;
   setAutostart: (enabled: boolean) => Promise<void>;
   setMinimizeToTray: (enabled: boolean) => Promise<void>;
   setOnboardingCompleted: (done: boolean) => Promise<void>;
@@ -50,7 +96,12 @@ const DEFAULTS: AppSettings = {
   defaultView: "dashboard",
   theme: "dark",
   language: "auto",
-  unitSystem: "imperial",
+  unitWeight: "lb",
+  unitAltitude: "ft",
+  unitSpeed: "kt",
+  unitVs: "fpm",
+  unitDistance: "nm",
+  unitPressure: "inHg",
   tempUnit: "C",
   autostartEnabled: false,
   simbriefPilotId: null,
@@ -66,7 +117,12 @@ const KEY_MAP: Record<string, string> = {
   onboardingCompleted: "pref_onboarding_completed",
   defaultView: "pref_default_view",
   language: "pref_language",
-  unitSystem: "pref_unit_system",
+  unitWeight: "pref_unit_weight",
+  unitAltitude: "pref_unit_altitude",
+  unitSpeed: "pref_unit_speed",
+  unitVs: "pref_unit_vs",
+  unitDistance: "pref_unit_distance",
+  unitPressure: "pref_unit_pressure",
   tempUnit: "pref_temp_unit",
 };
 
@@ -77,8 +133,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // de la DB (mismo patrón que el idioma con preloadLocale).
   settings: {
     ...DEFAULTS,
-    unitSystem: loadStoredUnitSystem(),
-    tempUnit: loadStoredTempUnit(),
+    ...unitFields(loadStoredUnitPrefs()),
   },
   lastError: null,
 
@@ -98,7 +153,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // (v3.28.0 P7.11) Espejo de unidades a localStorage — la DB es la
       // fuente de verdad; esto sincroniza el cold-start y el caso de
       // cloud sync que bajó prefs de otra PC.
-      persistUnits(s.unitSystem ?? "imperial", s.tempUnit ?? "C");
+      persistUnitPrefs(prefsOf(s));
     } catch (e) {
       console.warn("settings bootstrap failed:", e);
       // Aun en error marcamos `loaded:true` para que la UI no se
@@ -157,29 +212,49 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
-  async setUnitSystem(system) {
-    // (v3.28.0 P7.11) Optimista + persiste + espeja. Reactivo: los
+  async setUnitPref(field, value) {
+    // (v3.39.0 #3) Optimista + persiste + espeja. Reactivo: los
     // componentes que usan `useUnits()` se re-renderizan al instante.
     const prev = get().settings;
-    set({ settings: { ...prev, unitSystem: system } });
-    persistUnits(system, prev.tempUnit);
+    const next = { ...prev, [field]: value };
+    set({ settings: next });
+    persistUnitPrefs(prefsOf(next));
     try {
-      await api.setAppSetting(KEY_MAP.unitSystem, system);
+      await api.setAppSetting(KEY_MAP[field], value);
     } catch (e) {
       set({ settings: prev, lastError: String(e) });
-      persistUnits(prev.unitSystem, prev.tempUnit);
+      persistUnitPrefs(prefsOf(prev));
     }
   },
 
-  async setTempUnit(unit) {
+  async applyUnitPreset(preset) {
+    // (v3.39.0 #3) Atajo: rellena las 6 magnitudes (no la temperatura)
+    // desde un preset Imperial/Métrico en una sola pasada.
     const prev = get().settings;
-    set({ settings: { ...prev, tempUnit: unit } });
-    persistUnits(prev.unitSystem, unit);
+    const base = preset === "metric" ? METRIC_PREFS : IMPERIAL_PREFS;
+    const next = {
+      ...prev,
+      unitWeight: base.weight,
+      unitAltitude: base.altitude,
+      unitSpeed: base.speed,
+      unitVs: base.vs,
+      unitDistance: base.distance,
+      unitPressure: base.pressure,
+    };
+    set({ settings: next });
+    persistUnitPrefs(prefsOf(next));
     try {
-      await api.setAppSetting(KEY_MAP.tempUnit, unit);
+      await Promise.all([
+        api.setAppSetting("pref_unit_weight", base.weight),
+        api.setAppSetting("pref_unit_altitude", base.altitude),
+        api.setAppSetting("pref_unit_speed", base.speed),
+        api.setAppSetting("pref_unit_vs", base.vs),
+        api.setAppSetting("pref_unit_distance", base.distance),
+        api.setAppSetting("pref_unit_pressure", base.pressure),
+      ]);
     } catch (e) {
       set({ settings: prev, lastError: String(e) });
-      persistUnits(prev.unitSystem, prev.tempUnit);
+      persistUnitPrefs(prefsOf(prev));
     }
   },
 

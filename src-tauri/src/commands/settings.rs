@@ -41,12 +41,16 @@ pub struct AppSettings {
     pub theme: String,
     /// (v3.1.0) Idioma de la UI: "auto" | "es" | "en". Default "auto".
     pub language: String,
-    /// (v3.28.0 P7.11) Sistema de unidades global: "imperial" (ft, kt,
-    /// nm, fpm, lb, inHg) | "metric" (m, km/h, km, m/s, kg, hPa).
-    /// Default "imperial" — son las unidades reales de aviación, así
-    /// los usuarios actuales no ven ningún cambio salvo que opten por
-    /// métrico. Reactivo (no requiere reinicio).
-    pub unit_system: String,
+    /// (v3.39.0 #3) Unidades POR CATEGORÍA. Cada magnitud se elige por
+    /// separado; el preset Imperial/Métrico es sólo un atajo de UI. Los
+    /// usuarios de v3.28–v3.38 (que sólo tenían `pref_unit_system`)
+    /// migran cada categoría de ese valor — ver `unit_pref`.
+    pub unit_weight: String,   // "kg" | "lb"
+    pub unit_altitude: String, // "ft" | "m"
+    pub unit_speed: String,    // "kt" | "kmh" | "mph"
+    pub unit_vs: String,       // "fpm" | "ms"
+    pub unit_distance: String, // "nm" | "km" | "mi"
+    pub unit_pressure: String, // "inHg" | "hPa"
     /// (v3.28.0 P7.11) Unidad de temperatura: "C" | "F". Separada del
     /// sistema porque algunos usuarios imperiales quieren °C de todas
     /// formas (estándar METAR mundial). Default "C".
@@ -72,7 +76,12 @@ impl Default for AppSettings {
             default_view: "dashboard".to_string(),
             theme: "dark".to_string(),
             language: "auto".to_string(),
-            unit_system: "imperial".to_string(),
+            unit_weight: "lb".to_string(),
+            unit_altitude: "ft".to_string(),
+            unit_speed: "kt".to_string(),
+            unit_vs: "fpm".to_string(),
+            unit_distance: "nm".to_string(),
+            unit_pressure: "inHg".to_string(),
             temp_unit: "C".to_string(),
             autostart_enabled: false,
             simbrief_pilot_id: None,
@@ -127,11 +136,14 @@ pub async fn get_app_settings(
             .get("pref_language")
             .cloned()
             .unwrap_or_else(|| "auto".to_string()),
-        unit_system: kv
-            .get("pref_unit_system")
-            .filter(|s| matches!(s.as_str(), "imperial" | "metric"))
-            .cloned()
-            .unwrap_or_else(|| "imperial".to_string()),
+        // (v3.39.0 #3) Per-categoría, con migración del legado
+        // `pref_unit_system` cuando una categoría no está seteada.
+        unit_weight: unit_pref(&kv, "pref_unit_weight", &["kg", "lb"], "kg", "lb"),
+        unit_altitude: unit_pref(&kv, "pref_unit_altitude", &["ft", "m"], "m", "ft"),
+        unit_speed: unit_pref(&kv, "pref_unit_speed", &["kt", "kmh", "mph"], "kmh", "kt"),
+        unit_vs: unit_pref(&kv, "pref_unit_vs", &["fpm", "ms"], "ms", "fpm"),
+        unit_distance: unit_pref(&kv, "pref_unit_distance", &["nm", "km", "mi"], "km", "nm"),
+        unit_pressure: unit_pref(&kv, "pref_unit_pressure", &["inHg", "hPa"], "hPa", "inHg"),
         temp_unit: kv
             .get("pref_temp_unit")
             .filter(|s| matches!(s.as_str(), "C" | "F"))
@@ -241,8 +253,13 @@ fn is_valid_key(key: &str) -> bool {
             | "pref_theme"
             // (v3.1.0) Idioma de la UI: "auto" | "es" | "en".
             | "pref_language"
-            // (v3.28.0 P7.11) Unidades globales.
-            | "pref_unit_system"
+            // (v3.39.0 #3) Unidades por categoría (+ temperatura).
+            | "pref_unit_weight"
+            | "pref_unit_altitude"
+            | "pref_unit_speed"
+            | "pref_unit_vs"
+            | "pref_unit_distance"
+            | "pref_unit_pressure"
             | "pref_temp_unit"
     )
 }
@@ -251,6 +268,34 @@ fn as_bool(kv: &HashMap<String, String>, key: &str, default: bool) -> bool {
     kv.get(key)
         .map(|s| matches!(s.as_str(), "1" | "true" | "yes"))
         .unwrap_or(default)
+}
+
+/// (v3.39.0 #3) Lee una preferencia de unidad por categoría. Si la clave
+/// no existe o trae un valor inválido, MIGRA del legado
+/// `pref_unit_system` ("metric" → `metric_default`, si no
+/// `imperial_default`), de modo que los usuarios de v3.28–v3.38
+/// conservan su elección al pasar al modelo por categoría.
+fn unit_pref(
+    kv: &HashMap<String, String>,
+    key: &str,
+    allowed: &[&str],
+    metric_default: &str,
+    imperial_default: &str,
+) -> String {
+    if let Some(v) = kv.get(key) {
+        if allowed.contains(&v.as_str()) {
+            return v.clone();
+        }
+    }
+    let legacy_metric = kv
+        .get("pref_unit_system")
+        .map(|s| s == "metric")
+        .unwrap_or(false);
+    if legacy_metric {
+        metric_default.to_string()
+    } else {
+        imperial_default.to_string()
+    }
 }
 
 async fn read_settings_map(pool: &SqlitePool) -> anyhow::Result<HashMap<String, String>> {
