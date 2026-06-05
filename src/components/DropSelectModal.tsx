@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { t } from "../lib/i18n";
 import {
   AlertCircle,
   Box,
@@ -264,7 +265,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
 
             {gsxItems.length > 0 && (
               <Section
-                title="Perfiles GSX"
+                title={t("drop.tab.gsx")}
                 icon={<Plane className="h-3 w-3 text-violet-300" />}
                 items={gsxItems}
                 selected={selected}
@@ -274,7 +275,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
             )}
             {communityItems.length > 0 && (
               <Section
-                title="Paquetes Community"
+                title={t("drop.tab.community")}
                 icon={<Box className="h-3 w-3 text-emerald-300" />}
                 items={communityItems}
                 selected={selected}
@@ -284,7 +285,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
             )}
             {otherItems.length > 0 && (
               <Section
-                title="Otros (no instalables)"
+                title={t("drop.tab.other")}
                 icon={
                   <AlertCircle className="h-3 w-3 text-slate-500" />
                 }

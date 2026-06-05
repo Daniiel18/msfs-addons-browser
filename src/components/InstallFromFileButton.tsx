@@ -1,5 +1,6 @@
 import { FileUp, Loader2 } from "lucide-react";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
+import { t } from "../lib/i18n";
 
 /**
  * Botón del header que dispara «Instalar desde archivo…».
@@ -21,7 +22,7 @@ export function InstallFromFileButton() {
         onClick={() => run()}
         disabled={busy}
         className="inline-flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-        title="Instalar desde un archivo .zip/.rar/.7z"
+        title={t("install.from_file_tip")}
       >
         {busy ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />

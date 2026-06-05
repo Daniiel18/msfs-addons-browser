@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Loader2, Save, X } from "lucide-react";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 import type { FlightLogEntry } from "../lib/types";
 
 interface Props {
@@ -223,7 +224,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   type="text"
                   value={originIcao}
                   onChange={(e) => setOriginIcao(e.target.value.toUpperCase())}
-                  placeholder="Ej. KJFK, LFPG, SEQM"
+                  placeholder={t("editflight.ph.dep_icao")}
                   maxLength={4}
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
@@ -233,7 +234,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   type="text"
                   value={destIcao}
                   onChange={(e) => setDestIcao(e.target.value.toUpperCase())}
-                  placeholder="Ej. EGLL, KLAX, OMDB"
+                  placeholder={t("editflight.ph.arr_icao")}
                   maxLength={4}
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
@@ -280,7 +281,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 type="text"
                 value={registration}
                 onChange={(e) => setRegistration(e.target.value.toUpperCase())}
-                placeholder="Ej. N404DX, D-AIZA, PK-GHG"
+                placeholder={t("editflight.ph.registration")}
                 maxLength={10}
                 className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm uppercase text-slate-100 focus:border-amber-400 focus:outline-none"
               />
@@ -296,7 +297,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   type="text"
                   value={depGate}
                   onChange={(e) => setDepGate(e.target.value)}
-                  placeholder="Ej. A12, B23"
+                  placeholder={t("editflight.ph.gate_a")}
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
               </Field>
@@ -305,7 +306,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   type="text"
                   value={arrGate}
                   onChange={(e) => setArrGate(e.target.value)}
-                  placeholder="Ej. 9, D5"
+                  placeholder={t("editflight.ph.gate_b")}
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
               </Field>

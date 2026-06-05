@@ -10,6 +10,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { t } from "../lib/i18n";
 import type { UpdateInfo } from "../lib/types";
 import { api } from "../lib/tauri";
 
@@ -164,7 +165,7 @@ export function UpdateBanner() {
                   onClick={installNow}
                   disabled={installing}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-400 disabled:opacity-60"
-                  title="Descarga e instala automáticamente"
+                  title={t("update.auto_tip")}
                 >
                   {installing ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -202,7 +203,7 @@ export function UpdateBanner() {
           <button
             onClick={dismiss}
             disabled={installing}
-            title="Recordar más tarde — no avisar más por esta versión"
+            title={t("update.later_tip")}
             className="ml-1 shrink-0 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-1.5 text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-50"
           >
             <X className="h-4 w-4" />

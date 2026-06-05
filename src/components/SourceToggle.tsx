@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { cn } from "../lib/cn";
 import type { SourceDescriptor } from "../lib/types";
+import { t } from "../lib/i18n";
 
 interface Props {
   sources: SourceDescriptor[];
@@ -14,7 +15,7 @@ export function SourceToggle({ sources, activeId, onChange }: Props) {
   return (
     <div
       role="tablist"
-      aria-label="Fuente de datos"
+      aria-label={t("source.aria")}
       className="no-select relative inline-flex items-center rounded-full border border-slate-800 bg-slate-900/70 p-1 backdrop-blur"
     >
       {sources.map((s) => {
