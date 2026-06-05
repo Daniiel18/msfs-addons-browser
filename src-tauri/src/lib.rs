@@ -12,6 +12,10 @@ pub mod gsx;
 pub mod gsx_parking;
 pub mod install;
 pub mod logger;
+// Puente LVar opcional vía el módulo WASM de MobiFlight (brake temps).
+// El archivo tiene `#![cfg(target_os = "windows")]`, así que en otros
+// SO el módulo queda vacío.
+pub mod mobiflight_lvars;
 pub mod msfs_logbook;
 pub mod openmeteo;
 pub mod package_ops;

@@ -104,6 +104,15 @@ pub struct FlightLogEntry {
     /// SIM_ON_GROUND con radio_alt < 50ft). La UI lo marca como
     /// "Bouncing Detected" al lado del FPM.
     pub bounced: bool,
+    /// (v4.0.0 P7.4b) Temperatura máxima de frenos (°C) alcanzada
+    /// durante el vuelo. Solo se puebla cuando el avión publica el
+    /// LVar de brake temp (FBW A32NX, etc.) Y el usuario tiene el
+    /// módulo WASM de MobiFlight instalado (puente LVar opcional).
+    /// `None` en la inmensa mayoría de vuelos. `#[sqlx(default)]`
+    /// para que cualquier SELECT que no incluya la columna siga
+    /// mapeando sin error.
+    #[sqlx(default)]
+    pub max_brake_temp_c: Option<f64>,
 }
 
 /// Resultado del lookup de aeropuerto más cercano. Incluye
@@ -629,6 +638,29 @@ pub async fn touch_max_altitude(
         "#,
     )
     .bind(altitude_ft)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// (v4.0.0 P7.4b) Actualiza el `max_brake_temp_c` con el máximo
+/// histórico, sin tocar el resto del vuelo. Lo llama el watcher cada
+/// vez que el puente LVar (MobiFlight) reporta una lectura de
+/// temperatura de frenos válida para el vuelo abierto.
+pub async fn touch_max_brake_temp(
+    pool: &SqlitePool,
+    id: i64,
+    brake_temp_c: f64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET max_brake_temp_c = MAX(COALESCE(max_brake_temp_c, 0), ?1)
+        WHERE id = ?2
+        "#,
+    )
+    .bind(brake_temp_c)
     .bind(id)
     .execute(pool)
     .await?;
@@ -1179,7 +1211,8 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                source,
                flight_number, callsign, airline_icao, status,
                score_total, score_max, score_grade,
-               COALESCE(bounced, 0) AS bounced
+               COALESCE(bounced, 0) AS bounced,
+               max_brake_temp_c
         FROM flight_log
         WHERE status = 'completed'
         ORDER BY started_at DESC

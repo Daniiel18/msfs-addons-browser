@@ -988,6 +988,31 @@ function SelectedFlightPanel({
             </div>
           );
         })()}
+
+        {/* (v4.0.0 P7.4b) Temperatura máxima de frenos — solo si el
+            puente LVar de MobiFlight la capturó (FBW A32NX, etc.).
+            Ausente en la gran mayoría de vuelos. */}
+        {entry.maxBrakeTempC != null && entry.maxBrakeTempC > 0 && (() => {
+          const c = entry.maxBrakeTempC;
+          // Escala orientativa de frenos de airliner:
+          //   < 200°C  → verde (normal)
+          //   200-349  → amarillo (caliente, normal tras frenado fuerte)
+          //   ≥ 350°C  → rojo (muy caliente / posible overheat)
+          const color =
+            c < 200
+              ? "text-emerald-300"
+              : c < 350
+                ? "text-amber-300"
+                : "text-rose-400 font-semibold";
+          return (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
+              <span className="text-slate-500">
+                {t("fb.block.brake_temp")}:
+              </span>
+              <span className={`font-mono ${color}`}>{u.fmt.temp(c)}</span>
+            </div>
+          );
+        })()}
         </>
         )}
       </motion.div>

@@ -749,7 +749,12 @@ export default function App() {
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {tourOpen && <OnboardingTour onClose={() => setTourOpen(false)} />}
+      {tourOpen && (
+        <OnboardingTour
+          onClose={() => setTourOpen(false)}
+          onSettingsOpenChange={setSettingsOpen}
+        />
+      )}
       {importInventoryPath && (
         <ImportInventoryModal
           path={importInventoryPath}

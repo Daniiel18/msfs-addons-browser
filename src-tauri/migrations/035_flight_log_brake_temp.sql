@@ -1,0 +1,13 @@
+-- (v4.0.0 P7.4b) Temperatura máxima de frenos durante el vuelo (°C).
+--
+-- MSFS NO expone la temperatura de frenos como simvar nativo: solo
+-- existe como LVar en aeronaves de estudio (FBW A32NX, etc.). Esta
+-- app la lee — de forma OPCIONAL — a través del puente WASM de
+-- MobiFlight (Client Data Area). Si el usuario no tiene ese módulo
+-- instalado, o el avión no publica el LVar, la columna queda NULL y
+-- la UI simplemente no muestra el dato.
+--
+-- Guardamos el MÁXIMO alcanzado durante el vuelo (el momento más
+-- caliente suele ser justo tras el frenado de aterrizaje). Nullable
+-- por diseño: la inmensa mayoría de vuelos no tendrán este dato.
+ALTER TABLE flight_log ADD COLUMN max_brake_temp_c REAL;

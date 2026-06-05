@@ -1451,8 +1451,14 @@ mod windows_simconnect {
         //
         // El dispatch handler para `SIMCONNECT_RECV_ID_CLIENT_DATA`
         // se mantiene (no estorba) por si en una iteración futura
-        // queremos suscribirnos a algún CDA específico — pero por
-        // ahora no se llama nadie.
+        // queremos suscribirnos a algún CDA específico.
+
+        // (v4.0.0 P7.4b) Puente LVar OPCIONAL de MobiFlight para leer la
+        // temperatura de frenos (FBW A32NX, etc.). Si el módulo WASM no
+        // está instalado, esto no produce datos y nada se rompe — el
+        // resto del watcher es independiente. Ver `mobiflight_lvars.rs`.
+        let brake_bridge =
+            unsafe { crate::mobiflight_lvars::setup(&lib, handle) };
 
         // Marca conectado.
         update_connected(state, app, true);
@@ -1654,6 +1660,11 @@ mod windows_simconnect {
         // o usuarios que se olvidan de apagar motores y dejan la
         // app abierta.
         let mut idle_ticks_in_landed: u32 = 0;
+
+        // (v4.0.0 P7.4b) Máxima temperatura de frenos (°C) vista en este
+        // vuelo vía el puente LVar de MobiFlight. Se persiste con
+        // `touch_max_brake_temp` cuando sube y hay un vuelo abierto.
+        let mut max_brake_temp_c: Option<f64> = None;
 
         // (v3.5.0) Cache de meta strings de la aeronave — actualizado
         // cuando llega un dispatch de REQUEST_ID_AIRCRAFT_META.
@@ -2457,6 +2468,52 @@ mod windows_simconnect {
                         &*(p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA)
                     };
                     let request_id = evt.dwRequestID;
+
+                    // (v4.0.0 P7.4b) ¿Es el stream de brake temps del
+                    // puente LVar de MobiFlight? Si sí, leemos el máximo
+                    // y lo persistimos cuando crece y hay vuelo abierto.
+                    if let Some(bridge) = brake_bridge.as_ref() {
+                        if request_id == bridge.request_id {
+                            if let Some(t) = unsafe {
+                                crate::mobiflight_lvars::parse_max_brake_temp(
+                                    p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+                                    bridge.var_count,
+                                )
+                            } {
+                                let grew =
+                                    max_brake_temp_c.map_or(true, |m| t > m + 0.5);
+                                if max_brake_temp_c.map_or(true, |m| t > m) {
+                                    max_brake_temp_c = Some(t);
+                                }
+                                if grew {
+                                    let fid = current_flight_id
+                                        .lock()
+                                        .ok()
+                                        .and_then(|g| *g);
+                                    if let Some(fid) = fid {
+                                        let pool2 = pool.clone();
+                                        tokio::runtime::Handle::current().spawn(
+                                            async move {
+                                                if let Err(e) =
+                                                    crate::flight_log::touch_max_brake_temp(
+                                                        &pool2, fid, t,
+                                                    )
+                                                    .await
+                                                {
+                                                    tracing::warn!(
+                                                        target: "lvar_bridge",
+                                                        "touch_max_brake_temp falló: {e:#}"
+                                                    );
+                                                }
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+
                     let cda_name = match request_id {
                         100 => Some("FSDT_GSX_AIRCRAFT_DATA"),
                         101 => Some("FSDT_GSX_MENU"),

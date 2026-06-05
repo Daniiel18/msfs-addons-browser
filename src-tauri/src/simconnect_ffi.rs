@@ -96,6 +96,21 @@ pub const SIMCONNECT_RECV_ID_FACILITY_DATA_END: DWORD = 30;
 pub const SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT: DWORD = 0;
 pub const SIMCONNECT_DATA_REQUEST_FLAG_CHANGED: DWORD = 1;
 
+// ----- Client Data constants (v4.0.0 — puente LVar de MobiFlight) -----
+//
+// `SimConnect_AddToClientDataDefinition` acepta como `dwSizeOrType` o
+// bien un tamaño en bytes (positivo) o bien uno de los enum
+// `SIMCONNECT_CLIENTDATATYPE_*` (negativos). FLOAT32 = -5; lo pasamos
+// como DWORD en complemento a dos (0xFFFFFFFB).
+pub const SIMCONNECT_CLIENTDATATYPE_FLOAT32: DWORD = (-5i32) as DWORD;
+/// Periodo de stream del Client Data (enum SIMCONNECT_CLIENT_DATA_PERIOD).
+/// SECOND = 4. Brake temps cambian lento, 1 Hz sobra.
+pub const SIMCONNECT_CLIENT_DATA_PERIOD_SECOND: DWORD = 4;
+/// Flag por defecto en RequestClientData.
+pub const SIMCONNECT_CLIENT_DATA_REQUEST_FLAG_DEFAULT: DWORD = 0;
+/// Flag por defecto en SetClientData.
+pub const SIMCONNECT_CLIENT_DATA_SET_FLAG_DEFAULT: DWORD = 0;
+
 // SimConnect_Open `ConfigIndex` parameter — un valor 0 indica
 // "config local default" que es lo que necesitamos.
 pub const SIMCONNECT_OPEN_CONFIGINDEX_LOCAL: DWORD = 0;
@@ -330,6 +345,21 @@ pub type FnRequestClientData = unsafe extern "system" fn(
     limit: DWORD,
 ) -> HRESULT;
 
+/// `SimConnect_SetClientData` — escribe bytes en un Client Data Area.
+/// (v4.0.0) Lo usamos para enviar comandos de texto al área
+/// `MobiFlight.Command` (p.ej. `MF.SimVars.Add.(L:...)`), el mecanismo
+/// con el que el módulo WASM de MobiFlight expone LVars sobre
+/// SimConnect. `pDataSet` apunta a un buffer de `cbUnitSize` bytes.
+pub type FnSetClientData = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    ClientDataID: DWORD,
+    DefineID: DWORD,
+    Flags: DWORD,
+    dwReserved: DWORD,
+    cbUnitSize: DWORD,
+    pDataSet: *const c_void,
+) -> HRESULT;
+
 // ----- Wrapper de carga ------------------------------------------------------
 
 #[cfg(target_os = "windows")]
@@ -349,6 +379,7 @@ pub struct SimConnectLib {
     pub MapClientDataNameToID: Option<FnMapClientDataNameToID>,
     pub AddToClientDataDefinition: Option<FnAddToClientDataDefinition>,
     pub RequestClientData: Option<FnRequestClientData>,
+    pub SetClientData: Option<FnSetClientData>,
 }
 
 #[cfg(target_os = "windows")]
@@ -513,6 +544,10 @@ impl SimConnectLib {
             .get::<FnRequestClientData>(b"SimConnect_RequestClientData\0")
             .ok()
             .map(|s| *s);
+        let set_client: Option<FnSetClientData> = lib
+            .get::<FnSetClientData>(b"SimConnect_SetClientData\0")
+            .ok()
+            .map(|s| *s);
 
         Ok(Self {
             _lib: lib,
@@ -527,6 +562,7 @@ impl SimConnectLib {
             MapClientDataNameToID: map_client,
             AddToClientDataDefinition: add_client_def,
             RequestClientData: req_client,
+            SetClientData: set_client,
         })
     }
 }

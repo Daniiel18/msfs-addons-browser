@@ -326,6 +326,14 @@ export interface FlightLogEntry {
    * LandingToast.
    */
   bounced: boolean;
+  /**
+   * (v4.0.0 P7.4b) Temperatura máxima de frenos (°C) durante el vuelo.
+   * Solo se puebla si el avión publica el LVar de brake temp (FBW
+   * A32NX, etc.) Y el usuario tiene el módulo WASM de MobiFlight
+   * instalado (puente LVar opcional). `null` en la gran mayoría de
+   * vuelos.
+   */
+  maxBrakeTempC: number | null;
 }
 
 /** (v3.6.0 Phase H — Epic E) Reporte de scoring para un vuelo. */

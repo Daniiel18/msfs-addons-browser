@@ -264,7 +264,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               )}
 
-              <Section title={t("settings.section.general")} icon={<Power className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.general")} icon={<Power className="h-3.5 w-3.5" />} tourId="settings-general">
                 <ThemeRow
                   current={settings.theme}
                   onChange={(t) => void api.setAppSetting("pref_theme", t).then(() => useSettingsStore.getState().bootstrap())}
@@ -430,7 +430,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />}>
+              <Section title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />} tourId="settings-folders">
                 <PathRow
                   label={t("settings.folders.community")}
                   hint={t("settings.folders.community.hint")}
@@ -478,6 +478,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <Section
                 title={t("settings.section.cloud")}
                 icon={<Cloud className="h-3.5 w-3.5" />}
+                tourId="settings-cloud"
               >
                 <CloudSyncPanel onFeedback={setFeedback} />
               </Section>
@@ -811,13 +812,16 @@ function Section({
   title,
   icon,
   children,
+  tourId,
 }: {
   title: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
+  /** Ancla opcional para el tour guiado (`[data-tour-id="X"]`). */
+  tourId?: string;
 }) {
   return (
-    <div>
+    <div data-tour-id={tourId}>
       <h3 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
         {icon}
         {title}
