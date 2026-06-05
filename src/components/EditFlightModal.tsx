@@ -171,11 +171,10 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
             <div>
               <h3 className="text-sm font-semibold text-amber-200">
-                Editar vuelo · {entry.originIcao ?? "?"} → {entry.destinationIcao ?? "?"}
+                {t("editflight.title")} · {entry.originIcao ?? "?"} → {entry.destinationIcao ?? "?"}
               </h3>
               <p className="mt-0.5 text-[11px] text-slate-400">
-                Ajusta lo que el watcher detectó mal — block time, gates,
-                pasajeros, carga, fuel. Deja vacío lo que no quieras tocar.
+                {t("editflight.desc")}
               </p>
             </div>
             <button
@@ -188,7 +187,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           </header>
 
           <div className="space-y-3 p-4">
-            <Field label="Block time">
+            <Field label={t("editflight.block_time")}>
               <div className="flex items-center gap-1.5">
                 <NumInput
                   value={hours}
@@ -219,7 +218,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 un import VAS trae el ICAO con typo. El backend hace
                 .to_uppercase() antes de persistir. */}
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Origen (ICAO)">
+              <Field label={t("editflight.origin")}>
                 <input
                   type="text"
                   value={originIcao}
@@ -229,7 +228,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
               </Field>
-              <Field label="Destino (ICAO)">
+              <Field label={t("editflight.dest")}>
                 <input
                   type="text"
                   value={destIcao}
@@ -242,7 +241,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Pasajeros">
+              <Field label={t("editflight.pax")}>
                 <NumInput
                   value={passengers}
                   onChange={setPassengers}
@@ -251,7 +250,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   max={999}
                 />
               </Field>
-              <Field label="Carga (kg)">
+              <Field label={t("editflight.cargo")}>
                 <NumInput
                   value={cargoKg}
                   onChange={setCargoKg}
@@ -262,7 +261,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
               </Field>
             </div>
 
-            <Field label="Fuel consumido (kg)">
+            <Field label={t("editflight.fuel")}>
               <NumInput
                 value={fuelUsedKg}
                 onChange={setFuelUsedKg}
@@ -276,7 +275,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
               </p>
             </Field>
 
-            <Field label="Matrícula del avión">
+            <Field label={t("editflight.registration")}>
               <input
                 type="text"
                 value={registration}
@@ -292,7 +291,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
             </Field>
 
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Gate salida (parking)">
+              <Field label={t("editflight.gate_dep")}>
                 <input
                   type="text"
                   value={depGate}
@@ -301,7 +300,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
                 />
               </Field>
-              <Field label="Gate llegada (parking)">
+              <Field label={t("editflight.gate_arr")}>
                 <input
                   type="text"
                   value={arrGate}
@@ -321,7 +320,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
 
           <footer className="flex items-center justify-between gap-2 border-t border-slate-800 px-5 py-3">
             <p className="text-[10px] text-slate-500">
-              Los cambios se guardan en la DB local.
+              {t("editflight.saved_note")}
             </p>
             <div className="flex items-center gap-2">
               <button
@@ -329,7 +328,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 disabled={saving}
                 className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
               >
-                Cancelar
+                {t("common.cancel")}
               </button>
               <button
                 onClick={handleSave}
@@ -341,7 +340,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 ) : (
                   <Save className="h-3.5 w-3.5" />
                 )}
-                Guardar
+                {t("common.save")}
               </button>
             </div>
           </footer>
