@@ -68,7 +68,7 @@ export function DownloadsPanel({ open, onClose }: Props) {
             <header className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
               <div className="flex items-center gap-2">
                 <Download className="h-4 w-4 text-brand-300" />
-                <h2 className="text-sm font-semibold text-slate-100">Descargas</h2>
+                <h2 className="text-sm font-semibold text-slate-100">{t("nav.downloads")}</h2>
               </div>
               <button
                 onClick={onClose}

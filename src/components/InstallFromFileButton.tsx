@@ -29,7 +29,7 @@ export function InstallFromFileButton() {
         ) : (
           <FileUp className="h-3.5 w-3.5" />
         )}
-        <span>Instalar desde archivo</span>
+        <span>{t("install.from_file")}</span>
       </button>
       {/* Tooltip-error inline: aparece cuando la última instalación
           manual falló. Lo dejamos colgando del botón para que no

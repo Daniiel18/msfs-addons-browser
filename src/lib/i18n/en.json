@@ -5,6 +5,7 @@
   "common.dismiss": "Dismiss",
   "common.view_on_map": "View on map",
   "common.remove_from_list": "Remove from list",
+  "install.from_file": "Install from file",
   "install.from_file_tip": "Install from a .zip/.rar/.7z file",
   "drop.tab.gsx": "GSX profiles",
   "drop.tab.community": "Community packages",

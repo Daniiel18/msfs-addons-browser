@@ -5,6 +5,7 @@
   "common.dismiss": "Descartar",
   "common.view_on_map": "Ver en el mapa",
   "common.remove_from_list": "Quitar de la lista",
+  "install.from_file": "Instalar desde archivo",
   "install.from_file_tip": "Instalar desde un archivo .zip/.rar/.7z",
   "drop.tab.gsx": "Perfiles GSX",
   "drop.tab.community": "Paquetes Community",
