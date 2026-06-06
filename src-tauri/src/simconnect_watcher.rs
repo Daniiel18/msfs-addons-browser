@@ -2158,13 +2158,17 @@ mod windows_simconnect {
                         &mut prev_absolute_time_s,
                         &mut predeparture_buffer,
                     );
-                    // (v0.1.26) Si la transición acabó de marcar OUT
-                    // o entró en Landed (touchdown), disparamos la
-                    // request de Facility Data para obtener el gate
-                    // real. La response llega de forma asíncrona y
-                    // se procesa en los SIMCONNECT_RECV_FACILITY_DATA
-                    // events más abajo.
-                    if facility_def_ok {
+                    // (v4.1.1 FIX) La detección de gate usa el INI de GSX
+                    // en disco (`gsx_parking::find_nearest_parking`), que
+                    // NO depende de SimConnect Facility Data. Antes todo
+                    // este bloque estaba envuelto en `if facility_def_ok`,
+                    // así que si la API de Facility Data fallaba —
+                    // justamente lo que ocurre en MSFS 2020, motivo por el
+                    // que la abandonamos— TODA la detección de gate moría en
+                    // silencio aunque el INI de GSX existiera. Desacoplado:
+                    // los triggers corren siempre; el INI hace el trabajo.
+                    let _ = facility_def_ok;
+                    {
                         if prev_phase == FlightPhase::OnGround
                             && phase == FlightPhase::BlockOut
                         {
@@ -3993,10 +3997,10 @@ mod windows_simconnect {
         let Some(parking) = crate::gsx_parking::find_nearest_parking(
             &icao, player_lat, player_lon,
         ) else {
-            tracing::debug!(
+            tracing::info!(
                 target: "simconnect",
-                "request_gate_facility ({} {}): sin GSX INI o sin parking <200m del player",
-                role, icao
+                "gate {} {}: SIN gate — no hay INI de GSX para este ICAO, o ningún parking del INI quedó a <75m del avión ({:.5}, {:.5})",
+                role, icao, player_lat, player_lon
             );
             return;
         };
