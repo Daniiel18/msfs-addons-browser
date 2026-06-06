@@ -354,6 +354,8 @@ export interface ScoreItem {
   pointsMax: number;
   passed: boolean;
   severity: string;
+  /** (v4.1.0) Estado de checklist: "done" (✓) | "missed" (✗) | "na" (—). */
+  status: string;
   evidence: unknown;
 }
 

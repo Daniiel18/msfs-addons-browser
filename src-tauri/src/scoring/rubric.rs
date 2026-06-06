@@ -98,6 +98,73 @@ impl Phase {
     }
 }
 
+/// (v4.1.0) Orden cronológico canónico de una fase (string) para la
+/// presentación tipo checklist. Las fases persistidas se leían
+/// `ORDER BY phase` (alfabético) → "approach" salía arriba y "taxi"
+/// abajo. Esto mapea cada nombre de fase a su índice real de vuelo;
+/// `general` (límites de todo el vuelo) va al final. Desconocidas → 99.
+pub fn phase_order(phase: &str) -> u8 {
+    match phase {
+        "pre_departure" | "preflight" => 0,
+        "pushback" => 1,
+        "taxi_out" => 2,
+        "takeoff" => 3,
+        "takeoff_accel" => 4,
+        "initial_climb" => 5,
+        "climb" | "climbing" => 6,
+        "cruise" => 7,
+        "descent" => 8,
+        "initial_approach" => 9,
+        "final_approach" | "approach" => 10,
+        "landing" => 11,
+        "taxi_in" | "landed_rollout" => 12,
+        "arrived" | "parking" | "deboarding" => 13,
+        "general" => 14,
+        _ => 99,
+    }
+}
+
+/// (v4.1.0) Índice de una regla dentro de `RULES` — para ordenar los
+/// ítems DENTRO de una fase igual que el flujo del checklist. None si
+/// el rule_id no existe (regla retirada en una versión posterior).
+pub fn rule_index(rule_id: &str) -> Option<usize> {
+    RULES.iter().position(|r| r.id == rule_id)
+}
+
+/// (v4.1.0) Categoría de aeronave — decide qué ítems del checklist
+/// aplican. Detectada del título/tipo en `scoring::aircraft_category`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Airliner,
+    Turboprop,
+    Ga,
+}
+
+/// (v4.1.0) ¿La regla aplica a esta categoría de avión? Si no, el
+/// scoring la marca "na" (— no aplica) y NO penaliza el % de checklist.
+///
+/// Conservador: la mayoría de reglas son data-driven y se auto-resuelven
+/// (un avión sin spoilers reporta spoilers=0 → pasa "spoilers no
+/// desplegados"; sin fase pushback → esas reglas quedan vacías → skip).
+/// Solo excluimos para GA (avión ligero) los ítems que claramente no le
+/// corresponden y que SÍ producirían un "✗" injusto: transponder IFR
+/// (suele volar VFR), flaps de despegue (muchos despegan flaps 0) y el
+/// grupo de pushback. Airliner/Turboprop = todas aplican.
+pub fn rule_applies_to(rule_id: &str, cat: Category) -> bool {
+    match cat {
+        Category::Airliner | Category::Turboprop => true,
+        Category::Ga => !matches!(
+            rule_id,
+            "taxi_out_transponder"
+                | "taxi_out_flaps_set"
+                | "pushback_nav_light"
+                | "pushback_beacon_light"
+                | "pushback_engines_off_at_start"
+                | "pushback_doors_closed"
+        ),
+    }
+}
+
 pub type Evaluator = fn(&FlightContext, &Rule) -> ScoreItem;
 
 pub struct Rule {
@@ -516,6 +583,7 @@ fn pass(rule: &Rule, evidence: serde_json::Value) -> ScoreItem {
         points_max: rule.points_max,
         passed: true,
         severity: "info".to_string(),
+        status: "done".to_string(),
         evidence,
     }
 }
@@ -529,6 +597,7 @@ fn fail(rule: &Rule, severity: &str, earned: i64, evidence: serde_json::Value) -
         points_max: rule.points_max,
         passed: false,
         severity: severity.to_string(),
+        status: "missed".to_string(),
         evidence,
     }
 }
@@ -550,6 +619,7 @@ fn partial(rule: &Rule, earned: i64, evidence: serde_json::Value) -> ScoreItem {
         points_max: rule.points_max,
         passed,
         severity: severity.to_string(),
+        status: if passed { "done" } else { "missed" }.to_string(),
         evidence,
     }
 }
@@ -566,6 +636,7 @@ fn skip(rule: &Rule, reason: &str) -> ScoreItem {
         points_max: 0,
         passed: true,
         severity: "skipped".to_string(),
+        status: "na".to_string(),
         evidence: json!({ "reason": reason }),
     }
 }

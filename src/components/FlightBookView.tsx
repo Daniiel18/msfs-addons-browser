@@ -2176,6 +2176,35 @@ function AirlineTagFilter() {
  *  con su total "X/Y", expandible al clickearla para ver las reglas
  *  individuales (passed/failed) + evidencia.
  */
+/** (v4.1.0) Orden cronológico canónico de las fases para el checklist.
+ *  Espeja `scoring::rubric::phase_order` del backend. `general` (límites
+ *  de todo el vuelo) va al final; desconocidas al fondo. */
+const PHASE_ORDER: Record<string, number> = {
+  pre_departure: 0,
+  preflight: 0,
+  pushback: 1,
+  taxi_out: 2,
+  takeoff: 3,
+  takeoff_accel: 4,
+  initial_climb: 5,
+  climb: 6,
+  climbing: 6,
+  cruise: 7,
+  descent: 8,
+  initial_approach: 9,
+  final_approach: 10,
+  approach: 10,
+  landing: 11,
+  taxi_in: 12,
+  landed_rollout: 12,
+  arrived: 13,
+  parking: 13,
+  deboarding: 13,
+  general: 14,
+};
+const phaseOrder = (p: string): number =>
+  p in PHASE_ORDER ? PHASE_ORDER[p] : 99;
+
 function ChecklistWidget({
   flightId,
   onClose,
@@ -2214,21 +2243,34 @@ function ChecklistWidget({
     };
   }, [flightId]);
 
-  // Agrupa items por phase preservando el orden de `RULES` (que el
-  // backend nos devuelve en `items`).
+  // (v4.1.0) Agrupa por fase, cuenta cumplidos/aplicables (los "na" no
+  // cuentan), y ORDENA cronológicamente. Antes el render preservaba el
+  // orden de `items`, que al venir persistido era alfabético → "approach"
+  // arriba y "taxi" abajo. Ahora siempre va pre-departure → … → arrived.
   const byPhase = useMemo(() => {
     if (!report) return [];
-    const groups: { phase: string; items: typeof report.items; earned: number; max: number }[] = [];
+    type Group = {
+      phase: string;
+      items: typeof report.items;
+      done: number;
+      applicable: number;
+    };
+    const groups: Group[] = [];
     for (const item of report.items) {
       let g = groups.find((x) => x.phase === item.phase);
       if (!g) {
-        g = { phase: item.phase, items: [], earned: 0, max: 0 };
+        g = { phase: item.phase, items: [], done: 0, applicable: 0 };
         groups.push(g);
       }
       g.items.push(item);
-      g.earned += item.pointsEarned;
-      g.max += item.pointsMax;
+      if (item.status === "done") {
+        g.done += 1;
+        g.applicable += 1;
+      } else if (item.status === "missed") {
+        g.applicable += 1;
+      }
     }
+    groups.sort((a, b) => phaseOrder(a.phase) - phaseOrder(b.phase));
     return groups;
   }, [report]);
 
@@ -2252,7 +2294,7 @@ function ChecklistWidget({
                 report.grade,
               )}`}
             >
-              {report.grade} · {report.total}/{report.max}
+              {Math.round(report.percentage)}% · {report.total}/{report.max}
             </span>
           )}
         </div>
@@ -2291,7 +2333,8 @@ function ChecklistWidget({
         )}
         {byPhase.map((group) => {
           const isOpen = openPhases.has(group.phase);
-          const pct = group.max > 0 ? (group.earned / group.max) * 100 : 0;
+          const pct =
+            group.applicable > 0 ? (group.done / group.applicable) * 100 : 100;
           const phaseColor =
             pct >= 95
               ? "text-emerald-300"
@@ -2323,58 +2366,51 @@ function ChecklistWidget({
                   </span>
                 </span>
                 <span className={`font-mono tabular-nums ${phaseColor}`}>
-                  {group.earned}/{group.max}
+                  {group.done}/{group.applicable}
                 </span>
               </button>
               {isOpen && (
                 <ul className="space-y-1 border-t border-slate-800/70 px-3 py-2">
                   {group.items.map((it) => {
-                    // (v3.7.0 Phase O) "skipped" = la regla no se
-                    // pudo evaluar (datos ausentes — típico para
-                    // VAS imports sin lights/pitch). La pintamos
-                    // gris con icono "·" y NO suma puntos (0/0).
-                    const skipped = it.severity === "skipped";
+                    // (v4.1.0) Checklist puro: ✓ cumplido / ✗ no cumplido
+                    // / — no aplica (datos ausentes, o no aplica a este
+                    // tipo de avión). Los "—" NO penalizan el % de la fase.
                     const ruleLabel = ruleLabelText(it.ruleId, it.label);
+                    const icon =
+                      it.status === "done"
+                        ? "✓"
+                        : it.status === "missed"
+                          ? "✗"
+                          : "—";
+                    const iconClass =
+                      it.status === "done"
+                        ? "text-emerald-400"
+                        : it.status === "missed"
+                          ? "text-rose-400"
+                          : "text-slate-600";
                     return (
                       <li
                         key={it.ruleId}
-                        className="flex items-baseline justify-between gap-2 text-[10px]"
+                        className="flex items-baseline gap-2 text-[10px]"
                       >
-                        <span className="min-w-0 truncate text-slate-300">
-                          <span
-                            className={`mr-1.5 ${
-                              skipped
-                                ? "text-slate-500"
-                                : it.passed
-                                  ? "text-emerald-400"
-                                  : it.severity === "warn"
-                                    ? "text-amber-400"
-                                    : "text-rose-400"
-                            }`}
-                            title={
-                              skipped
-                                ? t("fb.checklist.severity.skipped")
-                                : undefined
-                            }
-                          >
-                            {skipped
-                              ? "·"
-                              : it.passed
-                                ? "✓"
-                                : it.severity === "warn"
-                                  ? "⚠"
-                                  : "✗"}
-                          </span>
-                          {ruleLabel}
+                        <span
+                          className={`w-3 shrink-0 text-center font-bold ${iconClass}`}
+                          title={
+                            it.status === "na"
+                              ? t("fb.checklist.severity.skipped")
+                              : undefined
+                          }
+                        >
+                          {icon}
                         </span>
                         <span
-                          className={`shrink-0 font-mono tabular-nums ${
-                            skipped ? "text-slate-600" : "text-slate-400"
+                          className={`min-w-0 ${
+                            it.status === "na"
+                              ? "text-slate-500"
+                              : "text-slate-300"
                           }`}
                         >
-                          {skipped
-                            ? t("fb.checklist.severity.skipped")
-                            : `${it.pointsEarned}/${it.pointsMax}`}
+                          {ruleLabel}
                         </span>
                       </li>
                     );

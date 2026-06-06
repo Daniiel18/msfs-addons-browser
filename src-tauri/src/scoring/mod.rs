@@ -23,7 +23,7 @@ use sqlx::SqlitePool;
 
 pub mod rubric;
 
-pub use rubric::{Phase, Rule, RULES};
+pub use rubric::{phase_order, rule_applies_to, rule_index, Category, Phase, Rule, RULES};
 
 /// Resultado del scoring para un vuelo — listo para devolverse al
 /// frontend como respuesta del comando `score_flight`.
@@ -48,6 +48,12 @@ pub struct ScoreItem {
     pub points_max: i64,
     pub passed: bool,
     pub severity: String,
+    /// (v4.1.0) Estado del ítem en el modelo de checklist puro:
+    ///   · "done"   — cumplido (✓ verde)
+    ///   · "missed" — no cumplido / parcial (✗ rojo)
+    ///   · "na"     — no aplica / sin datos (— gris). NO penaliza el %.
+    /// Derivado de `passed` + `severity` (severity == "skipped" → na).
+    pub status: String,
     pub evidence: serde_json::Value,
 }
 
@@ -75,6 +81,10 @@ pub struct FlightContext {
     pub airline_icao: Option<String>,
     pub status: String,
     pub arrival_gate: Option<String>,
+    /// (v4.1.0) Título/tipo de la aeronave — usado por
+    /// `aircraft_category()` para decidir qué ítems del checklist aplican.
+    pub aircraft_title: Option<String>,
+    pub aircraft_atc_type: Option<String>,
     pub track: Vec<TrackSample>,
     pub phases: Vec<PhaseRange>,
 }
@@ -235,6 +245,8 @@ struct FlightRow {
     airline_icao: Option<String>,
     status: String,
     arrival_gate: Option<String>,
+    aircraft_title: Option<String>,
+    aircraft_atc_type: Option<String>,
 }
 
 /// Cargar el FlightContext desde DB para un vuelo dado.
@@ -247,7 +259,7 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
                max_altitude_ft, landing_fpm,
                max_ground_speed_kt, max_true_airspeed_kt,
                flight_number, callsign, airline_icao, status,
-               arrival_gate
+               arrival_gate, aircraft_title, aircraft_atc_type
         FROM flight_log
         WHERE id = ?1
         "#,
@@ -310,6 +322,8 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
         airline_icao: row.airline_icao,
         status: row.status,
         arrival_gate: row.arrival_gate,
+        aircraft_title: row.aircraft_title,
+        aircraft_atc_type: row.aircraft_atc_type,
         track: track
             .into_iter()
             .map(|r| {
@@ -355,6 +369,39 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
     })
 }
 
+/// (v4.1.0) Clasifica la aeronave en una categoría amplia para decidir
+/// qué ítems del checklist aplican. Heurística por palabras clave del
+/// título + tipo ATC. Fallback = `Airliner` (la app es airliner-first).
+/// No pretende ser exhaustiva — solo separar el caso GA/turbohélice del
+/// airliner para no penalizar ítems que no corresponden.
+pub fn aircraft_category(title: Option<&str>, atc_type: Option<&str>) -> Category {
+    let hay = format!(
+        "{} {}",
+        title.unwrap_or("").to_lowercase(),
+        atc_type.unwrap_or("").to_lowercase()
+    );
+    const TURBOPROP: &[&str] = &[
+        "tbm", "king air", "kingair", "c208", "caravan", "pc-12", "pc12",
+        "pilatus", "atr ", "atr-", "dash 8", "dhc-6", "dhc-8", "twin otter",
+        "saab 340", "1900", "do228", "dornier 228", "mu-2", "kodiak",
+    ];
+    const GA: &[&str] = &[
+        "cessna 152", "c152", "cessna 172", "c172", "skyhawk", "cessna 182",
+        "c182", "skylane", "cirrus", "sr22", "sr20", "diamond", "da40",
+        "da42", "da62", "piper", "pa-28", "pa28", "cherokee", "archer",
+        "arrow", "bonanza", "baron", "mooney", "robin", "extra ", "icon a5",
+        "savage", "xcub", "super cub", "cub ", "vans", "rv-", "duchess",
+        "warrior", "seminole", "g36", "g58", "172 ", "152 ",
+    ];
+    if TURBOPROP.iter().any(|k| hay.contains(k)) {
+        return Category::Turboprop;
+    }
+    if GA.iter().any(|k| hay.contains(k)) {
+        return Category::Ga;
+    }
+    Category::Airliner
+}
+
 /// Evalúa **todas** las reglas del rubric sobre el FlightContext y
 /// produce un `ScoreReport`. Persiste los items en
 /// `flight_log_score_item` (upsert por (flight_id, phase, rule_id))
@@ -363,22 +410,41 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
 pub async fn score_flight(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<ScoreReport> {
     let ctx = load_context(pool, flight_id).await?;
 
-    let mut items: Vec<ScoreItem> = Vec::new();
-    let mut total: i64 = 0;
-    let mut max: i64 = 0;
+    // (v4.1.0) Categoría del avión — decide qué ítems del checklist aplican.
+    let category =
+        aircraft_category(ctx.aircraft_title.as_deref(), ctx.aircraft_atc_type.as_deref());
 
+    let mut items: Vec<ScoreItem> = Vec::new();
     for rule in RULES.iter() {
-        let item = (rule.evaluator)(&ctx, rule);
-        total += item.points_earned;
-        // (v3.7.0 — Phase O) Usar `item.points_max` (no `rule.points_max`)
-        // permite que evaluadores devuelvan 0/0 cuando los datos para
-        // la regla no existen (típicamente VAS imports sin lights/pitch).
-        // Esas reglas no inflan el denominador, y el % de score
-        // sigue siendo significativo aún con datos parciales.
-        max += item.points_max;
+        let mut item = (rule.evaluator)(&ctx, rule);
+        // (v4.1.0) Filtro por categoría: si la regla no aplica a este
+        // avión (ej. transponder IFR en un Cessna), la marcamos "na" → no
+        // penaliza el % del checklist (se muestra como "—").
+        if !rule_applies_to(rule.id, category) {
+            item.passed = true;
+            item.severity = "skipped".to_string();
+            item.status = "na".to_string();
+            item.points_earned = 0;
+            item.points_max = 0;
+            item.evidence = serde_json::json!({ "reason": "not_applicable_category" });
+        }
         items.push(item);
     }
 
+    // (v4.1.0) Orden CRONOLÓGICO del checklist (fase real, luego orden de
+    // la regla dentro de la fase). Antes salía alfabético al persistir.
+    items.sort_by_key(|i| {
+        (
+            phase_order(&i.phase),
+            rule_index(&i.rule_id).unwrap_or(usize::MAX),
+        )
+    });
+
+    // (v4.1.0) Modelo de checklist puro: la nota = % de ítems CUMPLIDOS
+    // sobre los APLICABLES (los "na" no cuentan). Reusamos las columnas
+    // resumen: total = nº cumplidos, max = nº aplicables.
+    let total = items.iter().filter(|i| i.status == "done").count() as i64;
+    let max = items.iter().filter(|i| i.status != "na").count() as i64;
     let percentage = if max > 0 {
         (total as f32 / max as f32) * 100.0
     } else {
@@ -460,7 +526,10 @@ pub async fn load_persisted_report(
     .bind(flight_id)
     .fetch_optional(pool)
     .await?;
-    let Some((Some(total), Some(max), grade)) = summary else {
+    // (v4.1.0) Solo nos sirve como guard de "¿ya está puntuado?" — los
+    // totales/grade se RECOMPUTAN abajo desde los estados de los ítems
+    // (modelo de checklist), así que no los vinculamos.
+    let Some((Some(_), Some(_), _)) = summary else {
         return Ok(None);
     };
     let items_raw: Vec<(
@@ -484,22 +553,49 @@ pub async fn load_persisted_report(
     .bind(flight_id)
     .fetch_all(pool)
     .await?;
-    let items: Vec<ScoreItem> = items_raw
+    let mut items: Vec<ScoreItem> = items_raw
         .into_iter()
-        .map(|(phase, rule_id, label, earned, max_p, passed, sev, ev)| ScoreItem {
-            phase,
-            rule_id,
-            label,
-            points_earned: earned,
-            points_max: max_p,
-            passed: passed != 0,
-            severity: sev.unwrap_or_else(|| "info".to_string()),
-            evidence: ev
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(serde_json::Value::Null),
+        .map(|(phase, rule_id, label, earned, max_p, passed, sev, ev)| {
+            let passed = passed != 0;
+            let severity = sev.unwrap_or_else(|| "info".to_string());
+            // (v4.1.0) Estado de checklist derivado de passed + severity.
+            let status = if severity == "skipped" {
+                "na"
+            } else if passed {
+                "done"
+            } else {
+                "missed"
+            }
+            .to_string();
+            ScoreItem {
+                phase,
+                rule_id,
+                label,
+                points_earned: earned,
+                points_max: max_p,
+                passed,
+                severity,
+                status,
+                evidence: ev
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::Value::Null),
+            }
         })
         .collect();
+
+    // (v4.1.0) Orden cronológico + % de cumplimiento recomputado de los
+    // estados. Esto hace que incluso los vuelos viejos persistidos (con
+    // el modelo de puntos ponderados) muestren el orden correcto y el %
+    // de checklist correcto, sin necesidad de re-evaluar.
+    items.sort_by_key(|i| {
+        (
+            phase_order(&i.phase),
+            rule_index(&i.rule_id).unwrap_or(usize::MAX),
+        )
+    });
+    let total = items.iter().filter(|i| i.status == "done").count() as i64;
+    let max = items.iter().filter(|i| i.status != "na").count() as i64;
     let percentage = if max > 0 {
         (total as f32 / max as f32) * 100.0
     } else {
@@ -510,7 +606,7 @@ pub async fn load_persisted_report(
         total,
         max,
         percentage,
-        grade: grade.unwrap_or_else(|| grade_for_percentage(percentage)),
+        grade: grade_for_percentage(percentage),
         items,
     }))
 }
