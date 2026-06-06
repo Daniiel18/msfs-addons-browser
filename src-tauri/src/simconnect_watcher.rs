@@ -1575,6 +1575,19 @@ mod windows_simconnect {
         let mut next_gate_seq_dep: u32 = 0;
         let mut next_gate_seq_arr: u32 = 0;
         let mut next_gate_seq_pre: u32 = 0;
+        // (v4.3.0) Gate desde el menú in-sim de GSX (archivo en disco, vía
+        // `crate::gsx_menu`). Cuando un aeropuerto NO tiene perfil de GSX el
+        // INI no da match y la API de Facility Data del simulador no
+        // devuelve nada en MSFS 2020; pero GSX SIEMPRE muestra el gate en su
+        // menú. Cacheamos el último gate visto + cuándo, y recordamos cuál
+        // ya aplicamos para no re-disparar en bucle. NUNCA sobrescribe el
+        // gate de un perfil GSX (el INI tiene prioridad en
+        // `request_gate_facility`).
+        let mut last_menu_gate: Option<(String, std::time::Instant)> = None;
+        let mut last_applied_menu_gate: Option<String> = None;
+        let mut last_menu_read_at = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
         // (v3.0.0) Throttle del preflight gate detection — re-disparamos
         // cada vez que el avión cambia de aeropuerto en tierra. Si
         // está parado en el mismo gate sólo lo pedimos UNA vez.
@@ -2184,6 +2197,88 @@ mod windows_simconnect {
                     // silencio aunque el INI de GSX existiera. Desacoplado:
                     // los triggers corren siempre; el INI hace el trabajo.
                     let _ = facility_def_ok;
+
+                    // (v4.3.0) Leer el gate que GSX muestra en su menú
+                    // in-sim (archivo en disco; NO toca la API del
+                    // simulador). Cubre aeropuertos SIN perfil de GSX.
+                    // Mientras el avión está parado en tierra leemos el
+                    // archivo cada ~1 s; al ver un gate NUEVO disparamos la
+                    // detección con el rol correcto (preflight a la salida,
+                    // arrival a la llegada). `request_gate_facility` da
+                    // prioridad al INI de GSX, así que esto NUNCA
+                    // sobrescribe un perfil GSX.
+                    {
+                        let m_lat = data.latitude_deg;
+                        let m_lon = data.longitude_deg;
+                        let m_pos_real =
+                            m_lat.abs() > 0.01 || m_lon.abs() > 0.01;
+                        let m_stationary = m_pos_real
+                            && data.ground_velocity_kt < 1.0
+                            && (matches!(phase, FlightPhase::OnGround)
+                                || matches!(phase, FlightPhase::Landed));
+                        if m_stationary
+                            && last_menu_read_at.elapsed()
+                                >= Duration::from_secs(1)
+                        {
+                            last_menu_read_at = std::time::Instant::now();
+                            if let Some(menu_g) = crate::gsx_menu::read_gate() {
+                                last_menu_gate = Some((
+                                    menu_g.clone(),
+                                    std::time::Instant::now(),
+                                ));
+                                if last_applied_menu_gate.as_deref()
+                                    != Some(menu_g.as_str())
+                                {
+                                    last_applied_menu_gate =
+                                        Some(menu_g.clone());
+                                    let role = if matches!(
+                                        phase,
+                                        FlightPhase::Landed
+                                    ) {
+                                        "arrival"
+                                    } else {
+                                        "preflight"
+                                    };
+                                    tracing::info!(
+                                        target: "simconnect",
+                                        "GSX menú muestra gate \"{}\" → trigger {} (fallback sin perfil GSX)",
+                                        menu_g, role
+                                    );
+                                    let seq = if role == "arrival" {
+                                        &mut next_gate_seq_arr
+                                    } else {
+                                        &mut next_gate_seq_pre
+                                    };
+                                    request_gate_facility(
+                                        lib,
+                                        handle,
+                                        pool,
+                                        app,
+                                        state,
+                                        role,
+                                        m_lat,
+                                        m_lon,
+                                        &current_flight_id,
+                                        seq,
+                                        &mut pending_gates,
+                                        Some(menu_g.as_str()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Gate del menú GSX más reciente que siga fresco
+                    // (≤30 min). Se pasa a los triggers de gate de abajo
+                    // como fallback cuando el INI no da match — p. ej. al
+                    // OUT, con el menú ya cerrado, reusamos el que vimos
+                    // mientras el usuario pedía servicios en el preflight.
+                    let menu_gate_fresh: Option<String> = last_menu_gate
+                        .as_ref()
+                        .filter(|(_, t)| {
+                            t.elapsed() < Duration::from_secs(30 * 60)
+                        })
+                        .map(|(g, _)| g.clone());
+
                     {
                         if prev_phase == FlightPhase::OnGround
                             && phase == FlightPhase::BlockOut
@@ -2200,6 +2295,7 @@ mod windows_simconnect {
                                 &current_flight_id,
                                 &mut next_gate_seq_dep,
                                 &mut pending_gates,
+                                menu_gate_fresh.as_deref(),
                             );
                         } else if prev_phase == FlightPhase::Airborne
                             && phase == FlightPhase::Landed
@@ -2216,6 +2312,7 @@ mod windows_simconnect {
                                 &current_flight_id,
                                 &mut next_gate_seq_arr,
                                 &mut pending_gates,
+                                menu_gate_fresh.as_deref(),
                             );
                         }
 
@@ -2319,6 +2416,7 @@ mod windows_simconnect {
                                         &current_flight_id,
                                         &mut next_gate_seq_pre,
                                         &mut pending_gates,
+                                        menu_gate_fresh.as_deref(),
                                     );
                                 }
                             }
@@ -2368,6 +2466,7 @@ mod windows_simconnect {
                                     &current_flight_id,
                                     &mut next_gate_seq_arr,
                                     &mut pending_gates,
+                                    menu_gate_fresh.as_deref(),
                                 );
                             }
                         }
@@ -3974,6 +4073,10 @@ mod windows_simconnect {
         current_flight_id: &std::sync::Arc<std::sync::Mutex<Option<i64>>>,
         next_seq: &mut u32,
         pending_gates: &mut std::collections::HashMap<u32, PendingGate>,
+        // (v4.3.0) Gate que GSX muestra en su menú in-sim (leído de disco
+        // por `crate::gsx_menu`). Sólo se usa como FALLBACK cuando el INI
+        // de GSX no da match — NUNCA sobrescribe un perfil GSX.
+        menu_gate: Option<&str>,
     ) {
         // "preflight" no requiere flight activo — actualiza SharedState
         // sólo. "departure"/"arrival" sí requieren flight_id.
@@ -4009,122 +4112,82 @@ mod windows_simconnect {
 
         *next_seq = next_seq.wrapping_add(1);
 
-        // **PRIORIDAD: GSX INI parser en disco (preciso).** Si hay match,
-        // lo usamos y terminamos — el fallback de MSFS NO corre, así que
-        // nunca sobrescribe un gate de GSX.
+        // Helper local: aplica un gate YA resuelto — emite a la UI
+        // (SharedState.current_gate) y, para departure/arrival, lo persiste
+        // en DB. Reutilizado por el INI de GSX y por el menú de GSX.
+        let apply_gate = |name: String, source: &'static str| {
+            tracing::info!(
+                target: "simconnect",
+                "gate {} {} → \"{}\" ({})",
+                role, icao, name, source
+            );
+            // 1) SharedState + emit inmediato (incluye preflight, para que
+            //    el chip "Volando ahora" pinte el gate ANTES del OUT).
+            {
+                let state_c = state.clone();
+                let app_c = app.clone();
+                let name_c = name.clone();
+                tokio::spawn(async move {
+                    let mut guard = state_c.lock().await;
+                    guard.status.current_gate = Some(name_c.clone());
+                    let snapshot = guard.status.clone();
+                    drop(guard);
+                    let _ = app_c.emit("flight://current", &snapshot);
+                });
+            }
+            // 2) Persistir a DB para departure/arrival. Preflight no lo
+            //    necesita: el gate viaja por SharedState.current_gate;
+            //    finish_flight lo usa como fallback_arrival_gate y el
+            //    trigger "departure" del OUT lo persiste a departure_gate.
+            if let Some(fid) = flight_id {
+                let pool_c = pool.clone();
+                let role_owned = role;
+                let name_for_db = name.clone();
+                tokio::spawn(async move {
+                    let input = match role_owned {
+                        "departure" => crate::flight_log::UpdateEntryInput {
+                            departure_gate: Some(name_for_db),
+                            ..Default::default()
+                        },
+                        "arrival" => crate::flight_log::UpdateEntryInput {
+                            arrival_gate: Some(name_for_db),
+                            ..Default::default()
+                        },
+                        _ => return,
+                    };
+                    let _ =
+                        crate::flight_log::update_entry(&pool_c, fid, &input)
+                            .await;
+                });
+            }
+        };
+
+        // **PRIORIDAD: GSX INI parser en disco (preciso).** Si hay match, lo
+        // usamos y terminamos — el fallback NO corre, así que nunca
+        // sobrescribe el gate de un perfil GSX.
         if let Some(parking) = crate::gsx_parking::find_nearest_parking(
             &icao, player_lat, player_lon,
         ) {
-        let name = parking.name.clone();
-        tracing::info!(
-            target: "simconnect",
-            "gate {} {} → \"{}\" (GSX INI)",
-            role, icao, name
-        );
-
-        // 1) Actualizar SharedState + emit a UI inmediato (preflight
-        //    incluido — para que el chip "Volando ahora" pinte el gate
-        //    ANTES de que el usuario haga pushback).
-        {
-            let state_c = state.clone();
-            let app_c = app.clone();
-            let name_c = name.clone();
-            tokio::spawn(async move {
-                let mut guard = state_c.lock().await;
-                guard.status.current_gate = Some(name_c.clone());
-                let snapshot = guard.status.clone();
-                drop(guard);
-                let _ = app_c.emit("flight://current", &snapshot);
-            });
-        }
-        // 2) Persistir a DB para departure/arrival (preflight no
-        //    necesita — el gate se copia al departure_gate al disparar
-        //    el OUT en start_flight, vía un mecanismo separado o via
-        //    el siguiente "departure" trigger).
-        if let Some(fid) = flight_id {
-            let pool_c = pool.clone();
-            let role_owned = role;
-            let name_for_db = name.clone();
-            tokio::spawn(async move {
-                let input = match role_owned {
-                    "departure" => crate::flight_log::UpdateEntryInput {
-                        departure_gate: Some(name_for_db),
-                        ..Default::default()
-                    },
-                    "arrival" => crate::flight_log::UpdateEntryInput {
-                        arrival_gate: Some(name_for_db),
-                        ..Default::default()
-                    },
-                    _ => return,
-                };
-                let _ = crate::flight_log::update_entry(&pool_c, fid, &input).await;
-            });
-        }
+            apply_gate(parking.name.clone(), "GSX INI");
             return;
-        } // cierra el if-let del INI de GSX (prioridad)
+        }
 
-        // (v4.2.0) FALLBACK: sin INI de GSX para este ICAO → pedimos los
-        // parkings al propio MSFS vía SimConnect Facility Data (de donde
-        // GSX también los toma). Solo corre si el INI no dio match → NUNCA
-        // sobrescribe un gate de GSX. La respuesta llega async en
-        // RECV_FACILITY_DATA → process_pending_gate elige el más cercano.
-        // Si MSFS no devuelve parkings, el gate queda vacío (sin la
-        // etiqueta ruidosa "Stand · X° Ym").
+        // (v4.3.0) FALLBACK sin perfil GSX → usamos el gate que GSX muestra
+        // en su MENÚ in-sim (leído de disco por `crate::gsx_menu`). GSX
+        // SIEMPRE sabe el gate aunque no haya perfil. NO usamos la API de
+        // Facility Data del simulador (TAXI_PARKING): en MSFS 2020 no
+        // devuelve nada — confirmado por el usuario. Esto NUNCA sobrescribe
+        // un gate de GSX porque el INI tiene prioridad y ya hizo `return`.
+        if let Some(gate) = menu_gate {
+            apply_gate(gate.to_string(), "GSX menú");
+            return;
+        }
+
         tracing::info!(
             target: "simconnect",
-            "gate {} {}: sin INI de GSX → fallback a parkings de MSFS (Facility Data)",
+            "gate {} {}: sin perfil GSX ni menú GSX abierto → gate vacío (editable a mano)",
             role, icao
         );
-        {
-        let req_fac = match lib.RequestFacilityData {
-            Some(f) => f,
-            None => return,
-        };
-        let base = match role {
-            "departure" => REQUEST_ID_GATE_DEP_BASE,
-            "preflight" => REQUEST_ID_GATE_PRE_BASE,
-            _ => REQUEST_ID_GATE_ARR_BASE,
-        };
-        let req_id = base + (*next_seq % 1000);
-
-        let icao_c = sc::cstr(&icao);
-        let region_c = sc::cstr("");
-        let hr = unsafe {
-            req_fac(
-                handle,
-                DEFINE_ID_AIRPORT_PARKING,
-                req_id,
-                icao_c.as_ptr(),
-                region_c.as_ptr(),
-            )
-        };
-        if !sc::succeeded(hr) {
-            tracing::warn!(
-                target: "simconnect",
-                "RequestFacilityData('{}') falló (0x{:08x}); gate fallback estará en use",
-                icao, hr
-            );
-            return;
-        }
-        pending_gates.insert(
-            req_id,
-            PendingGate {
-                flight_id,
-                role,
-                player_lat,
-                player_lon,
-                airport_icao: icao.clone(),
-                airport_lat: None,
-                airport_lon: None,
-                parkings: Vec::new(),
-            },
-        );
-        tracing::info!(
-            target: "simconnect",
-            "RequestFacilityData ({} req={}) → {} desde ({:.4}, {:.4})",
-            role, req_id, icao, player_lat, player_lon
-        );
-        }  // cierra el #[allow(unreachable_code)] block del v3.4.8 refactor
     }
 
     /// (v0.1.26) Procesa una request de gate completada — elige el

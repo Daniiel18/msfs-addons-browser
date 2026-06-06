@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "4.2.0"
+version = "4.3.0"
 description = "SimFleet — flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -105,6 +105,14 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # que usamos. Cross-platform pero la implementación SimConnect sólo
 # se compila en Windows.
 libloading = "0.8"
+
+# (v4.3.0) Lectura del registro para resolver el root de FSDT/GSX
+# (`HKCU\Software\Fsdreamteam\root`) y de ahí el archivo del menú de GSX,
+# que usamos para rellenar el gate cuando un aeropuerto no tiene perfil
+# GSX. Sólo Windows; ya estaba en el árbol como dep transitiva, así que no
+# añade coste de compilación.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

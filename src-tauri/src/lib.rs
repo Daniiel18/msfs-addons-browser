@@ -9,6 +9,10 @@ pub mod drop_install;
 pub mod download;
 pub mod flight_log;
 pub mod gsx;
+// (v4.3.0) Lector del gate que GSX muestra en su menú in-sim (archivo en
+// disco). Cubre aeropuertos SIN perfil de GSX, donde el INI no da match y
+// la API de Facility Data del simulador no devuelve nada en MSFS 2020.
+pub mod gsx_menu;
 pub mod gsx_parking;
 pub mod install;
 pub mod logger;
