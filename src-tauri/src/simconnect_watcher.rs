@@ -1399,12 +1399,28 @@ mod windows_simconnect {
         // request flow. El gate name viene ahora del módulo WASM de
         // GSX vía Client Data Area `FSDT_GSX_AIRCRAFT_DATA` (set up
         // más abajo).
+        // (v4.2.0) RE-HABILITADO TAXI_PARKING como FALLBACK. El gate
+        // preciso sigue viniendo del INI de GSX (prioridad); pero cuando
+        // un aeropuerto NO tiene perfil GSX, pedimos los parkings al
+        // propio MSFS (de donde GSX también los toma). El layout debe
+        // coincidir EXACTO con el parser de RECV_FACILITY_DATA:
+        //   AIRPORT      → [f64 LATITUDE][f64 LONGITUDE]
+        //   TAXI_PARKING → [u32 TYPE][u32 NAME][u32 NUMBER][u32 SUFFIX]
+        //                  [f64 BIAS_X][f64 BIAS_Y]
         let mut facility_def_ok = false;
         if let Some(add_fac) = lib.AddToFacilityDefinition {
             let fields = &[
                 "OPEN AIRPORT",
                 "LATITUDE",
                 "LONGITUDE",
+                "OPEN TAXI_PARKING",
+                "TYPE",
+                "NAME",
+                "NUMBER",
+                "SUFFIX",
+                "BIAS_X",
+                "BIAS_Y",
+                "CLOSE TAXI_PARKING",
                 "CLOSE AIRPORT",
             ];
             let mut all_ok = true;
@@ -3993,18 +4009,12 @@ mod windows_simconnect {
 
         *next_seq = next_seq.wrapping_add(1);
 
-        // **Lookup en disco: GSX INI parser.**
-        let Some(parking) = crate::gsx_parking::find_nearest_parking(
+        // **PRIORIDAD: GSX INI parser en disco (preciso).** Si hay match,
+        // lo usamos y terminamos — el fallback de MSFS NO corre, así que
+        // nunca sobrescribe un gate de GSX.
+        if let Some(parking) = crate::gsx_parking::find_nearest_parking(
             &icao, player_lat, player_lon,
-        ) else {
-            tracing::info!(
-                target: "simconnect",
-                "gate {} {}: SIN gate — no hay INI de GSX para este ICAO, o ningún parking del INI quedó a <75m del avión ({:.5}, {:.5})",
-                role, icao, player_lat, player_lon
-            );
-            return;
-        };
-
+        ) {
         let name = parking.name.clone();
         tracing::info!(
             target: "simconnect",
@@ -4050,12 +4060,21 @@ mod windows_simconnect {
                 let _ = crate::flight_log::update_entry(&pool_c, fid, &input).await;
             });
         }
-        return;
-        // **El resto del cuerpo viejo (SimConnect Facility Data) queda
-        // dead code después del `return` — lo dejamos como referencia
-        // histórica y para no tener un diff masivo. Compilador lo
-        // elimina del binario.**
-        #[allow(unreachable_code)]
+            return;
+        } // cierra el if-let del INI de GSX (prioridad)
+
+        // (v4.2.0) FALLBACK: sin INI de GSX para este ICAO → pedimos los
+        // parkings al propio MSFS vía SimConnect Facility Data (de donde
+        // GSX también los toma). Solo corre si el INI no dio match → NUNCA
+        // sobrescribe un gate de GSX. La respuesta llega async en
+        // RECV_FACILITY_DATA → process_pending_gate elige el más cercano.
+        // Si MSFS no devuelve parkings, el gate queda vacío (sin la
+        // etiqueta ruidosa "Stand · X° Ym").
+        tracing::info!(
+            target: "simconnect",
+            "gate {} {}: sin INI de GSX → fallback a parkings de MSFS (Facility Data)",
+            role, icao
+        );
         {
         let req_fac = match lib.RequestFacilityData {
             Some(f) => f,
