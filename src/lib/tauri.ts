@@ -201,6 +201,9 @@ interface Api {
   ) => Promise<DropCommitReport>;
   /** Libera la sesión sin instalar nada. */
   dropCancel: (sessionId: string) => Promise<void>;
+  /** (v4.7.0) Borra el archivo comprimido original arrastrado, tras una
+   *  instalación exitosa y con confirmación del usuario. */
+  deleteDroppedArchive: (archivePath: string) => Promise<void>;
 
   // Actualizaciones
   /** Verifica contra GitHub Releases si hay una versión mayor que la
@@ -466,6 +469,8 @@ const realApi: Api = {
       communityPath,
     }),
   dropCancel: (sessionId) => invoke<void>("drop_cancel", { sessionId }),
+  deleteDroppedArchive: (archivePath) =>
+    invoke<void>("delete_dropped_archive", { archivePath }),
 
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
   installUpdate: (assetUrl, autoRestart) =>
@@ -1024,6 +1029,9 @@ const demoApi: Api = {
     return { installedGsx: [], installedPackages: [], errors: [] };
   },
   async dropCancel() {
+    /* no-op demo */
+  },
+  async deleteDroppedArchive() {
     /* no-op demo */
   },
 

@@ -208,6 +208,7 @@ pub fn run() {
             commands::drop::drop_inspect,
             commands::drop::drop_commit,
             commands::drop::drop_cancel,
+            commands::drop::delete_dropped_archive,
             // (v3.6.0 Phase H) Scoring + Airlines
             commands::scoring::score_flight,
             commands::scoring::score_get_report,

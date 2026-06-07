@@ -10,6 +10,7 @@ import {
   FileDown,
   Loader2,
   Plane,
+  Trash2,
   X,
 } from "lucide-react";
 import { api } from "../lib/tauri";
@@ -28,6 +29,11 @@ import { useGsxLocalStore } from "../stores/useGsxLocalStore";
  * inspecciones de un drop y muestra "Archivo X de N ← →" con
  * checkboxes por archivo. Al pulsar "Install" commitea TODAS las
  * sesiones secuencialmente y reporta el total agregado.
+ *
+ * (v4.7.0) Tras una instalación exitosa, ofrece BORRAR el/los archivo(s)
+ * comprimido(s) original(es) arrastrados (paso de confirmación). Además
+ * todos los textos pasan por i18n (`t(...)`) — antes había strings en
+ * español hardcoded que se mostraban aunque la app estuviera en inglés.
  */
 interface Props {
   inspections: DropInspection[];
@@ -51,20 +57,24 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
     return init;
   });
   const [installing, setInstalling] = useState(false);
+  // (v4.7.0) Paso de borrado del archivo original tras instalar.
+  const [deletePrompt, setDeletePrompt] = useState<string[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [pendingReports, setPendingReports] = useState<DropCommitReport[]>([]);
 
   const selected = selectionsBySession[inspection.sessionId] ?? new Set();
 
   // ESC cierra (con cancel de TODAS las sesiones).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !installing) {
+      if (e.key === "Escape" && !installing && !deleting && !deletePrompt) {
         cancelAll();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [installing]);
+  }, [installing, deleting, deletePrompt]);
 
   const cancelAll = async () => {
     for (const insp of inspections) {
@@ -106,6 +116,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
   const onInstall = async () => {
     setInstalling(true);
     const reports: DropCommitReport[] = [];
+    const committed: string[] = [];
     try {
       // Commitea cada inspección secuencialmente. Si alguna falla,
       // seguimos con las siguientes — el reporte agregado lo dice.
@@ -123,6 +134,8 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
             null,
           );
           reports.push(r);
+          // Solo ofrecemos borrar archivos que se instalaron OK.
+          committed.push(insp.archivePath);
         } catch (e) {
           reports.push({
             installedGsx: [],
@@ -133,16 +146,39 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           });
         }
       }
-      onDone(reports);
       void useCommunityStore.getState().rescan().catch(() => {});
       void useGsxLocalStore.getState().refresh().catch(() => {});
+
+      // (v4.7.0) Si algo se instaló bien, ofrecemos borrar el/los
+      // archivo(s) original(es). Si no, cerramos directo.
+      const uniqueArchives = Array.from(new Set(committed));
+      if (uniqueArchives.length > 0) {
+        setPendingReports(reports);
+        setDeletePrompt(uniqueArchives);
+      } else {
+        onDone(reports);
+      }
     } finally {
       setInstalling(false);
     }
   };
 
+  // (v4.7.0) Resuelve el paso de borrado: borra (o no) y cierra.
+  const resolveDelete = async (doDelete: boolean) => {
+    const archives = deletePrompt ?? [];
+    if (doDelete && archives.length > 0) {
+      setDeleting(true);
+      for (const p of archives) {
+        await api.deleteDroppedArchive(p).catch(() => {});
+      }
+      setDeleting(false);
+    }
+    setDeletePrompt(null);
+    onDone(pendingReports);
+  };
+
   const onCancel = async () => {
-    if (installing) return;
+    if (installing || deleting || deletePrompt) return;
     await cancelAll();
   };
 
@@ -173,161 +209,252 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           onClick={(e) => e.stopPropagation()}
           className="w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
         >
-          <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
-            <div className="flex items-center gap-2">
-              <FileDown className="h-4 w-4 text-brand-300" />
-              <div>
-                <h2 className="text-sm font-semibold text-slate-100">
-                  ¿Qué quieres instalar?
-                </h2>
-                <p
-                  className="truncate text-[11px] text-slate-500 max-w-[450px]"
-                  title={inspection.archivePath}
+          {deletePrompt ? (
+            <DeleteConfirm
+              archives={deletePrompt}
+              deleting={deleting}
+              onResolve={resolveDelete}
+            />
+          ) : (
+            <>
+              <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+                <div className="flex items-center gap-2">
+                  <FileDown className="h-4 w-4 text-brand-300" />
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-100">
+                      {t("drop.modal.title")}
+                    </h2>
+                    <p
+                      className="truncate text-[11px] text-slate-500 max-w-[450px]"
+                      title={inspection.archivePath}
+                    >
+                      {inspection.archivePath.split(/[\\/]/).pop()}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={onCancel}
+                  disabled={installing}
+                  className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
                 >
-                  {inspection.archivePath.split(/[\\/]/).pop()}
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={onCancel}
-              disabled={installing}
-              className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </header>
+                  <X className="h-4 w-4" />
+                </button>
+              </header>
 
-          {/* (v2.2.0) Paginación cuando hay varios archivos. */}
-          {inspections.length > 1 && (
-            <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/30 px-5 py-2">
-              <button
-                onClick={() => setPageIdx((i) => Math.max(0, i - 1))}
-                disabled={pageIdx === 0 || installing}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
-              >
-                <ChevronLeft className="h-3 w-3" />
-                Anterior
-              </button>
-              <div className="text-center text-[11px] text-slate-300">
-                <span className="font-mono">
-                  Archivo {pageIdx + 1} de {inspections.length}
+              {/* (v2.2.0) Paginación cuando hay varios archivos. */}
+              {inspections.length > 1 && (
+                <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/30 px-5 py-2">
+                  <button
+                    onClick={() => setPageIdx((i) => Math.max(0, i - 1))}
+                    disabled={pageIdx === 0 || installing}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
+                  >
+                    <ChevronLeft className="h-3 w-3" />
+                    {t("drop.modal.prev")}
+                  </button>
+                  <div className="text-center text-[11px] text-slate-300">
+                    <span className="font-mono">
+                      {t("drop.modal.file_of", {
+                        n: pageIdx + 1,
+                        total: inspections.length,
+                      })}
+                    </span>
+                    <span className="ml-2 text-slate-500">
+                      {t("drop.modal.selected_here", {
+                        sel: (
+                          selectionsBySession[inspection.sessionId] ?? new Set()
+                        ).size,
+                        total: inspection.items.length,
+                      })}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() =>
+                      setPageIdx((i) =>
+                        Math.min(inspections.length - 1, i + 1),
+                      )
+                    }
+                    disabled={pageIdx === inspections.length - 1 || installing}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
+                  >
+                    {t("drop.modal.next")}
+                    <ChevronRight className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-5 py-2 text-[11px]">
+                <span className="text-slate-500">
+                  {t("drop.modal.items_detected", {
+                    count: inspection.items.length,
+                  })}{" "}
+                  ·{" "}
+                  <span className="text-emerald-300">
+                    {t("drop.modal.selected_count", { count: selected.size })}
+                  </span>
                 </span>
-                <span className="ml-2 text-slate-500">
-                  ({(selectionsBySession[inspection.sessionId] ?? new Set()).size}/
-                  {inspection.items.length} seleccionados aquí)
-                </span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={selectAll}
+                    className="rounded border border-slate-800 px-2 py-0.5 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                  >
+                    {t("drop.modal.select_all")}
+                  </button>
+                  <button
+                    onClick={selectNone}
+                    className="rounded border border-slate-800 px-2 py-0.5 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                  >
+                    {t("drop.modal.select_none")}
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={() =>
-                  setPageIdx((i) => Math.min(inspections.length - 1, i + 1))
-                }
-                disabled={pageIdx === inspections.length - 1 || installing}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
-              >
-                Siguiente
-                <ChevronRight className="h-3 w-3" />
-              </button>
-            </div>
-          )}
 
-          <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-5 py-2 text-[11px]">
-            <span className="text-slate-500">
-              {inspection.items.length} items detectados ·{" "}
-              <span className="text-emerald-300">
-                {selected.size} seleccionados
-              </span>
-            </span>
-            <div className="flex gap-1">
-              <button
-                onClick={selectAll}
-                className="rounded border border-slate-800 px-2 py-0.5 text-slate-400 hover:border-slate-700 hover:text-slate-200"
-              >
-                Todos
-              </button>
-              <button
-                onClick={selectNone}
-                className="rounded border border-slate-800 px-2 py-0.5 text-slate-400 hover:border-slate-700 hover:text-slate-200"
-              >
-                Ninguno
-              </button>
-            </div>
-          </div>
-
-          <div className="max-h-[55vh] overflow-y-auto p-4">
-            {inspection.items.length === 0 && (
-              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-xs text-amber-200">
-                <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
-                No detectamos perfiles GSX ni paquetes Community en el
-                archivo. Verifica que el .zip/.rar contenga .ini, .py o
-                una carpeta con manifest.json.
-              </div>
-            )}
-
-            {gsxItems.length > 0 && (
-              <Section
-                title={t("drop.tab.gsx")}
-                icon={<Plane className="h-3 w-3 text-violet-300" />}
-                items={gsxItems}
-                selected={selected}
-                toggle={toggle}
-                destinationHint="%APPDATA%\Virtuali\GSX\MSFS"
-              />
-            )}
-            {communityItems.length > 0 && (
-              <Section
-                title={t("drop.tab.community")}
-                icon={<Box className="h-3 w-3 text-emerald-300" />}
-                items={communityItems}
-                selected={selected}
-                toggle={toggle}
-                destinationHint="MSFS Community"
-              />
-            )}
-            {otherItems.length > 0 && (
-              <Section
-                title={t("drop.tab.other")}
-                icon={
-                  <AlertCircle className="h-3 w-3 text-slate-500" />
-                }
-                items={otherItems}
-                selected={selected}
-                toggle={toggle}
-                destinationHint=""
-              />
-            )}
-          </div>
-
-          <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
-            <span className="text-[11px] text-slate-500">
-              GSX → %APPDATA%\Virtuali\GSX\MSFS · Community → tu carpeta
-              Community detectada
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={onCancel}
-                disabled={installing}
-                className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={onInstall}
-                disabled={installing || totalSelected === 0}
-                className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-400 disabled:opacity-40"
-              >
-                {installing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-3.5 w-3.5" />
+              <div className="max-h-[55vh] overflow-y-auto p-4">
+                {inspection.items.length === 0 && (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-xs text-amber-200">
+                    <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
+                    {t("drop.modal.no_items")}
+                  </div>
                 )}
-                Instalar {totalSelected} item{totalSelected === 1 ? "" : "s"}
-                {inspections.length > 1 && ` (de ${inspections.length} archivos)`}
-              </button>
-            </div>
-          </footer>
+
+                {gsxItems.length > 0 && (
+                  <Section
+                    title={t("drop.tab.gsx")}
+                    icon={<Plane className="h-3 w-3 text-violet-300" />}
+                    items={gsxItems}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint="%APPDATA%\Virtuali\GSX\MSFS"
+                  />
+                )}
+                {communityItems.length > 0 && (
+                  <Section
+                    title={t("drop.tab.community")}
+                    icon={<Box className="h-3 w-3 text-emerald-300" />}
+                    items={communityItems}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint="MSFS Community"
+                  />
+                )}
+                {otherItems.length > 0 && (
+                  <Section
+                    title={t("drop.tab.other")}
+                    icon={<AlertCircle className="h-3 w-3 text-slate-500" />}
+                    items={otherItems}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint=""
+                  />
+                )}
+              </div>
+
+              <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
+                <span className="text-[11px] text-slate-500">
+                  {t("drop.modal.footer_hint")}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={onCancel}
+                    disabled={installing}
+                    className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
+                  >
+                    {t("drop.modal.cancel")}
+                  </button>
+                  <button
+                    onClick={onInstall}
+                    disabled={installing || totalSelected === 0}
+                    className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-400 disabled:opacity-40"
+                  >
+                    {installing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                    )}
+                    {t("drop.modal.install", {
+                      count: totalSelected,
+                      items:
+                        totalSelected === 1
+                          ? t("drop.modal.item")
+                          : t("drop.modal.items"),
+                    })}
+                    {inspections.length > 1 &&
+                      t("drop.modal.from_files", { n: inspections.length })}
+                  </button>
+                </div>
+              </footer>
+            </>
+          )}
         </motion.div>
       </motion.div>
     </AnimatePresence>
+  );
+}
+
+/** (v4.7.0) Paso de confirmación: ¿borrar el/los archivo(s) original(es)? */
+function DeleteConfirm({
+  archives,
+  deleting,
+  onResolve,
+}: {
+  archives: string[];
+  deleting: boolean;
+  onResolve: (doDelete: boolean) => void;
+}) {
+  return (
+    <div className="p-5">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 rounded-lg bg-rose-500/15 p-2 ring-1 ring-rose-500/30">
+          <Trash2 className="h-5 w-5 text-rose-300" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-slate-100">
+            {t("drop.modal.delete_title")}
+          </h2>
+          <p className="mt-1 text-xs leading-relaxed text-slate-400">
+            {t("drop.modal.delete_body")}
+          </p>
+          <div className="mt-3">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              {t("drop.modal.delete_files")}
+            </p>
+            <ul className="max-h-32 space-y-1 overflow-y-auto">
+              {archives.map((p) => (
+                <li
+                  key={p}
+                  title={p}
+                  className="truncate rounded border border-slate-800 bg-slate-900/40 px-2 py-1 font-mono text-[11px] text-slate-300"
+                >
+                  {p.split(/[\\/]/).pop()}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <button
+          onClick={() => onResolve(false)}
+          disabled={deleting}
+          className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
+        >
+          {t("drop.modal.delete_no")}
+        </button>
+        <button
+          onClick={() => onResolve(true)}
+          disabled={deleting}
+          className="inline-flex items-center gap-1 rounded-md bg-rose-500 px-3 py-1.5 text-xs font-semibold text-rose-950 hover:bg-rose-400 disabled:opacity-50"
+        >
+          {deleting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+          {deleting ? t("drop.modal.deleting") : t("drop.modal.delete_yes")}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -415,7 +542,7 @@ function Section({
                 {it.description && (
                   <details className="mt-1 text-[10px] text-slate-400">
                     <summary className="cursor-pointer text-slate-500 hover:text-slate-300">
-                      Ver primeras líneas del archivo
+                      {t("drop.modal.see_first_lines")}
                     </summary>
                     <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-950/50 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-slate-400">
                       {it.description}
