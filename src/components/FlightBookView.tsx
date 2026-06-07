@@ -29,6 +29,7 @@ import { EditFlightModal } from "./EditFlightModal";
 import { WeatherModal } from "./WeatherModal";
 import { NotamsModal } from "./NotamsModal";
 import { DamageBadge } from "./DamageBadge";
+import { AirlineLogo } from "./AirlineLogo";
 import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
 /**
@@ -717,6 +718,23 @@ function SelectedFlightPanel({
             />
           )}
 
+          {/* (v4.8.0) LOGO + NOMBRE de aerolínea — identidad institucional
+              del vuelo, justo encima de la ruta. Fallback elegante al
+              código si el CDN no tiene el logo. */}
+          {(entry.airlineIcao || entry.aircraftAirline) && (
+            <div className="mb-1.5 flex items-center gap-2">
+              <AirlineLogo
+                icao={entry.airlineIcao}
+                name={entry.aircraftAirline}
+                size={28}
+              />
+              {entry.aircraftAirline && (
+                <span className="text-xs font-semibold uppercase tracking-wide text-amber-200/90">
+                  {entry.aircraftAirline}
+                </span>
+              )}
+            </div>
+          )}
           {/* (v3.4.0) ROUTE BIG — text-4xl font-black, mono,
               tracking-tight. Es el elemento más prominente del panel,
               lo PRIMERO que el usuario ve al abrir un vuelo. */}
@@ -1957,21 +1975,30 @@ function CompactFlightRow({
       {selected && (
         <span className="absolute left-0 top-0 h-full w-0.5 bg-amber-400" />
       )}
-      <div className="flex items-baseline justify-between gap-2 font-mono">
-        <span
-          className={`truncate text-sm font-bold tracking-tight ${
-            selected ? "text-amber-50" : "text-slate-100"
-          }`}
-        >
-          <span>{entry.originIcao ?? "?"}</span>
+      <div className="flex items-center justify-between gap-2 font-mono">
+        <span className="flex min-w-0 items-center gap-1.5">
+          {/* (v4.8.0) Logo de aerolínea mini — identidad visual rápida
+              en el feed. Fallback a chip de código si no hay logo. */}
+          <AirlineLogo
+            icao={entry.airlineIcao}
+            name={entry.aircraftAirline}
+            size={16}
+          />
           <span
-            className={`mx-1 ${
-              selected ? "text-amber-300" : "text-emerald-400"
+            className={`truncate text-sm font-bold tracking-tight ${
+              selected ? "text-amber-50" : "text-slate-100"
             }`}
           >
-            →
+            <span>{entry.originIcao ?? "?"}</span>
+            <span
+              className={`mx-1 ${
+                selected ? "text-amber-300" : "text-emerald-400"
+              }`}
+            >
+              →
+            </span>
+            <span>{entry.destinationIcao ?? "?"}</span>
           </span>
-          <span>{entry.destinationIcao ?? "?"}</span>
         </span>
         <span className="shrink-0 font-sans text-[10px] tabular-nums text-slate-400">
           {duration}
@@ -2147,15 +2174,17 @@ function AirlineTagFilter() {
               )
             }
             title={a.name}
-            className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+            className={`flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
               isActive
                 ? "bg-amber-500/25 text-amber-100 ring-1 ring-amber-500/40"
                 : "text-slate-300 hover:bg-slate-800/70"
             }`}
           >
+            {/* (v4.8.0) Mini logo de aerolínea en el chip de filtro. */}
+            <AirlineLogo icao={a.icao} name={a.name} size={14} />
             <span className="font-mono">{a.icao ?? a.name.slice(0, 3).toUpperCase()}</span>
-            <span className="ml-1 text-slate-500">·</span>
-            <span className="ml-1 tabular-nums">{a.flightCount}</span>
+            <span className="text-slate-500">·</span>
+            <span className="tabular-nums">{a.flightCount}</span>
           </button>
         );
       })}
