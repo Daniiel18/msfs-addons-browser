@@ -2,14 +2,15 @@
 //!
 //! ## Por qué existe
 //!
-//! MSFS NO expone la temperatura de frenos (ni la mayoría de
-//! variables de aviones de estudio) como *simvar* nativo. Esos datos
-//! viven como **LVars** (`L:NOMBRE`), y un cliente SimConnect externo
-//! —como esta app— **no puede leer LVars directamente**: los LVars
-//! solo son accesibles desde dentro del sim (módulos WASM/gauges).
+//! MSFS NO expone como *simvar* nativo ni la temperatura de frenos ni
+//! ciertos datos de GSX (p. ej. el gate al que el avión está asignado
+//! cuando el aeropuerto no tiene perfil de GSX). Esos datos viven como
+//! **LVars** (`L:NOMBRE`), y un cliente SimConnect externo —como esta
+//! app— **no puede leer LVars directamente**: los LVars solo son
+//! accesibles desde dentro del sim (módulos WASM/gauges).
 //!
-//! El estándar de facto para puentear LVars hacia un cliente
-//! SimConnect es el **módulo WASM de MobiFlight**
+//! El estándar de facto para puentear LVars hacia un cliente SimConnect
+//! es el **módulo WASM de MobiFlight**
 //! (<https://github.com/MobiFlight/MobiFlight-WASM-Module>), que el
 //! usuario instala en su carpeta `Community`. Ese módulo crea tres
 //! *Client Data Areas* sobre SimConnect:
@@ -20,6 +21,20 @@
 //!   · `MobiFlight.LVars`    — el módulo streamea los valores (floats)
 //!                             de las variables registradas, en el
 //!                             orden en que se registraron.
+//!
+//! ## Qué leemos
+//!
+//!   1. **Brake temps** del FlightByWire A32NX (4 LVars en °C).
+//!   2. **Gate de GSX** — el "subtítulo" del menú de GSX. Desde GSX Pro
+//!      ~4.0.x el gate ("Gate B 14") ya NO va en el título del menú (que
+//!      se escribe a disco) sino en un slot de string codificado en
+//!      LVars: `L:FSDT_GSX_MENU_SUBTITLE_LEN` (nº de chars base64) +
+//!      `L:FSDT_GSX_MENU_SUBTITLE_B0..` (4 chars base64 por chunk, 6 bits
+//!      por char, char bajo primero). Verificado leyendo el JS del panel
+//!      de GSX (`readStringSlot`, `CHARS_PER_CHUNK = 4`, alfabeto base64
+//!      estándar, `MENU_SUBTITLE_MAX_CHUNKS = 40`). Decodificamos el
+//!      string aquí; el watcher lo usa como gate cuando el menú principal
+//!      ("Activate Services at") está abierto.
 //!
 //! ## Protocolo que usamos (mínimo)
 //!
@@ -35,22 +50,15 @@
 //! ## Degradación elegante
 //!
 //! Si el módulo WASM NO está instalado, los `Map/Set/Request` simplemente
-//! no producen datos (a lo sumo alguna EXCEPTION puntual que el watcher
-//! loguea) y `max_brake_temp_c` queda `None`. NADA se rompe: el resto
-//! del watcher (detección de vuelos, OOOI, FPM, etc.) es independiente.
-//!
-//! ## Aviones soportados
-//!
-//! Hoy registramos los LVars de brake temp del **FlightByWire A32NX**
-//! (open-source, nombres públicos y estables). PMDG 737 no expone temp
-//! de frenos como LVar; otros aviones de estudio se pueden añadir a
-//! [`BRAKE_TEMP_LVARS`] cuando se confirmen sus nombres. Los LVars
-//! inexistentes en el avión actual evalúan a 0 y los ignoramos.
+//! no producen datos y todo queda `None`. NADA se rompe: el resto del
+//! watcher (detección de vuelos, OOOI, FPM, etc.) es independiente.
 
 #![cfg(target_os = "windows")]
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::c_void;
+
+use base64::Engine as _;
 
 use crate::simconnect_ffi as sc;
 use crate::simconnect_ffi::SimConnectLib;
@@ -63,7 +71,7 @@ const CLIENT_DATA_ID_LVAR: sc::DWORD = 0x4D46_0002;
 const DEFINE_ID_CMD: sc::DWORD = 0x4D46_0010;
 const DEFINE_ID_LVAR: sc::DWORD = 0x4D46_0011;
 /// Request id del stream de LVars — el dispatch lo compara para saber
-/// que un `RECV_ID_CLIENT_DATA` trae nuestras brake temps.
+/// que un `RECV_ID_CLIENT_DATA` trae nuestros valores.
 pub const REQUEST_ID_LVAR: sc::DWORD = 0x4D46_0020;
 
 const MOBIFLIGHT_COMMAND_AREA: &str = "MobiFlight.Command";
@@ -84,11 +92,29 @@ pub const BRAKE_TEMP_LVARS: &[&str] = &[
     "(L:A32NX_REPORTED_BRAKE_TEMPERATURE_4)",
 ];
 
+/// Nº de chunks `_Bk` del slot de subtítulo de GSX que registramos. GSX
+/// soporta hasta 40 (`MENU_SUBTITLE_MAX_CHUNKS`); con 16 chunks × 4 chars
+/// = 64 chars base64 = 48 bytes, más que de sobra para cualquier nombre
+/// de gate/parking ("N Cargo Apron 12" cabe holgado).
+const GSX_SUBTITLE_CHUNKS: usize = 16;
+/// Chars base64 por chunk (lo fija GSX en su panel: `CHARS_PER_CHUNK`).
+const GSX_SUBTITLE_CHARS_PER_CHUNK: usize = 4;
+/// Alfabeto base64 estándar (el que usa `readStringSlot` de GSX).
+const B64_STD: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 /// Estado del puente tras configurarlo. El watcher lo guarda para
 /// interpretar los dispatches de Client Data.
-pub struct BrakeBridge {
+pub struct LvarBridge {
     pub request_id: sc::DWORD,
+    /// Total de floats registrados (brake temps + LEN + chunks).
     pub var_count: usize,
+    /// Los primeros `brake_count` floats son brake temps (°C).
+    pub brake_count: usize,
+    /// Índice del float `L:FSDT_GSX_MENU_SUBTITLE_LEN`.
+    pub subtitle_len_index: usize,
+    /// Nº de floats chunk `_Bk` que siguen al `_LEN`.
+    pub subtitle_chunk_count: usize,
 }
 
 /// Configura el puente sobre una conexión SimConnect ya abierta.
@@ -97,7 +123,7 @@ pub struct BrakeBridge {
 ///
 /// # Safety
 /// `handle` debe ser un `HSIMCONNECT` válido y abierto.
-pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<BrakeBridge> {
+pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridge> {
     let (Some(map), Some(add_def), Some(set), Some(req)) = (
         lib.MapClientDataNameToID,
         lib.AddToClientDataDefinition,
@@ -106,10 +132,14 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<BrakeBrid
     ) else {
         tracing::info!(
             target: "lvar_bridge",
-            "SimConnect.dll no exporta las funciones de Client Data; puente LVar (brake temps) deshabilitado"
+            "SimConnect.dll no exporta las funciones de Client Data; puente LVar deshabilitado"
         );
         return None;
     };
+
+    let brake_count = BRAKE_TEMP_LVARS.len();
+    let subtitle_len_index = brake_count;
+    let var_count = brake_count + 1 + GSX_SUBTITLE_CHUNKS;
 
     // 1) Mapear los nombres de área de MobiFlight a IDs locales.
     let cmd_name = sc::cstr(MOBIFLIGHT_COMMAND_AREA);
@@ -121,14 +151,28 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<BrakeBrid
     //    offset 0 (así SetClientData escribe el comando completo).
     add_def(handle, DEFINE_ID_CMD, 0, MOBIFLIGHT_MESSAGE_SIZE, 0.0, 0);
 
-    // 3) Resetear registros previos y registrar nuestros LVars en orden.
+    // 3) Resetear registros previos y registrar nuestros LVars EN ORDEN:
+    //    primero brake temps, luego el slot de subtítulo de GSX (LEN +
+    //    chunks). El orden define los offsets en el área de LVars.
     send_command(set, handle, "MF.SimVars.Clear");
     for expr in BRAKE_TEMP_LVARS {
         send_command(set, handle, &format!("MF.SimVars.Add.{expr}"));
     }
+    send_command(
+        set,
+        handle,
+        "MF.SimVars.Add.(L:FSDT_GSX_MENU_SUBTITLE_LEN)",
+    );
+    for i in 0..GSX_SUBTITLE_CHUNKS {
+        send_command(
+            set,
+            handle,
+            &format!("MF.SimVars.Add.(L:FSDT_GSX_MENU_SUBTITLE_B{i})"),
+        );
+    }
 
     // 4) Definir el área de LVars: un FLOAT32 por variable, offsets 0,4,8…
-    for i in 0..BRAKE_TEMP_LVARS.len() {
+    for i in 0..var_count {
         add_def(
             handle,
             DEFINE_ID_LVAR,
@@ -154,12 +198,15 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<BrakeBrid
 
     tracing::info!(
         target: "lvar_bridge",
-        "puente LVar de MobiFlight configurado ({} brake-temp vars). Si no llegan datos, el módulo WASM de MobiFlight no está instalado o el avión no publica esos LVars.",
-        BRAKE_TEMP_LVARS.len()
+        "puente LVar de MobiFlight configurado ({} vars: {} brake-temp + gate de GSX). Si no llega nada, falta el módulo WASM de MobiFlight en Community.",
+        var_count, brake_count
     );
-    Some(BrakeBridge {
+    Some(LvarBridge {
         request_id: REQUEST_ID_LVAR,
-        var_count: BRAKE_TEMP_LVARS.len(),
+        var_count,
+        brake_count,
+        subtitle_len_index,
+        subtitle_chunk_count: GSX_SUBTITLE_CHUNKS,
     })
 }
 
@@ -181,24 +228,33 @@ unsafe fn send_command(set: sc::FnSetClientData, handle: sc::HANDLE, cmd: &str) 
     );
 }
 
-/// Lee los `count` floats del payload de un `RECV_ID_CLIENT_DATA` y
-/// devuelve la temperatura de frenos MÁXIMA válida (°C), o `None` si
-/// todos son 0 (LVar inexistente / frenos fríos a 0) o fuera de rango.
+/// Lee el float en el índice `i` del payload de un `RECV_ID_CLIENT_DATA`.
 ///
 /// # Safety
 /// `p_data` debe apuntar a un `SIMCONNECT_RECV_CLIENT_DATA` válido cuyo
-/// define corresponda a `count` floats contiguos.
-pub unsafe fn parse_max_brake_temp(
-    p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA,
-    count: usize,
-) -> Option<f64> {
+/// define corresponda a al menos `i+1` floats contiguos.
+unsafe fn read_float(p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA, i: usize) -> f64 {
     // El payload empieza en `dwData` (marcador [DWORD;1] al final del
     // struct) — mismo cálculo que el dump de GSX en el watcher.
     let base = (p_data as *const u8)
         .add(std::mem::size_of::<sc::SIMCONNECT_RECV_CLIENT_DATA>() - 4);
+    (base.add(i * 4) as *const f32).read_unaligned() as f64
+}
+
+/// Lee los primeros `count` floats y devuelve la temperatura de frenos
+/// MÁXIMA válida (°C), o `None` si todos son 0 (LVar inexistente / frenos
+/// fríos) o fuera de rango.
+///
+/// # Safety
+/// `p_data` debe apuntar a un `SIMCONNECT_RECV_CLIENT_DATA` válido con al
+/// menos `count` floats.
+pub unsafe fn parse_max_brake_temp(
+    p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+    count: usize,
+) -> Option<f64> {
     let mut max: Option<f64> = None;
     for i in 0..count {
-        let f = (base.add(i * 4) as *const f32).read_unaligned() as f64;
+        let f = read_float(p_data, i);
         // Ignoramos 0 (LVar ausente) y valores absurdos. Un freno real
         // ronda 20-40°C en frío y puede pasar de 300°C tras frenar.
         if f > 1.0 && f < 3000.0 {
@@ -206,4 +262,58 @@ pub unsafe fn parse_max_brake_temp(
         }
     }
     max
+}
+
+/// Decodifica el slot de subtítulo del menú de GSX (LEN + chunks base64)
+/// y devuelve el string (p. ej. `"Gate B 14"`), o `None` si el slot está
+/// vacío (menú sin subtítulo / sin gate) o no decodifica.
+///
+/// Replica `readStringSlot` del panel de GSX: cada chunk lleva
+/// `CHARS_PER_CHUNK` chars base64 empaquetados 6 bits por char (char bajo
+/// primero) como `Σ idx_j · 64^j`. Los chunks son enteros ≤ 64^4-1 =
+/// 16_777_215, exactamente representables en f32.
+///
+/// # Safety
+/// `p_data` debe apuntar a un `SIMCONNECT_RECV_CLIENT_DATA` válido con al
+/// menos `len_index + 1 + chunk_count` floats.
+pub unsafe fn parse_gate_subtitle(
+    p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+    len_index: usize,
+    chunk_count: usize,
+) -> Option<String> {
+    let len_f = read_float(p_data, len_index);
+    if !len_f.is_finite() || len_f < 1.0 {
+        return None;
+    }
+    let max_chars = chunk_count * GSX_SUBTITLE_CHARS_PER_CHUNK;
+    let total = (len_f.round() as usize).min(max_chars);
+    if total == 0 {
+        return None;
+    }
+    let mut b64 = String::with_capacity(total + 4);
+    let mut remaining = total;
+    for i in 0..chunk_count {
+        if remaining == 0 {
+            break;
+        }
+        let mut value = read_float(p_data, len_index + 1 + i).round() as u64;
+        let count = remaining.min(GSX_SUBTITLE_CHARS_PER_CHUNK);
+        for _ in 0..count {
+            let idx = (value % 64) as usize;
+            b64.push(B64_STD[idx] as char);
+            value /= 64;
+        }
+        remaining -= count;
+    }
+    // GSX quita el padding '=' al escribir; lo re-añadimos para decodificar.
+    while b64.len() % 4 != 0 {
+        b64.push('=');
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&b64).ok()?;
+    let s = String::from_utf8_lossy(&bytes).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }

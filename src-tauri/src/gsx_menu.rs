@@ -1,44 +1,33 @@
-//! Lector del gate que GSX muestra en su **menú in-sim**, leyendo el
-//! archivo `menu` que el panel de GSX escribe en disco.
+//! Lector del **menú in-sim de GSX** para rellenar el gate cuando un
+//! aeropuerto no tiene perfil de GSX.
 //!
-//! ## Por qué existe
+//! ## Cómo expone GSX el gate (verificado en el JS del panel)
 //!
-//! Cuando un aeropuerto **no** tiene perfil de GSX (sin `.ini` en
-//! `%APPDATA%\Virtuali\GSX\MSFS`), el parser de [`crate::gsx_parking`] no
-//! encuentra parking. La API de Facility Data del simulador
-//! (`SimConnect_RequestFacilityData` sobre `TAXI_PARKING`) **no devuelve
-//! nada** en MSFS 2020 — por eso en su día la abandonamos, y el usuario
-//! confirmó que el fallback de v4.2.0 no funciona.
-//!
-//! Pero GSX **siempre** sabe en qué gate está el avión: su motor Couatl lo
-//! calcula desde la escena del simulador y lo muestra como título de su
-//! menú, p. ej.:
-//!
-//! ```text
-//! Activate Services at MDSD/Las Americas International, Gate B 14
-//! ```
-//!
-//! GSX escribe ese menú a un archivo de **texto plano**:
+//! GSX escribe su menú a un archivo de texto plano en disco:
 //!
 //! ```text
 //! <FSDT root>\MSFS\fsdreamteam-gsx-pro\html_ui\InGamePanels\FSDT_GSX_Panel\menu
 //! ```
 //!
-//! donde `<FSDT root>` sale del registro `HKCU\Software\Fsdreamteam\root`
-//! (el instalador de FSDT lo escribe ahí). **Línea 0 = título**; líneas
-//! 1..N = opciones del menú. Mecanismo verificado en los proyectos
-//! open-source AccessGSX, `msfs-blind-assist` y Fenix2GSX, que leen ese
-//! mismo archivo para reflejar/automatizar el menú de GSX.
+//! (ruta vía registro `HKCU\Software\Fsdreamteam\root`). **Línea 0 = el
+//! título** del menú; líneas 1..N = las opciones.
 //!
-//! ## Limitación
+//! PERO desde GSX Pro ~4.0.x el **gate ya NO está en ese archivo**. El
+//! título (línea 0) es solo "Activate Services at \<aeropuerto\>", y el
+//! gate ("Gate B 14") viaja en un **slot de string aparte codificado en
+//! LVars** (`L:FSDT_GSX_MENU_SUBTITLE_*`), que NUNCA toca el disco — GSX
+//! lo hizo a propósito para que las herramientas que parsean `./menu`
+//! sigan viendo un título de una sola línea.
 //!
-//! El archivo sólo tiene contenido **mientras el menú de GSX está
-//! abierto** (se vacía al cerrarlo). El watcher lo lee mientras el avión
-//! está parado en tierra; en cuanto el usuario abre el menú de GSX para
-//! pedir servicios (lo que hace en el gate, tanto a la salida como a la
-//! llegada), capturamos el gate y lo cacheamos.
+//! Por eso aquí combinamos dos fuentes:
+//!   · **archivo `menu`** → el TÍTULO, que dice QUÉ menú está abierto
+//!     (solo nos interesa el principal: "Activate Services at …").
+//!   · **subtítulo (LVar)** → el GATE, leído/decodificado por
+//!     [`crate::mobiflight_lvars`] vía el puente WASM de MobiFlight y
+//!     pasado a [`gate_from_menu`].
 //!
-//! Esto **no** usa SimConnect ni la API del simulador: es file IO + parse.
+//! El archivo solo tiene contenido mientras el menú de GSX está abierto;
+//! el watcher lo lee mientras el avión está parado en tierra.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -48,13 +37,14 @@ const MENU_REL: &str =
     r"MSFS\fsdreamteam-gsx-pro\html_ui\InGamePanels\FSDT_GSX_Panel\menu";
 
 /// Prefijo (en minúsculas) del título del menú **principal** de GSX — el
-/// único que muestra el gate al que el avión está asignado.
+/// único cuyo subtítulo es el gate al que el avión está asignado. Otros
+/// menús ("Select Position at…", pushback, operador) tienen otro
+/// subtítulo y NO deben rellenar el gate.
 const TITLE_PREFIX: &str = "activate services at";
 
-/// Palabras-tipo de posición de MSFS/GSX. El nombre de gate/parking del
-/// título contiene una de éstas como token. Sirve para validar que el
-/// candidato es realmente una posición y no parte del nombre del
-/// aeropuerto (p. ej. "...International").
+/// Palabras-tipo de posición de MSFS/GSX. El nombre de gate/parking
+/// contiene una de éstas como token. Valida que el subtítulo sea de
+/// verdad una posición y no otra cosa.
 const POSITION_KEYWORDS: &[&str] = &[
     "gate", "ramp", "parking", "stand", "apron", "dock", "cargo", "remote",
     "hangar", "mil", "military", "fuel", "pad", "tie", "vehicle",
@@ -106,53 +96,47 @@ fn resolve_menu_path() -> Option<PathBuf> {
     None
 }
 
-/// Lee el archivo del menú de GSX y, si el menú abierto es el principal
-/// ("Activate Services at …"), devuelve el nombre del gate/parking que GSX
-/// muestra (p. ej. `"Gate B 14"`).
-///
-/// Devuelve `None` cuando:
-///   · GSX no está instalado / no se resolvió la ruta,
-///   · el menú está cerrado (archivo vacío),
-///   · el menú abierto no es el principal (pushback, operador, etc.),
-///   · el título no trae una posición reconocible.
-pub fn read_gate() -> Option<String> {
+/// Lee la **primera línea** (título) del archivo de menú de GSX. `None`
+/// si GSX no está / el menú está cerrado (archivo vacío).
+pub fn read_title() -> Option<String> {
     let path = menu_path()?;
     // Lectura barata: el archivo son unos cientos de bytes.
     let content = std::fs::read_to_string(path).ok()?;
-    let title = content.lines().next()?;
-    parse_gate_from_title(title)
+    let title = content.lines().next()?.trim().to_string();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
 }
 
-/// Extrae el nombre de posición del título del menú principal de GSX.
-/// `pub(crate)` para poder testearlo.
-pub(crate) fn parse_gate_from_title(title: &str) -> Option<String> {
-    let t = title.trim();
-    if t.is_empty() || !t.to_lowercase().starts_with(TITLE_PREFIX) {
+/// ¿El título corresponde al menú principal ("Activate Services at …")?
+pub fn is_services_menu(title: &str) -> bool {
+    title.trim().to_lowercase().starts_with(TITLE_PREFIX)
+}
+
+/// Combina título (archivo) + subtítulo (LVar) → nombre de gate.
+///
+/// Devuelve `Some("Gate B 14")` SOLO si el menú abierto es el principal
+/// ("Activate Services at …") y el subtítulo parece una posición. `None`
+/// en cualquier otro caso (menú cerrado, otro menú, subtítulo no-posición).
+pub fn gate_from_menu(subtitle: Option<&str>) -> Option<String> {
+    let subtitle = subtitle?;
+    let title = read_title()?;
+    if !is_services_menu(&title) {
         return None;
     }
+    clean_position(subtitle)
+}
 
-    // El candidato a posición es el texto tras la ÚLTIMA coma — preserva
-    // prefijos direccionales ("N Parking 6") y nombres con número
-    // ("Gate B 14"). Si no hay coma (formato raro), tomamos desde la
-    // última palabra-tipo de posición hasta el final.
-    let candidate: String = if let Some((_, after)) = t.rsplit_once(',') {
-        after.trim().to_string()
-    } else {
-        let toks: Vec<&str> = t.split_whitespace().collect();
-        match toks.iter().rposition(|tok| is_position_keyword(tok)) {
-            Some(i) => toks[i..].join(" "),
-            None => return None,
-        }
-    };
-
-    // Colapsar espacios múltiples.
-    let cleaned = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
-    // Salvaguarda de longitud: un título inesperado no debería colarse.
+/// Normaliza y valida un string como nombre de posición de GSX. Colapsa
+/// espacios, descarta vacíos / demasiado largos, y exige que contenga una
+/// palabra-tipo de posición conocida. `pub(crate)` para testearlo.
+pub(crate) fn clean_position(raw: &str) -> Option<String> {
+    let cleaned = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if cleaned.is_empty() || cleaned.len() > 40 {
         return None;
     }
-    // Validar que contenga una palabra-tipo de posición (evita capturar
-    // el nombre del aeropuerto cuando GSX no muestra posición).
     if !cleaned.split_whitespace().any(is_position_keyword) {
         return None;
     }
@@ -169,85 +153,42 @@ fn is_position_keyword(tok: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_gate_from_title;
+    use super::{clean_position, is_services_menu};
 
     #[test]
-    fn parses_gate_after_comma() {
+    fn detects_services_menu() {
+        assert!(is_services_menu(
+            "Activate Services at MDSD/Las Americas International"
+        ));
+        assert!(is_services_menu("activate services at KATL/Atlanta"));
+        assert!(!is_services_menu("Select Position at KATL/Atlanta"));
+        assert!(!is_services_menu("Select pushback direction"));
+        assert!(!is_services_menu(""));
+    }
+
+    #[test]
+    fn cleans_gate_subtitle() {
         assert_eq!(
-            parse_gate_from_title(
-                "Activate Services at MDSD/Las Americas International, Gate B 14"
-            ),
+            clean_position("Gate B 14"),
             Some("Gate B 14".to_string())
         );
-    }
-
-    #[test]
-    fn parses_parking() {
+        assert_eq!(clean_position("Parking 30"), Some("Parking 30".to_string()));
         assert_eq!(
-            parse_gate_from_title("Activate Services at KATL/Atlanta, Parking 30"),
-            Some("Parking 30".to_string())
-        );
-    }
-
-    #[test]
-    fn preserves_directional_prefix() {
-        assert_eq!(
-            parse_gate_from_title("Activate Services at EDDF/Frankfurt, N Parking 6"),
+            clean_position("N Parking 6"),
             Some("N Parking 6".to_string())
         );
-    }
-
-    #[test]
-    fn handles_extra_commas_in_airport_name() {
         assert_eq!(
-            parse_gate_from_title(
-                "Activate Services at LFPG/Paris, Charles de Gaulle, Stand 102"
-            ),
-            Some("Stand 102".to_string())
-        );
-    }
-
-    #[test]
-    fn handles_no_comma_format() {
-        assert_eq!(
-            parse_gate_from_title("Activate Services at KSEA Seattle Gate A1"),
+            clean_position("  Gate   A1 "),
             Some("Gate A1".to_string())
         );
     }
 
     #[test]
-    fn rejects_non_main_menu() {
-        assert_eq!(parse_gate_from_title("Select pushback direction"), None);
-        assert_eq!(parse_gate_from_title("Request FollowMe"), None);
-        // "Select Position at" NO es el menú principal — no afirma el gate
-        // al que el avión ya está asignado.
-        assert_eq!(
-            parse_gate_from_title("Select Position at KATL/Atlanta"),
-            None
-        );
-    }
-
-    #[test]
-    fn rejects_title_without_position() {
-        assert_eq!(
-            parse_gate_from_title(
-                "Activate Services at MDSD/Las Americas International"
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn rejects_empty() {
-        assert_eq!(parse_gate_from_title(""), None);
-        assert_eq!(parse_gate_from_title("   "), None);
-    }
-
-    #[test]
-    fn collapses_whitespace() {
-        assert_eq!(
-            parse_gate_from_title("Activate Services at X,   Gate   A1 "),
-            Some("Gate A1".to_string())
-        );
+    fn rejects_non_position_subtitle() {
+        // Subtítulos que NO son una posición (otro menú) → None.
+        assert_eq!(clean_position("Lufthansa"), None);
+        assert_eq!(clean_position("Boeing 737"), None);
+        assert_eq!(clean_position(""), None);
+        assert_eq!(clean_position("   "), None);
     }
 }

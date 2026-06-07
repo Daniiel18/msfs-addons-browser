@@ -1588,6 +1588,11 @@ mod windows_simconnect {
         let mut last_menu_read_at = std::time::Instant::now()
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(std::time::Instant::now);
+        // (v4.4.0) Último subtítulo del menú de GSX (= el gate) decodificado
+        // del LVar `L:FSDT_GSX_MENU_SUBTITLE_*` vía el puente de MobiFlight.
+        // Lo actualiza el dispatch de Client Data (1 Hz) y lo consume el
+        // bloque de detección de gate de abajo.
+        let mut latest_gsx_subtitle: Option<String> = None;
         // (v3.0.0) Throttle del preflight gate detection — re-disparamos
         // cada vez que el avión cambia de aeropuerto en tierra. Si
         // está parado en el mismo gate sólo lo pedimos UNA vez.
@@ -2221,7 +2226,9 @@ mod windows_simconnect {
                                 >= Duration::from_secs(1)
                         {
                             last_menu_read_at = std::time::Instant::now();
-                            if let Some(menu_g) = crate::gsx_menu::read_gate() {
+                            if let Some(menu_g) = crate::gsx_menu::gate_from_menu(
+                                latest_gsx_subtitle.as_deref(),
+                            ) {
                                 last_menu_gate = Some((
                                     menu_g.clone(),
                                     std::time::Instant::now(),
@@ -2596,7 +2603,7 @@ mod windows_simconnect {
                             if let Some(t) = unsafe {
                                 crate::mobiflight_lvars::parse_max_brake_temp(
                                     p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
-                                    bridge.var_count,
+                                    bridge.brake_count,
                                 )
                             } {
                                 let grew =
@@ -2629,6 +2636,18 @@ mod windows_simconnect {
                                     }
                                 }
                             }
+                            // (v4.4.0) El subtítulo del menú de GSX = el
+                            // gate cuando el menú principal está abierto.
+                            // Lo decodificamos del slot LVar y lo guardamos;
+                            // el bloque de gate (SIMOBJECT_DATA) lo combina
+                            // con el título del archivo `menu` y lo aplica.
+                            latest_gsx_subtitle = unsafe {
+                                crate::mobiflight_lvars::parse_gate_subtitle(
+                                    p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+                                    bridge.subtitle_len_index,
+                                    bridge.subtitle_chunk_count,
+                                )
+                            };
                             continue;
                         }
                     }
