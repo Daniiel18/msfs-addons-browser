@@ -3297,35 +3297,36 @@ mod windows_simconnect {
                     });
                 }
                 (FlightPhase::BlockOut, FlightPhase::OnGround) => {
-                    // Cancelación de salida: el usuario re-frenó y
-                    // apagó motores sin despegar. Cerramos la fila
-                    // como un vuelo vacío (destination = origin) para
-                    // no dejarla huérfana.
+                    // (v4.6.0) Salida cancelada SIN despegar: el usuario
+                    // salió del gate (motores + movimiento) pero volvió a
+                    // frenar y apagar motores sin volar. Esto NO es un
+                    // vuelo — es lo típico tras ver un replay o reposicionar
+                    // el avión en el gate para cambiar de aeronave o
+                    // empezar otro vuelo. Antes lo cerrábamos como "vuelo
+                    // vacío" (destino = origen) y quedaba un fantasma en el
+                    // FlightBook. Ahora BORRAMOS la fila: un vuelo que nunca
+                    // estuvo en el aire no cuenta. Los vuelos REALES se
+                    // cierran por la rama (Landed → OnGround), nunca por
+                    // aquí, así que esto jamás borra un vuelo de verdad.
                     let id_opt = current_flight_id
                         .lock()
                         .ok()
                         .and_then(|mut g| g.take());
                     if let Some(id) = id_opt {
                         let pool_c = pool.clone();
-                        let lat_c = lat;
-                        let lon_c = lon;
                         let app_c = app.clone();
                         tokio::spawn(async move {
-                            let metrics =
-                                crate::flight_log::FlightFinishMetrics::default();
-                            if let Err(e) = crate::flight_log::finish_flight(
-                                &pool_c, id, lat_c, lon_c, metrics,
-                            )
-                            .await
+                            if let Err(e) =
+                                crate::flight_log::delete_entry(&pool_c, id).await
                             {
                                 tracing::error!(
                                     target: "simconnect",
-                                    "finish_flight (cancel OUT) falló: {e:#}"
+                                    "delete_entry (cancel OUT sin despegar) falló: {e:#}"
                                 );
                             } else {
                                 tracing::info!(
                                     target: "simconnect",
-                                    "BLOCK-OUT CANCELADO — flight_log id={} cerrado sin despegar",
+                                    "BLOCK-OUT CANCELADO — flight_log id={} BORRADO (nunca despegó: replay/reposición en gate)",
                                     id
                                 );
                                 let _ = app_c.emit("flightlog://changed", ());

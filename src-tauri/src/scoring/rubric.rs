@@ -501,7 +501,7 @@ pub static RULES: &[Rule] = &[
     // ============================================================
     Rule {
         id: "landing_smooth",
-        label: "Smooth touchdown (firm > -400, hard > -600 fpm)",
+        label: "Touchdown suave o firme (≥ -400 fpm; duro < -400)",
         phase: Phase::Landing,
         points_max: 50,
         evaluator: eval_landing_smooth,
@@ -1611,12 +1611,16 @@ fn eval_landing_smooth(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     //   duro    -400..-600      → 1/2
     //   muy duro -600..-1000    → 1/5 (probable daño)
     //   peor que -1000          → 0 (daño estructural)
+    // (v4.6.0) En el checklist (✓/✗) un aterrizaje SUAVE o FIRME es un
+    // pase: -388 fpm es un toque normal, no un fallo. Solo "duro"
+    // (≤ -400) o peor cuentan como no cumplido. Antes firme caía en
+    // `partial` (3/4) → status "missed" → ✗, lo que el usuario reportó
+    // como injusto.
     match fpm {
-        f if f > -240 => pass(rule, evidence),
-        f if f > -400 => partial(rule, (rule.points_max * 3) / 4, evidence),
-        f if f > -600 => partial(rule, rule.points_max / 2, evidence),
-        f if f > -1000 => partial(rule, rule.points_max / 5, evidence),
-        _ => fail(rule, "fail", 0, evidence),
+        f if f > -400 => pass(rule, evidence), // suave o firme → ✓
+        f if f > -600 => partial(rule, rule.points_max / 2, evidence), // duro
+        f if f > -1000 => partial(rule, rule.points_max / 5, evidence), // muy duro
+        _ => fail(rule, "fail", 0, evidence), // daño estructural
     }
 }
 
@@ -1648,8 +1652,26 @@ fn eval_taxi_in_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if samples.is_empty() {
         return skip(rule, "no_taxi_in_data");
     }
-    let max_gs = max_i64(&samples, |s| s.gs_kt).unwrap_or(0);
-    let evidence = json!({ "max_gs_kt_taxi_in": max_gs });
+    // (v4.6.0) La cola del rollout (desaceleración en pista) cae dentro de
+    // "taxi_in" porque separamos las fases por velocidad, no por geometría
+    // de pista. Esa bajada monótona desde ~40 kt NO es "taxi rápido". La
+    // excluimos: saltamos la racha inicial en la que la velocidad SOLO
+    // baja y medimos la máxima a partir de que el avión deja de frenar (ya
+    // maniobrando en calle de rodaje). Así un taxi rápido real (acelera en
+    // taxiway) sí se detecta, pero el frenado post-touchdown no penaliza.
+    let gss: Vec<i64> = samples.iter().filter_map(|s| s.gs_kt).collect();
+    if gss.is_empty() {
+        return skip(rule, "no_gs_data");
+    }
+    let mut start = 0usize;
+    while start + 1 < gss.len() && gss[start + 1] < gss[start] {
+        start += 1;
+    }
+    let max_gs = gss[start..].iter().copied().max().unwrap_or(0);
+    let evidence = json!({
+        "max_gs_kt_taxi_in": max_gs,
+        "rollout_samples_skipped": start,
+    });
     match max_gs {
         n if n <= 30 => pass(rule, evidence),
         n if n <= 40 => partial(rule, (rule.points_max * 2) / 3, evidence),

@@ -1,0 +1,23 @@
+-- (v4.6.0) Reset de scores cacheados tras corregir dos evaluadores del
+-- rubric:
+--
+--   1. Landing: un aterrizaje SUAVE o FIRME (> -400 fpm) ahora cuenta
+--      como ✓ en el checklist. Antes "firme" (p. ej. -388 fpm) caía en
+--      `partial` → status "missed" → ✗, lo que el usuario reportó como
+--      injusto. Solo "duro" (≤ -400) o peor quedan como no cumplido.
+--
+--   2. Taxi-In: la velocidad de taxi ahora EXCLUYE la cola de
+--      desaceleración del rollout (la bajada monótona desde ~40 kt que
+--      cae dentro de la fase "taxi_in" por separar fases por velocidad,
+--      no por geometría de pista). Antes ese frenado post-touchdown
+--      inflaba la velocidad máxima y marcaba ✗ aunque el usuario nunca
+--      excediera 30 kt taxiando de verdad.
+--
+-- Ambos fixes viven en los evaluadores (rubric.rs), que re-leen los
+-- datos crudos ya guardados (landing_fpm + samples de gs por fase). Por
+-- eso basta con limpiar el cache: al abrir la Flight Evaluation,
+-- `score_get_report` ve el resumen en NULL y llama a `score_flight`, que
+-- recomputa con la lógica corregida — sin pedirle al usuario volver a
+-- volar sus vuelos anteriores.
+DELETE FROM flight_log_score_item;
+UPDATE flight_log SET score_total = NULL, score_max = NULL, score_grade = NULL;
