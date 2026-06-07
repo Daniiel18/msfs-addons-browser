@@ -124,22 +124,17 @@ where
     }
 }
 
-/// (v3.1.3) Logs unificados — un solo archivo `simfleet.log` en la
-/// carpeta de logs de la app, con rotación SIMPLE por tamaño.
+/// (v4.5.0) Logs **diarios** con retención de 30 días — pedido del
+/// usuario. Cada día se crea un archivo nuevo `simfleet.<YYYY-MM-DD>.log`
+/// y `tracing-appender` borra automáticamente los más antiguos cuando
+/// hay más de `LOG_RETENTION_DAYS`. Así un día de logs no contamina al
+/// siguiente y el historial se mantiene acotado (~1 mes) sin crecer sin
+/// fin.
 ///
-/// Antes usábamos `tracing_appender::rolling::daily` que generaba un
-/// archivo por día (`app.log.2026-05-22`, `app.log.2026-05-23`, etc).
-/// El usuario pidió "un único archivo de log global" para auditar sin
-/// saltar entre archivos.
-///
-/// Estrategia:
-///   · Archivo principal: `simfleet.log` (todos los logs nuevos).
-///   · Al arrancar, si `simfleet.log` supera `MAX_LOG_BYTES` (5 MB),
-///     lo rotamos a `simfleet.log.1` (sobrescribiendo el anterior).
-///   · Sólo 1 backup — los logs históricos antiguos quedan en
-///     `app.log.YYYY-MM-DD` por compat con instalaciones previas.
-const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
-const LOG_FILE_NAME: &str = "simfleet.log";
+/// (Antes: un único `simfleet.log` con rotación por tamaño.)
+const LOG_FILE_PREFIX: &str = "simfleet";
+const LOG_FILE_SUFFIX: &str = "log";
+const LOG_RETENTION_DAYS: usize = 30;
 
 /// (v3.4.0) Guard contra doble init. Antes usábamos `try_init()` que
 /// es idempotente pero SILENCIOSO — si por error invocábamos
@@ -163,22 +158,14 @@ pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
     let logs_dir = app_data_dir.join("logs");
     std::fs::create_dir_all(&logs_dir)?;
 
-    // Rotación por tamaño al arrancar — barato y suficiente para
-    // los volúmenes que generamos (~50 MB/día en debug, <5 MB/día
-    // en INFO production).
-    let log_path = logs_dir.join(LOG_FILE_NAME);
-    if let Ok(meta) = std::fs::metadata(&log_path) {
-        if meta.len() > MAX_LOG_BYTES {
-            let backup = logs_dir.join(format!("{}.1", LOG_FILE_NAME));
-            let _ = std::fs::remove_file(&backup); // ignora si no existe
-            let _ = std::fs::rename(&log_path, &backup);
-        }
-    }
-
-    // never daily — usamos un appender que escribe siempre al mismo
-    // archivo. `rolling::never` cumple esto y soporta WriteGuard
-    // implícito para flush ordenado.
-    let file_appender = tracing_appender::rolling::never(&logs_dir, LOG_FILE_NAME);
+    // (v4.5.0) Appender diario con retención de 30 archivos. Genera
+    // `simfleet.<YYYY-MM-DD>.log` y poda los más viejos automáticamente.
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(LOG_FILE_PREFIX)
+        .filename_suffix(LOG_FILE_SUFFIX)
+        .max_log_files(LOG_RETENTION_DAYS)
+        .build(&logs_dir)?;
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
@@ -211,8 +198,9 @@ pub fn init(app_data_dir: &Path) -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        "logger inicializado — logs unificados en {}",
-        log_path.display()
+        "logger inicializado — logs diarios (retención {} días) en {}",
+        LOG_RETENTION_DAYS,
+        logs_dir.display()
     );
     Ok(())
 }

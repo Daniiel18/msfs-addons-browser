@@ -2203,6 +2203,21 @@ mod windows_simconnect {
                     // los triggers corren siempre; el INI hace el trabajo.
                     let _ = facility_def_ok;
 
+                    // (v4.5.0 FIX) Al despegar limpiamos la caché del gate
+                    // del menú de GSX: el gate de SALIDA no debe filtrarse
+                    // como gate de LLEGADA en el destino. En vuelos cortos
+                    // (<30 min) la caché seguía "fresca" al aterrizar y el
+                    // trigger de arrival escribía el gate de salida. Tras
+                    // limpiar aquí, la llegada sólo se rellena si GSX
+                    // muestra un gate NUEVO en el aeropuerto de destino.
+                    if matches!(phase, FlightPhase::Airborne)
+                        && (last_menu_gate.is_some()
+                            || last_applied_menu_gate.is_some())
+                    {
+                        last_menu_gate = None;
+                        last_applied_menu_gate = None;
+                    }
+
                     // (v4.3.0) Leer el gate que GSX muestra en su menú
                     // in-sim (archivo en disco; NO toca la API del
                     // simulador). Cubre aeropuertos SIN perfil de GSX.
@@ -2600,14 +2615,6 @@ mod windows_simconnect {
                     // y lo persistimos cuando crece y hay vuelo abierto.
                     if let Some(bridge) = brake_bridge.as_ref() {
                         if request_id == bridge.request_id {
-                            // (v4.4.1) Diagnóstico throttled: vuelca valores
-                            // crudos del puente para depurar la cadena.
-                            unsafe {
-                                crate::mobiflight_lvars::debug_dump(
-                                    p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
-                                    bridge,
-                                );
-                            }
                             if let Some(t) = unsafe {
                                 crate::mobiflight_lvars::parse_max_brake_temp(
                                     p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
@@ -4068,6 +4075,22 @@ mod windows_simconnect {
         }
     }
 
+    /// (v4.5.0) Loguea el resultado de detección de gate SÓLO cuando
+    /// cambia respecto al último logueado — evita repetir la misma línea
+    /// cada vez que el trigger periódico (preflight cada ~15 min, etc.)
+    /// re-evalúa el mismo gate sin cambios. Dedup global por el texto.
+    fn log_gate_outcome_once(msg: &str) {
+        use std::sync::Mutex;
+        static LAST: Mutex<Option<String>> = Mutex::new(None);
+        if let Ok(mut g) = LAST.lock() {
+            if g.as_deref() == Some(msg) {
+                return;
+            }
+            *g = Some(msg.to_string());
+        }
+        tracing::info!(target: "simconnect", "{}", msg);
+    }
+
     /// (v0.1.26) Dispara una `RequestFacilityData` para el aeropuerto
     /// más cercano al player y registra la request como pendiente.
     /// Cuando lleguen los `FACILITY_DATA_END` events procesaremos la
@@ -4143,11 +4166,10 @@ mod windows_simconnect {
         // (SharedState.current_gate) y, para departure/arrival, lo persiste
         // en DB. Reutilizado por el INI de GSX y por el menú de GSX.
         let apply_gate = |name: String, source: &'static str| {
-            tracing::info!(
-                target: "simconnect",
+            log_gate_outcome_once(&format!(
                 "gate {} {} → \"{}\" ({})",
                 role, icao, name, source
-            );
+            ));
             // 1) SharedState + emit inmediato (incluye preflight, para que
             //    el chip "Volando ahora" pinte el gate ANTES del OUT).
             {
@@ -4210,11 +4232,10 @@ mod windows_simconnect {
             return;
         }
 
-        tracing::info!(
-            target: "simconnect",
+        log_gate_outcome_once(&format!(
             "gate {} {}: sin perfil GSX ni menú GSX abierto → gate vacío (editable a mano)",
             role, icao
-        );
+        ));
     }
 
     /// (v0.1.26) Procesa una request de gate completada — elige el

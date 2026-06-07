@@ -328,51 +328,12 @@ pub unsafe fn parse_gate_subtitle(
     }
     let bytes = base64::engine::general_purpose::STANDARD.decode(&b64).ok()?;
     let s = String::from_utf8_lossy(&bytes).trim().to_string();
-    if s.is_empty() {
+    // Rechazar lecturas parciales/torn: el módulo puede entregarnos un
+    // LEN>0 con los chunks aún en 0 (mitad de escritura), lo que produce
+    // bytes nulos / de control. Eso no es un nombre de gate válido.
+    if s.is_empty() || s.chars().any(|c| c.is_control()) {
         None
     } else {
         Some(s)
     }
-}
-
-/// Diagnóstico (throttled ~8 s): vuelca al log los valores crudos que
-/// llegan por el puente — brake temps, el LEN del subtítulo, los primeros
-/// chunks y el subtítulo ya decodificado. Permite ver de un vistazo si el
-/// módulo de MobiFlight está entregando datos y dónde falla la cadena.
-///
-/// # Safety
-/// `p_data` debe apuntar a un `SIMCONNECT_RECV_CLIENT_DATA` válido con al
-/// menos `bridge.var_count` floats.
-pub unsafe fn debug_dump(
-    p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA,
-    bridge: &LvarBridge,
-) {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    static LAST_MS: AtomicI64 = AtomicI64::new(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    if now - LAST_MS.load(Ordering::Relaxed) < 8000 {
-        return;
-    }
-    LAST_MS.store(now, Ordering::Relaxed);
-
-    let brakes: Vec<f64> = (0..bridge.brake_count)
-        .map(|i| read_float(p_data, i))
-        .collect();
-    let len = read_float(p_data, bridge.subtitle_len_index);
-    let chunks: Vec<f64> = (0..bridge.subtitle_chunk_count.min(4))
-        .map(|i| read_float(p_data, bridge.subtitle_len_index + 1 + i))
-        .collect();
-    let decoded = parse_gate_subtitle(
-        p_data,
-        bridge.subtitle_len_index,
-        bridge.subtitle_chunk_count,
-    );
-    tracing::info!(
-        target: "lvar_bridge",
-        "DIAG MobiFlight: brakes={:?} subtitle_LEN={} chunks[0..]={:?} -> decoded={:?}",
-        brakes, len, chunks, decoded
-    );
 }
