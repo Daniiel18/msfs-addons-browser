@@ -2207,19 +2207,52 @@ mod windows_simconnect {
                     // los triggers corren siempre; el INI hace el trabajo.
                     let _ = facility_def_ok;
 
-                    // (v4.5.0 FIX) Al despegar limpiamos la caché del gate
-                    // del menú de GSX: el gate de SALIDA no debe filtrarse
-                    // como gate de LLEGADA en el destino. En vuelos cortos
-                    // (<30 min) la caché seguía "fresca" al aterrizar y el
-                    // trigger de arrival escribía el gate de salida. Tras
-                    // limpiar aquí, la llegada sólo se rellena si GSX
-                    // muestra un gate NUEVO en el aeropuerto de destino.
-                    if matches!(phase, FlightPhase::Airborne)
-                        && (last_menu_gate.is_some()
-                            || last_applied_menu_gate.is_some())
+                    // (v4.6.3 FIX) Al DESPEGAR (flanco a Airborne):
+                    //   1. Si el gate de SALIDA no se persistió pero lo
+                    //      detectamos en preflight (SharedState.current_gate),
+                    //      lo guardamos AHORA en departure_gate — así no se
+                    //      pierde aunque el trigger del OUT no lo escribiera
+                    //      (p. ej. el avión se alejó >75 m del parking en el
+                    //      pushback antes del OUT).
+                    //   2. Limpiamos current_gate y la caché del menú GSX. El
+                    //      gate de salida NO debe reaparecer como gate de
+                    //      LLEGADA en el destino — ese era el bug: como
+                    //      current_gate (de la salida) nunca se limpiaba,
+                    //      finish_flight lo reusaba de fallback para arrival.
+                    //      v4.5.0 solo limpió la caché del MENÚ; faltaba esto.
+                    if !matches!(prev_phase, FlightPhase::Airborne)
+                        && matches!(phase, FlightPhase::Airborne)
                     {
                         last_menu_gate = None;
                         last_applied_menu_gate = None;
+                        let fid =
+                            current_flight_id.lock().ok().and_then(|g| *g);
+                        let state_c = state.clone();
+                        let pool_c = pool.clone();
+                        let app_c = app.clone();
+                        tokio::spawn(async move {
+                            // Tomar (y limpiar) el gate de salida del
+                            // SharedState para que no contamine la llegada.
+                            let dep_gate = {
+                                let mut guard = state_c.lock().await;
+                                guard.status.current_gate.take()
+                            };
+                            if let (Some(id), Some(g)) = (fid, dep_gate) {
+                                // Solo rellena si departure_gate está vacío
+                                // (no pisa un valor del INI ya guardado).
+                                let r = sqlx::query(
+                                    "UPDATE flight_log SET departure_gate = ?1 \
+                                     WHERE id = ?2 AND (departure_gate IS NULL OR departure_gate = '')",
+                                )
+                                .bind(g)
+                                .bind(id)
+                                .execute(&pool_c)
+                                .await;
+                                if matches!(r, Ok(res) if res.rows_affected() > 0) {
+                                    let _ = app_c.emit("flightlog://changed", ());
+                                }
+                            }
+                        });
                     }
 
                     // (v4.3.0) Leer el gate que GSX muestra en su menú
