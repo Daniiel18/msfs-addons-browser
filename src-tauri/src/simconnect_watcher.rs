@@ -153,12 +153,16 @@ pub fn spawn(pool: SqlitePool, app: AppHandle) -> SharedState {
             let should_emit_now = (changed || polls_since_emit >= FALLBACK_HEARTBEAT_EVERY)
                 && !status.simconnect_connected;
             if should_emit_now {
-                tracing::info!(
-                    target: "simconnect",
-                    "emit flight://current (fallback{}) sim_running={} sc_connected={} origin={:?}",
-                    if changed { ", changed" } else { ", heartbeat" },
-                    status.sim_running, status.simconnect_connected, status.origin_icao
-                );
+                // (v4.5.1) Solo logueamos cuando CAMBIA el estado; el
+                // heartbeat periódico sigue emitiendo a la UI pero en
+                // silencio para no inflar el log.
+                if changed {
+                    tracing::info!(
+                        target: "simconnect",
+                        "emit flight://current (fallback, changed) sim_running={} sc_connected={} origin={:?}",
+                        status.sim_running, status.simconnect_connected, status.origin_icao
+                    );
+                }
                 if let Err(e) = app.emit("flight://current", &status) {
                     tracing::warn!(target: "simconnect", "emit flight://current falló: {e:#}");
                 }
@@ -4044,29 +4048,31 @@ mod windows_simconnect {
             if should_emit {
                 let snapshot = st.clone();
                 drop(guard);
-                // (v3.4.10) Log diagnóstico throttled — cada ~10s
-                // mostramos un summary del payload para confirmar
-                // que el emit está corriendo. Sin esto, si el badge
-                // no aparece en la UI no sabemos si es bug de
-                // backend (no emite) o frontend (no recibe).
-                static LAST_LOG_TS: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> =
+                // (v4.5.1) Log del emit SÓLO cuando cambia el resumen
+                // (sim/conn/gate/fase). Antes lo escribía cada ~10s aunque
+                // no hubiera novedad, inflando el log. El emit a la UI sí
+                // sigue saliendo cada intervalo; solo se calla el log.
+                static LAST_EMIT_SIG: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
                     std::sync::OnceLock::new();
-                let last_log = LAST_LOG_TS.get_or_init(|| {
-                    std::sync::Mutex::new(
-                        std::time::Instant::now() - std::time::Duration::from_secs(60),
-                    )
-                });
-                if let Ok(mut t) = last_log.lock() {
-                    if t.elapsed() >= std::time::Duration::from_secs(10) {
+                let sig = format!(
+                    "{} {} {:?} {:?}",
+                    snapshot.sim_running,
+                    snapshot.simconnect_connected,
+                    snapshot.current_gate,
+                    snapshot.phase_label
+                );
+                let cell = LAST_EMIT_SIG.get_or_init(|| std::sync::Mutex::new(None));
+                if let Ok(mut last) = cell.lock() {
+                    if last.as_deref() != Some(sig.as_str()) {
                         tracing::info!(
                             target: "simconnect",
-                            "emit flight://current (tick) sim_running={} sc_connected={} gate={:?} phase={:?}",
+                            "emit flight://current sim_running={} sc_connected={} gate={:?} phase={:?}",
                             snapshot.sim_running,
                             snapshot.simconnect_connected,
                             snapshot.current_gate,
                             snapshot.phase_label
                         );
-                        *t = std::time::Instant::now();
+                        *last = Some(sig);
                     }
                 }
                 let _ = app.emit("flight://current", &snapshot);
