@@ -106,6 +106,11 @@ pub const SIMCONNECT_CLIENTDATATYPE_FLOAT32: DWORD = (-5i32) as DWORD;
 /// Periodo de stream del Client Data (enum SIMCONNECT_CLIENT_DATA_PERIOD).
 /// SECOND = 4. Brake temps cambian lento, 1 Hz sobra.
 pub const SIMCONNECT_CLIENT_DATA_PERIOD_SECOND: DWORD = 4;
+/// ON_SET = 3 — entrega los datos cuando OTRO cliente ESCRIBE el área
+/// (vía SetClientData). Es el periodo correcto para leer datos que
+/// produce el módulo WASM de MobiFlight: `SECOND` no dispara para
+/// escrituras de otro cliente. (Confirmado en los clientes de referencia.)
+pub const SIMCONNECT_CLIENT_DATA_PERIOD_ON_SET: DWORD = 3;
 /// Flag por defecto en RequestClientData.
 pub const SIMCONNECT_CLIENT_DATA_REQUEST_FLAG_DEFAULT: DWORD = 0;
 /// Flag por defecto en SetClientData.
@@ -319,6 +324,17 @@ pub type FnMapClientDataNameToID = unsafe extern "system" fn(
     ClientDataID: DWORD,
 ) -> HRESULT;
 
+/// `SimConnect_CreateClientData` — crea (o referencia) el Client Data Area
+/// con el ID ya mapeado. Los clientes de referencia "raw" (vía la DLL,
+/// como nosotros) lo llaman para las 3 áreas de MobiFlight antes de
+/// definir/suscribir; sin esto el stream de LVars no llega.
+pub type FnCreateClientData = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    ClientDataID: DWORD,
+    dwSize: DWORD,
+    Flags: DWORD,
+) -> HRESULT;
+
 /// `SimConnect_AddToClientDataDefinition` — define el layout
 /// (offsets + sizes) de un struct dentro de un Client Data Area.
 pub type FnAddToClientDataDefinition = unsafe extern "system" fn(
@@ -377,6 +393,7 @@ pub struct SimConnectLib {
     pub AddToFacilityDefinition: Option<FnAddToFacilityDefinition>,
     pub RequestFacilityData: Option<FnRequestFacilityData>,
     pub MapClientDataNameToID: Option<FnMapClientDataNameToID>,
+    pub CreateClientData: Option<FnCreateClientData>,
     pub AddToClientDataDefinition: Option<FnAddToClientDataDefinition>,
     pub RequestClientData: Option<FnRequestClientData>,
     pub SetClientData: Option<FnSetClientData>,
@@ -536,6 +553,10 @@ impl SimConnectLib {
             .get::<FnMapClientDataNameToID>(b"SimConnect_MapClientDataNameToID\0")
             .ok()
             .map(|s| *s);
+        let create_client: Option<FnCreateClientData> = lib
+            .get::<FnCreateClientData>(b"SimConnect_CreateClientData\0")
+            .ok()
+            .map(|s| *s);
         let add_client_def: Option<FnAddToClientDataDefinition> = lib
             .get::<FnAddToClientDataDefinition>(b"SimConnect_AddToClientDataDefinition\0")
             .ok()
@@ -560,6 +581,7 @@ impl SimConnectLib {
             AddToFacilityDefinition: add_fac_def,
             RequestFacilityData: req_fac_data,
             MapClientDataNameToID: map_client,
+            CreateClientData: create_client,
             AddToClientDataDefinition: add_client_def,
             RequestClientData: req_client,
             SetClientData: set_client,

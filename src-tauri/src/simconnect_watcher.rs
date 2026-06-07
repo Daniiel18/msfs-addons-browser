@@ -2600,6 +2600,14 @@ mod windows_simconnect {
                     // y lo persistimos cuando crece y hay vuelo abierto.
                     if let Some(bridge) = brake_bridge.as_ref() {
                         if request_id == bridge.request_id {
+                            // (v4.4.1) Diagnóstico throttled: vuelca valores
+                            // crudos del puente para depurar la cadena.
+                            unsafe {
+                                crate::mobiflight_lvars::debug_dump(
+                                    p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+                                    bridge,
+                                );
+                            }
                             if let Some(t) = unsafe {
                                 crate::mobiflight_lvars::parse_max_brake_temp(
                                     p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,

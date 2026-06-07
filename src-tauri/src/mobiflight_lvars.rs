@@ -66,8 +66,9 @@ use crate::simconnect_ffi::SimConnectLib;
 // IDs locales del cliente. Elegidos en un rango alto y distintivo
 // ("MF" = 0x4D46) para no colisionar con los DEFINE_ID/REQUEST_ID que
 // el watcher usa para simvars y facility data.
-const CLIENT_DATA_ID_CMD: sc::DWORD = 0x4D46_0001;
-const CLIENT_DATA_ID_LVAR: sc::DWORD = 0x4D46_0002;
+const CLIENT_DATA_ID_LVAR: sc::DWORD = 0x4D46_0001;
+const CLIENT_DATA_ID_CMD: sc::DWORD = 0x4D46_0002;
+const CLIENT_DATA_ID_RESPONSE: sc::DWORD = 0x4D46_0003;
 const DEFINE_ID_CMD: sc::DWORD = 0x4D46_0010;
 const DEFINE_ID_LVAR: sc::DWORD = 0x4D46_0011;
 /// Request id del stream de LVars — el dispatch lo compara para saber
@@ -75,9 +76,13 @@ const DEFINE_ID_LVAR: sc::DWORD = 0x4D46_0011;
 pub const REQUEST_ID_LVAR: sc::DWORD = 0x4D46_0020;
 
 const MOBIFLIGHT_COMMAND_AREA: &str = "MobiFlight.Command";
+const MOBIFLIGHT_RESPONSE_AREA: &str = "MobiFlight.Response";
 const MOBIFLIGHT_LVAR_AREA: &str = "MobiFlight.LVars";
-/// Tamaño del área de comandos de MobiFlight (`MOBIFLIGHT_MESSAGE_SIZE`).
-const MOBIFLIGHT_MESSAGE_SIZE: sc::DWORD = 1024;
+/// Tamaño del área de comandos de MobiFlight (`DATA_STRING_SIZE` en los
+/// clientes de referencia). Los comandos son cortos; 256 sobra.
+const MOBIFLIGHT_MESSAGE_SIZE: sc::DWORD = 256;
+/// Tamaño del área de LVars de MobiFlight (4096 bytes = 1024 floats).
+const MOBIFLIGHT_LVAR_AREA_SIZE: sc::DWORD = 4096;
 
 /// LVars de temperatura de frenos que registramos, **en orden**. El
 /// offset de cada uno en el área de LVars = índice × 4 bytes.
@@ -124,8 +129,9 @@ pub struct LvarBridge {
 /// # Safety
 /// `handle` debe ser un `HSIMCONNECT` válido y abierto.
 pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridge> {
-    let (Some(map), Some(add_def), Some(set), Some(req)) = (
+    let (Some(map), Some(create), Some(add_def), Some(set), Some(req)) = (
         lib.MapClientDataNameToID,
+        lib.CreateClientData,
         lib.AddToClientDataDefinition,
         lib.SetClientData,
         lib.RequestClientData,
@@ -141,19 +147,28 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridg
     let subtitle_len_index = brake_count;
     let var_count = brake_count + 1 + GSX_SUBTITLE_CHUNKS;
 
-    // 1) Mapear los nombres de área de MobiFlight a IDs locales.
-    let cmd_name = sc::cstr(MOBIFLIGHT_COMMAND_AREA);
+    // 1) Mapear + CREAR las 3 áreas de MobiFlight (LVars, Command,
+    //    Response). Los clientes de referencia "raw" (vía SimConnect.dll,
+    //    como nosotros) crean las áreas explícitamente — sin esto el
+    //    stream de LVars no llega.
     let lvar_name = sc::cstr(MOBIFLIGHT_LVAR_AREA);
-    map(handle, cmd_name.as_ptr(), CLIENT_DATA_ID_CMD);
+    let cmd_name = sc::cstr(MOBIFLIGHT_COMMAND_AREA);
+    let resp_name = sc::cstr(MOBIFLIGHT_RESPONSE_AREA);
     map(handle, lvar_name.as_ptr(), CLIENT_DATA_ID_LVAR);
+    create(handle, CLIENT_DATA_ID_LVAR, MOBIFLIGHT_LVAR_AREA_SIZE, 0);
+    map(handle, cmd_name.as_ptr(), CLIENT_DATA_ID_CMD);
+    create(handle, CLIENT_DATA_ID_CMD, MOBIFLIGHT_MESSAGE_SIZE, 0);
+    map(handle, resp_name.as_ptr(), CLIENT_DATA_ID_RESPONSE);
+    create(handle, CLIENT_DATA_ID_RESPONSE, MOBIFLIGHT_MESSAGE_SIZE, 0);
 
-    // 2) Definir el área de comandos: un único string de 1024 bytes en
-    //    offset 0 (así SetClientData escribe el comando completo).
+    // 2) Definir el área de comandos: un único string en offset 0.
     add_def(handle, DEFINE_ID_CMD, 0, MOBIFLIGHT_MESSAGE_SIZE, 0.0, 0);
 
-    // 3) Resetear registros previos y registrar nuestros LVars EN ORDEN:
-    //    primero brake temps, luego el slot de subtítulo de GSX (LEN +
+    // 3) Registrar nuestros LVars EN ORDEN. Mandamos un `MF.Ping` primero
+    //    porque el módulo a veces ignora el PRIMER comando; luego Clear y
+    //    los Add: brake temps, después el slot de subtítulo de GSX (LEN +
     //    chunks). El orden define los offsets en el área de LVars.
+    send_command(set, handle, "MF.Ping");
     send_command(set, handle, "MF.SimVars.Clear");
     for expr in BRAKE_TEMP_LVARS {
         send_command(set, handle, &format!("MF.SimVars.Add.{expr}"));
@@ -183,13 +198,15 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridg
         );
     }
 
-    // 5) Suscribirse al stream de valores (1 Hz).
+    // 5) Suscribirse al stream de valores con PERIOD_ON_SET: el módulo
+    //    ESCRIBE el área y SimConnect nos lo entrega. `SECOND` no dispara
+    //    para escrituras de otro cliente — ese era el bug.
     req(
         handle,
         CLIENT_DATA_ID_LVAR,
         REQUEST_ID_LVAR,
         DEFINE_ID_LVAR,
-        sc::SIMCONNECT_CLIENT_DATA_PERIOD_SECOND,
+        sc::SIMCONNECT_CLIENT_DATA_PERIOD_ON_SET,
         sc::SIMCONNECT_CLIENT_DATA_REQUEST_FLAG_DEFAULT,
         0,
         0,
@@ -316,4 +333,46 @@ pub unsafe fn parse_gate_subtitle(
     } else {
         Some(s)
     }
+}
+
+/// Diagnóstico (throttled ~8 s): vuelca al log los valores crudos que
+/// llegan por el puente — brake temps, el LEN del subtítulo, los primeros
+/// chunks y el subtítulo ya decodificado. Permite ver de un vistazo si el
+/// módulo de MobiFlight está entregando datos y dónde falla la cadena.
+///
+/// # Safety
+/// `p_data` debe apuntar a un `SIMCONNECT_RECV_CLIENT_DATA` válido con al
+/// menos `bridge.var_count` floats.
+pub unsafe fn debug_dump(
+    p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+    bridge: &LvarBridge,
+) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_MS: AtomicI64 = AtomicI64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    if now - LAST_MS.load(Ordering::Relaxed) < 8000 {
+        return;
+    }
+    LAST_MS.store(now, Ordering::Relaxed);
+
+    let brakes: Vec<f64> = (0..bridge.brake_count)
+        .map(|i| read_float(p_data, i))
+        .collect();
+    let len = read_float(p_data, bridge.subtitle_len_index);
+    let chunks: Vec<f64> = (0..bridge.subtitle_chunk_count.min(4))
+        .map(|i| read_float(p_data, bridge.subtitle_len_index + 1 + i))
+        .collect();
+    let decoded = parse_gate_subtitle(
+        p_data,
+        bridge.subtitle_len_index,
+        bridge.subtitle_chunk_count,
+    );
+    tracing::info!(
+        target: "lvar_bridge",
+        "DIAG MobiFlight: brakes={:?} subtitle_LEN={} chunks[0..]={:?} -> decoded={:?}",
+        brakes, len, chunks, decoded
+    );
 }
