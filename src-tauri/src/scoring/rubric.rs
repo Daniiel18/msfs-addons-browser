@@ -243,7 +243,7 @@ pub static RULES: &[Rule] = &[
     },
     Rule {
         id: "predep_engines_off",
-        label: "All engines off",
+        label: "Motores apagados al inicio (arranque en frío)",
         phase: Phase::PreDeparture,
         points_max: 100,
         evaluator: eval_predep_engines_off,
@@ -957,8 +957,17 @@ fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 fn eval_predep_engines_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // (v3.21.0) Usamos el N1 por sample (ya capturado). Durante
-    // pre-departure (antes de arrancar) el N1 debe ser ~0. <5% ≈ off.
+    // (v4.6.1 FIX) La fase pre_departure INCLUYE el arranque de motores en
+    // el gate (es lo normal: cold & dark → start → pushback). Antes
+    // tomábamos el N1 MÁXIMO de la fase, que siempre era alto (motores ya
+    // arrancados) → la regla SIEMPRE marcaba ✗ aunque el usuario empezara
+    // bien en frío. El intento real de esta regla es premiar el arranque
+    // EN FRÍO: que los motores hayan estado apagados AL INICIO. Por eso
+    // usamos el N1 MÍNIMO de la fase: si en algún momento estuvieron
+    // apagados (<5%), el usuario empezó cold & dark → ✓. Solo si NUNCA
+    // estuvieron apagados (spawn "ready-to-fly" con motores en marcha)
+    // baja la nota. (El APU NO cuenta: eng_n1 lee TURB ENG N1 de los
+    // motores 1-4, no el APU.)
     let samples = samples_pre_departure(ctx);
     if samples.is_empty() {
         return skip(rule, "no_pre_departure_phase");
@@ -966,11 +975,14 @@ fn eval_predep_engines_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if !any_present(&samples, |s| s.eng_n1_max) {
         return skip(rule, "no_engine_data");
     }
-    let max_n1 = max_f64(&samples, |s| s.eng_n1_max).unwrap_or(0.0);
-    let evidence = json!({ "max_n1_pct_pre_departure": max_n1 });
-    if max_n1 < 5.0 {
+    let min_n1 = samples
+        .iter()
+        .filter_map(|s| s.eng_n1_max)
+        .fold(f64::INFINITY, f64::min);
+    let evidence = json!({ "min_n1_pct_pre_departure": min_n1 });
+    if min_n1 < 5.0 {
         pass(rule, evidence)
-    } else if max_n1 < 20.0 {
+    } else if min_n1 < 20.0 {
         partial(rule, rule.points_max / 2, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
