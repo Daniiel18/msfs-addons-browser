@@ -720,6 +720,57 @@ fn samples_taxi_in<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
         .collect()
 }
 
+/// (v4.6.2) Taxi-In "asentado" — excluye la cola de desaceleración del
+/// rollout (la bajada monótona de velocidad en pista, que el detector de
+/// fase mete en "taxi_in" porque separa fases por velocidad, no por
+/// geometría de pista). Devuelve las muestras DESDE que el avión deja de
+/// frenar (ya maniobrando en calle de rodaje). Ahí tiene sentido medir la
+/// velocidad de taxi y exigir que las luces de aterrizaje ya estén
+/// apagadas (after-landing flow hecho).
+fn samples_taxi_in_settled<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    let s = samples_taxi_in(ctx);
+    if s.len() <= 1 {
+        return s;
+    }
+    let mut start = 0usize;
+    while start + 1 < s.len() {
+        match (s[start].gs_kt, s[start + 1].gs_kt) {
+            (Some(a), Some(b)) if b < a => start += 1,
+            _ => break,
+        }
+    }
+    s[start..].to_vec()
+}
+
+/// (v4.6.2) Núcleo del crucero — sólo muestras dentro de 3000 ft del techo
+/// del vuelo. El detector de fase también etiqueta "cruise" a las
+/// nivelaciones BAJAS (banda 1800..10000 ft nivelado: escalones de ATC,
+/// tramos nivelados del descenso), donde puede haber flaps/gear/luces
+/// desplegados legítimamente. Para evaluar la config de crucero (avión
+/// "limpio") sólo miramos el crucero REAL (cerca del techo), evitando
+/// falsos fallos por esas nivelaciones bajas.
+fn samples_cruise_core<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    let cruise = ctx.samples_in_phase("cruise");
+    if cruise.is_empty() {
+        return cruise;
+    }
+    let max_alt = cruise.iter().filter_map(|s| s.alt_ft).max().unwrap_or(0);
+    if max_alt <= 0 {
+        return cruise;
+    }
+    let floor = max_alt - 3000;
+    let core: Vec<&TrackSample> = cruise
+        .iter()
+        .copied()
+        .filter(|s| s.alt_ft.map(|a| a >= floor).unwrap_or(false))
+        .collect();
+    if core.is_empty() {
+        cruise
+    } else {
+        core
+    }
+}
+
 /// Arrived (engines off / parking / deboarding).
 fn samples_arrived<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
     if ctx.has_scoring_phase() {
@@ -941,15 +992,32 @@ fn eval_max_service_ceiling(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 // =============================================================================
 
 fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_pre_departure(ctx);
+    let all = samples_pre_departure(ctx);
+    if all.is_empty() {
+        return skip(rule, "no_pre_departure_phase");
+    }
+    // (v4.6.2) Solo el periodo ESTÁTICO en el gate (gs < 1 kt). Soltar el
+    // freno para el pushback (ya en movimiento) es lo normal y no debe
+    // penalizar. Antes medíamos sobre TODA la fase pre_departure — que
+    // incluye el pushback con freno suelto — y el % bajaba → ✗ injusto.
+    let static_samples: Vec<&TrackSample> = all
+        .iter()
+        .copied()
+        .filter(|s| s.gs_kt.map(|g| g < 1).unwrap_or(true))
+        .collect();
+    let samples = if static_samples.is_empty() {
+        all
+    } else {
+        static_samples
+    };
     if !any_present(&samples, |s| s.parking_brake) {
         return skip(rule, "no_parking_brake_data");
     }
     let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
-    let evidence = json!({ "parking_brake_set_pct": (pct * 100.0) as i32 });
-    if pct >= 0.95 {
+    let evidence = json!({ "parking_brake_set_pct_static": (pct * 100.0) as i32 });
+    if pct >= 0.9 {
         pass(rule, evidence)
-    } else if pct >= 0.7 {
+    } else if pct >= 0.5 {
         partial(rule, (rule.points_max * 2) / 3, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1272,18 +1340,29 @@ fn eval_takeoff_pitch_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 // =============================================================================
 
 fn eval_takeoff_accel_gear_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_takeoff_accel(ctx);
-    if samples.is_empty() {
+    let to = samples_takeoff_accel(ctx);
+    if to.is_empty() {
         return skip(rule, "no_takeoff_accel_data");
     }
-    if !any_present(&samples, |s| s.gear_down) {
+    if !any_present(&to, |s| s.gear_down) {
         return skip(rule, "no_gear_data");
     }
-    // Tomar el ÚLTIMO sample (al final de la phase de aceleración) —
-    // a 1000 ft AGL el gear ya debe estar arriba.
-    let last_gear = samples.last().and_then(|s| s.gear_down).unwrap_or(true);
-    let evidence = json!({ "gear_down_at_1000ft": last_gear });
-    if !last_gear {
+    // (v4.6.2) El tren está ABAJO en la carrera y el liftoff (correcto) y
+    // se retrae justo después. Antes mirábamos SOLO el último sample de la
+    // aceleración, que con muestreo escaso podía caer en el liftoff (tren
+    // abajo) → ✗ injusto, "obviamente subo el tren al despegar". Ahora
+    // aceptamos si el tren se retrajo en CUALQUIER punto del low-climb, o
+    // si ya está arriba al empezar el initial climb (~1000 ft).
+    let retracted_in_to = to.iter().any(|s| s.gear_down == Some(false));
+    let ic = samples_initial_climb(ctx);
+    let retracted_by_climb = ic.iter().take(3).any(|s| s.gear_down == Some(false));
+    let last_gear_up = to.last().and_then(|s| s.gear_down) == Some(false);
+    let retracted = retracted_in_to || retracted_by_climb || last_gear_up;
+    let evidence = json!({
+        "retracted_in_takeoff_accel": retracted_in_to,
+        "retracted_by_initial_climb": retracted_by_climb,
+    });
+    if retracted {
         pass(rule, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1360,7 +1439,7 @@ fn eval_initial_climb_landing_light_off(ctx: &FlightContext, rule: &Rule) -> Sco
 // =============================================================================
 
 fn eval_cruise_gear_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("cruise");
+    let samples = samples_cruise_core(ctx);
     if samples.is_empty() {
         return skip(rule, "no_cruise_phase");
     }
@@ -1377,7 +1456,7 @@ fn eval_cruise_gear_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 fn eval_cruise_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("cruise");
+    let samples = samples_cruise_core(ctx);
     if samples.is_empty() {
         return skip(rule, "no_cruise_phase");
     }
@@ -1396,7 +1475,7 @@ fn eval_cruise_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem 
 }
 
 fn eval_cruise_flaps_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("cruise");
+    let samples = samples_cruise_core(ctx);
     if samples.is_empty() {
         return skip(rule, "no_cruise_phase");
     }
@@ -1641,7 +1720,11 @@ fn eval_landing_smooth(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 // =============================================================================
 
 fn eval_taxi_in_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_taxi_in(ctx);
+    // (v4.6.2) Usamos el taxi-in ASENTADO: el after-landing flow (apagar
+    // luces de aterrizaje) ocurre mientras aún frenas en pista, y ese
+    // tramo cae en "taxi_in". Excluyéndolo, medimos las luces ya
+    // maniobrando en calle de rodaje, donde deben estar apagadas.
+    let samples = samples_taxi_in_settled(ctx);
     if samples.is_empty() {
         return skip(rule, "no_taxi_in_data");
     }

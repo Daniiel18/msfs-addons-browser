@@ -1,0 +1,24 @@
+-- (v4.6.2) Reset de scores cacheados tras corregir varios evaluadores que
+-- medían sobre TODA una fase aunque los límites de fase (por velocidad /
+-- altitud) no coinciden con el momento operacional real:
+--
+--   · Pre-Departure "parking brake": ahora mide solo el periodo ESTÁTICO
+--     en el gate (gs < 1). Soltar el freno para el pushback no penaliza.
+--   · Take-Off "gear retracted": robusto a muestreo escaso — acepta la
+--     retracción en cualquier punto del low-climb o al empezar el initial
+--     climb (antes solo el último sample, que podía caer en el liftoff
+--     con el tren abajo).
+--   · Cruise "flaps/gear/luces": solo el NÚCLEO del crucero (dentro de
+--     3000 ft del techo). Antes las nivelaciones bajas (escalones / tramos
+--     del descenso) que el detector etiqueta "cruise" metían flaps/luces
+--     desplegados → falsos fallos.
+--   · Taxi-In "luces de aterrizaje off": usa el taxi ASENTADO (excluye la
+--     cola de desaceleración del rollout donde aún se hace el after-landing
+--     flow en pista).
+--
+-- Los fixes viven en los evaluadores (rubric.rs), que re-leen los datos
+-- crudos por sample ya guardados. Basta con limpiar el cache: al abrir la
+-- Flight Evaluation, `score_get_report` recomputa con la lógica corregida
+-- — sin re-volar.
+DELETE FROM flight_log_score_item;
+UPDATE flight_log SET score_total = NULL, score_max = NULL, score_grade = NULL;
