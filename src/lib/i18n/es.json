@@ -858,5 +858,7 @@
   "drop.modal.delete_files": "Archivos a eliminar:",
   "drop.modal.delete_yes": "Sí, eliminar",
   "drop.modal.delete_no": "Conservar",
-  "drop.modal.deleting": "Eliminando…"
+  "drop.modal.deleting": "Eliminando…",
+  "drop.modal.installed_ok": "¡Instalado correctamente!",
+  "drop.modal.installed_ok_sub": "{count} elemento(s) instalado(s)"
 }

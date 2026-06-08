@@ -57,6 +57,10 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
     return init;
   });
   const [installing, setInstalling] = useState(false);
+  // (v4.11.2) Estado efímero "Instalado ✓" que se muestra ~1s ANTES de
+  // ofrecer borrar el archivo — así se percibe que SÍ se instaló y no
+  // parece que se borra sin instalar.
+  const [installedOk, setInstalledOk] = useState(false);
   // (v4.7.0) Paso de borrado del archivo original tras instalar.
   const [deletePrompt, setDeletePrompt] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -67,14 +71,20 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
   // ESC cierra (con cancel de TODAS las sesiones).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !installing && !deleting && !deletePrompt) {
+      if (
+        e.key === "Escape" &&
+        !installing &&
+        !deleting &&
+        !deletePrompt &&
+        !installedOk
+      ) {
         cancelAll();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [installing, deleting, deletePrompt]);
+  }, [installing, deleting, deletePrompt, installedOk]);
 
   const cancelAll = async () => {
     for (const insp of inspections) {
@@ -148,18 +158,22 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
       }
       void useCommunityStore.getState().rescan().catch(() => {});
       void useGsxLocalStore.getState().refresh().catch(() => {});
-
-      // (v4.7.0) Si algo se instaló bien, ofrecemos borrar el/los
-      // archivo(s) original(es). Si no, cerramos directo.
-      const uniqueArchives = Array.from(new Set(committed));
-      if (uniqueArchives.length > 0) {
-        setPendingReports(reports);
-        setDeletePrompt(uniqueArchives);
-      } else {
-        onDone(reports);
-      }
     } finally {
       setInstalling(false);
+    }
+
+    // (v4.7.0 / v4.11.2) Si algo se instaló bien, mostramos "Instalado ✓"
+    // ~1s y LUEGO ofrecemos borrar el/los archivo(s). Si no, cerramos.
+    const uniqueArchives = Array.from(new Set(committed));
+    if (uniqueArchives.length > 0) {
+      setPendingReports(reports);
+      setInstalledOk(true);
+      setTimeout(() => {
+        setInstalledOk(false);
+        setDeletePrompt(uniqueArchives);
+      }, 1100);
+    } else {
+      onDone(reports);
     }
   };
 
@@ -195,7 +209,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
     <AnimatePresence>
       <motion.div
         key="drop-modal"
-        className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-950/80 px-4 py-10 backdrop-blur-sm"
+        className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-slate-950/80 px-4 py-10 backdrop-blur-sm"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -207,9 +221,13 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           exit={{ y: 16, opacity: 0 }}
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
-          className="w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
+          className={`w-full rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ${
+            installedOk || deletePrompt ? "max-w-sm" : "max-w-2xl"
+          }`}
         >
-          {deletePrompt ? (
+          {installedOk ? (
+            <InstalledSuccess reports={pendingReports} />
+          ) : deletePrompt ? (
             <DeleteConfirm
               archives={deletePrompt}
               deleting={deleting}
@@ -388,6 +406,33 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
         </motion.div>
       </motion.div>
     </AnimatePresence>
+  );
+}
+
+/** (v4.11.2) Estado efímero "Instalado ✓" antes de ofrecer borrar. Da
+ *  feedback claro de que la instalación SÍ ocurrió. */
+function InstalledSuccess({ reports }: { reports: DropCommitReport[] }) {
+  const count = reports.reduce(
+    (n, r) => n + r.installedPackages.length + r.installedGsx.length,
+    0,
+  );
+  return (
+    <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
+      <motion.div
+        initial={{ scale: 0.6, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 320, damping: 18 }}
+        className="rounded-full bg-emerald-500/15 p-3 ring-1 ring-emerald-500/30"
+      >
+        <CheckCircle2 className="h-7 w-7 text-emerald-300" />
+      </motion.div>
+      <h2 className="text-sm font-semibold text-slate-100">
+        {t("drop.modal.installed_ok")}
+      </h2>
+      <p className="text-xs text-slate-400">
+        {t("drop.modal.installed_ok_sub", { count })}
+      </p>
+    </div>
   );
 }
 
