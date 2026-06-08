@@ -120,6 +120,16 @@ export interface SimBriefBriefing {
   generatedAt: string | null;
 }
 
+/** (v4.10.0) Un punto del plan de ruta (navlog de SimBrief). */
+export interface RouteFix {
+  ident: string;
+  fixType: string | null;
+  lat: number;
+  lon: number;
+  stage: string | null;
+  isSidStar: boolean;
+}
+
 export interface SimBriefFlight {
   ofpId: string;
   pilotId: string;
@@ -148,6 +158,9 @@ export interface SimBriefFlight {
   fuelBurnKg: number | null;
   /** "lbs" o "kgs" del OFP — sólo trazabilidad. */
   units: string | null;
+  /** (v4.10.0) Puntos del plan de ruta (navlog). Vacío si el OFP no
+   *  trae navlog. Se usa para dibujar la ruta planificada en el mapa. */
+  routeFixes?: RouteFix[];
 }
 
 export interface SimBriefRefreshResult {

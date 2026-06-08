@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "4.9.3"
+version = "4.10.0"
 description = "SimFleet — flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -73,7 +73,7 @@ tempfile = "3"
 librqbit = { version = "8", default-features = false, features = ["default-tls"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "chrono", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 anyhow = "1"

@@ -307,6 +307,57 @@ export function RoutesMapView({
         },
       });
 
+      // (v4.10.0) RUTA PLANIFICADA de SimBrief (navlog): línea violeta a
+      // través de los waypoints + puntos + etiquetas. Las etiquetas usan
+      // colisión automática (text-allow-overlap:false) y minzoom para
+      // declutter: en zoom bajo sólo se ven los nombres que caben.
+      map.addSource("rt-plan", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-plan-line",
+        type: "line",
+        source: "rt-plan",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#a78bfa",
+          "line-width": 1.6,
+          "line-opacity": 0.7,
+        },
+      });
+      map.addSource("rt-plan-fixes", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-plan-fixes-dots",
+        type: "circle",
+        source: "rt-plan-fixes",
+        minzoom: 4,
+        paint: {
+          "circle-radius": 2.4,
+          "circle-color": "#c4b5fd",
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#4c1d95",
+          "circle-opacity": 0.9,
+        },
+      });
+      map.addLayer({
+        id: "rt-plan-fixes-labels",
+        type: "symbol",
+        source: "rt-plan-fixes",
+        minzoom: 5,
+        layout: {
+          "text-field": ["get", "ident"],
+          "text-size": 10,
+          "text-offset": [0, -0.9],
+          "text-allow-overlap": false,
+          "text-optional": true,
+          "text-padding": 2,
+          "symbol-sort-key": ["get", "sort"],
+        },
+        paint: {
+          "text-color": "#ddd6fe",
+          "text-halo-color": "#1e1b4b",
+          "text-halo-width": 1.2,
+        },
+      });
+
       // (v4.0.0 — P6) Terminator día/noche con gradiente suave.
       // Dos polígonos apilados crean tres niveles de oscuridad:
       // día (transparente) → crepúsculo (0.25) → noche profunda (0.62).
@@ -578,6 +629,78 @@ export function RoutesMapView({
     simbriefFlights,
   ]);
 
+  // (v4.10.0) RUTA PLANIFICADA (navlog SimBrief). Se dibuja cuando hay
+  // un OFP cuyos origen+destino matchean el vuelo seleccionado
+  // (FlightBook) o, en vuelo, el origen del watcher. Devuelve la línea
+  // a través de los waypoints + los puntos con su ident.
+  const planData = useMemo<{
+    line: GeoJSON.FeatureCollection<GeoJSON.MultiLineString>;
+    fixes: GeoJSON.FeatureCollection<GeoJSON.Point>;
+  }>(() => {
+    const emptyLine = {
+      type: "FeatureCollection",
+      features: [],
+    } as GeoJSON.FeatureCollection<GeoJSON.MultiLineString>;
+    const emptyFix = {
+      type: "FeatureCollection",
+      features: [],
+    } as GeoJSON.FeatureCollection<GeoJSON.Point>;
+
+    let origin: string | null | undefined;
+    let dest: string | null | undefined;
+    if (selectedFlightId != null) {
+      const sel = flightLogEntries.find((e) => e.id === selectedFlightId);
+      origin = sel?.originIcao;
+      dest = sel?.destinationIcao;
+    } else {
+      origin = flightStatus?.originIcao;
+    }
+    if (!origin) return { line: emptyLine, fixes: emptyFix };
+
+    const ofp = simbriefFlights.find(
+      (f) => f.originIcao === origin && (!dest || f.destinationIcao === dest),
+    );
+    const fixes = ofp?.routeFixes ?? [];
+    if (fixes.length < 2) return { line: emptyLine, fixes: emptyFix };
+
+    const coords: number[][][] = [];
+    for (let i = 0; i < fixes.length - 1; i++) {
+      const segs = greatCircleLine(
+        fixes[i].lon,
+        fixes[i].lat,
+        fixes[i + 1].lon,
+        fixes[i + 1].lat,
+      );
+      for (const s of segs) coords.push(s);
+    }
+    const line: GeoJSON.FeatureCollection<GeoJSON.MultiLineString> = {
+      type: "FeatureCollection",
+      features: coords.length
+        ? [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: { type: "MultiLineString", coordinates: coords },
+            },
+          ]
+        : [],
+    };
+    const fixFeatures: GeoJSON.Feature<GeoJSON.Point>[] = fixes.map((fx, i) => ({
+      type: "Feature",
+      properties: { ident: fx.ident, sidStar: fx.isSidStar, sort: i },
+      geometry: { type: "Point", coordinates: [fx.lon, fx.lat] },
+    }));
+    return {
+      line,
+      fixes: { type: "FeatureCollection", features: fixFeatures },
+    };
+  }, [
+    selectedFlightId,
+    flightLogEntries,
+    flightStatus?.originIcao,
+    simbriefFlights,
+  ]);
+
   // Geometría del track real del vuelo seleccionado.
   const trackGeojson = useMemo<
     GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
@@ -823,6 +946,12 @@ export function RoutesMapView({
     liveSrc?.setData(liveTrackGeojson);
     const projSrc = map.getSource("rt-projection") as GeoJSONSource | undefined;
     projSrc?.setData(projectionGeojson);
+    const planSrc = map.getSource("rt-plan") as GeoJSONSource | undefined;
+    planSrc?.setData(planData.line);
+    const planFixSrc = map.getSource("rt-plan-fixes") as
+      | GeoJSONSource
+      | undefined;
+    planFixSrc?.setData(planData.fixes);
     map.triggerRepaint();
   }, [
     mapReady,
@@ -832,6 +961,7 @@ export function RoutesMapView({
     selectedGreatCircleGeojson,
     liveTrackGeojson,
     projectionGeojson,
+    planData,
   ]);
 
   // (v1.1.4) Marker del avión en vivo. Sólo visible cuando SimConnect

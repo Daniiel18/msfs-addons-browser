@@ -22,6 +22,25 @@ use sqlx::SqlitePool;
 /// Vuelo persistido en `simbrief_flights`. Lo expone el comando
 /// `list_simbrief_flights` para que el mapa pinte una LineString
 /// por cada uno.
+/// (v4.10.0) Un punto del plan de ruta (navlog de SimBrief). Cada `<fix>`
+/// del OFP: waypoint, VOR, NDB, aeropuerto o punto lat/long, con su etapa
+/// (CLB/CRZ/DSC) para poder colorear/declutter por fase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteFix {
+    /// Identificador (p.ej. "KOK", "SOVAR", "TOC"). Puede repetirse.
+    pub ident: String,
+    /// Tipo SimBrief: "apt" | "wpt" | "vor" | "ndb" | "ltlg" | etc.
+    pub fix_type: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+    /// Etapa de vuelo del fix: "CLB" | "CRZ" | "DSC" (vacío en algunos).
+    pub stage: Option<String>,
+    /// `true` si el fix pertenece a una SID o STAR (procedimiento de
+    /// terminal) — útil para declutter (ocultar nombres en zoom bajo).
+    pub is_sid_star: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct SimBriefFlight {
@@ -69,6 +88,13 @@ pub struct SimBriefFlight {
     /// con `FUEL TOTAL QUANTITY WEIGHT` capturado al OUT — si delta <10%,
     /// es el OFP del piloto que cargó el avión.
     pub plan_ramp_kg: Option<i64>,
+    /// (v4.10.0) Puntos del plan de ruta (navlog del OFP). Se persiste
+    /// como JSON TEXT en la columna `route_fixes` (decodificado con
+    /// `#[sqlx(json)]`). Las SELECT usan `COALESCE(route_fixes,'[]')`
+    /// para que filas viejas (NULL) devuelvan lista vacía.
+    #[serde(default)]
+    #[sqlx(json)]
+    pub route_fixes: Vec<RouteFix>,
 }
 
 /// Resultado del refresh manual: cuántos OFPs nuevos se añadieron
@@ -156,9 +182,9 @@ pub async fn refresh_latest(
             destination_icao, destination_name, destination_lat, destination_lon,
             route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
             pax_count, cargo_kg, fuel_burn_kg, units,
-            aircraft_reg, plan_ramp_kg
+            aircraft_reg, plan_ramp_kg, route_fixes
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21, ?22, ?23)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21, ?22, ?23, ?24)
         ON CONFLICT(ofp_id) DO UPDATE SET
             fetched_at   = datetime('now'),
             pax_count    = COALESCE(excluded.pax_count, simbrief_flights.pax_count),
@@ -166,7 +192,8 @@ pub async fn refresh_latest(
             fuel_burn_kg = COALESCE(excluded.fuel_burn_kg, simbrief_flights.fuel_burn_kg),
             units        = COALESCE(excluded.units, simbrief_flights.units),
             aircraft_reg = COALESCE(excluded.aircraft_reg, simbrief_flights.aircraft_reg),
-            plan_ramp_kg = COALESCE(excluded.plan_ramp_kg, simbrief_flights.plan_ramp_kg)
+            plan_ramp_kg = COALESCE(excluded.plan_ramp_kg, simbrief_flights.plan_ramp_kg),
+            route_fixes  = COALESCE(NULLIF(excluded.route_fixes, '[]'), simbrief_flights.route_fixes)
         "#,
     )
     .bind(&flight.ofp_id)
@@ -192,6 +219,7 @@ pub async fn refresh_latest(
     .bind(&flight.units)
     .bind(&flight.aircraft_reg)
     .bind(flight.plan_ramp_kg)
+    .bind(serde_json::to_string(&flight.route_fixes).unwrap_or_else(|_| "[]".to_string()))
     .execute(pool)
     .await?;
 
@@ -210,7 +238,8 @@ pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFligh
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
                pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg
+               aircraft_reg, plan_ramp_kg,
+               COALESCE(route_fixes, '[]') AS route_fixes
         FROM simbrief_flights
         ORDER BY COALESCE(generated_at, fetched_at) DESC
         "#,
@@ -243,7 +272,8 @@ pub async fn find_recent_for_origin(
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
                pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg
+               aircraft_reg, plan_ramp_kg,
+               COALESCE(route_fixes, '[]') AS route_fixes
         FROM simbrief_flights
         WHERE UPPER(origin_icao) = UPPER(?1)
           AND (
@@ -341,7 +371,8 @@ pub async fn score_simbrief_candidates(
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
                pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg
+               aircraft_reg, plan_ramp_kg,
+               COALESCE(route_fixes, '[]') AS route_fixes
         FROM simbrief_flights
         WHERE UPPER(origin_icao) = UPPER(?1)
           AND (
@@ -591,6 +622,51 @@ static TAG_ALTERNATE: Lazy<Regex> = Lazy::new(|| tag_re("alternate"));
 static TAG_NOTAMS: Lazy<Regex> = Lazy::new(|| tag_re("notams"));
 static TAG_NOTAMDREC: Lazy<Regex> = Lazy::new(|| tag_re("notamdrec"));
 
+static TAG_NAVLOG: Lazy<Regex> = Lazy::new(|| tag_re("navlog"));
+static TAG_FIX: Lazy<Regex> = Lazy::new(|| tag_re("fix"));
+
+/// Extrae los `<fix>` del bloque `<navlog>` del OFP. Cada fix con su
+/// ident, tipo, lat/lon y etapa. Degradación elegante: si falta lat/lon
+/// el fix se omite; si no hay navlog devuelve lista vacía.
+pub fn parse_navlog(xml: &str) -> Vec<RouteFix> {
+    let navlog = match TAG_NAVLOG.captures(xml).and_then(|c| c.get(1)) {
+        Some(m) => m.as_str(),
+        None => return Vec::new(),
+    };
+    let mut fixes = Vec::new();
+    for cap in TAG_FIX.captures_iter(navlog) {
+        let block = match cap.get(1) {
+            Some(m) => m.as_str(),
+            None => continue,
+        };
+        let lat = inner_tag(block, "pos_lat").and_then(|s| s.trim().parse::<f64>().ok());
+        let lon = inner_tag(block, "pos_long").and_then(|s| s.trim().parse::<f64>().ok());
+        let (lat, lon) = match (lat, lon) {
+            (Some(la), Some(lo)) if la.abs() <= 90.0 && lo.abs() <= 180.0 => (la, lo),
+            _ => continue,
+        };
+        let ident = inner_tag(block, "ident")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "•".to_string());
+        let is_sid_star = inner_tag(block, "is_sid_star")
+            .map(|s| {
+                let t = s.trim();
+                !t.is_empty() && t != "0"
+            })
+            .unwrap_or(false);
+        fixes.push(RouteFix {
+            ident,
+            fix_type: inner_tag(block, "type").map(|s| s.trim().to_string()),
+            lat,
+            lon,
+            stage: inner_tag(block, "stage").map(|s| s.trim().to_string()),
+            is_sid_star,
+        });
+    }
+    fixes
+}
+
 /// Parser principal. Devuelve `None` si faltan los campos
 /// imprescindibles (origen, destino con lat/lon).
 pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
@@ -717,6 +793,7 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
         units,
         aircraft_reg,
         plan_ramp_kg,
+        route_fixes: parse_navlog(xml),
     })
 }
 
@@ -879,6 +956,32 @@ mod tests {
   <times>
     <est_time_enroute>5400</est_time_enroute>
   </times>
+  <navlog>
+    <fix>
+      <ident>KOK</ident>
+      <type>wpt</type>
+      <pos_lat>51.09</pos_lat>
+      <pos_long>2.65</pos_long>
+      <stage>CLB</stage>
+      <is_sid_star>1</is_sid_star>
+    </fix>
+    <fix>
+      <ident>TOC</ident>
+      <type>wpt</type>
+      <pos_lat>49.5</pos_lat>
+      <pos_long>1.2</pos_long>
+      <stage>CRZ</stage>
+      <is_sid_star>0</is_sid_star>
+    </fix>
+    <fix>
+      <ident>MAD</ident>
+      <type>vor</type>
+      <pos_lat>40.48</pos_lat>
+      <pos_long>-3.45</pos_long>
+      <stage>DSC</stage>
+      <is_sid_star>0</is_sid_star>
+    </fix>
+  </navlog>
   <api_params>
     <time_generated>1735689600</time_generated>
   </api_params>
@@ -912,6 +1015,35 @@ mod tests {
             "fuel_burn_kg = {} (esperado ~3901)",
             fuel
         );
+    }
+
+    #[test]
+    fn parses_navlog_fixes() {
+        let f = parse_ofp_xml(SAMPLE_XML, "50956").expect("parse should succeed");
+        assert_eq!(f.route_fixes.len(), 3, "deben parsearse 3 fixes");
+        let kok = &f.route_fixes[0];
+        assert_eq!(kok.ident, "KOK");
+        assert_eq!(kok.fix_type.as_deref(), Some("wpt"));
+        assert_eq!(kok.stage.as_deref(), Some("CLB"));
+        assert!(kok.is_sid_star, "KOK es parte de SID");
+        assert!((kok.lat - 51.09).abs() < 0.01);
+        assert!((kok.lon - 2.65).abs() < 0.01);
+        assert!(!f.route_fixes[1].is_sid_star, "TOC no es SID/STAR");
+        assert_eq!(f.route_fixes[2].ident, "MAD");
+        assert!((f.route_fixes[2].lon - -3.45).abs() < 0.01);
+    }
+
+    #[test]
+    fn navlog_absent_yields_empty() {
+        let xml = r#"<?xml version="1.0"?>
+<OFP>
+  <fetch><request_id>1</request_id></fetch>
+  <params><units>kgs</units></params>
+  <origin><icao_code>LEMD</icao_code><pos_lat>40</pos_lat><pos_long>-3</pos_long></origin>
+  <destination><icao_code>EBBR</icao_code><pos_lat>50</pos_lat><pos_long>4</pos_long></destination>
+</OFP>"#;
+        let f = parse_ofp_xml(xml, "1").expect("parse");
+        assert!(f.route_fixes.is_empty());
     }
 
     #[test]
