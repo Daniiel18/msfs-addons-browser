@@ -268,6 +268,28 @@ const NAME_KEYWORD_TO_IATA: ReadonlyArray<readonly [string, string]> = [
   ["indigo", "6E"],
   ["vistara", "UK"],
   ["spicejet", "SG"],
+  ["tigerair", "TR"],
+  ["citilink", "QG"],
+  ["super air jet", "IU"],
+  ["juneyao", "HO"],
+  ["loong air", "GJ"],
+  ["hong kong airlines", "HX"],
+  ["greater bay", "HB"],
+  ["bamboo", "QH"],
+  ["pacific airlines", "BL"],
+  ["myanmar", "8M"],
+  ["royal brunei", "BI"],
+  ["fiji airways", "FJ"],
+  ["t'way", "TW"],
+  ["tway air", "TW"],
+  ["air premia", "YP"],
+  ["jeju air", "7C"],
+  ["jeju", "7C"],
+  ["eastar", "ZE"],
+  ["salam air", "OV"],
+  ["flynas", "XY"],
+  ["flyadeal", "F3"],
+  ["nepal airlines", "RA"],
   // Norteamérica
   ["westjet", "WS"],
   ["delta", "DL"],
@@ -347,6 +369,17 @@ const NAME_KEYWORD_TO_IATA: ReadonlyArray<readonly [string, string]> = [
   ["jazeera", "J9"],
   // Oceanía / otros
   ["qantas", "QF"],
+  ["aer lingus", "EI"],
+  ["widerøe", "WF"],
+  ["wideroe", "WF"],
+  ["croatia airlines", "OU"],
+  ["sunexpress", "XQ"],
+  ["rwandair", "WB"],
+  ["airlink", "4Z"],
+  ["allegiant", "G4"],
+  ["porter", "PD"],
+  ["breeze", "MX"],
+  ["play ", "OG"],
   // Carga
   ["fedex", "FX"],
   ["ups ", "5X"],
@@ -355,14 +388,36 @@ const NAME_KEYWORD_TO_IATA: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
- * Intenta resolver el IATA buscando palabras clave de aerolínea dentro
- * de un nombre/título libre. Devuelve el IATA o `null`.
+ * Intenta resolver el IATA desde un nombre/título libre de aerolínea.
+ *
+ * Ejemplos de título (MSFS): "PMDG 737-900ER DAL (N827DN - C.E.Woolman)",
+ * "Fenix A320 - Tigerair 'Standard' 9V-TAR (2016)".
+ *
+ * Pasos:
+ *  1. LIMPIEZA: quitamos paréntesis (regs/variantes/años) y descartamos
+ *     tokens que parezcan **matrícula** o variante de avión — cualquiera
+ *     con dígito o guion (A320, 737-900ER, 9V-TAR, PK-GQN, N827DN). Esto
+ *     evita resolver por la matrícula (p.ej. "9V-TAR" contiene "TAR" =
+ *     Tunisair → falso positivo).
+ *  2. Palabra clave de nombre dentro del texto limpio.
+ *  3. Último recurso: un token ICAO de 3 letras conocido embebido en el
+ *     título (estilo PMDG, p.ej. "DAL" → DL, "UAE" → EK, "BAW" → BA).
  */
 export function nameToIata(name?: string | null): string | null {
   if (!name) return null;
-  const hay = name.toLowerCase();
+  const tokens = name
+    .replace(/\([^)]*\)/g, " ") // (N827DN - C.E.Woolman), (2016), (178Seat)
+    .split(/\s+/)
+    .filter((t) => t && !/[0-9-]/.test(t)); // fuera matrículas/variantes
+  const cleaned = tokens.join(" ");
+  const hay = " " + cleaned.toLowerCase() + " ";
+
   for (const [kw, iata] of NAME_KEYWORD_TO_IATA) {
     if (hay.includes(kw)) return iata;
+  }
+  for (const tok of tokens) {
+    const t = tok.toUpperCase().replace(/[^A-Z]/g, "");
+    if (t.length === 3 && ICAO_TO_IATA[t]) return ICAO_TO_IATA[t];
   }
   return null;
 }
