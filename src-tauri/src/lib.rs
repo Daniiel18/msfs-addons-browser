@@ -150,6 +150,7 @@ pub fn run() {
             commands::updater::install_update,
             commands::airports::list_addons_on_map,
             commands::airports::refresh_airports_dataset,
+            commands::airports::lookup_airports,
             commands::community::scan_community,
             commands::community::list_community_packages,
             commands::community::list_available_updates,

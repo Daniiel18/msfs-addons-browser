@@ -1,5 +1,17 @@
-use crate::airports::{self, AddonOnMap};
+use crate::airports::{self, AddonOnMap, AirportBrief};
 use crate::AppState;
+
+/// (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. Lo usa el
+/// FlightBook para mostrar el aeropuerto bajo el código de origen/destino.
+#[tauri::command]
+pub async fn lookup_airports(
+    icaos: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<AirportBrief>, String> {
+    airports::lookup_airports(&state.db, &icaos)
+        .await
+        .map_err(|e| e.to_string())
+}
 
 /// Devuelve los addons del catálogo local que tienen ICAO con coords
 /// resolvibles. Es lo que pinta el mapa.

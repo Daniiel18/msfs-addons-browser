@@ -8,6 +8,7 @@ import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type {
   Addon,
   AddonOnMap,
+  AirportBrief,
   AppSettings,
   AvailableUpdate,
   BackupResult,
@@ -232,6 +233,8 @@ interface Api {
   /** Fuerza un refresco del dataset de aeropuertos. Devuelve cuántas
    *  filas quedaron en la tabla tras el fetch. */
   refreshAirportsDataset: () => Promise<number>;
+  /** (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. */
+  lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
 
   // Community
   /** Escanea el folder Community + sincroniza con DB. */
@@ -488,6 +491,8 @@ const realApi: Api = {
 
   listAddonsOnMap: () => invoke<AddonOnMap[]>("list_addons_on_map"),
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
+  lookupAirports: (icaos: string[]) =>
+    invoke<AirportBrief[]>("lookup_airports", { icaos }),
 
   scanCommunity: () => invoke<ScanReport>("scan_community", { communityPath: null }),
   listCommunityPackages: () =>
@@ -1105,6 +1110,14 @@ const demoApi: Api = {
   async refreshAirportsDataset() {
     await sleep(300);
     return 4;
+  },
+  async lookupAirports(icaos: string[]) {
+    await sleep(50);
+    const demo: Record<string, AirportBrief> = {
+      RJTT: { icao: "RJTT", name: "Tokyo Haneda International Airport", municipality: "Tokyo", isoCountry: "JP" },
+      RKSI: { icao: "RKSI", name: "Incheon International Airport", municipality: "Seoul", isoCountry: "KR" },
+    };
+    return icaos.map((i) => demo[i]).filter(Boolean) as AirportBrief[];
   },
 
   async scanCommunity() {

@@ -120,6 +120,14 @@ export interface SimBriefBriefing {
   generatedAt: string | null;
 }
 
+/** (v4.11.0) Info liviana de aeropuerto por ICAO (nombre/ciudad/país). */
+export interface AirportBrief {
+  icao: string;
+  name: string;
+  municipality: string | null;
+  isoCountry: string | null;
+}
+
 /** (v4.10.0) Un punto del plan de ruta (navlog de SimBrief). */
 export interface RouteFix {
   ident: string;

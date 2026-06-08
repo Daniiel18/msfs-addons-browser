@@ -45,6 +45,43 @@ pub struct AirportPoint {
     pub municipality: Option<String>,
 }
 
+/// (v4.11.0) Info liviana de aeropuerto por ICAO para el FlightBook:
+/// nombre, ciudad (municipality) y país (ISO-2). El frontend convierte
+/// el ISO a nombre legible con `Intl.DisplayNames`.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AirportBrief {
+    pub icao: String,
+    pub name: String,
+    pub municipality: Option<String>,
+    pub iso_country: Option<String>,
+}
+
+/// Busca varios aeropuertos por ICAO de una sola consulta. Devuelve sólo
+/// los encontrados (los ICAO sin match simplemente no aparecen).
+pub async fn lookup_airports(
+    pool: &SqlitePool,
+    icaos: &[String],
+) -> anyhow::Result<Vec<AirportBrief>> {
+    let cleaned: Vec<String> = icaos
+        .iter()
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = cleaned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT icao, name, municipality, iso_country FROM airports WHERE icao IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, AirportBrief>(&sql);
+    for ic in &cleaned {
+        q = q.bind(ic);
+    }
+    Ok(q.fetch_all(pool).await?)
+}
+
 /// Una fila tal como llega del CSV. Sólo deserializamos lo que vamos
 /// a guardar — cualquier columna nueva en upstream se ignora.
 #[derive(Debug, Deserialize)]

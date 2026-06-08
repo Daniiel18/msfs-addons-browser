@@ -23,7 +23,7 @@ import {
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useUnits } from "../lib/units";
-import type { FlightLogEntry } from "../lib/types";
+import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
 import { WeatherModal } from "./WeatherModal";
@@ -645,6 +645,61 @@ function DeleteFlightModal({
  *  Cada bloque es una card independiente con borde redondeado, shadow
  *  sutil y padding generoso. AnimatePresence + motion.div para
  *  microanimaciones al cambiar de vuelo seleccionado. */
+// (v4.11.0) ISO-2 → nombre de país legible con la API nativa del
+// navegador (sin dataset extra). Usa el locale actual (es/en).
+let REGION_DN: Intl.DisplayNames | null | undefined;
+function countryName(iso?: string | null): string | null {
+  if (!iso) return null;
+  try {
+    if (REGION_DN === undefined) {
+      REGION_DN = new Intl.DisplayNames(undefined, { type: "region" });
+    }
+    return REGION_DN?.of(iso.toUpperCase()) ?? iso;
+  } catch {
+    return iso;
+  }
+}
+
+/** "Ciudad, País" a partir del AirportBrief (omite lo que falte). */
+function airportSubtitle(a?: AirportBrief): string | null {
+  if (!a) return null;
+  const parts: string[] = [];
+  if (a.municipality) parts.push(a.municipality);
+  const country = countryName(a.isoCountry);
+  if (country) parts.push(country);
+  return parts.length ? parts.join(", ") : null;
+}
+
+/** (v4.11.0) ICAO en negrita + nombre de aeropuerto y "ciudad, país"
+ *  debajo. Usado en las filas Origin/Destination del bloque ROUTE. */
+function AirportCell({
+  icao,
+  airport,
+  fallbackName,
+}: {
+  icao: string;
+  airport?: AirportBrief;
+  fallbackName?: string | null;
+}) {
+  const name = airport?.name ?? fallbackName ?? null;
+  const sub = airportSubtitle(airport);
+  return (
+    <span className="flex flex-col items-end text-right">
+      <span className="font-mono font-bold text-slate-100">{icao}</span>
+      {name && (
+        <span className="font-sans text-[11px] font-normal leading-tight text-slate-400">
+          {name}
+        </span>
+      )}
+      {sub && (
+        <span className="font-sans text-[10px] font-normal leading-tight text-slate-500">
+          {sub}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function SelectedFlightPanel({
   entry,
   collapsed,
@@ -658,6 +713,31 @@ function SelectedFlightPanel({
   const reload = useFlightLogStore((s) => s.reload);
   // (v3.28.0 P7.11) Formateadores de unidades reactivos.
   const u = useUnits();
+
+  // (v4.11.0) Resuelve nombre/ciudad/país de origen y destino por ICAO.
+  const [airports, setAirports] = useState<Record<string, AirportBrief>>({});
+  useEffect(() => {
+    const icaos = [entry.originIcao, entry.destinationIcao].filter(
+      (x): x is string => !!x,
+    );
+    if (icaos.length === 0) {
+      setAirports({});
+      return;
+    }
+    let alive = true;
+    import("../lib/tauri")
+      .then(({ api }) => api.lookupAirports(icaos))
+      .then((rows) => {
+        if (!alive) return;
+        const map: Record<string, AirportBrief> = {};
+        for (const r of rows) map[r.icao] = r;
+        setAirports(map);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [entry.originIcao, entry.destinationIcao]);
 
   // (v3.3.0) Re-renderiza con animación al cambiar de vuelo.
   return (
@@ -768,28 +848,24 @@ function SelectedFlightPanel({
         {/* BLOQUE 1 — Route */}
         <DetailBlock title={t("fb.block.route")} icon="route">
           <BlockRow label={t("fb.route.origin")} value={
-            <span className="font-mono">
-              <span className="font-bold text-slate-100">
-                {entry.originIcao ?? "?"}
-              </span>
-              {entry.originName && (
-                <span className="ml-1.5 font-sans text-[11px] font-normal text-slate-400">
-                  {entry.originName}
-                </span>
-              )}
-            </span>
+            <AirportCell
+              icao={entry.originIcao ?? "?"}
+              airport={
+                entry.originIcao ? airports[entry.originIcao] : undefined
+              }
+              fallbackName={entry.originName}
+            />
           } />
           <BlockRow label={t("fb.route.destination")} value={
-            <span className="font-mono">
-              <span className="font-bold text-slate-100">
-                {entry.destinationIcao ?? "?"}
-              </span>
-              {entry.destinationName && (
-                <span className="ml-1.5 font-sans text-[11px] font-normal text-slate-400">
-                  {entry.destinationName}
-                </span>
-              )}
-            </span>
+            <AirportCell
+              icao={entry.destinationIcao ?? "?"}
+              airport={
+                entry.destinationIcao
+                  ? airports[entry.destinationIcao]
+                  : undefined
+              }
+              fallbackName={entry.destinationName}
+            />
           } />
           <BlockRow label={t("fb.route.distance")} value={u.fmt.distance(entry.distanceNm)} />
           {/* (v3.4.0) Gates SIEMPRE visibles aún sin datos —
