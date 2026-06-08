@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { icaoToIata } from "../lib/airlineCodes";
+import { resolveIata } from "../lib/airlineCodes";
 
 /**
  * (v4.9.1) Logo de aerolínea por código ICAO.
@@ -37,7 +37,9 @@ export function AirlineLogo({
   className?: string;
 }) {
   const code = (icao ?? "").toUpperCase().trim();
-  const iata = icaoToIata(code);
+  // ICAO autoritativo primero; si no mapea, resolvemos por el nombre
+  // (vuelos importados sin callsign solo traen el nombre/título).
+  const iata = resolveIata(code, name);
   const [failed, setFailed] = useState(false);
 
   if (!iata || failed) {
