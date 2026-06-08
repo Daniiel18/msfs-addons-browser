@@ -41,6 +41,10 @@ export const ICAO_TO_IATA: Record<string, string> = {
   BAW: "BA", // British Airways
   SHT: "BA", // BA Shuttle
   AFR: "AF", // Air France
+  HOP: "A5", // Air France Hop
+  CCM: "XK", // Air Corsica
+  CTV: "QG", // Citilink (Indonesia)
+  MAU: "MK", // Air Mauritius
   DLH: "LH", // Lufthansa
   CLH: "LH", // Lufthansa CityLine
   KLM: "KL", // KLM
@@ -194,6 +198,7 @@ const NAME_KEYWORD_TO_IATA: ReadonlyArray<readonly [string, string]> = [
   ["air india express", "IX"],
   ["air india", "AI"],
   ["air france", "AF"],
+  ["air corsica", "XK"],
   ["air canada", "AC"],
   ["air china", "CA"],
   ["air new zealand", "NZ"],
