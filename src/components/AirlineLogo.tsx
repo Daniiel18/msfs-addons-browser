@@ -1,17 +1,23 @@
 import { useState } from "react";
+import { icaoToIata } from "../lib/airlineCodes";
 
 /**
- * (v4.8.0) Logo de aerolínea por código ICAO.
+ * (v4.9.0) Logo de aerolínea por código ICAO.
  *
- * Fuente: CDN de airhex (`content.airhex.com`), que indexa por ICAO de
- * 3 letras — el dato que ya guardamos por vuelo (`airlineIcao`). Si el
- * logo no carga (offline, ICAO desconocido, o el CDN no lo tiene) caemos
- * a un chip elegante con el código/iniciales, así NUNCA se ve roto.
+ * Guardamos el ICAO de 3 letras por vuelo, pero los CDN de logos
+ * gratuitos (avs.io) indexan por IATA de 2 letras. Mapeamos ICAO→IATA
+ * con `airlineCodes.ts` y pedimos el bitmap a avs.io.
  *
- * Tamaño en px; pedimos el bitmap a 2× para nitidez en pantallas HiDPI.
+ * Importante: solo pedimos red cuando TENEMOS un IATA mapeado. Para un
+ * código desconocido los CDN devuelven 200 con un placeholder genérico
+ * (no dispara onError) — así que en ese caso mostramos directamente un
+ * chip con el código, sin red. Si el logo mapeado falla al cargar,
+ * también caemos al chip.
+ *
+ * (airhex quedó descartado: devuelve 403 sin API key.)
  */
-const airhexUrl = (icao: string, px: number) =>
-  `https://content.airhex.com/content/logos/airlines_${icao}_${px}_${px}_s.png?proportions=keep`;
+const avsUrl = (iata: string, px: number) =>
+  `https://pics.avs.io/${px}/${px}/${iata}.png`;
 
 export function AirlineLogo({
   icao,
@@ -25,10 +31,10 @@ export function AirlineLogo({
   className?: string;
 }) {
   const code = (icao ?? "").toUpperCase().trim();
-  const valid = /^[A-Z]{3}$/.test(code);
+  const iata = icaoToIata(code);
   const [failed, setFailed] = useState(false);
 
-  if (!valid || failed) {
+  if (!iata || failed) {
     const initials =
       code ||
       (name ?? "")
@@ -51,10 +57,11 @@ export function AirlineLogo({
     );
   }
 
+  // 2× para nitidez en pantallas HiDPI.
   const px = Math.round(size * 2);
   return (
     <img
-      src={airhexUrl(code, px)}
+      src={avsUrl(iata, px)}
       alt={name ?? code}
       title={name ?? code}
       width={size}
