@@ -1,5 +1,38 @@
-use crate::simbrief::{self, SimBriefBriefing, SimBriefFlight, SimBriefRefreshResult};
+use crate::simbrief::{self, RouteFix, SimBriefBriefing, SimBriefFlight, SimBriefRefreshResult};
 use crate::AppState;
+
+/// (v4.12.0) Devuelve la ruta planificada (navlog) PEGADA a un vuelo.
+/// Lee `flight_log.route_fixes`; si está vacío pero el vuelo está enlazado
+/// a un OFP que sigue en `simbrief_flights`, lo resuelve por el link.
+#[tauri::command]
+pub async fn flight_route_fixes(
+    flight_id: i64,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RouteFix>, String> {
+    let json: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(
+            fl.route_fixes,
+            (SELECT sf.route_fixes FROM simbrief_flights sf
+             WHERE sf.ofp_id = fl.simbrief_ofp_id)
+        )
+        FROM flight_log fl
+        WHERE fl.id = ?1
+        "#,
+    )
+    .bind(flight_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?
+    .flatten();
+
+    match json {
+        Some(s) if !s.trim().is_empty() => {
+            serde_json::from_str::<Vec<RouteFix>>(&s).map_err(|e| e.to_string())
+        }
+        _ => Ok(Vec::new()),
+    }
+}
 
 #[tauri::command]
 pub async fn get_simbrief_pilot_id(
@@ -134,7 +167,8 @@ pub async fn link_simbrief_ofp(
             airline_icao     = COALESCE(airline_icao, ?4),
             passengers       = COALESCE(passengers, ?5),
             cargo_kg         = COALESCE(cargo_kg, ?6),
-            fuel_used_kg     = COALESCE(fuel_used_kg, ?7)
+            fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
+            route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
         WHERE id = ?8
         "#,
     )
@@ -146,6 +180,7 @@ pub async fn link_simbrief_ofp(
     .bind(ofp.cargo_kg)
     .bind(ofp.fuel_burn_kg)
     .bind(flight_id)
+    .bind(serde_json::to_string(&ofp.route_fixes).unwrap_or_else(|_| "[]".to_string()))
     .execute(&state.db)
     .await
     .map_err(|e| e.to_string())?;

@@ -9,6 +9,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { greatCircleLine } from "../lib/greatCircle";
 import { t } from "../lib/i18n";
+import type { RouteFix } from "../lib/types";
 import {
   smoothCatmullRom,
   segmentTrackCoords,
@@ -78,6 +79,28 @@ export function RoutesMapView({
 
   const simbriefFlights = useSimBriefStore((s) => s.flights);
   const flightLogEntries = useFlightLogStore((s) => s.entries);
+  // (v4.12.0) Ruta planificada PEGADA al vuelo seleccionado (navlog
+  // copiado a flight_log al enlazar el OFP). Permanente: no depende de
+  // que el OFP siga en caché.
+  const [storedFixes, setStoredFixes] = useState<RouteFix[]>([]);
+  useEffect(() => {
+    if (selectedFlightId == null) {
+      setStoredFixes([]);
+      return;
+    }
+    let alive = true;
+    import("../lib/tauri")
+      .then(({ api }) => api.flightRouteFixes(selectedFlightId))
+      .then((fixes) => {
+        if (alive) setStoredFixes(fixes);
+      })
+      .catch(() => {
+        if (alive) setStoredFixes([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selectedFlightId]);
   // (v1.1.4) Estado en vivo del watcher SimConnect — usado para
   // pintar el avión en el mapa cuando hay vuelo en curso.
   const flightStatus = useFlightLogStore((s) => s.status);
@@ -655,12 +678,17 @@ export function RoutesMapView({
     } else {
       origin = flightStatus?.originIcao;
     }
-    if (!origin) return { line: emptyLine, fixes: emptyFix };
 
-    const ofp = simbriefFlights.find(
-      (f) => f.originIcao === origin && (!dest || f.destinationIcao === dest),
-    );
-    const fixes = ofp?.routeFixes ?? [];
+    // Fuente preferida: ruta PEGADA al vuelo (permanente). Si no, el OFP
+    // activo/cacheado que matchee origen+destino.
+    let fixes: RouteFix[] = storedFixes;
+    if (fixes.length < 2) {
+      if (!origin) return { line: emptyLine, fixes: emptyFix };
+      const ofp = simbriefFlights.find(
+        (f) => f.originIcao === origin && (!dest || f.destinationIcao === dest),
+      );
+      fixes = ofp?.routeFixes ?? [];
+    }
     if (fixes.length < 2) return { line: emptyLine, fixes: emptyFix };
 
     const coords: number[][][] = [];
@@ -699,6 +727,7 @@ export function RoutesMapView({
     flightLogEntries,
     flightStatus?.originIcao,
     simbriefFlights,
+    storedFixes,
   ]);
 
   // Geometría del track real del vuelo seleccionado.

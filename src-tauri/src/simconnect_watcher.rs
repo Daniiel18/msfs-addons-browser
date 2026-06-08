@@ -4412,7 +4412,8 @@ mod windows_simconnect {
                         airline_icao     = COALESCE(airline_icao, ?4),
                         passengers       = COALESCE(passengers, ?5),
                         cargo_kg         = COALESCE(cargo_kg, ?6),
-                        fuel_used_kg     = COALESCE(fuel_used_kg, ?7)
+                        fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
+                        route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
                     WHERE id = ?8
                     "#,
                 )
@@ -4424,6 +4425,10 @@ mod windows_simconnect {
                 .bind(ofp.cargo_kg)
                 .bind(ofp.fuel_burn_kg)
                 .bind(flight_id)
+                .bind(
+                    serde_json::to_string(&ofp.route_fixes)
+                        .unwrap_or_else(|_| "[]".to_string()),
+                )
                 .execute(pool)
                 .await;
                 match res {

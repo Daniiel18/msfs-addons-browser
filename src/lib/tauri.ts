@@ -9,6 +9,7 @@ import type {
   Addon,
   AddonOnMap,
   AirportBrief,
+  RouteFix,
   AppSettings,
   AvailableUpdate,
   BackupResult,
@@ -235,6 +236,8 @@ interface Api {
   refreshAirportsDataset: () => Promise<number>;
   /** (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. */
   lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
+  /** (v4.12.0) Ruta planificada (navlog SimBrief) pegada a un vuelo. */
+  flightRouteFixes: (flightId: number) => Promise<RouteFix[]>;
 
   // Community
   /** Escanea el folder Community + sincroniza con DB. */
@@ -493,6 +496,8 @@ const realApi: Api = {
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
   lookupAirports: (icaos: string[]) =>
     invoke<AirportBrief[]>("lookup_airports", { icaos }),
+  flightRouteFixes: (flightId: number) =>
+    invoke<RouteFix[]>("flight_route_fixes", { flightId }),
 
   scanCommunity: () => invoke<ScanReport>("scan_community", { communityPath: null }),
   listCommunityPackages: () =>
@@ -1118,6 +1123,10 @@ const demoApi: Api = {
       RKSI: { icao: "RKSI", name: "Incheon International Airport", municipality: "Seoul", isoCountry: "KR" },
     };
     return icaos.map((i) => demo[i]).filter(Boolean) as AirportBrief[];
+  },
+  async flightRouteFixes() {
+    await sleep(20);
+    return [];
   },
 
   async scanCommunity() {
