@@ -2,11 +2,17 @@ import { useState } from "react";
 import { icaoToIata } from "../lib/airlineCodes";
 
 /**
- * (v4.9.0) Logo de aerolínea por código ICAO.
+ * (v4.9.1) Logo de aerolínea por código ICAO.
  *
  * Guardamos el ICAO de 3 letras por vuelo, pero los CDN de logos
  * gratuitos (avs.io) indexan por IATA de 2 letras. Mapeamos ICAO→IATA
  * con `airlineCodes.ts` y pedimos el bitmap a avs.io.
+ *
+ * Usamos el endpoint `al_square` (isotipo CUADRADO, PNG transparente)
+ * en vez del rectangular: queda limpio en chips y panel, sin recuadro
+ * blanco. Los logos transparentes (p.ej. el "vencejo" rojo de China
+ * Eastern) se integran en el fondo oscuro; los que traen su propio
+ * recuadro de marca (p.ej. SAS azul) se ven como un icono de app.
  *
  * Importante: solo pedimos red cuando TENEMOS un IATA mapeado. Para un
  * código desconocido los CDN devuelven 200 con un placeholder genérico
@@ -17,7 +23,7 @@ import { icaoToIata } from "../lib/airlineCodes";
  * (airhex quedó descartado: devuelve 403 sin API key.)
  */
 const avsUrl = (iata: string, px: number) =>
-  `https://pics.avs.io/${px}/${px}/${iata}.png`;
+  `https://pics.avs.io/al_square/${px}/${px}/${iata}.png`;
 
 export function AirlineLogo({
   icao,
@@ -69,7 +75,7 @@ export function AirlineLogo({
       loading="lazy"
       onError={() => setFailed(true)}
       style={{ width: size, height: size, objectFit: "contain" }}
-      className={`inline-block shrink-0 rounded bg-white/90 ${className}`}
+      className={`inline-block shrink-0 rounded ${className}`}
     />
   );
 }
