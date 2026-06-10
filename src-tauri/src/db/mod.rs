@@ -939,9 +939,22 @@ pub mod repo {
               AND UPPER(cp.content_type) = 'SCENERY'
               AND cp.creator IS NOT NULL AND cp.creator <> ''
               AND a.developer IS NOT NULL AND a.developer <> ''
+              -- (v4.16.2) Match creator↔developer TOLERANTE a puntuación y
+              -- espacios. El INSTR crudo fallaba cuando el catálogo trae
+              -- "MK-STUDIOS" (con guion) y el manifest "MKStudios" (sin
+              -- guion) → el update NO se detectaba en Dashboard/Map aunque
+              -- Search SÍ lo mostraba (Search compara solo ICAO+versión).
+              -- Normalizamos quitando espacios, guiones, guiones-bajos,
+              -- puntos, comas y apóstrofes antes de comparar.
               AND (
-                INSTR(LOWER(cp.creator), LOWER(a.developer)) > 0
-                OR INSTR(LOWER(a.developer), LOWER(cp.creator)) > 0
+                INSTR(
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
+                ) > 0
+                OR INSTR(
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
+                ) > 0
               )
             "#,
         )
@@ -1008,9 +1021,17 @@ pub mod repo {
             INNER JOIN addons a ON
               cp.creator IS NOT NULL AND cp.creator <> ''
               AND a.developer IS NOT NULL AND a.developer <> ''
+              -- (v4.16.2) Match creator↔developer tolerante a puntuación/
+              -- espacios (mismo fix que la query de scenery).
               AND (
-                INSTR(LOWER(cp.creator), LOWER(a.developer)) > 0
-                OR INSTR(LOWER(a.developer), LOWER(cp.creator)) > 0
+                INSTR(
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
+                ) > 0
+                OR INSTR(
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
+                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
+                ) > 0
               )
               AND (
                 INSTR(LOWER(a.name), LOWER(cp.title)) > 0

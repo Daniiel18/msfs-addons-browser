@@ -260,6 +260,22 @@ export function smoothCatmullRom(
     const p1 = ext[i];
     const p2 = ext[i + 1];
     const p3 = ext[i + 2];
+    // (v4.16.2) Suavizado ADAPTATIVO: solo interpolamos entre puntos
+    // LEJANOS (vuelo en el aire, donde rellenar el gap con una spline da
+    // un trazo fluido). En tramos CORTOS (rodaje en tierra: el avión va
+    // despacio → puntos muy juntos con giros cerrados de taxiway) NO
+    // subdividimos — dejamos la recta entre los puntos REALES grabados.
+    //
+    // Motivo: aunque la Catmull-Rom centrípeta no hace lazos, su tangente
+    // C1 "anticipa" los giros, abombando la curva FUERA del tramo recto.
+    // En el aire (giros suaves) se ve natural; en tierra (esquinas de 90°
+    // de la taxiway) parecía que el avión se salía de la calle de rodaje.
+    // El usuario reportó: "en el aire ya es preciso, en tierra todo mal".
+    const chord = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    if (chord < GROUND_CHORD_DEG) {
+      result.push([p1[0], p1[1]]); // raw — exacto, sin curvar
+      continue;
+    }
     const t0 = 0;
     const t1 = knot(t0, p0, p1);
     const t2 = knot(t1, p1, p2);
@@ -275,6 +291,14 @@ export function smoothCatmullRom(
   result.push(pts[n - 1]); // último punto exacto
   return result;
 }
+
+/** (v4.16.2) Umbral de longitud de cuerda (en grados) por debajo del cual
+ *  un tramo se considera "en tierra / baja velocidad" y NO se suaviza con
+ *  spline (se deja la recta exacta entre los puntos grabados). ~0.003° ≈
+ *  330 m: el rodaje (≈15 kt × 10 s ≈ 77 m ≈ 0.0007°) queda muy por debajo,
+ *  mientras que ascenso/crucero/descenso (≥130 kt × 10 s ≈ 670 m ≈ 0.006°)
+ *  quedan por encima → siguen suavizándose. */
+const GROUND_CHORD_DEG = 0.003;
 
 /**
  * Componente escalar de la spline Catmull-Rom centrípeta vía la fórmula
