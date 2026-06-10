@@ -564,6 +564,14 @@ pub mod repo {
         pub catalog_source: String,
         pub catalog_addon_id: String,
         pub catalog_page_url: String,
+        /// (v4.16.3) Creator del manifest + developer del catálogo — el match
+        /// creator↔developer se hace AHORA en Rust (`compute_available`)
+        /// normalizando a solo alfanuméricos, robusto ante guiones Unicode
+        /// (en-dash "–" del catálogo vs "-" ASCII del manifest, etc.).
+        #[sqlx(default)]
+        pub creator: String,
+        #[sqlx(default)]
+        pub developer: String,
     }
 
     // -----------------------------------------------------------------
@@ -930,7 +938,9 @@ pub mod repo {
                    a.version             AS catalog_version,
                    a.source              AS catalog_source,
                    a.id                  AS catalog_addon_id,
-                   a.page_url            AS catalog_page_url
+                   a.page_url            AS catalog_page_url,
+                   cp.creator            AS creator,
+                   a.developer           AS developer
             FROM community_packages cp
             INNER JOIN addons a    ON UPPER(a.icao)  = UPPER(cp.icao)
             INNER JOIN airports ap ON ap.icao        = UPPER(cp.icao)
@@ -939,23 +949,11 @@ pub mod repo {
               AND UPPER(cp.content_type) = 'SCENERY'
               AND cp.creator IS NOT NULL AND cp.creator <> ''
               AND a.developer IS NOT NULL AND a.developer <> ''
-              -- (v4.16.2) Match creator↔developer TOLERANTE a puntuación y
-              -- espacios. El INSTR crudo fallaba cuando el catálogo trae
-              -- "MK-STUDIOS" (con guion) y el manifest "MKStudios" (sin
-              -- guion) → el update NO se detectaba en Dashboard/Map aunque
-              -- Search SÍ lo mostraba (Search compara solo ICAO+versión).
-              -- Normalizamos quitando espacios, guiones, guiones-bajos,
-              -- puntos, comas y apóstrofes antes de comparar.
-              AND (
-                INSTR(
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
-                ) > 0
-                OR INSTR(
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
-                ) > 0
-              )
+              -- (v4.16.3) El match creator↔developer se hace en RUST
+              -- (compute_available) normalizando a solo alfanuméricos —
+              -- robusto ante guiones Unicode (catálogo "MK–STUDIOS" en-dash
+              -- vs manifest "MK-STUDIOS" ASCII), que el INSTR de SQL no
+              -- cazaba. Aquí solo exigimos que ambos campos no estén vacíos.
             "#,
         )
         .fetch_all(pool)
@@ -1016,23 +1014,16 @@ pub mod repo {
                    a.version             AS catalog_version,
                    a.source              AS catalog_source,
                    a.id                  AS catalog_addon_id,
-                   a.page_url            AS catalog_page_url
+                   a.page_url            AS catalog_page_url,
+                   cp.creator            AS creator,
+                   a.developer           AS developer
             FROM community_packages cp
             INNER JOIN addons a ON
               cp.creator IS NOT NULL AND cp.creator <> ''
               AND a.developer IS NOT NULL AND a.developer <> ''
-              -- (v4.16.2) Match creator↔developer tolerante a puntuación/
-              -- espacios (mismo fix que la query de scenery).
-              AND (
-                INSTR(
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
-                ) > 0
-                OR INSTR(
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(a.developer),' ',''),'-',''),'_',''),'.',''),',',''),'''',''),
-                  REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cp.creator),' ',''),'-',''),'_',''),'.',''),',',''),'''','')
-                ) > 0
-              )
+              -- (v4.16.3) El match creator↔developer se hace en RUST
+              -- (compute_available), robusto ante guiones Unicode. Aquí
+              -- solo exigimos no-vacío + el match de modelo/título de abajo.
               AND (
                 INSTR(LOWER(a.name), LOWER(cp.title)) > 0
                 OR INSTR(LOWER(cp.title), LOWER(a.name)) > 0

@@ -81,6 +81,17 @@ pub struct RefreshSummary {
 /// candidato con la **versión más alta** (no el más reciente que
 /// vimos). Eso evita el bug en que abrir Simplaza después de
 /// SceneryAddons hacía aparecer una "update" a una versión menor.
+/// (v4.16.3) Normaliza un nombre de creator/developer a SOLO caracteres
+/// alfanuméricos ASCII en minúsculas. Colapsa "MK-STUDIOS", "MK–STUDIOS"
+/// (en-dash), "MK Studios", "mk.studios" → todos a "mkstudios". Hace el
+/// match creator↔developer robusto ante puntuación/espacios/Unicode.
+fn norm_alnum(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<AvailableUpdate>> {
     use std::collections::HashMap;
 
@@ -98,6 +109,22 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
     // necesitar lectura + escritura del mismo bucket.
     let mut by_folder: HashMap<String, repo::UpdateCandidate> = HashMap::new();
     for c in candidates {
+        // (v4.16.3) Match creator↔developer NORMALIZADO (solo alfanuméricos,
+        // lowercase) — robusto ante guiones Unicode: el catálogo trae
+        // "MK–STUDIOS" (en-dash) y el manifest "MK-STUDIOS" (guion ASCII);
+        // el INSTR de SQL no lo cazaba → el update no se detectaba en
+        // Dashboard/Map. Aquí ambos colapsan a "mkstudios" → match.
+        // Sigue evitando falsos positivos cross-developer (mismo ICAO, dev
+        // distinto), que era el motivo original del filtro.
+        let cn = norm_alnum(&c.creator);
+        let dn = norm_alnum(&c.developer);
+        if cn.is_empty() || dn.is_empty() || !(cn.contains(&dn) || dn.contains(&cn)) {
+            tracing::debug!(
+                "compute_available: skip {} — creator '{}' ≠ developer '{}'",
+                c.folder_name, c.creator, c.developer
+            );
+            continue;
+        }
         use std::collections::hash_map::Entry;
         match by_folder.entry(c.folder_name.clone()) {
             Entry::Vacant(v) => {

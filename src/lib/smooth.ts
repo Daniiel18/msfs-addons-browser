@@ -260,32 +260,37 @@ export function smoothCatmullRom(
     const p1 = ext[i];
     const p2 = ext[i + 1];
     const p3 = ext[i + 2];
-    // (v4.16.2) Suavizado ADAPTATIVO: solo interpolamos entre puntos
-    // LEJANOS (vuelo en el aire, donde rellenar el gap con una spline da
-    // un trazo fluido). En tramos CORTOS (rodaje en tierra: el avión va
-    // despacio → puntos muy juntos con giros cerrados de taxiway) NO
-    // subdividimos — dejamos la recta entre los puntos REALES grabados.
+    // (v4.16.3) Suavizado ADAPTATIVO por BLEND. Aunque la Catmull-Rom
+    // centrípeta no hace lazos, su tangente C1 "anticipa" los giros y
+    // abomba la curva fuera del tramo recto. En el AIRE (giros suaves) se
+    // ve perfecto; en TIERRA (esquinas de 90° de taxiway) parecía que el
+    // avión se salía de la calle de rodaje.
     //
-    // Motivo: aunque la Catmull-Rom centrípeta no hace lazos, su tangente
-    // C1 "anticipa" los giros, abombando la curva FUERA del tramo recto.
-    // En el aire (giros suaves) se ve natural; en tierra (esquinas de 90°
-    // de la taxiway) parecía que el avión se salía de la calle de rodaje.
-    // El usuario reportó: "en el aire ya es preciso, en tierra todo mal".
+    // Solución: en tramos CORTOS (rodaje, puntos muy juntos) mezclamos la
+    // spline con la RECTA real entre puntos al `GROUND_SMOOTH_BLEND` → las
+    // esquinas se redondean a la mitad (ni se sale como el spline puro, ni
+    // queda angular como la recta pura). En tramos LARGOS (vuelo) usamos la
+    // spline completa, idéntica a antes.
     const chord = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
-    if (chord < GROUND_CHORD_DEG) {
-      result.push([p1[0], p1[1]]); // raw — exacto, sin curvar
-      continue;
-    }
+    const blend = chord < GROUND_CHORD_DEG ? GROUND_SMOOTH_BLEND : 1;
     const t0 = 0;
     const t1 = knot(t0, p0, p1);
     const t2 = knot(t1, p1, p2);
     const t3 = knot(t2, p2, p3);
     for (let s = 0; s < segmentsPerStep; s++) {
-      const t = t1 + (s / segmentsPerStep) * (t2 - t1);
-      result.push([
-        centripetalComponent(p0[0], p1[0], p2[0], p3[0], t0, t1, t2, t3, t),
-        centripetalComponent(p0[1], p1[1], p2[1], p3[1], t0, t1, t2, t3, t),
-      ]);
+      const f = s / segmentsPerStep;
+      const t = t1 + f * (t2 - t1);
+      const sx = centripetalComponent(p0[0], p1[0], p2[0], p3[0], t0, t1, t2, t3, t);
+      const sy = centripetalComponent(p0[1], p1[1], p2[1], p3[1], t0, t1, t2, t3, t);
+      if (blend >= 1) {
+        result.push([sx, sy]);
+      } else {
+        // Posición lineal a lo largo de la recta p1→p2, mezclada con la
+        // spline. blend=0 → recta exacta; blend=1 → spline pura.
+        const lx = p1[0] + (p2[0] - p1[0]) * f;
+        const ly = p1[1] + (p2[1] - p1[1]) * f;
+        result.push([lx + (sx - lx) * blend, ly + (sy - ly) * blend]);
+      }
     }
   }
   result.push(pts[n - 1]); // último punto exacto
@@ -293,12 +298,17 @@ export function smoothCatmullRom(
 }
 
 /** (v4.16.2) Umbral de longitud de cuerda (en grados) por debajo del cual
- *  un tramo se considera "en tierra / baja velocidad" y NO se suaviza con
- *  spline (se deja la recta exacta entre los puntos grabados). ~0.003° ≈
- *  330 m: el rodaje (≈15 kt × 10 s ≈ 77 m ≈ 0.0007°) queda muy por debajo,
- *  mientras que ascenso/crucero/descenso (≥130 kt × 10 s ≈ 670 m ≈ 0.006°)
- *  quedan por encima → siguen suavizándose. */
+ *  un tramo se considera "en tierra / baja velocidad". ~0.003° ≈ 330 m: el
+ *  rodaje (≈15 kt × 10 s ≈ 77 m ≈ 0.0007°) queda muy por debajo, mientras
+ *  que ascenso/crucero/descenso (≥130 kt × 10 s ≈ 670 m ≈ 0.006°) quedan
+ *  por encima → spline completa. */
 const GROUND_CHORD_DEG = 0.003;
+
+/** (v4.16.3) Mezcla spline↔recta para tramos de tierra. 0 = recta pura
+ *  (angular pero exacta), 1 = spline pura (suave pero se "sale" en esquinas
+ *  cerradas). 0.5 = punto medio: redondea las esquinas a la mitad sin salir
+ *  de la taxiway. */
+const GROUND_SMOOTH_BLEND = 0.5;
 
 /**
  * Componente escalar de la spline Catmull-Rom centrípeta vía la fórmula
