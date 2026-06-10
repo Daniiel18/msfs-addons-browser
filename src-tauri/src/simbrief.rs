@@ -410,6 +410,27 @@ pub async fn score_simbrief_candidates(
     // Score cada candidato.
     let mut scored: Vec<ScoredOfp> = Vec::with_capacity(rows.len());
     for ofp in rows.into_iter() {
+        // (v4.15.0 #4) Gate de exclusión ESTRICTO por matrícula. Si
+        // conocemos la matrícula LOCAL (ATC ID / TAIL NUMBER capturado por
+        // SimConnect) y el OFP también trae matrícula pero es DISTINTA,
+        // ese plan NO pertenece a esta sesión → se descarta por completo.
+        // Esto evita la contaminación cruzada cuando dos pilotos vuelan el
+        // MISMO plan a la vez con SimBrief (mismo origen/tipo/fuel): la
+        // matrícula es el discriminador estricto. Si el OFP no trae
+        // matrícula, seguimos con el scoring normal (best-effort).
+        if let (Some(plane), Some(ofp_reg)) =
+            (plane_reg_norm.as_deref(), ofp.aircraft_reg.as_deref())
+        {
+            let ofp_norm = normalize_reg(ofp_reg);
+            if !ofp_norm.is_empty() && ofp_norm != plane {
+                tracing::info!(
+                    target: "simbrief",
+                    "ofp_id={} DESCARTADO por matrícula estricta: OFP={:?} != local={:?}",
+                    ofp.ofp_id, ofp_norm, plane,
+                );
+                continue;
+            }
+        }
         let mut score: i32 = 0;
         let mut breakdown: Vec<(String, i32)> = Vec::new();
 

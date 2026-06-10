@@ -159,7 +159,6 @@ pub fn rule_applies_to(rule_id: &str, cat: Category) -> bool {
                 | "taxi_out_flaps_set"
                 | "pushback_nav_light"
                 | "pushback_beacon_light"
-                | "pushback_engines_off_at_start"
                 | "pushback_doors_closed"
         ),
     }
@@ -286,13 +285,10 @@ pub static RULES: &[Rule] = &[
         points_max: 50,
         evaluator: eval_pushback_beacon_light,
     },
-    Rule {
-        id: "pushback_engines_off_at_start",
-        label: "Pushback started with engines off",
-        phase: Phase::Pushback,
-        points_max: 80,
-        evaluator: eval_pushback_engines_off_at_start,
-    },
+    // (v4.15.0 #3) Regla "Pushback started with engines off" ELIMINADA:
+    // en la aviación real el remolque comienza con los motores apagados y
+    // se van encendiendo DURANTE el pushback — es un procedimiento normal,
+    // no una falta. Penalizarlo era incorrecto.
     Rule {
         id: "pushback_doors_closed",
         label: "Doors closed",
@@ -1015,9 +1011,13 @@ fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
     let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
     let evidence = json!({ "parking_brake_set_pct_static": (pct * 100.0) as i32 });
-    if pct >= 0.9 {
+    // (v4.15.0 #3) Umbrales tolerantes a la lectura INTERMITENTE del simvar
+    // BRAKE PARKING POSITION en aviones complejos (PMDG/iFly), que provoca
+    // falsos negativos: sobre el periodo estático en el gate, con que el
+    // freno haya estado puesto la mayor parte del tiempo basta para ✓.
+    if pct >= 0.5 {
         pass(rule, evidence)
-    } else if pct >= 0.5 {
+    } else if pct >= 0.25 {
         partial(rule, (rule.points_max * 2) / 3, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1155,31 +1155,6 @@ fn eval_pushback_beacon_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     }
 }
 
-fn eval_pushback_engines_off_at_start(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    // (v3.21.0) N1 al INICIO del pushback (primer sample con dato). Lo
-    // correcto es empezar el pushback con motores apagados (<5%).
-    let samples = ctx.samples_in_phase("pushback");
-    if samples.is_empty() {
-        return skip(rule, "no_pushback_phase");
-    }
-    if !any_present(&samples, |s| s.eng_n1_max) {
-        return skip(rule, "no_engine_data");
-    }
-    let first_n1 = samples
-        .iter()
-        .filter_map(|s| s.eng_n1_max)
-        .next()
-        .unwrap_or(0.0);
-    let evidence = json!({ "n1_pct_at_pushback_start": first_n1 });
-    if first_n1 < 5.0 {
-        pass(rule, evidence)
-    } else if first_n1 < 25.0 {
-        partial(rule, rule.points_max / 2, evidence)
-    } else {
-        fail(rule, "fail", 0, evidence)
-    }
-}
-
 fn eval_pushback_doors_closed(_ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     skip(rule, "doors_open_simvar_not_captured")
 }
@@ -1241,18 +1216,39 @@ fn eval_taxi_out_transponder(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 fn eval_taxi_out_taxi_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = ctx.samples_in_phase("taxi_out");
-    if samples.is_empty() {
+    let all = ctx.samples_in_phase("taxi_out");
+    if all.is_empty() {
         return skip(rule, "no_taxi_out_phase");
     }
-    if !any_present(&samples, |s| s.light_taxi) {
+    if !any_present(&all, |s| s.light_taxi) {
         return skip(rule, "no_light_taxi_data");
     }
-    let pct = pct_bool_true(&samples, |s| s.light_taxi).unwrap_or(0.0);
-    let evidence = json!({ "taxi_light_on_pct": (pct * 100.0) as i32 });
-    if pct >= 0.8 {
+    // (v4.15.0 #3) Margen de tolerancia: la taxi light solo aplica cuando
+    // el avión RUEDA (gs ≥ 5 kt) — detenido en un hold-short con la luz
+    // apagada no es falta. Además damos un colchón de ~30-45s de rodaje
+    // continuo antes de penalizar: si el avión rodó poco tiempo (pocas
+    // muestras en movimiento), se le da el beneficio de la duda.
+    let moving: Vec<&TrackSample> = all
+        .iter()
+        .copied()
+        .filter(|s| s.gs_kt.map(|g| g >= 5).unwrap_or(false))
+        .collect();
+    if moving.is_empty() {
+        // Nunca rodó de verdad (gate/empuje) → no penalizamos.
+        return skip(rule, "no_taxi_movement");
+    }
+    // Aproximación del colchón temporal: con muestreo ~3-5s, ~10 muestras
+    // en movimiento ≈ 30-50s. Por debajo de eso, rodaje demasiado breve
+    // para exigir la luz → ✓.
+    if moving.len() <= 10 {
+        let evidence = json!({ "moving_samples": moving.len(), "grace": true });
+        return pass(rule, evidence);
+    }
+    let pct = pct_bool_true(&moving, |s| s.light_taxi).unwrap_or(0.0);
+    let evidence = json!({ "taxi_light_on_pct_moving": (pct * 100.0) as i32 });
+    if pct >= 0.7 {
         pass(rule, evidence)
-    } else if pct >= 0.4 {
+    } else if pct >= 0.35 {
         partial(rule, rule.points_max / 2, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1398,12 +1394,20 @@ fn eval_initial_climb_flaps_retracted(ctx: &FlightContext, rule: &Rule) -> Score
     if !any_present(&samples, |s| s.flaps_pct) {
         return skip(rule, "no_flaps_data");
     }
-    // En el último sample del initial climb (cercano a 10k), flaps == 0.
-    let last_flaps = samples.last().and_then(|s| s.flaps_pct).unwrap_or(0);
-    let evidence = json!({ "flaps_pct_at_10k": last_flaps });
-    if last_flaps <= 2 {
+    // (v4.15.0 #3) "Flaps completamente limpios antes de 10.000 ft": basta
+    // con que en ALGÚN momento del ascenso inicial los flaps llegaran a
+    // configuración limpia (mín de flaps ≤ 2%). Antes mirábamos solo el
+    // ÚLTIMO sample, que podía ser ruidoso y dar falsos negativos si la
+    // retracción terminaba justo en el borde de los 10k.
+    let min_flaps = samples
+        .iter()
+        .filter_map(|s| s.flaps_pct)
+        .min()
+        .unwrap_or(0);
+    let evidence = json!({ "min_flaps_pct_initial_climb": min_flaps });
+    if min_flaps <= 2 {
         pass(rule, evidence)
-    } else if last_flaps <= 15 {
+    } else if min_flaps <= 15 {
         partial(rule, rule.points_max / 2, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1456,15 +1460,27 @@ fn eval_cruise_gear_up(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 fn eval_cruise_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_cruise_core(ctx);
-    if samples.is_empty() {
+    let core = samples_cruise_core(ctx);
+    if core.is_empty() {
         return skip(rule, "no_cruise_phase");
     }
-    if !any_present(&samples, |s| s.light_landing) {
+    if !any_present(&core, |s| s.light_landing) {
         return skip(rule, "no_light_landing_data");
     }
+    // (v4.15.0 #3) Margen regulatorio hasta 11.000 ft: la landing light
+    // solo se considera "tarde" (falta) si sigue encendida POR ENCIMA de
+    // 11.000 ft. Entre 10k y 11k es zona de gracia (apagado tardío normal).
+    let samples: Vec<&TrackSample> = core
+        .iter()
+        .copied()
+        .filter(|s| s.alt_ft.map(|a| a > 11000).unwrap_or(false))
+        .collect();
+    if samples.is_empty() {
+        // No hubo crucero por encima de 11k → nada que penalizar aquí.
+        return pass(rule, json!({ "no_samples_above_11000ft": true }));
+    }
     let pct_on = pct_bool_true(&samples, |s| s.light_landing).unwrap_or(0.0);
-    let evidence = json!({ "landing_light_on_pct_cruise": (pct_on * 100.0) as i32 });
+    let evidence = json!({ "landing_light_on_pct_above_11000ft": (pct_on * 100.0) as i32 });
     if pct_on <= 0.05 {
         pass(rule, evidence)
     } else if pct_on <= 0.3 {
@@ -1545,14 +1561,14 @@ fn eval_initial_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreIte
         return skip(rule, "no_ias_data");
     }
     let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
-    let evidence = json!({ "max_ias_kt_initial_approach": max_ias, "limit_kt": 250 });
-    // (v3.29.0 #8) Límite REAL sub-10.000 ft = 250 kt (FAR 91.117 / regla
-    // estándar). Antes ≤200 penalizaba approaches normales. El piloto
-    // puede ir a la velocidad que necesite mientras respete 250 kt < 10k.
+    let evidence = json!({ "max_ias_kt_initial_approach": max_ias, "limit_kt": 261 });
+    // (v4.15.0 #3) Límite sub-10.000 ft = 250 kt (FAR 91.117) + margen
+    // técnico de tolerancia a +11 kt (261) para absorber ráfagas/turbulencia
+    // en el descenso sin penalizar injustamente.
     match max_ias {
-        n if n <= 250 => pass(rule, evidence),
-        n if n <= 270 => partial(rule, (rule.points_max * 2) / 3, evidence),
-        n if n <= 290 => partial(rule, rule.points_max / 3, evidence),
+        n if n <= 261 => pass(rule, evidence),
+        n if n <= 280 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        n if n <= 300 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
@@ -1665,15 +1681,13 @@ fn eval_final_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem 
         return skip(rule, "no_ias_data");
     }
     let max_ias = max_i64(&samples, |s| s.ias_kt).unwrap_or(0);
-    let evidence = json!({ "max_ias_kt_final_approach": max_ias, "limit_kt": 250 });
-    // (v3.29.0 #8) Igual que initial approach: el techo objetivo es
-    // 250 kt sub-10k. En corta final la velocidad real será mucho menor
-    // (Vref+aditivos), pero NO penalizamos por ir rápido mientras se
-    // respete 250 kt — eso es decisión del piloto, no una falta.
+    let evidence = json!({ "max_ias_kt_final_approach": max_ias, "limit_kt": 261 });
+    // (v4.15.0 #3) Igual que initial approach: 250 kt sub-10k + margen
+    // técnico a 261 kt para no penalizar por ráfagas/turbulencia.
     match max_ias {
-        n if n <= 250 => pass(rule, evidence),
-        n if n <= 270 => partial(rule, (rule.points_max * 2) / 3, evidence),
-        n if n <= 290 => partial(rule, rule.points_max / 3, evidence),
+        n if n <= 261 => pass(rule, evidence),
+        n if n <= 280 => partial(rule, (rule.points_max * 2) / 3, evidence),
+        n if n <= 300 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
     }
 }
