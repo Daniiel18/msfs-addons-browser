@@ -113,6 +113,14 @@ pub struct FlightLogEntry {
     /// mapeando sin error.
     #[sqlx(default)]
     pub max_brake_temp_c: Option<f64>,
+    /// (v4.16.1 #5b) METAR REAL de salida/llegada (vida real) capturado del
+    /// OFP de SimBrief al finalizar el vuelo, para consulta histórica en el
+    /// FlightBook. `#[sqlx(default)]` → SELECTs que no incluyan la columna
+    /// siguen mapeando. `None` para imports VAS y vuelos sin OFP linkeado.
+    #[sqlx(default)]
+    pub metar_origin: Option<String>,
+    #[sqlx(default)]
+    pub metar_dest: Option<String>,
 }
 
 /// Resultado del lookup de aeropuerto más cercano. Incluye
@@ -1212,7 +1220,8 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                flight_number, callsign, airline_icao, status,
                score_total, score_max, score_grade,
                COALESCE(bounced, 0) AS bounced,
-               max_brake_temp_c
+               max_brake_temp_c,
+               metar_origin, metar_dest
         FROM flight_log
         WHERE status = 'completed'
         ORDER BY started_at DESC

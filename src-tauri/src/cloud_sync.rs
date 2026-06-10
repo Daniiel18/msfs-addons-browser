@@ -1102,8 +1102,9 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
                  departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
                  paused_seconds,
                  flight_number, callsign, airline_icao, status,
-                 score_total, score_max, score_grade)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 score_total, score_max, score_grade,
+                 metar_origin, metar_dest)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  started_at = excluded.started_at,
                  ended_at = excluded.ended_at,
@@ -1138,7 +1139,9 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
                  status = excluded.status,
                  score_total = excluded.score_total,
                  score_max = excluded.score_max,
-                 score_grade = excluded.score_grade"#,
+                 score_grade = excluded.score_grade,
+                 metar_origin = COALESCE(excluded.metar_origin, flight_log.metar_origin),
+                 metar_dest = COALESCE(excluded.metar_dest, flight_log.metar_dest)"#,
         )
         .bind(id)
         .bind(&started_at)
@@ -1175,6 +1178,8 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .bind(json_i64(row, "scoreTotal"))
         .bind(json_i64(row, "scoreMax"))
         .bind(json_str(row, "scoreGrade"))
+        .bind(json_str(row, "metarOrigin"))
+        .bind(json_str(row, "metarDest"))
         .execute(&mut *tx)
         .await?;
         flights += 1;
@@ -2037,8 +2042,9 @@ pub async fn download_missing(
                  departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
                  paused_seconds, source, external_id,
                  flight_number, callsign, airline_icao, status,
-                 score_total, score_max, score_grade)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+                 score_total, score_max, score_grade,
+                 metar_origin, metar_dest)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
         )
         .bind(&started_at)
         .bind(ended_at.as_deref())
@@ -2076,6 +2082,8 @@ pub async fn download_missing(
         .bind(json_i64(row, "scoreTotal"))
         .bind(json_i64(row, "scoreMax"))
         .bind(json_str(row, "scoreGrade"))
+        .bind(json_str(row, "metarOrigin"))
+        .bind(json_str(row, "metarDest"))
         .execute(&mut *tx)
         .await?;
 

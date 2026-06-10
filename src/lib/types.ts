@@ -355,6 +355,11 @@ export interface FlightLogEntry {
    * vuelos.
    */
   maxBrakeTempC: number | null;
+  /** (v4.16.1 #5b) METAR real de salida/llegada (vida real) capturado del
+   *  OFP de SimBrief al finalizar — para consulta histórica. `null` para
+   *  imports VAS / vuelos sin OFP. */
+  metarOrigin?: string | null;
+  metarDest?: string | null;
 }
 
 /** (v3.6.0 Phase H — Epic E) Reporte de scoring para un vuelo. */

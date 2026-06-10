@@ -622,6 +622,73 @@ pub async fn load_persisted_report(
 ///
 /// La función NO devuelve error — todos los fallos se emiten como
 /// eventos. El watcher sigue su loop normal pase lo que pase.
+/// (v4.16.1 #5b) Captura y persiste el METAR real de salida/llegada del OFP
+/// de SimBrief para un vuelo finalizado, para consulta histórica en el
+/// FlightBook. Best-effort: si no hay OFP linkeado, ni Pilot ID, o el
+/// briefing no coincide con origen/destino, no hace nada. No re-captura si
+/// ya hay METAR guardado. NO toca el FPM/touchdown — solo lee/escribe texto.
+async fn capture_metar_for_flight(
+    pool: &sqlx::SqlitePool,
+    http: &reqwest::Client,
+    flight_id: i64,
+) -> anyhow::Result<()> {
+    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT origin_icao, destination_icao, simbrief_ofp_id, metar_origin \
+             FROM flight_log WHERE id = ?1",
+        )
+        .bind(flight_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some((Some(origin), dest, Some(ofp_id), existing_metar)) = row else {
+        return Ok(());
+    };
+    if ofp_id.is_empty() || existing_metar.is_some() {
+        return Ok(()); // sin OFP, o ya capturado
+    }
+    let Some(pilot_id) = crate::simbrief::get_pilot_id(pool).await? else {
+        return Ok(());
+    };
+    let briefing = crate::simbrief::fetch_briefing(http, &pilot_id).await?;
+    let norm = |s: &str| s.trim().to_ascii_uppercase();
+    // El briefing es del OFP MÁS RECIENTE — solo lo usamos si coincide con
+    // el origen (y destino, si lo hay) de este vuelo.
+    let b_orig = briefing.origin_icao.as_deref().map(norm).unwrap_or_default();
+    if b_orig != norm(&origin) {
+        return Ok(());
+    }
+    if let Some(d) = dest.as_deref().filter(|d| !d.is_empty()) {
+        let b_dest = briefing
+            .destination_icao
+            .as_deref()
+            .map(norm)
+            .unwrap_or_default();
+        if b_dest != norm(d) {
+            return Ok(());
+        }
+    }
+    if briefing.orig_metar.is_none() && briefing.dest_metar.is_none() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE flight_log \
+         SET metar_origin = COALESCE(metar_origin, ?2), \
+             metar_dest   = COALESCE(metar_dest, ?3) \
+         WHERE id = ?1",
+    )
+    .bind(flight_id)
+    .bind(briefing.orig_metar.as_deref())
+    .bind(briefing.dest_metar.as_deref())
+    .execute(pool)
+    .await?;
+    tracing::info!(
+        target: "scoring",
+        "METAR real capturado y persistido para flight {}",
+        flight_id
+    );
+    Ok(())
+}
+
 pub async fn finalize_after_finish(
     pool: &sqlx::SqlitePool,
     app: &tauri::AppHandle,
@@ -663,11 +730,19 @@ pub async fn finalize_after_finish(
     let app_c = app.clone();
     tokio::spawn(async move {
         use tauri::Manager;
+        let state = app_c.state::<crate::AppState>();
+        // (v4.16.1 #5b) Captura best-effort del METAR real (OFP de SimBrief)
+        // ANTES del upload, para que se persista y sincronice a la nube.
+        if let Err(e) = capture_metar_for_flight(&pool_c, &state.http, flight_id).await {
+            tracing::debug!(
+                target: "scoring",
+                "capture_metar({}) omitido: {:#}", flight_id, e
+            );
+        }
         let _ = app_c.emit(
             "score:upload:started",
             &serde_json::json!({ "flightId": flight_id }),
         );
-        let state = app_c.state::<crate::AppState>();
         match crate::cloud_sync::upload_all(&pool_c, &state.http, None).await {
             Ok(rep) => {
                 tracing::info!(

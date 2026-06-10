@@ -350,6 +350,29 @@ export function WeatherModal({
     return briefing;
   })();
 
+  // (v4.16.1 #5b) METAR a mostrar: preferimos el briefing LIVE si coincide
+  // con este vuelo; si no (vuelo pasado cuyo OFP ya no es el actual), caemos
+  // al METAR PERSISTIDO que se capturó al finalizar el vuelo.
+  const metarView = (() => {
+    if (briefingWx && (briefingWx.origMetar || briefingWx.destMetar)) {
+      return {
+        origMetar: briefingWx.origMetar ?? null,
+        destMetar: briefingWx.destMetar ?? null,
+        originIcao: briefingWx.originIcao ?? entry.originIcao,
+        destinationIcao: briefingWx.destinationIcao ?? entry.destinationIcao,
+      };
+    }
+    if (entry.metarOrigin || entry.metarDest) {
+      return {
+        origMetar: entry.metarOrigin ?? null,
+        destMetar: entry.metarDest ?? null,
+        originIcao: entry.originIcao,
+        destinationIcao: entry.destinationIcao,
+      };
+    }
+    return null;
+  })();
+
   // (v4.0.0 P7.9b) Resumen del clima capturado para el panel lateral.
   const wxSummary = (() => {
     if (!hasWeather || !weather) return null;
@@ -538,31 +561,32 @@ export function WeatherModal({
               </div>
             )}
 
-            {/* (v3.32.0 #4) METAR REAL de salida/llegada del OFP de SimBrief
-                — sólo si el OFP coincide con este vuelo. */}
-            {briefingWx && (
+            {/* (v3.32.0 #4 / v4.16.1 #5b) METAR REAL de salida/llegada — del
+                briefing live del OFP si coincide, o del METAR persistido del
+                vuelo (consulta histórica). */}
+            {metarView && (
               <div className="mt-3 border-t border-slate-800 pt-2.5">
                 <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
                   <Cloud className="h-3 w-3" />
                   {t("fb.weather.simbrief.title")}
                 </div>
-                {briefingWx.origMetar && (
+                {metarView.origMetar && (
                   <div className="mb-2">
                     <div className="font-mono text-[10px] font-semibold text-sky-200">
-                      {t("fb.weather.simbrief.dep")} {briefingWx.originIcao ?? ""}
+                      {t("fb.weather.simbrief.dep")} {metarView.originIcao ?? ""}
                     </div>
                     <div className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-slate-300">
-                      {briefingWx.origMetar}
+                      {metarView.origMetar}
                     </div>
                   </div>
                 )}
-                {briefingWx.destMetar && (
+                {metarView.destMetar && (
                   <div>
                     <div className="font-mono text-[10px] font-semibold text-sky-200">
-                      {t("fb.weather.simbrief.dest")} {briefingWx.destinationIcao ?? ""}
+                      {t("fb.weather.simbrief.dest")} {metarView.destinationIcao ?? ""}
                     </div>
                     <div className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-slate-300">
-                      {briefingWx.destMetar}
+                      {metarView.destMetar}
                     </div>
                   </div>
                 )}
