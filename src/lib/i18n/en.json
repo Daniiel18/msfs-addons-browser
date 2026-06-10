@@ -449,6 +449,8 @@
   "fb.weather.live_flight": "LIVE",
   "fb.weather.past_flight": "HISTORICAL",
   "fb.weather.no_coords": "No coordinates to show the map.",
+  "fb.weather.layer.none": "No layer",
+  "fb.weather.no_owkey": "Weather layers unavailable (no API key)",
   "fb.map.real_track": "Real track",
   "fb.map.real_count": "Real",
   "fb.map.loading_track": "Loading track…",

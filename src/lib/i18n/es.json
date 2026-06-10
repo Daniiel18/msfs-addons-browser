@@ -449,6 +449,8 @@
   "fb.weather.live_flight": "EN VIVO",
   "fb.weather.past_flight": "HISTÓRICO",
   "fb.weather.no_coords": "Sin coordenadas para mostrar el mapa.",
+  "fb.weather.layer.none": "Sin capa",
+  "fb.weather.no_owkey": "Capas meteo no disponibles (sin API key)",
   "fb.map.real_track": "Ruta real",
   "fb.map.real_count": "Reales",
   "fb.map.loading_track": "Cargando trayectoria…",

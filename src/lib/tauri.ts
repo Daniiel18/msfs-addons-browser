@@ -244,6 +244,9 @@ interface Api {
   lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
   /** (v4.12.0) Ruta planificada (navlog SimBrief) pegada a un vuelo. */
   flightRouteFixes: (flightId: number) => Promise<RouteFix[]>;
+  /** (v4.16.0 #5a) API key de OpenWeather embebida (tiles meteo del mapa).
+   *  `null` si no se configuró al compilar. */
+  getOpenweatherKey: () => Promise<string | null>;
 
   // Community
   /** Escanea el folder Community + sincroniza con DB. */
@@ -510,6 +513,7 @@ const realApi: Api = {
     invoke<AirportBrief[]>("lookup_airports", { icaos }),
   flightRouteFixes: (flightId: number) =>
     invoke<RouteFix[]>("flight_route_fixes", { flightId }),
+  getOpenweatherKey: () => invoke<string | null>("get_openweather_key"),
 
   scanCommunity: () => invoke<ScanReport>("scan_community", { communityPath: null }),
   listCommunityPackages: () =>
@@ -1144,6 +1148,9 @@ const demoApi: Api = {
   async flightRouteFixes() {
     await sleep(20);
     return [];
+  },
+  async getOpenweatherKey() {
+    return null;
   },
 
   async scanCommunity() {

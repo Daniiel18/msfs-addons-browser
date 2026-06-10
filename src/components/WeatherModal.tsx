@@ -1,89 +1,62 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 import {
   Cloud,
-  CloudFog,
   CloudRain,
-  Cloudy,
-  Eye,
   Gauge,
-  Radar,
-  Satellite,
-  Snowflake,
+  MapPin,
   Thermometer,
-  ThermometerSnowflake,
-  Tornado,
-  Waves,
   Wind,
   X,
-  Zap,
 } from "lucide-react";
-import type { FlightLogEntry, WeatherSample, SimBriefBriefing } from "../lib/types";
+import type {
+  FlightLogEntry,
+  WeatherSample,
+  SimBriefBriefing,
+  RouteFix,
+} from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useUnits } from "../lib/units";
 
 /**
- * (v3.35.0) Weather modal del FlightBook — Windy embebido.
+ * (v4.16.0 #5a) Weather modal del FlightBook — mapa MapLibre con capas
+ * meteo de OpenWeather + la RUTA del vuelo (waypoints del navlog SimBrief)
+ * trazada encima. Reemplaza el iframe de Windy.
  *
- * Muestra el mapa interactivo de Windy (iframe público, sin API key)
- * centrado en el punto medio de la ruta del vuelo. El sidebar de la
- * izquierda cambia la CAPA (overlay) de Windy — satélite, radar, nubes,
- * viento, etc. — sin tener que usar los controles internos de Windy.
+ * El sidebar izquierdo cambia la CAPA meteo (nubes / precipitación / viento
+ * / temperatura / presión) que se pinta como tiles raster sobre el basemap
+ * oscuro (CARTO). La ruta planificada se dibuja como línea + waypoints, con
+ * marcadores de origen/destino. (NO se dibuja una línea recta origen→destino
+ * cuando no hay waypoints — se evita el artefacto de "track recto".)
  *
- * Junto al mapa en vivo, el sidebar resume el clima REAL que se capturó
- * durante el vuelo (`flight_log_track`, AMBIENT del sim) y el METAR real
- * de salida/llegada tomado del OFP de SimBrief (#4) cuando el OFP actual
- * coincide con este vuelo. Ese resumen ES el clima histórico del vuelo:
- * el embed de Windy sólo expone clima ACTUAL/PRONÓSTICO, no fechas pasadas.
- *
- * (v3.35.0) Se eliminó todo el mapa MapLibre y sus capas derivadas: desde
- * v3.34.0 el iframe de Windy las tapaba por completo y `mapReady` quedaba
- * siempre en `false`, así que era código muerto que además ocultaba los
- * paneles de METAR/resumen. Ahora esos paneles viven en el sidebar.
+ * El sidebar también resume el clima REAL capturado durante el vuelo
+ * (`flight_log_track`, AMBIENT del sim) y el METAR real de salida/llegada
+ * del OFP de SimBrief cuando coincide con este vuelo.
  *
  * Resizable: handle SE, listener global de pointermove. Min 600×400.
  */
 
-type LayerKey =
-  | "satellite"
-  | "radar"
-  | "clouds"
-  | "cbase"
-  | "precip"
-  | "wind"
-  | "gust"
-  | "temp"
-  | "deg0"
-  | "visibility"
-  | "fog"
-  | "icing"
-  | "turbulence"
-  | "cape"
-  | "pressure";
+type LayerKey = "none" | "clouds" | "precip" | "wind" | "temp" | "pressure";
 
-// (v3.35.0) Cada entrada del sidebar controla una CAPA (overlay) del embed
-// de Windy. `overlay` = id del overlay de Windy. Selección curada de capas
-// útiles para aviación. A pedido del usuario: "Windy"→"Satelital" (overlay
-// satellite) y "Engelamiento"→"Hielo" (overlay icing). Se añadieron capas
-// buenas de Windy: radar, techo de nubes, ráfagas, nivel de congelación,
-// niebla, turbulencia, tormentas (CAPE) y presión.
-const LAYERS: { key: LayerKey; labelKey: string; Icon: typeof Cloud; overlay: string }[] = [
-  { key: "satellite", labelKey: "fb.weather.layer.satellite", Icon: Satellite, overlay: "satellite" },
-  { key: "radar", labelKey: "fb.weather.layer.radar", Icon: Radar, overlay: "radar" },
-  { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud, overlay: "clouds" },
-  { key: "cbase", labelKey: "fb.weather.layer.cbase", Icon: Cloudy, overlay: "cbase" },
-  { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain, overlay: "rain" },
-  { key: "wind", labelKey: "fb.weather.layer.wind", Icon: Wind, overlay: "wind" },
-  { key: "gust", labelKey: "fb.weather.layer.gust", Icon: Tornado, overlay: "gust" },
-  { key: "temp", labelKey: "fb.weather.layer.temp", Icon: Thermometer, overlay: "temp" },
-  { key: "deg0", labelKey: "fb.weather.layer.deg0", Icon: ThermometerSnowflake, overlay: "deg0" },
-  { key: "visibility", labelKey: "fb.weather.layer.visibility", Icon: Eye, overlay: "visibility" },
-  { key: "fog", labelKey: "fb.weather.layer.fog", Icon: CloudFog, overlay: "fog" },
-  { key: "icing", labelKey: "fb.weather.layer.icing", Icon: Snowflake, overlay: "icing" },
-  { key: "turbulence", labelKey: "fb.weather.layer.turbulence", Icon: Waves, overlay: "turbulence" },
-  { key: "cape", labelKey: "fb.weather.layer.cape", Icon: Zap, overlay: "cape" },
-  { key: "pressure", labelKey: "fb.weather.layer.pressure", Icon: Gauge, overlay: "pressure" },
+// (v4.16.0 #5a) Capas meteo de OpenWeather (tiles raster). `owLayer` = id de
+// la capa en la API de tiles de OpenWeather (https://tile.openweathermap.org
+// /map/{owLayer}/{z}/{x}/{y}.png). "none" = solo basemap. Reutilizamos las
+// claves i18n existentes de capas donde aplican.
+const LAYERS: {
+  key: LayerKey;
+  labelKey: string;
+  Icon: typeof Cloud;
+  owLayer: string | null;
+}[] = [
+  { key: "none", labelKey: "fb.weather.layer.none", Icon: MapPin, owLayer: null },
+  { key: "clouds", labelKey: "fb.weather.layer.clouds", Icon: Cloud, owLayer: "clouds_new" },
+  { key: "precip", labelKey: "fb.weather.layer.precip", Icon: CloudRain, owLayer: "precipitation_new" },
+  { key: "wind", labelKey: "fb.weather.layer.wind", Icon: Wind, owLayer: "wind_new" },
+  { key: "temp", labelKey: "fb.weather.layer.temp", Icon: Thermometer, owLayer: "temp_new" },
+  { key: "pressure", labelKey: "fb.weather.layer.pressure", Icon: Gauge, owLayer: "pressure_new" },
 ];
 
 export function WeatherModal({
@@ -103,11 +76,20 @@ export function WeatherModal({
     return m >= 9999 ? "6+ sm" : `${(m / 1609.34).toFixed(1)} sm`;
   };
 
-  const [activeLayer, setActiveLayer] = useState<LayerKey>("satellite");
+  const [activeLayer, setActiveLayer] = useState<LayerKey>("clouds");
   const [size, setSize] = useState({ width: 880, height: 560 });
   const resizingRef = useRef<{ startX: number; startY: number; w: number; h: number } | null>(
     null,
   );
+
+  // (v4.16.0 #5a) Mapa MapLibre + key de OpenWeather + waypoints de la ruta.
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const [owKey, setOwKey] = useState<string | null>(null);
+  const [routeFixes, setRouteFixes] = useState<RouteFix[]>([]);
+  // Contador que incrementa cuando el mapa terminó de cargar — dispara los
+  // effects de datos/capa (que dependen de `mapRef.current` ya listo).
+  const [mapReady, setMapReady] = useState(0);
 
   // Vuelo activo si todavía no terminó (sin ended_at).
   const isLiveFlight = entry.endedAt == null;
@@ -148,40 +130,213 @@ export function WeatherModal({
     };
   }, [entry.id]);
 
-  // (v3.33.0 #4) URL del embed de Windy centrado en el punto medio de la
-  // ruta (o el origen si no hay destino). El overlay viene de la capa
-  // activa del sidebar. metricWind=kt y metricTemp=°C por coherencia con
-  // aviación; el `key={activeLayer}` del iframe fuerza recarga al cambiar.
-  const windyUrl = (() => {
-    const lat =
-      entry.destinationLat != null
-        ? (entry.originLat + entry.destinationLat) / 2
-        : entry.originLat;
-    const lon =
-      entry.destinationLon != null
-        ? (entry.originLon + entry.destinationLon) / 2
-        : entry.originLon;
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-    const p = new URLSearchParams({
-      lat: lat.toFixed(3),
-      lon: lon.toFixed(3),
-      detailLat: lat.toFixed(3),
-      detailLon: lon.toFixed(3),
-      zoom: "5",
-      level: "surface",
-      overlay: LAYERS.find((l) => l.key === activeLayer)?.overlay ?? "wind",
-      menu: "",
-      message: "true",
-      marker: "true",
-      calendar: "now",
-      type: "map",
-      location: "coordinates",
-      metricWind: "kt",
-      metricTemp: "°C",
-      radarRange: "-1",
+  // (v4.16.0 #5a) Carga la key de OpenWeather + los waypoints del navlog
+  // (ruta planificada de SimBrief pegada al vuelo).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getOpenweatherKey()
+      .then((k) => {
+        if (!cancelled) setOwKey(k);
+      })
+      .catch(() => {});
+    api
+      .flightRouteFixes(entry.id)
+      .then((fx) => {
+        if (!cancelled) setRouteFixes(fx);
+      })
+      .catch(() => setRouteFixes([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.id]);
+
+  const originOk =
+    Number.isFinite(entry.originLat) && Number.isFinite(entry.originLon);
+  const destOk =
+    entry.destinationLat != null &&
+    entry.destinationLon != null &&
+    Number.isFinite(entry.destinationLat) &&
+    Number.isFinite(entry.destinationLon);
+
+  // (v4.16.0 #5a) Inicializa el mapa MapLibre UNA vez (basemap oscuro CARTO).
+  // Sources/layers de la ruta se crean vacíos; los effects de abajo hacen
+  // setData + swap de la capa meteo.
+  useEffect(() => {
+    if (mapRef.current || !mapContainerRef.current) return;
+    const lon0 = originOk ? entry.originLon : 0;
+    const lat0 = originOk ? entry.originLat : 25;
+    const style: maplibregl.StyleSpecification = {
+      version: 8,
+      sources: {
+        "carto-dark": {
+          type: "raster",
+          tiles: [
+            "https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
+            "https://cartodb-basemaps-b.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
+            "https://cartodb-basemaps-c.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
+          ],
+          tileSize: 256,
+          attribution: "© OpenStreetMap · © CARTO · Weather © OpenWeather",
+        },
+      },
+      layers: [{ id: "carto-dark-layer", type: "raster", source: "carto-dark" }],
+    };
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style,
+      center: [lon0, lat0],
+      zoom: 4,
+      attributionControl: false,
     });
-    return `https://embed.windy.com/embed2.html?${p.toString()}`;
-  })();
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+    const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+    map.on("load", () => {
+      // Ruta planificada (violeta) + waypoints + endpoints.
+      map.addSource("wx-route", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "wx-route-line",
+        type: "line",
+        source: "wx-route",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#a78bfa", "line-width": 2.2, "line-opacity": 0.95 },
+      });
+      map.addSource("wx-fixes", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "wx-fixes-circle",
+        type: "circle",
+        source: "wx-fixes",
+        paint: {
+          "circle-radius": 2.6,
+          "circle-color": "#c4b5fd",
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#1e1b4b",
+        },
+      });
+      map.addSource("wx-ends", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "wx-ends-circle",
+        type: "circle",
+        source: "wx-ends",
+        paint: {
+          "circle-radius": 5,
+          "circle-color": [
+            "case",
+            ["==", ["get", "kind"], "orig"],
+            "#34d399",
+            "#fb7185",
+          ],
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "#0f172a",
+        },
+      });
+      mapRef.current = map;
+      // Disparar el primer render de datos/capa.
+      setMapReady((n) => n + 1);
+    });
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // (v4.16.0 #5a) Ruta (línea + waypoints + endpoints) + encuadre.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const coords: [number, number][] = [];
+    if (originOk) coords.push([entry.originLon, entry.originLat]);
+    for (const f of routeFixes) {
+      if (Number.isFinite(f.lon) && Number.isFinite(f.lat)) coords.push([f.lon, f.lat]);
+    }
+    if (destOk) {
+      coords.push([entry.destinationLon as number, entry.destinationLat as number]);
+    }
+    // Línea SOLO si hay waypoints intermedios — NUNCA recta origen→destino.
+    const lineFeats: GeoJSON.Feature[] =
+      routeFixes.length > 0 && coords.length >= 2
+        ? [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: { type: "LineString", coordinates: coords },
+            },
+          ]
+        : [];
+    (map.getSource("wx-route") as maplibregl.GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: lineFeats,
+    });
+    (map.getSource("wx-fixes") as maplibregl.GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: routeFixes
+        .filter((f) => Number.isFinite(f.lon) && Number.isFinite(f.lat))
+        .map((f) => ({
+          type: "Feature",
+          properties: { ident: f.ident },
+          geometry: { type: "Point", coordinates: [f.lon, f.lat] },
+        })),
+    });
+    const ends: GeoJSON.Feature[] = [];
+    if (originOk) {
+      ends.push({
+        type: "Feature",
+        properties: { kind: "orig", icao: entry.originIcao ?? "" },
+        geometry: { type: "Point", coordinates: [entry.originLon, entry.originLat] },
+      });
+    }
+    if (destOk) {
+      ends.push({
+        type: "Feature",
+        properties: { kind: "dest", icao: entry.destinationIcao ?? "" },
+        geometry: {
+          type: "Point",
+          coordinates: [entry.destinationLon as number, entry.destinationLat as number],
+        },
+      });
+    }
+    (map.getSource("wx-ends") as maplibregl.GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features: ends,
+    });
+    if (coords.length >= 2) {
+      const lons = coords.map((c) => c[0]);
+      const lats = coords.map((c) => c[1]);
+      map.fitBounds(
+        [
+          [Math.min(...lons), Math.min(...lats)],
+          [Math.max(...lons), Math.max(...lats)],
+        ],
+        { padding: 60, duration: 600, maxZoom: 7 },
+      );
+    } else if (coords.length === 1) {
+      map.easeTo({ center: coords[0], zoom: 6, duration: 400 });
+    }
+  }, [mapReady, routeFixes, entry.id, originOk, destOk]);
+
+  // (v4.16.0 #5a) Capa meteo OpenWeather — añade/quita el raster según la
+  // capa activa + la key. Se inserta DEBAJO de la ruta para no taparla.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    if (map.getLayer("wx-owm-layer")) map.removeLayer("wx-owm-layer");
+    if (map.getSource("wx-owm")) map.removeSource("wx-owm");
+    const def = LAYERS.find((l) => l.key === activeLayer);
+    if (!def?.owLayer || !owKey) return;
+    map.addSource("wx-owm", {
+      type: "raster",
+      tiles: [
+        `https://tile.openweathermap.org/map/${def.owLayer}/{z}/{x}/{y}.png?appid=${owKey}`,
+      ],
+      tileSize: 256,
+    });
+    const beforeId = map.getLayer("wx-route-line") ? "wx-route-line" : undefined;
+    map.addLayer(
+      { id: "wx-owm-layer", type: "raster", source: "wx-owm", paint: { "raster-opacity": 0.75 } },
+      beforeId,
+    );
+  }, [mapReady, activeLayer, owKey]);
 
   const briefingWx = (() => {
     if (!briefing) return null;
@@ -415,16 +570,16 @@ export function WeatherModal({
             )}
           </nav>
 
-          {/* Mapa Windy — el iframe llena el área; el sidebar lo controla. */}
+          {/* (v4.16.0 #5a) Mapa MapLibre — basemap oscuro + capa meteo
+              OpenWeather + ruta del vuelo. El sidebar cambia la capa. */}
           <div className="relative min-h-0 flex-1">
-            {windyUrl ? (
-              <iframe
-                title="Windy"
-                key={activeLayer}
-                src={windyUrl}
-                className="absolute inset-0 h-full w-full border-0"
-              />
-            ) : (
+            <div ref={mapContainerRef} className="absolute inset-0 h-full w-full" />
+            {owKey === null && (
+              <div className="pointer-events-none absolute bottom-2 left-2 z-10 rounded bg-slate-900/85 px-2 py-1 text-[10px] text-amber-300 ring-1 ring-amber-500/30">
+                {t("fb.weather.no_owkey")}
+              </div>
+            )}
+            {!originOk && (
               <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-slate-500">
                 {t("fb.weather.no_coords")}
               </div>

@@ -171,6 +171,7 @@ pub fn run() {
             commands::simbrief::delete_simbrief_flight,
             commands::simbrief::link_simbrief_ofp,
             commands::simbrief::flight_route_fixes,
+            commands::weather::get_openweather_key,
             commands::stats::get_dashboard_stats,
             commands::flight_log::list_flight_log,
             commands::flight_log::delete_flight_log_entry,
