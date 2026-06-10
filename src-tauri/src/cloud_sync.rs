@@ -39,7 +39,6 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
@@ -59,10 +58,6 @@ const SYNC_FILE_NAME: &str = "msfs-addons-data.json";
 // (bytes entregados al socket en subida / leídos de la respuesta en bajada),
 // no el procesamiento interno de Google — pero da %, MB/s y ETA correctos.
 // =============================================================================
-
-/// Tamaño de chunk para el stream de subida — 256 KiB es un buen balance
-/// entre granularidad de la barra y overhead por chunk.
-const TRANSFER_CHUNK: usize = 256 * 1024;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,29 +93,6 @@ fn emit_transfer_progress(
         );
     }
 }
-/// Construye un `reqwest::Body` por streaming a partir de `bytes`, emitiendo
-/// progreso de subida a medida que cada chunk se entrega al transporte. El
-/// llamador DEBE fijar `Content-Length = total` para evitar chunked-encoding
-/// y mantener el formato idéntico al buffered.
-fn counting_upload_body(
-    bytes: Vec<u8>,
-    total: u64,
-    app: Option<AppHandle>,
-) -> reqwest::Body {
-    // Partimos en chunks owned para poder mover cada uno al stream.
-    let chunks: Vec<Vec<u8>> = bytes
-        .chunks(TRANSFER_CHUNK)
-        .map(|c| c.to_vec())
-        .collect();
-    let mut sent: u64 = 0;
-    let stream = futures_util::stream::iter(chunks).map(move |chunk| {
-        sent += chunk.len() as u64;
-        emit_transfer_progress(app.as_ref(), "upload", sent, total, false);
-        Ok::<Vec<u8>, std::io::Error>(chunk)
-    });
-    reqwest::Body::wrap_stream(stream)
-}
-
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email";
 
 // (v3.1.0 / v3.1.1) Credenciales OAuth embebidas en el binario al
@@ -787,12 +759,7 @@ async fn create_sync_file(
     );
     body.extend_from_slice(&gz);
     body.extend_from_slice(format!("\r\n--{b}--", b = boundary).as_bytes());
-    // (v4.14.0 #2) Cuerpo como stream contador para reportar progreso de
-    // subida. Mantenemos Content-Length fijo (= tamaño total) para que la
-    // request NO use transfer-encoding chunked y el formato hacia Google
-    // sea idéntico al buffered anterior.
     let total = body.len() as u64;
-    let drive_body = counting_upload_body(body, total, app.cloned());
     let resp = http
         .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
         .bearer_auth(access_token)
@@ -800,16 +767,17 @@ async fn create_sync_file(
             "Content-Type",
             format!("multipart/related; boundary={}", boundary),
         )
-        .header(reqwest::header::CONTENT_LENGTH, total)
         .timeout(DRIVE_TRANSFER_TIMEOUT)
-        .body(drive_body)
+        .body(body)
         .send()
         .await
         .map_err(|e| transport_error("Creando el snapshot en Drive", e))?;
-    emit_transfer_progress(app, "upload", total, total, true);
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
+    // (v4.14.1 #2) Un único evento final con el TAMAÑO real subido — el
+    // frontend deriva MB/s = bytes / duración y anima la barra ~1.5s.
+    emit_transfer_progress(app, "upload", total, total, true);
     let file: DriveFile = resp.json().await?;
     crate::success!(
         target: "cloud_sync",
@@ -830,10 +798,7 @@ async fn update_sync_file(
     // subía el JSON crudo (cientos de MB) y la request moría por
     // "operation timed out".
     let gz = gzip_bytes(content.as_bytes())?;
-    // (v4.14.0 #2) Cuerpo como stream contador para reportar progreso.
-    // Content-Length fijo = mismo formato de red que el buffered.
     let total = gz.len() as u64;
-    let drive_body = counting_upload_body(gz, total, app.cloned());
     let resp = http
         .patch(format!(
             "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media",
@@ -841,16 +806,16 @@ async fn update_sync_file(
         ))
         .bearer_auth(access_token)
         .header("Content-Type", "application/gzip")
-        .header(reqwest::header::CONTENT_LENGTH, total)
         .timeout(DRIVE_TRANSFER_TIMEOUT)
-        .body(drive_body)
+        .body(gz)
         .send()
         .await
         .map_err(|e| transport_error("Actualizando el snapshot en Drive", e))?;
-    emit_transfer_progress(app, "upload", total, total, true);
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
+    // (v4.14.1 #2) Evento final con el tamaño subido (gz) para MB/s real.
+    emit_transfer_progress(app, "upload", total, total, true);
     crate::success!(
         target: "cloud_sync",
         "Snapshot actualizado en Drive (file {})",
@@ -880,22 +845,12 @@ async fn download_sync_file(
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
-    // (v4.14.0 #2) Leemos la respuesta por streaming para reportar progreso
-    // de bajada. `content_length` da el total cuando Drive lo envía (lo hace
-    // para `alt=media`); si no, total=0 (barra indeterminada en el frontend).
-    let total = resp.content_length().unwrap_or(0);
-    let mut stream = resp.bytes_stream();
-    let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
-    let mut recv: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| transport_error("Descargando el snapshot de Drive", e))?;
-        recv += chunk.len() as u64;
-        bytes.extend_from_slice(&chunk);
-        emit_transfer_progress(app, "download", recv, total, false);
-    }
-    emit_transfer_progress(app, "download", recv, total.max(recv), true);
     // (v4.0.1) El snapshot puede venir gzipeado (nuevo) o en texto plano
     // (snapshots viejos). `maybe_gunzip_to_string` detecta por magic bytes.
+    let bytes = resp.bytes().await?.to_vec();
+    // (v4.14.1 #2) Evento final con el tamaño bajado (comprimido) para
+    // que el frontend muestre MB/s real.
+    emit_transfer_progress(app, "download", bytes.len() as u64, bytes.len() as u64, true);
     Ok(Some(maybe_gunzip_to_string(bytes)?))
 }
 
@@ -1809,24 +1764,147 @@ pub async fn upload_all(
     http: &reqwest::Client,
     app: Option<&AppHandle>,
 ) -> anyhow::Result<UploadReport> {
-    tracing::info!(target: "cloud", "upload_all: construyendo snapshot local…");
+    use std::collections::{HashMap, HashSet};
+    tracing::info!(target: "cloud", "upload_all: merge incremental local → nube…");
     let access_token = fresh_access_token(pool, http).await?;
+
+    // 1. Snapshot local (todo lo que hay en este PC).
     let local = build_snapshot(pool).await?;
-    let payload = serde_json::to_string(&local)?;
-    let report = UploadReport {
-        uploaded_flights: local.flight_log.len(),
-        uploaded_tracks: local.flight_log_track.len(),
-        uploaded_settings: local.settings.len(),
+
+    // 2. Snapshot remoto actual (si existe) — base del merge. Si está
+    //    corrupto, partimos de vacío (recuperación: se reescribe entero).
+    let remote_file_id = find_sync_file(http, &access_token).await?;
+    // La bajada interna del snapshot remoto (para mergear) NO emite
+    // progreso — así la barra de "Subir" solo muestra la fase de subida.
+    let mut merged: Snapshot = match download_sync_file(http, &access_token, None).await? {
+        Some(t) => serde_json::from_str(&t).unwrap_or_default(),
+        None => Snapshot::default(),
     };
+
+    // 3. Índice de claves estables de los vuelos que YA están en la nube
+    //    + el id máximo usado (para asignar ids nuevos sin colisión).
+    let mut cloud_keys: HashSet<String> = HashSet::new();
+    let mut max_id: i64 = 0;
+    for row in &merged.flight_log {
+        let (ik, sk) = snapshot_flight_keys(row);
+        if let Some(k) = ik {
+            cloud_keys.insert(k);
+        }
+        cloud_keys.insert(sk);
+        if let Some(id) = row.get("id").and_then(|v| v.as_i64()) {
+            max_id = max_id.max(id);
+        }
+    }
+
+    // 4. Añadimos SOLO los vuelos locales que no están en la nube. Cada
+    //    vuelo nuevo recibe un id fresco (sin colisión) y sus tracks /
+    //    fases / score-items se remapean a ese id. Los vuelos que ya están
+    //    arriba NO se re-suben ni se pisan (se preserva lo de otras máquinas).
+    let mut next_id = max_id;
+    let mut new_flights = 0usize;
+    let mut new_tracks = 0usize;
+    for frow in &local.flight_log {
+        let (ik, sk) = snapshot_flight_keys(frow);
+        let in_cloud = ik.as_ref().map(|k| cloud_keys.contains(k)).unwrap_or(false)
+            || cloud_keys.contains(&sk);
+        if in_cloud {
+            continue;
+        }
+        let Some(old_id) = frow.get("id").and_then(|v| v.as_i64()) else {
+            continue;
+        };
+        next_id += 1;
+        let new_id = next_id;
+        let mut f = frow.clone();
+        if let Some(o) = f.as_object_mut() {
+            o.insert("id".into(), serde_json::json!(new_id));
+        }
+        merged.flight_log.push(f);
+        new_flights += 1;
+
+        let remap = |rows: &[serde_json::Value], dst: &mut Vec<serde_json::Value>| -> usize {
+            let mut n = 0;
+            for r in rows {
+                if r.get("flightId").and_then(|v| v.as_i64()) == Some(old_id) {
+                    let mut c = r.clone();
+                    if let Some(o) = c.as_object_mut() {
+                        o.insert("flightId".into(), serde_json::json!(new_id));
+                    }
+                    dst.push(c);
+                    n += 1;
+                }
+            }
+            n
+        };
+        new_tracks += remap(&local.flight_log_track, &mut merged.flight_log_track);
+        remap(&local.flight_log_phase, &mut merged.flight_log_phase);
+        remap(&local.flight_log_score_item, &mut merged.flight_log_score_item);
+    }
+
+    // 5. Settings (pref_*): unión con la local como autoridad (son prefs de
+    //    esta máquina). Pequeñas; no afectan al peso.
+    let mut smap: HashMap<String, String> = merged
+        .settings
+        .iter()
+        .map(|kv| (kv.key.clone(), kv.value.clone()))
+        .collect();
+    let settings_before = smap.len();
+    for kv in &local.settings {
+        smap.insert(kv.key.clone(), kv.value.clone());
+    }
+    let settings_changed = smap.len() != settings_before
+        || local.settings.iter().any(|kv| {
+            merged
+                .settings
+                .iter()
+                .find(|m| m.key == kv.key)
+                .map(|m| m.value != kv.value)
+                .unwrap_or(true)
+        });
+    merged.settings = smap
+        .into_iter()
+        .map(|(key, value)| SettingKV { key, value })
+        .collect();
+    merged.version = 2;
+    merged.exported_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let report = UploadReport {
+        uploaded_flights: new_flights,
+        uploaded_tracks: new_tracks,
+        uploaded_settings: merged.settings.len(),
+    };
+
+    // 6. Si no hay nada nuevo que añadir y los settings no cambiaron, y ya
+    //    existe un snapshot remoto, no re-subimos el archivo entero — era
+    //    justo lo que el usuario no quería ("que no suba todo otra vez").
+    if new_flights == 0 && !settings_changed && remote_file_id.is_some() {
+        tracing::info!(
+            target: "cloud",
+            "upload_all: nada nuevo que subir — la nube ya tiene todos los vuelos locales"
+        );
+        // Nada que subir → emitimos un done con tamaño 0 para que la barra
+        // cierre limpio (el frontend igual tiene su red de seguridad).
+        emit_transfer_progress(app, "upload", 0, 0, true);
+        set_setting(
+            pool,
+            KEY_LAST_SYNC_AT,
+            &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        )
+        .await?;
+        return Ok(report);
+    }
+
+    let payload = serde_json::to_string(&merged)?;
     tracing::info!(
         target: "cloud",
-        "upload_all: snapshot listo — {} vuelos, {} tracks, {} settings · JSON {:.1} MB (se sube gzipeado)",
-        report.uploaded_flights,
-        report.uploaded_tracks,
-        report.uploaded_settings,
+        "upload_all: merge listo — +{} vuelos nuevos (+{} tracks) · nube ahora {} vuelos · JSON {:.1} MB (gz)",
+        new_flights,
+        new_tracks,
+        merged.flight_log.len(),
         payload.len() as f64 / 1_048_576.0,
     );
-    if let Some(file_id) = find_sync_file(http, &access_token).await? {
+    // update/create_sync_file emite el evento final con el tamaño subido.
+    if let Some(file_id) = remote_file_id {
         update_sync_file(http, &access_token, &file_id, &payload, app).await?;
     } else {
         create_sync_file(http, &access_token, &payload, app).await?;
@@ -1839,10 +1917,25 @@ pub async fn upload_all(
     .await?;
     tracing::info!(
         target: "cloud",
-        "upload OK · {} flights, {} tracks, {} settings",
-        report.uploaded_flights, report.uploaded_tracks, report.uploaded_settings,
+        "upload OK · +{} flights nuevos, +{} tracks",
+        report.uploaded_flights, report.uploaded_tracks,
     );
     Ok(report)
+}
+
+/// (v4.14.1) Claves estables de un row de flight_log (snapshot JSON) para
+/// dedup cross-machine — mismas que usa `download_missing`:
+///   · import_key = `{source}|{externalId}` (sólo imports VAS-ACARS).
+///   · sim_key    = `{startedAt}|{originLat:.2}|{originLon:.2}`.
+fn snapshot_flight_keys(row: &serde_json::Value) -> (Option<String>, String) {
+    let source = json_str(row, "source").unwrap_or_else(|| "simconnect".into());
+    let external_id = json_str(row, "externalId");
+    let started_at = json_str(row, "startedAt").unwrap_or_default();
+    let origin_lat = json_f64(row, "originLat").unwrap_or(0.0);
+    let origin_lon = json_f64(row, "originLon").unwrap_or(0.0);
+    let import_key = external_id.as_deref().map(|eid| format!("{source}|{eid}"));
+    let sim_key = format!("{started_at}|{origin_lat:.2}|{origin_lon:.2}");
+    (import_key, sim_key)
 }
 
 /// **Bajar** los vuelos faltantes de la nube. NO sobrescribe los vuelos
@@ -1868,6 +1961,7 @@ pub async fn download_missing(
     let access_token = fresh_access_token(pool, http).await?;
     let mut report = DownloadReport::default();
 
+    // download_sync_file emite el evento final con el tamaño bajado.
     let Some(text) = download_sync_file(http, &access_token, app).await? else {
         tracing::info!(target: "cloud", "download: no remote snapshot exists yet");
         return Ok(report);

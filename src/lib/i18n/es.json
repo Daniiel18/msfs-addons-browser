@@ -242,6 +242,7 @@
   "settings.cloud.progress.downloading": "Bajando…",
   "settings.cloud.progress.preparing": "Preparando…",
   "settings.cloud.progress.done": "Completado",
+  "settings.cloud.progress.flights": "{n} / {total} vuelos",
   "settings.cloud.feedback.upload_done": "Datos enviados a la nube correctamente",
   "settings.cloud.feedback.upload_error": "Error al subir",
   "settings.cloud.feedback.download_done": "Datos descargados de la nube correctamente",
