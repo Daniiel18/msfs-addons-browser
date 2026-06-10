@@ -750,7 +750,7 @@ pub async fn vas_acars_import(
                 "score:upload:started",
                 &serde_json::json!({ "source": "vas-acars-batch" }),
             );
-            match crate::cloud_sync::upload_all(&pool_c, &http_c).await {
+            match crate::cloud_sync::upload_all(&pool_c, &http_c, None).await {
                 Ok(rep) => {
                     tracing::info!(
                         target: "vas_acars",

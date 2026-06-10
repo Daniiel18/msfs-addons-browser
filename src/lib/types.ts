@@ -817,6 +817,20 @@ export interface CloudOauthCompletedEvent {
   error: string | null;
 }
 
+/** (v4.14.0 #2) Progreso de transferencia cloud (evento `cloud://progress`).
+ *  La velocidad (MB/s) y el ETA los deriva el frontend de los deltas de
+ *  `transferred` entre eventos consecutivos. */
+export interface CloudProgress {
+  /** "upload" | "download". */
+  phase: "upload" | "download";
+  /** Bytes transferidos hasta ahora. */
+  transferred: number;
+  /** Tamaño total en bytes. 0 = desconocido. */
+  total: number;
+  /** true en el último evento de la fase. */
+  done: boolean;
+}
+
 /** (v2.0.0) Reporte tras un sync exitoso — cuenta uploads y
  *  downloads por colección. */
 export interface CloudSyncReport {

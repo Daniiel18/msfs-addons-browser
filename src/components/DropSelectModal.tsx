@@ -144,8 +144,16 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
             null,
           );
           reports.push(r);
-          // Solo ofrecemos borrar archivos que se instalaron OK.
-          committed.push(insp.archivePath);
+          // (v4.14.0 #5c) Solo ofrecemos borrar el archivo origen si
+          // REALMENTE se instaló algo desde él — perfil GSX o paquete
+          // Community. Antes se empujaba `archivePath` aunque el commit
+          // no instalara nada (solo errores), lo que ofrecía borrar un
+          // archivo que no se había instalado. Con esto, los drops de
+          // perfiles GSX (.zip/.rar/.7z → %AppData%\Virtuali\GSX\MSFS)
+          // disparan el confirm de borrado igual que los de Community.
+          if (r.installedGsx.length > 0 || r.installedPackages.length > 0) {
+            committed.push(insp.archivePath);
+          }
         } catch (e) {
           reports.push({
             installedGsx: [],

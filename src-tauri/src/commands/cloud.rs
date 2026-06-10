@@ -69,10 +69,11 @@ pub async fn cloud_sync_now(
 /// los tracks, todos los settings con `pref_*`).
 #[tauri::command]
 pub async fn cloud_upload_all(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<UploadReport, String> {
     let _t = CmdTimer::start("cloud_upload_all");
-    cloud_sync::upload_all(&state.db, &state.http)
+    cloud_sync::upload_all(&state.db, &state.http, Some(&app))
         .await
         .map_err(|e| e.to_string())
 }
@@ -82,10 +83,11 @@ pub async fn cloud_upload_all(
 /// con `ended_at = NULL` para evitar el bug del "FLYING NOW phantom".
 #[tauri::command]
 pub async fn cloud_download_missing(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<DownloadReport, String> {
     let _t = CmdTimer::start("cloud_download_missing");
-    cloud_sync::download_missing(&state.db, &state.http)
+    cloud_sync::download_missing(&state.db, &state.http, Some(&app))
         .await
         .map_err(|e| e.to_string())
 }

@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
   AlertCircle,
   Archive,
   Bell,
+  Check,
   CheckCircle2,
+  ChevronDown,
   Cloud,
   CloudOff,
   Compass,
@@ -298,7 +300,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     </button>
                   </div>
                 </div>
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.units.weight")}
                   current={settings.unitWeight}
                   options={[
@@ -307,7 +309,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ]}
                   onChange={(v) => void setUnitPref("unitWeight", v)}
                 />
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.units.altitude")}
                   current={settings.unitAltitude}
                   options={[
@@ -316,7 +318,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ]}
                   onChange={(v) => void setUnitPref("unitAltitude", v)}
                 />
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.units.speed")}
                   current={settings.unitSpeed}
                   options={[
@@ -326,7 +328,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ]}
                   onChange={(v) => void setUnitPref("unitSpeed", v)}
                 />
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.units.vs")}
                   current={settings.unitVs}
                   options={[
@@ -335,7 +337,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ]}
                   onChange={(v) => void setUnitPref("unitVs", v)}
                 />
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.units.distance")}
                   current={settings.unitDistance}
                   options={[
@@ -345,7 +347,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ]}
                   onChange={(v) => void setUnitPref("unitDistance", v)}
                 />
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.units.pressure")}
                   current={settings.unitPressure}
                   options={[
@@ -354,7 +356,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   ]}
                   onChange={(v) => void setUnitPref("unitPressure", v)}
                 />
-                <SegmentRow
+                <UnitSelect
                   title={t("settings.temp.title")}
                   description={t("settings.temp.description")}
                   current={settings.tempUnit}
@@ -737,7 +739,26 @@ export function LanguageRow({
  *  igual al selector de idioma). Usada para Unidades y Temperatura.
  *  A diferencia del idioma, NO requiere reinicio — el cambio es
  *  reactivo en toda la UI vía `useUnits()`. */
-function SegmentRow({
+/** (v4.14.0 #2) Formatea segundos restantes como "Ns" (<60s) o "m:ss". */
+function formatEta(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
+/**
+ * (v4.14.0 #1) Selector de unidad por categoría — dropdown custom estilo
+ * "Dropbox": botón compacto que despliega una lista flotante animada con
+ * todas las opciones, check en la activa, cierre por click-fuera/Escape.
+ * Sustituye a los botones segmentados horizontales anteriores.
+ *
+ * Sigue siendo 100% reactivo a los presets globales (Imperial/Metric):
+ * `current` viene del store, así que `applyUnitPreset` actualiza el label
+ * y el check de cada dropdown automáticamente.
+ */
+function UnitSelect({
   title,
   description,
   current,
@@ -750,28 +771,89 @@ function SegmentRow({
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Cierre por click-fuera + Escape. Solo se engancha mientras está abierto.
+  useEffect(() => {
+    if (!open) return;
+    const onDocPointer = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const currentLabel =
+    options.find((o) => o.value === current)?.label ?? current;
+
   return (
-    <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+    <div className="flex items-center justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="text-xs text-slate-200">{title}</div>
         {description ? (
           <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
         ) : null}
       </div>
-      <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
-        {options.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            className={`rounded px-2.5 py-1 text-[11px] ${
-              current === opt.value
-                ? "bg-slate-700/80 text-slate-100"
-                : "text-slate-400 hover:text-slate-200"
+      <div ref={ref} className="relative shrink-0">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="flex min-w-[5.25rem] items-center justify-between gap-2 rounded-md border border-slate-700 bg-slate-950/60 px-2.5 py-1.5 text-[11px] text-slate-100 transition-colors hover:border-slate-600 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+        >
+          <span className="truncate">{currentLabel}</span>
+          <ChevronDown
+            className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform duration-150 ${
+              open ? "rotate-180" : ""
             }`}
-          >
-            {opt.label}
-          </button>
-        ))}
+          />
+        </button>
+        <AnimatePresence>
+          {open ? (
+            <motion.ul
+              role="listbox"
+              initial={{ opacity: 0, y: -4, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.98 }}
+              transition={{ duration: 0.12, ease: "easeOut" }}
+              className="absolute right-0 z-50 mt-1 min-w-[7rem] origin-top overflow-hidden rounded-md border border-slate-700 bg-slate-900 py-1 shadow-xl shadow-black/40"
+            >
+              {options.map((opt) => {
+                const active = opt.value === current;
+                return (
+                  <li key={opt.value} role="option" aria-selected={active}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChange(opt.value);
+                        setOpen(false);
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-[11px] transition-colors ${
+                        active
+                          ? "bg-brand-500/15 text-slate-100"
+                          : "text-slate-300 hover:bg-slate-800/70 hover:text-slate-100"
+                      }`}
+                    >
+                      <span>{opt.label}</span>
+                      {active ? (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-brand-400" />
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </motion.ul>
+          ) : null}
+        </AnimatePresence>
       </div>
     </div>
   );
@@ -1100,6 +1182,57 @@ function CloudSyncPanel({
     hint: string | null;
   } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  // (v4.14.0 #2) Progreso de transferencia cloud — barra + MB/s + ETA.
+  // `pct = -1` ⇒ indeterminado (fase de preparación del snapshot, sin
+  // eventos de bytes todavía).
+  const [progress, setProgress] = useState<{
+    phase: "upload" | "download";
+    pct: number;
+    speedMbps: number;
+    etaSec: number;
+  } | null>(null);
+  // Muestra de bytes/tiempo previa para derivar velocidad entre eventos.
+  const progressRef = useRef<{ t: number; bytes: number } | null>(null);
+
+  // (v4.14.0 #2) Suscripción al evento `cloud://progress`. Calcula la
+  // velocidad (MB/s) a partir del delta de bytes entre eventos y el ETA
+  // a partir de los bytes restantes / velocidad actual.
+  useEffect(() => {
+    let unsub: (() => void) | null = null;
+    api
+      .onCloudProgress((e) => {
+        const now = performance.now();
+        const prev = progressRef.current;
+        let speedMbps = 0;
+        if (prev && e.transferred >= prev.bytes && now > prev.t) {
+          const dBytes = e.transferred - prev.bytes;
+          const dSec = (now - prev.t) / 1000;
+          if (dSec > 0) speedMbps = dBytes / 1_048_576 / dSec;
+        }
+        progressRef.current = { t: now, bytes: e.transferred };
+        const pct =
+          e.total > 0 ? Math.min(100, (e.transferred / e.total) * 100) : -1;
+        const remaining = e.total > 0 ? e.total - e.transferred : 0;
+        const etaSec =
+          speedMbps > 0 && remaining > 0
+            ? remaining / 1_048_576 / speedMbps
+            : -1;
+        if (e.done) {
+          setProgress({ phase: e.phase, pct: 100, speedMbps: 0, etaSec: 0 });
+          progressRef.current = null;
+          window.setTimeout(() => setProgress(null), 700);
+        } else {
+          setProgress({ phase: e.phase, pct, speedMbps, etaSec });
+        }
+      })
+      .then((u) => {
+        unsub = u;
+      })
+      .catch(() => {});
+    return () => {
+      if (unsub) unsub();
+    };
+  }, []);
 
   const refresh = async () => {
     try {
@@ -1170,11 +1303,17 @@ function CloudSyncPanel({
   const onUpload = async () => {
     setUploading(true);
     onFeedback(null);
+    // Barra indeterminada mientras se prepara el snapshot (antes del 1er
+    // evento de bytes).
+    progressRef.current = null;
+    setProgress({ phase: "upload", pct: -1, speedMbps: 0, etaSec: -1 });
     try {
       await api.cloudUploadAll();
       onFeedback(t("settings.cloud.feedback.upload_done"));
       await refresh();
     } catch (e) {
+      progressRef.current = null;
+      setProgress(null);
       onFeedback(`${t("settings.cloud.feedback.upload_error")}: ${String(e)}`);
     } finally {
       setUploading(false);
@@ -1186,12 +1325,16 @@ function CloudSyncPanel({
   const onDownload = async () => {
     setDownloading(true);
     onFeedback(null);
+    progressRef.current = null;
+    setProgress({ phase: "download", pct: -1, speedMbps: 0, etaSec: -1 });
     try {
       await api.cloudDownloadMissing();
       onFeedback(t("settings.cloud.feedback.download_done"));
       await refresh();
       await reloadFlightLog();
     } catch (e) {
+      progressRef.current = null;
+      setProgress(null);
       onFeedback(`${t("settings.cloud.feedback.download_error")}: ${String(e)}`);
     } finally {
       setDownloading(false);
@@ -1371,6 +1514,60 @@ function CloudSyncPanel({
           </div>
         </div>
       </div>
+
+      {/* (v4.14.0 #2) Barra de progreso de transferencia — % + MB/s + ETA
+          en vivo durante subida/bajada. */}
+      {progress && (
+        <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+          <div className="mb-1.5 flex items-center justify-between text-[11px]">
+            <span className="flex items-center gap-1.5 font-medium text-slate-200">
+              {progress.phase === "upload" ? (
+                <Upload className="h-3.5 w-3.5 text-emerald-300" />
+              ) : (
+                <Download className="h-3.5 w-3.5 text-sky-300" />
+              )}
+              {progress.phase === "upload"
+                ? t("settings.cloud.progress.uploading")
+                : t("settings.cloud.progress.downloading")}
+            </span>
+            <span className="font-mono text-slate-400">
+              {progress.pct >= 0 ? `${Math.round(progress.pct)}%` : "…"}
+            </span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            {progress.pct >= 0 ? (
+              <div
+                className={`h-full rounded-full transition-[width] duration-200 ${
+                  progress.phase === "upload"
+                    ? "bg-emerald-400"
+                    : "bg-sky-400"
+                }`}
+                style={{ width: `${progress.pct}%` }}
+              />
+            ) : (
+              <div
+                className={`h-full w-1/3 animate-pulse rounded-full ${
+                  progress.phase === "upload"
+                    ? "bg-emerald-400/70"
+                    : "bg-sky-400/70"
+                }`}
+              />
+            )}
+          </div>
+          <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-slate-500">
+            <span>
+              {progress.speedMbps > 0
+                ? `${progress.speedMbps.toFixed(1)} MB/s`
+                : progress.pct >= 100
+                  ? t("settings.cloud.progress.done")
+                  : t("settings.cloud.progress.preparing")}
+            </span>
+            <span>
+              {progress.etaSec > 0 ? `ETA ${formatEta(progress.etaSec)}` : ""}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* (v3.2.0) UI de credenciales eliminada — las claves OAuth
           están embebidas en el binario via `build.rs` desde

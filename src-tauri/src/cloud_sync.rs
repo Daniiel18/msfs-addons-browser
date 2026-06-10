@@ -39,6 +39,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
@@ -46,6 +47,80 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 const SYNC_FILE_NAME: &str = "msfs-addons-data.json";
+
+// =============================================================================
+// (v4.14.0 #2) Progreso de transferencia cloud — barra + velocidad + ETA.
+//
+// Emitimos `cloud://progress` mientras se sube/baja el snapshot. La
+// velocidad (MB/s) y el ETA los calcula el frontend a partir de los deltas
+// de bytes entre eventos consecutivos, así el backend solo reporta bytes.
+//
+// IMPORTANTE: el byte-count refleja el throughput de NUESTRA transferencia
+// (bytes entregados al socket en subida / leídos de la respuesta en bajada),
+// no el procesamiento interno de Google — pero da %, MB/s y ETA correctos.
+// =============================================================================
+
+/// Tamaño de chunk para el stream de subida — 256 KiB es un buen balance
+/// entre granularidad de la barra y overhead por chunk.
+const TRANSFER_CHUNK: usize = 256 * 1024;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferProgress {
+    /// "upload" | "download".
+    phase: &'static str,
+    /// Bytes transferidos hasta ahora (comprimidos / como van por el cable).
+    transferred: u64,
+    /// Tamaño total en bytes. 0 = desconocido (bajada sin Content-Length).
+    total: u64,
+    /// true en el último evento de la fase.
+    done: bool,
+}
+
+/// Emite un evento de progreso si hay un `AppHandle` (las rutas sin UI —
+/// auto-sync diario, purge — pasan `None` y no emiten nada).
+fn emit_transfer_progress(
+    app: Option<&AppHandle>,
+    phase: &'static str,
+    transferred: u64,
+    total: u64,
+    done: bool,
+) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "cloud://progress",
+            TransferProgress {
+                phase,
+                transferred,
+                total,
+                done,
+            },
+        );
+    }
+}
+/// Construye un `reqwest::Body` por streaming a partir de `bytes`, emitiendo
+/// progreso de subida a medida que cada chunk se entrega al transporte. El
+/// llamador DEBE fijar `Content-Length = total` para evitar chunked-encoding
+/// y mantener el formato idéntico al buffered.
+fn counting_upload_body(
+    bytes: Vec<u8>,
+    total: u64,
+    app: Option<AppHandle>,
+) -> reqwest::Body {
+    // Partimos en chunks owned para poder mover cada uno al stream.
+    let chunks: Vec<Vec<u8>> = bytes
+        .chunks(TRANSFER_CHUNK)
+        .map(|c| c.to_vec())
+        .collect();
+    let mut sent: u64 = 0;
+    let stream = futures_util::stream::iter(chunks).map(move |chunk| {
+        sent += chunk.len() as u64;
+        emit_transfer_progress(app.as_ref(), "upload", sent, total, false);
+        Ok::<Vec<u8>, std::io::Error>(chunk)
+    });
+    reqwest::Body::wrap_stream(stream)
+}
+
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email";
 
 // (v3.1.0 / v3.1.1) Credenciales OAuth embebidas en el binario al
@@ -690,6 +765,7 @@ async fn create_sync_file(
     http: &reqwest::Client,
     access_token: &str,
     content: &str,
+    app: Option<&AppHandle>,
 ) -> anyhow::Result<String> {
     let metadata = serde_json::json!({
         "name": SYNC_FILE_NAME,
@@ -711,6 +787,12 @@ async fn create_sync_file(
     );
     body.extend_from_slice(&gz);
     body.extend_from_slice(format!("\r\n--{b}--", b = boundary).as_bytes());
+    // (v4.14.0 #2) Cuerpo como stream contador para reportar progreso de
+    // subida. Mantenemos Content-Length fijo (= tamaño total) para que la
+    // request NO use transfer-encoding chunked y el formato hacia Google
+    // sea idéntico al buffered anterior.
+    let total = body.len() as u64;
+    let drive_body = counting_upload_body(body, total, app.cloned());
     let resp = http
         .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
         .bearer_auth(access_token)
@@ -718,11 +800,13 @@ async fn create_sync_file(
             "Content-Type",
             format!("multipart/related; boundary={}", boundary),
         )
+        .header(reqwest::header::CONTENT_LENGTH, total)
         .timeout(DRIVE_TRANSFER_TIMEOUT)
-        .body(body)
+        .body(drive_body)
         .send()
         .await
         .map_err(|e| transport_error("Creando el snapshot en Drive", e))?;
+    emit_transfer_progress(app, "upload", total, total, true);
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -740,11 +824,16 @@ async fn update_sync_file(
     access_token: &str,
     file_id: &str,
     content: &str,
+    app: Option<&AppHandle>,
 ) -> anyhow::Result<()> {
     // (v4.0.1) Payload comprimido con gzip + timeout largo. Antes se
     // subía el JSON crudo (cientos de MB) y la request moría por
     // "operation timed out".
     let gz = gzip_bytes(content.as_bytes())?;
+    // (v4.14.0 #2) Cuerpo como stream contador para reportar progreso.
+    // Content-Length fijo = mismo formato de red que el buffered.
+    let total = gz.len() as u64;
+    let drive_body = counting_upload_body(gz, total, app.cloned());
     let resp = http
         .patch(format!(
             "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media",
@@ -752,11 +841,13 @@ async fn update_sync_file(
         ))
         .bearer_auth(access_token)
         .header("Content-Type", "application/gzip")
+        .header(reqwest::header::CONTENT_LENGTH, total)
         .timeout(DRIVE_TRANSFER_TIMEOUT)
-        .body(gz)
+        .body(drive_body)
         .send()
         .await
         .map_err(|e| transport_error("Actualizando el snapshot en Drive", e))?;
+    emit_transfer_progress(app, "upload", total, total, true);
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -771,6 +862,7 @@ async fn update_sync_file(
 async fn download_sync_file(
     http: &reqwest::Client,
     access_token: &str,
+    app: Option<&AppHandle>,
 ) -> anyhow::Result<Option<String>> {
     let Some(file_id) = find_sync_file(http, access_token).await? else {
         return Ok(None);
@@ -788,9 +880,22 @@ async fn download_sync_file(
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
+    // (v4.14.0 #2) Leemos la respuesta por streaming para reportar progreso
+    // de bajada. `content_length` da el total cuando Drive lo envía (lo hace
+    // para `alt=media`); si no, total=0 (barra indeterminada en el frontend).
+    let total = resp.content_length().unwrap_or(0);
+    let mut stream = resp.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
+    let mut recv: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| transport_error("Descargando el snapshot de Drive", e))?;
+        recv += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+        emit_transfer_progress(app, "download", recv, total, false);
+    }
+    emit_transfer_progress(app, "download", recv, total.max(recv), true);
     // (v4.0.1) El snapshot puede venir gzipeado (nuevo) o en texto plano
     // (snapshots viejos). `maybe_gunzip_to_string` detecta por magic bytes.
-    let bytes = resp.bytes().await?.to_vec();
     Ok(Some(maybe_gunzip_to_string(bytes)?))
 }
 
@@ -808,7 +913,7 @@ async fn purge_cloud_snapshot(
 ) -> anyhow::Result<PurgeReport> {
     let mut report = PurgeReport::default();
     // Leer el snapshot remoto para reportar lo que se borra.
-    if let Some(text) = download_sync_file(http, access_token).await? {
+    if let Some(text) = download_sync_file(http, access_token, None).await? {
         if let Ok(snap) = serde_json::from_str::<Snapshot>(&text) {
             report.deleted_flights = snap.flight_log.len();
             report.deleted_tracks = snap.flight_log_track.len();
@@ -1633,7 +1738,7 @@ pub async fn sync_now(
     let access_token = fresh_access_token(pool, http).await?;
     let mut report = SyncReport::default();
 
-    if let Some(text) = download_sync_file(http, &access_token).await? {
+    if let Some(text) = download_sync_file(http, &access_token, None).await? {
         match serde_json::from_str::<Snapshot>(&text) {
             Ok(remote) => {
                 let r = restore_snapshot(pool, &remote).await?;
@@ -1657,9 +1762,9 @@ pub async fn sync_now(
     report.uploaded_settings = local.settings.len();
 
     if let Some(file_id) = find_sync_file(http, &access_token).await? {
-        update_sync_file(http, &access_token, &file_id, &payload).await?;
+        update_sync_file(http, &access_token, &file_id, &payload, None).await?;
     } else {
-        create_sync_file(http, &access_token, &payload).await?;
+        create_sync_file(http, &access_token, &payload, None).await?;
     }
 
     set_setting(
@@ -1702,6 +1807,7 @@ pub struct DownloadReport {
 pub async fn upload_all(
     pool: &SqlitePool,
     http: &reqwest::Client,
+    app: Option<&AppHandle>,
 ) -> anyhow::Result<UploadReport> {
     tracing::info!(target: "cloud", "upload_all: construyendo snapshot local…");
     let access_token = fresh_access_token(pool, http).await?;
@@ -1721,9 +1827,9 @@ pub async fn upload_all(
         payload.len() as f64 / 1_048_576.0,
     );
     if let Some(file_id) = find_sync_file(http, &access_token).await? {
-        update_sync_file(http, &access_token, &file_id, &payload).await?;
+        update_sync_file(http, &access_token, &file_id, &payload, app).await?;
     } else {
-        create_sync_file(http, &access_token, &payload).await?;
+        create_sync_file(http, &access_token, &payload, app).await?;
     }
     set_setting(
         pool,
@@ -1757,11 +1863,12 @@ pub async fn upload_all(
 pub async fn download_missing(
     pool: &SqlitePool,
     http: &reqwest::Client,
+    app: Option<&AppHandle>,
 ) -> anyhow::Result<DownloadReport> {
     let access_token = fresh_access_token(pool, http).await?;
     let mut report = DownloadReport::default();
 
-    let Some(text) = download_sync_file(http, &access_token).await? else {
+    let Some(text) = download_sync_file(http, &access_token, app).await? else {
         tracing::info!(target: "cloud", "download: no remote snapshot exists yet");
         return Ok(report);
     };

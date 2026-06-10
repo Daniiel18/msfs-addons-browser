@@ -668,7 +668,7 @@ pub async fn finalize_after_finish(
             &serde_json::json!({ "flightId": flight_id }),
         );
         let state = app_c.state::<crate::AppState>();
-        match crate::cloud_sync::upload_all(&pool_c, &state.http).await {
+        match crate::cloud_sync::upload_all(&pool_c, &state.http, None).await {
             Ok(rep) => {
                 tracing::info!(
                     target: "scoring",

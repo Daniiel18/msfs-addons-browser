@@ -31,6 +31,7 @@ import type {
   CloudConfig,
   CloudOauthCompletedEvent,
   CloudOauthStart,
+  CloudProgress,
   CloudSyncReport,
   CloudUploadReport,
   CloudDownloadReport,
@@ -176,6 +177,11 @@ interface Api {
   /** Subscribe al evento de fin de OAuth. */
   onCloudOauthCompleted: (
     cb: (event: CloudOauthCompletedEvent) => void,
+  ) => Promise<() => void>;
+  /** (v4.14.0 #2) Subscribe al progreso de subida/bajada cloud. El backend
+   *  emite `cloud://progress` mientras transfiere el snapshot. */
+  onCloudProgress: (
+    cb: (event: CloudProgress) => void,
   ) => Promise<() => void>;
 
   // (v2.0.1) Folder sync — alternativa simple sin OAuth
@@ -457,6 +463,12 @@ const realApi: Api = {
     return await listen<CloudOauthCompletedEvent>(
       "cloud://oauth-completed",
       (e) => cb(e.payload),
+    );
+  },
+  async onCloudProgress(cb) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<CloudProgress>("cloud://progress", (e) =>
+      cb(e.payload),
     );
   },
   folderSyncGetConfig: () =>
@@ -994,6 +1006,11 @@ const demoApi: Api = {
     return { flightsDeleted: 0, tracksDeleted: 0 };
   },
   async onCloudOauthCompleted() {
+    return () => {
+      /* no-op */
+    };
+  },
+  async onCloudProgress() {
     return () => {
       /* no-op */
     };
