@@ -79,28 +79,6 @@ export function RoutesMapView({
 
   const simbriefFlights = useSimBriefStore((s) => s.flights);
   const flightLogEntries = useFlightLogStore((s) => s.entries);
-  // (v4.12.0) Ruta planificada PEGADA al vuelo seleccionado (navlog
-  // copiado a flight_log al enlazar el OFP). Permanente: no depende de
-  // que el OFP siga en caché.
-  const [storedFixes, setStoredFixes] = useState<RouteFix[]>([]);
-  useEffect(() => {
-    if (selectedFlightId == null) {
-      setStoredFixes([]);
-      return;
-    }
-    let alive = true;
-    import("../lib/tauri")
-      .then(({ api }) => api.flightRouteFixes(selectedFlightId))
-      .then((fixes) => {
-        if (alive) setStoredFixes(fixes);
-      })
-      .catch(() => {
-        if (alive) setStoredFixes([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [selectedFlightId]);
   // (v1.1.4) Estado en vivo del watcher SimConnect — usado para
   // pintar el avión en el mapa cuando hay vuelo en curso.
   const flightStatus = useFlightLogStore((s) => s.status);
@@ -311,24 +289,9 @@ export function RoutesMapView({
           "line-dasharray": [2, 1.5],
         },
       });
-      // (v3.1.0) Línea proyectada — great-circle desde la posición
-      // actual del avión hasta el destino del OFP. Color cyan apagado
-      // dashed para diferenciarla del track real (ámbar) y de los
-      // planes SimBrief históricos. Aparece sólo cuando hay vuelo en
-      // curso + destination conocido + posición SimConnect.
-      map.addSource("rt-projection", { type: "geojson", data: empty });
-      map.addLayer({
-        id: "rt-projection-line",
-        type: "line",
-        source: "rt-projection",
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": "#67e8f9",
-          "line-width": 1.8,
-          "line-opacity": 0.75,
-          "line-dasharray": [3, 2],
-        },
-      });
+      // (v4.13.0) Se eliminó la línea proyectada great-circle (rt-projection,
+      // cyan): era redundante con la ruta real del navlog y confundía
+      // (dos líneas a la vez). Ahora solo se dibuja la ruta planificada.
 
       // (v4.10.0) RUTA PLANIFICADA de SimBrief (navlog): línea violeta a
       // través de los waypoints + puntos + etiquetas. Las etiquetas usan
@@ -548,6 +511,13 @@ export function RoutesMapView({
     if (inFlightId == null) {
       return { type: "FeatureCollection", features: [] };
     }
+    // (v4.13.0) No dibujar el track durante el PUSHBACK: el avión es
+    // remolcado en una curva cerrada que generaba un artefacto naranja
+    // en el mapa (el usuario lo reportó). El track empieza a dibujarse
+    // desde el taxi en adelante.
+    if (flightStatus?.phaseLabel === "pushback") {
+      return { type: "FeatureCollection", features: [] };
+    }
     // (v3.4.0) Llevamos timestamp al sanitizador para detectar gaps
     // de tiempo reales (sim pausado, reconexión) además de los saltos
     // geométricos. Esto resuelve la "línea recta fea" que el usuario
@@ -593,69 +563,12 @@ export function RoutesMapView({
     };
   }, [inFlightId, liveTrackPoints, flightStatus]);
 
-  // (v3.1.0) Geometría de la línea PROYECTADA — great-circle desde
-  // la posición actual del avión hasta el destino del vuelo activo.
-  // Sólo se renderiza cuando:
-  //   · SimConnect está vivo + currentLat/Lon conocidos.
-  //   · Hay un vuelo flight_log abierto (status.originIcao desde el
-  //     watcher) Y existe un OFP de SimBrief con ese origen + dest.
-  //
-  // Sin OFP no hay destinationLat/Lon → no se dibuja.
-  const projectionGeojson = useMemo<
-    GeoJSON.FeatureCollection<GeoJSON.MultiLineString>
-  >(() => {
-    if (!flightStatus?.simconnectConnected) {
-      return { type: "FeatureCollection", features: [] };
-    }
-    const curLat = flightStatus.currentLat;
-    const curLon = flightStatus.currentLon;
-    if (curLat == null || curLon == null) {
-      return { type: "FeatureCollection", features: [] };
-    }
-    // Match SimBrief OFP por originIcao del watcher (que viene del
-    // simbrief_flights latest_recent_simbrief).
-    const origin = flightStatus.originIcao;
-    if (!origin) return { type: "FeatureCollection", features: [] };
-    const matchedOfp = simbriefFlights.find(
-      (f) => f.originIcao === origin,
-    );
-    if (!matchedOfp) {
-      return { type: "FeatureCollection", features: [] };
-    }
-    // greatCircleLine devuelve [][]  — múltiples polylines cuando la
-    // ruta cruza la dateline. Usamos MultiLineString para renderizar
-    // todos los segmentos.
-    const segments = greatCircleLine(
-      curLon,
-      curLat,
-      matchedOfp.destinationLon,
-      matchedOfp.destinationLat,
-    );
-    if (segments.length === 0) {
-      return { type: "FeatureCollection", features: [] };
-    }
-    return {
-      type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          properties: { projection: true },
-          geometry: { type: "MultiLineString", coordinates: segments },
-        },
-      ],
-    };
-  }, [
-    flightStatus?.simconnectConnected,
-    flightStatus?.currentLat,
-    flightStatus?.currentLon,
-    flightStatus?.originIcao,
-    simbriefFlights,
-  ]);
-
-  // (v4.10.0) RUTA PLANIFICADA (navlog SimBrief). Se dibuja cuando hay
-  // un OFP cuyos origen+destino matchean el vuelo seleccionado
-  // (FlightBook) o, en vuelo, el origen del watcher. Devuelve la línea
-  // a través de los waypoints + los puntos con su ident.
+  // (v4.13.0) RUTA PLANIFICADA (navlog SimBrief). SOLO se dibuja durante
+  // un vuelo ACTIVO (FLYING NOW: sin vuelo seleccionado + SimConnect
+  // vivo). Los vuelos completados/seleccionados muestran únicamente el
+  // track real (ámbar) — antes salían DOS líneas. Además la ruta se va
+  // "consumiendo": solo dibujamos el tramo POR DELANTE del avión y
+  // conectamos desde su posición actual.
   const planData = useMemo<{
     line: GeoJSON.FeatureCollection<GeoJSON.MultiLineString>;
     fixes: GeoJSON.FeatureCollection<GeoJSON.Point>;
@@ -669,65 +582,92 @@ export function RoutesMapView({
       features: [],
     } as GeoJSON.FeatureCollection<GeoJSON.Point>;
 
-    let origin: string | null | undefined;
-    let dest: string | null | undefined;
-    if (selectedFlightId != null) {
-      const sel = flightLogEntries.find((e) => e.id === selectedFlightId);
-      origin = sel?.originIcao;
-      dest = sel?.destinationIcao;
-    } else {
-      origin = flightStatus?.originIcao;
+    if (selectedFlightId != null) return { line: emptyLine, fixes: emptyFix };
+    if (!flightStatus?.simconnectConnected) {
+      return { line: emptyLine, fixes: emptyFix };
     }
+    const origin = flightStatus.originIcao;
+    if (!origin) return { line: emptyLine, fixes: emptyFix };
+    const ofp = simbriefFlights.find((f) => f.originIcao === origin);
+    const allFixes: RouteFix[] = ofp?.routeFixes ?? [];
+    if (allFixes.length < 2) return { line: emptyLine, fixes: emptyFix };
 
-    // Fuente preferida: ruta PEGADA al vuelo (permanente). Si no, el OFP
-    // activo/cacheado que matchee origen+destino.
-    let fixes: RouteFix[] = storedFixes;
-    if (fixes.length < 2) {
-      if (!origin) return { line: emptyLine, fixes: emptyFix };
-      const ofp = simbriefFlights.find(
-        (f) => f.originIcao === origin && (!dest || f.destinationIcao === dest),
-      );
-      fixes = ofp?.routeFixes ?? [];
+    // Distancia² equirectangular — basta para ordenar/elegir el fix más
+    // cercano (no necesitamos km exactos).
+    const dist2 = (aLat: number, aLon: number, bLat: number, bLon: number) => {
+      const dLat = aLat - bLat;
+      const dLon =
+        (aLon - bLon) * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));
+      return dLat * dLat + dLon * dLon;
+    };
+
+    const curLat = flightStatus.currentLat;
+    const curLon = flightStatus.currentLon;
+    let remaining: RouteFix[] = allFixes;
+    let head: [number, number] | null = null;
+    if (curLat != null && curLon != null) {
+      let bestIdx = 0;
+      let best = Infinity;
+      for (let i = 0; i < allFixes.length; i++) {
+        const d = dist2(curLat, curLon, allFixes[i].lat, allFixes[i].lon);
+        if (d < best) {
+          best = d;
+          bestIdx = i;
+        }
+      }
+      // Si el avión ya pasó el fix más cercano (está más cerca del
+      // siguiente que la longitud del tramo), avanzamos uno para no
+      // dibujar hacia atrás.
+      let startIdx = bestIdx;
+      if (bestIdx < allFixes.length - 1) {
+        const a = allFixes[bestIdx];
+        const b = allFixes[bestIdx + 1];
+        if (dist2(curLat, curLon, b.lat, b.lon) < dist2(a.lat, a.lon, b.lat, b.lon)) {
+          startIdx = bestIdx + 1;
+        }
+      }
+      remaining = allFixes.slice(startIdx);
+      head = [curLon, curLat];
     }
-    if (fixes.length < 2) return { line: emptyLine, fixes: emptyFix };
+    if (remaining.length < 1) return { line: emptyLine, fixes: emptyFix };
 
+    const pts: Array<[number, number]> = [];
+    if (head) pts.push(head);
+    for (const fx of remaining) pts.push([fx.lon, fx.lat]);
     const coords: number[][][] = [];
-    for (let i = 0; i < fixes.length - 1; i++) {
-      const segs = greatCircleLine(
-        fixes[i].lon,
-        fixes[i].lat,
-        fixes[i + 1].lon,
-        fixes[i + 1].lat,
-      );
+    for (let i = 0; i < pts.length - 1; i++) {
+      const segs = greatCircleLine(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
       for (const s of segs) coords.push(s);
     }
+    if (coords.length === 0) return { line: emptyLine, fixes: emptyFix };
     const line: GeoJSON.FeatureCollection<GeoJSON.MultiLineString> = {
       type: "FeatureCollection",
-      features: coords.length
-        ? [
-            {
-              type: "Feature",
-              properties: {},
-              geometry: { type: "MultiLineString", coordinates: coords },
-            },
-          ]
-        : [],
+      features: [
+        {
+          type: "Feature",
+          properties: {},
+          geometry: { type: "MultiLineString", coordinates: coords },
+        },
+      ],
     };
-    const fixFeatures: GeoJSON.Feature<GeoJSON.Point>[] = fixes.map((fx, i) => ({
-      type: "Feature",
-      properties: { ident: fx.ident, sidStar: fx.isSidStar, sort: i },
-      geometry: { type: "Point", coordinates: [fx.lon, fx.lat] },
-    }));
+    const fixFeatures: GeoJSON.Feature<GeoJSON.Point>[] = remaining.map(
+      (fx, i) => ({
+        type: "Feature",
+        properties: { ident: fx.ident, sidStar: fx.isSidStar, sort: i },
+        geometry: { type: "Point", coordinates: [fx.lon, fx.lat] },
+      }),
+    );
     return {
       line,
       fixes: { type: "FeatureCollection", features: fixFeatures },
     };
   }, [
     selectedFlightId,
-    flightLogEntries,
+    flightStatus?.simconnectConnected,
     flightStatus?.originIcao,
+    flightStatus?.currentLat,
+    flightStatus?.currentLon,
     simbriefFlights,
-    storedFixes,
   ]);
 
   // Geometría del track real del vuelo seleccionado.
@@ -973,8 +913,6 @@ export function RoutesMapView({
     selGcSrc?.setData(selectedGreatCircleGeojson);
     const liveSrc = map.getSource("rt-live") as GeoJSONSource | undefined;
     liveSrc?.setData(liveTrackGeojson);
-    const projSrc = map.getSource("rt-projection") as GeoJSONSource | undefined;
-    projSrc?.setData(projectionGeojson);
     const planSrc = map.getSource("rt-plan") as GeoJSONSource | undefined;
     planSrc?.setData(planData.line);
     const planFixSrc = map.getSource("rt-plan-fixes") as
@@ -989,7 +927,6 @@ export function RoutesMapView({
     trackGeojson,
     selectedGreatCircleGeojson,
     liveTrackGeojson,
-    projectionGeojson,
     planData,
   ]);
 
