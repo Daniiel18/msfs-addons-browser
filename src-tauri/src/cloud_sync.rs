@@ -916,7 +916,10 @@ pub async fn purge(
     let access_token = fresh_access_token(pool, http).await?;
     let report = purge_cloud_snapshot(http, &access_token).await?;
     // Reset del last_sync_at para que la UI refleje "nunca sincronizado".
-    sqlx::query("DELETE FROM app_settings WHERE key = ?1")
+    // (v4.19.0) Fix: la tabla se llama `settings`, no `app_settings` —
+    // el typo hacía fallar TODO el purge con "no such table" justo
+    // después de borrar el snapshot de Drive.
+    sqlx::query("DELETE FROM settings WHERE key = ?1")
         .bind(KEY_LAST_SYNC_AT)
         .execute(pool)
         .await?;

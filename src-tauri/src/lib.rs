@@ -8,6 +8,7 @@ pub mod db;
 pub mod drop_install;
 pub mod download;
 pub mod flight_log;
+pub mod flight_report;
 pub mod gsx;
 // (v4.3.0) Lector del gate que GSX muestra en su menú in-sim (archivo en
 // disco). Cubre aeropuertos SIN perfil de GSX, donde el INI no da match y
@@ -181,6 +182,7 @@ pub fn run() {
             commands::flight_log::get_flight_track,
             commands::flight_log::get_flight_track_full,
             commands::flight_log::get_flight_weather,
+            commands::flight_log::save_flight_metar,
             commands::flight_log::analyze_flight_damage,
             commands::flight_log::update_flight_log_entry,
             commands::flight_log::msfs_logbook_detect,
@@ -234,7 +236,7 @@ pub fn run() {
 /// Antes (v3.1.x y previo) usábamos `%APPDATA%\org.n0xful.msfsaddonsbrowser`
 /// que el usuario reportó como invasivo. La nueva arquitectura
 /// portable migra esos datos automáticamente al primer arranque.
-fn resolve_portable_data_dir() -> anyhow::Result<std::path::PathBuf> {
+pub(crate) fn resolve_portable_data_dir() -> anyhow::Result<std::path::PathBuf> {
     let exe = std::env::current_exe()?;
     let exe_dir = exe.parent()
         .ok_or_else(|| anyhow::anyhow!("current_exe sin parent"))?

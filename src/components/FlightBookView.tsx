@@ -20,7 +20,6 @@ import {
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
@@ -273,20 +272,19 @@ export function FlightBookView() {
     });
   }, [completed, sidebarQuery, selectedAirline]);
 
-  // (v3.5.0 → v4.18.1) Pieza central del overlay flotante. Con vuelo
-  // ACTIVO ya no se muestra el card "FLYING NOW" (feedback usuario: el
-  // LiveFlightPanel del mapa da más detalle) — el overlay queda
-  // reservado para el detalle de un vuelo viejo al clickearlo.
-  const overlayKind: "selected" | "preflight" | "stats" | "none" =
-    selectedFlight
-      ? "selected"
-      : inFlight
-        ? "none"
-        : status?.simconnectConnected && status.currentAirportIcao
-          ? "preflight"
-          : completed.length > 0
-            ? "stats"
-            : "none";
+  // (v3.5.0 → v4.19.0) Pieza central del overlay flotante. Con
+  // SimConnect conectado (preflight, vuelo activo, llegada) NO se
+  // muestra ningún card de estado — feedback usuario: ahí solo va el
+  // detalle de un vuelo viejo al clickearlo (el LiveFlightPanel del
+  // mapa ya cubre el vuelo en curso). El Overview de stats se mantiene
+  // únicamente cuando el sim no está conectado.
+  const overlayKind: "selected" | "stats" | "none" = selectedFlight
+    ? "selected"
+    : inFlight || status?.simconnectConnected
+      ? "none"
+      : completed.length > 0
+        ? "stats"
+        : "none";
 
   return (
     <section className="flex h-[calc(100vh-13rem)] flex-col gap-3 overflow-hidden">
@@ -538,9 +536,6 @@ export function FlightBookView() {
                         collapsed={panelCollapsed}
                         onToggleCollapse={() => setPanelCollapsed((v) => !v)}
                       />
-                    )}
-                    {overlayKind === "preflight" && status && (
-                      <PreflightCard status={status} />
                     )}
                     {overlayKind === "stats" && stats && (
                       <StatsWidget stats={stats} />
@@ -1214,141 +1209,9 @@ function formatTime(iso: string): string {
 // (v3.3.0) `Metric` legacy component eliminado — DetailBlock +
 // BlockRow lo reemplazan completamente.
 
-/** (v3.4.10 → v3.4.12) **PreflightCard** — visible cuando hay
- *  SimConnect conectado pero no hay vuelo abierto en DB.
- *
- *  v3.4.12: título y subtexto dinámicos según phase_label. Antes
- *  decía siempre "En tierra · pre-vuelo · Esperando pushback"
- *  aunque el usuario ya estuviera en pushback/taxi/takeoff. Ahora:
- *
- *    preflight / null      → "En tierra · Pre-vuelo" · "Esperando pushback / despegue."
- *    engine_running        → "En tierra · Motores encendidos" · "Listo para pushback."
- *    pushback              → "Pushback" · "Iniciando vuelo…"
- *    taxi_out              → "Rodaje a pista" · "En camino a la pista."
- *    takeoff               → "Despegue" · (sin subtexto)
- *    climbing/cruise/...   → "En vuelo" · (sin subtexto — improbable
- *                            que se llegue acá sin inFlight pero
- *                            cubrimos por si el watcher detecta
- *                            airborne antes de start_flight)
- */
-function PreflightCard({ status }: { status: import("../lib/types").FlightStatus }) {
-  const icao = status.currentAirportIcao ?? "?";
-  const gate = status.currentGate ?? "—";
-  const phase = status.phaseLabel ?? "preflight";
-  const phaseShown = phaseLabelForUi(phase);
-  const meta = phaseCardMeta(phase);
-
-  // (v3.4.13) Destino — si hay un OFP de SimBrief cuyo origen
-  // matchee el aeropuerto actual del avión, mostramos el destino.
-  // Si no hay match, no inventamos nada (el chip "→ DEST" no
-  // aparece) y la UI sigue siendo coherente para vuelos ad-hoc.
-  const ofpFlights = useSimBriefStore((s) => s.flights);
-  const matchedOfp = useMemo(() => {
-    if (!icao || icao === "?") return null;
-    if (!ofpFlights.length) return null;
-    const sorted = [...ofpFlights].sort((a, b) => {
-      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
-      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
-      return bTs - aTs;
-    });
-    return sorted.find((f) => f.originIcao === icao) ?? null;
-  }, [icao, ofpFlights]);
-
-  return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 ring-1 ring-amber-500/15">
-      <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-300">
-        <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
-        </span>
-        {meta.titleKey ? t(meta.titleKey) : phaseShown}
-      </div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-amber-100">
-        <span>
-          <MapPin className="mr-1 inline h-3.5 w-3.5" />
-          {icao}
-        </span>
-        {matchedOfp && (
-          <>
-            <span className="text-amber-400">→</span>
-            <span className="font-semibold">{matchedOfp.destinationIcao}</span>
-          </>
-        )}
-        {gate !== "—" && (
-          <>
-            <span className="text-amber-400">·</span>
-            <span className="font-semibold">{gate}</span>
-          </>
-        )}
-        <span className="text-amber-400">·</span>
-        <span className="text-amber-200">{phaseShown}</span>
-      </div>
-      {meta.subKey && (
-        <div className="mt-1 text-[11px] text-amber-200/80">
-          {t(meta.subKey)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Mapea el phase_label canónico del watcher a la string i18n. */
-function phaseLabelForUi(phase: string | null): string {
-  if (!phase) return t("flying.preflight");
-  const key = `flying.${phase}`;
-  return t(key);
-}
-
-/** (v3.4.12) Header + subtexto de la PreflightCard según fase.
- *  `titleKey` undefined ⇒ usar el phase_label crudo. `subKey`
- *  undefined ⇒ no mostrar subtexto. */
-function phaseCardMeta(phase: string): { titleKey?: string; subKey?: string } {
-  switch (phase) {
-    case "preflight":
-      return {
-        titleKey: "fb.preflight.title.at_gate",
-        subKey: "fb.preflight.sub.waiting_pushback",
-      };
-    case "engine_running":
-      return {
-        titleKey: "fb.preflight.title.engines_on",
-        subKey: "fb.preflight.sub.ready_pushback",
-      };
-    case "pushback":
-      return {
-        titleKey: "fb.preflight.title.pushback",
-        subKey: "fb.preflight.sub.starting_flight",
-      };
-    case "taxi_out":
-      return {
-        titleKey: "fb.preflight.title.taxi_out",
-        subKey: "fb.preflight.sub.to_runway",
-      };
-    case "takeoff":
-      return {
-        titleKey: "fb.preflight.title.takeoff",
-      };
-    case "climbing":
-    case "cruise":
-    case "descent":
-    case "approach":
-      return {
-        titleKey: "fb.preflight.title.airborne",
-      };
-    case "landed_rollout":
-    case "taxi_in":
-    case "parking":
-    case "deboarding":
-      return {
-        titleKey: "fb.preflight.title.arrival",
-      };
-    default:
-      return {
-        titleKey: "fb.preflight.title.at_gate",
-        subKey: "fb.preflight.sub.waiting_pushback",
-      };
-  }
-}
+// (v4.19.0) `PreflightCard` ("ON GROUND · PRE-FLIGHT") eliminado —
+// feedback usuario: el overlay del mapa solo muestra el detalle del
+// vuelo seleccionado; el estado en vivo lo cubre el LiveFlightPanel.
 
 /** (v3.5.0 F4) Widget compacto del resumen — antes ocupaba todo el
  *  mapa con 7 StatCards en grid 2-col. Ahora es una pila vertical

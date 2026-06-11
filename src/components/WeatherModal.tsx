@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type {
   FlightLogEntry,
+  FlightTrackPoint,
   WeatherSample,
   SimBriefBriefing,
   RouteFix,
@@ -20,6 +21,7 @@ import type {
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useUnits } from "../lib/units";
+import { segmentTrackCoords, smoothCatmullRom } from "../lib/smooth";
 
 /**
  * (v4.16.0 #5a) Weather modal del FlightBook — mapa MapLibre con capas
@@ -151,6 +153,25 @@ export function WeatherModal({
     };
   }, [entry.id]);
 
+  // (v4.19.0) TRACK REAL del vuelo — el mismo trazado del mapa de rutas
+  // (feedback usuario: el mapa del weather debe mostrar exactamente lo
+  // que se voló, no la ruta planificada). Si el vuelo tiene track, se
+  // dibuja ese; los fixes del navlog quedan como fallback.
+  const [trackPoints, setTrackPoints] = useState<FlightTrackPoint[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setTrackPoints([]);
+    api
+      .getFlightTrack(entry.id)
+      .then((pts) => {
+        if (!cancelled) setTrackPoints(pts);
+      })
+      .catch(() => setTrackPoints([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.id]);
+
   // (v4.17.1) Coordenada válida = finita Y lejos de (0,0). Algunos vuelos
   // guardan el destino con coords basura ≈(0,0) (lookup fallido) — eso
   // ponía un marcador fantasma frente a África y el fitBounds encuadraba
@@ -256,21 +277,45 @@ export function WeatherModal({
     // hacía return SIN reintento → la ruta/marcadores no se dibujaban nunca
     // (bug reportado: "no me está trazando la ruta").
     if (!map) return;
+    // (v4.19.0) TRACK REAL primero — mismo pipeline que el mapa de rutas
+    // (segmentación por gaps + Catmull-Rom). Si el vuelo no tiene track
+    // (sin datos), caemos a la ruta planificada del navlog como antes.
+    const trackLines = segmentTrackCoords(
+      trackPoints.map((p) => ({ lon: p.lon, lat: p.lat, ts: p.ts })),
+    )
+      .filter((seg) => seg.length >= 2)
+      .map((seg) => smoothCatmullRom(seg, 8));
+    const hasTrack = trackLines.length > 0;
+
     const coords: [number, number][] = [];
-    if (originOk) coords.push([entry.originLon, entry.originLat]);
-    for (const f of routeFixes) {
-      if (coordOk(f.lat, f.lon)) coords.push([f.lon, f.lat]);
+    if (hasTrack) {
+      for (const seg of trackLines) {
+        for (const c of seg) coords.push(c as [number, number]);
+      }
+    } else {
+      if (originOk) coords.push([entry.originLon, entry.originLat]);
+      for (const f of routeFixes) {
+        if (coordOk(f.lat, f.lon)) coords.push([f.lon, f.lat]);
+      }
+      if (destOk) {
+        coords.push([entry.destinationLon as number, entry.destinationLat as number]);
+      }
     }
-    if (destOk) {
-      coords.push([entry.destinationLon as number, entry.destinationLat as number]);
-    }
-    // Línea SOLO si hay waypoints intermedios — NUNCA recta origen→destino.
-    const lineFeats: GeoJSON.Feature[] =
-      routeFixes.length > 0 && coords.length >= 2
+    // Línea: track real (MultiLineString, ámbar como el routemap) o ruta
+    // planificada SOLO si hay waypoints — NUNCA recta origen→destino.
+    const lineFeats: GeoJSON.Feature[] = hasTrack
+      ? [
+          {
+            type: "Feature",
+            properties: { real: true },
+            geometry: { type: "MultiLineString", coordinates: trackLines },
+          },
+        ]
+      : routeFixes.length > 0 && coords.length >= 2
         ? [
             {
               type: "Feature",
-              properties: {},
+              properties: { real: false },
               geometry: { type: "LineString", coordinates: coords },
             },
           ]
@@ -279,15 +324,26 @@ export function WeatherModal({
       type: "FeatureCollection",
       features: lineFeats,
     });
+    // Color según lo que se dibuja: ámbar = track volado (igual que el
+    // mapa de rutas), violeta = ruta planificada.
+    if (map.getLayer("wx-route-line")) {
+      map.setPaintProperty(
+        "wx-route-line",
+        "line-color",
+        hasTrack ? "#fbbf24" : "#a78bfa",
+      );
+    }
     (map.getSource("wx-fixes") as maplibregl.GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection",
-      features: routeFixes
-        .filter((f) => coordOk(f.lat, f.lon))
-        .map((f) => ({
-          type: "Feature",
-          properties: { ident: f.ident },
-          geometry: { type: "Point", coordinates: [f.lon, f.lat] },
-        })),
+      features: hasTrack
+        ? []
+        : routeFixes
+            .filter((f) => coordOk(f.lat, f.lon))
+            .map((f) => ({
+              type: "Feature",
+              properties: { ident: f.ident },
+              geometry: { type: "Point", coordinates: [f.lon, f.lat] },
+            })),
     });
     const ends: GeoJSON.Feature[] = [];
     if (originOk) {
@@ -324,7 +380,7 @@ export function WeatherModal({
     } else if (coords.length === 1) {
       map.easeTo({ center: coords[0], zoom: 6, duration: 400 });
     }
-  }, [mapReady, routeFixes, entry.id, originOk, destOk]);
+  }, [mapReady, routeFixes, trackPoints, entry.id, originOk, destOk]);
 
   // (v4.16.0 #5a) Capa meteo OpenWeather — añade/quita el raster según la
   // capa activa + la key. Se inserta DEBAJO de la ruta para no taparla.
@@ -363,18 +419,12 @@ export function WeatherModal({
     return briefing;
   })();
 
-  // (v4.16.1 #5b) METAR a mostrar: preferimos el briefing LIVE si coincide
-  // con este vuelo; si no (vuelo pasado cuyo OFP ya no es el actual), caemos
-  // al METAR PERSISTIDO que se capturó al finalizar el vuelo.
+  // (v4.16.1 #5b → v4.19.0) METAR a mostrar: SIEMPRE preferimos el METAR
+  // PERSISTIDO del vuelo (histórico, inmutable). El briefing live solo se
+  // usa cuando el vuelo todavía no tiene METAR guardado. Antes era al
+  // revés y un vuelo viejo de la misma ruta mostraba el clima de HOY —
+  // y al hacer otro vuelo el METAR "desaparecía" (bug reportado).
   const metarView = (() => {
-    if (briefingWx && (briefingWx.origMetar || briefingWx.destMetar)) {
-      return {
-        origMetar: briefingWx.origMetar ?? null,
-        destMetar: briefingWx.destMetar ?? null,
-        originIcao: briefingWx.originIcao ?? entry.originIcao,
-        destinationIcao: briefingWx.destinationIcao ?? entry.destinationIcao,
-      };
-    }
     if (entry.metarOrigin || entry.metarDest) {
       return {
         origMetar: entry.metarOrigin ?? null,
@@ -383,8 +433,36 @@ export function WeatherModal({
         destinationIcao: entry.destinationIcao,
       };
     }
+    if (briefingWx && (briefingWx.origMetar || briefingWx.destMetar)) {
+      return {
+        origMetar: briefingWx.origMetar ?? null,
+        destMetar: briefingWx.destMetar ?? null,
+        originIcao: briefingWx.originIcao ?? entry.originIcao,
+        destinationIcao: briefingWx.destinationIcao ?? entry.destinationIcao,
+      };
+    }
     return null;
   })();
+
+  // (v4.19.0) PERSISTENCIA del METAR: si el briefing live coincide con
+  // este vuelo y el vuelo no tiene METAR guardado, lo grabamos en la DB
+  // en ese momento — así queda para siempre aunque el OFP cambie con el
+  // próximo vuelo. Solo rellena NULLs (nunca pisa lo capturado al
+  // finalizar el vuelo). Best-effort: fallo silencioso.
+  const savedMetarRef = useRef(false);
+  useEffect(() => {
+    savedMetarRef.current = false;
+  }, [entry.id]);
+  useEffect(() => {
+    if (savedMetarRef.current) return;
+    if (entry.metarOrigin && entry.metarDest) return;
+    if (!briefingWx || (!briefingWx.origMetar && !briefingWx.destMetar)) return;
+    savedMetarRef.current = true;
+    api
+      .saveFlightMetar(entry.id, briefingWx.origMetar ?? null, briefingWx.destMetar ?? null)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry.id, briefingWx]);
 
   // (v4.0.0 P7.9b) Resumen del clima capturado para el panel lateral.
   const wxSummary = (() => {

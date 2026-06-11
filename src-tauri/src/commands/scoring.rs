@@ -19,9 +19,21 @@ pub async fn score_flight(
     flight_id: i64,
     state: tauri::State<'_, AppState>,
 ) -> Result<ScoreReport, String> {
-    scoring::score_flight(&state.db, flight_id)
+    let report = scoring::score_flight(&state.db, flight_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // (v4.19.0) Re-evaluar desde la UI también (re)genera el log por
+    // vuelo `ORIG-DEST-CALLSIGN.log` — así se pueden producir reportes
+    // de vuelos VIEJOS sin volver a volarlos. Best-effort.
+    if let Ok(data_dir) = crate::resolve_portable_data_dir() {
+        if let Err(e) =
+            crate::flight_report::write_flight_report(&state.db, flight_id, &report, &data_dir)
+                .await
+        {
+            tracing::debug!(target: "scoring", "flight report({flight_id}) falló: {e:#}");
+        }
+    }
+    Ok(report)
 }
 
 #[tauri::command]

@@ -350,6 +350,13 @@ interface Api {
   /** (v4.0.0 P7.9b) Weather samples (viento/temp/presión/precip) de un
    *  vuelo, capturados por sample. Vacío si el vuelo no tiene weather. */
   getFlightWeather: (flightId: number) => Promise<WeatherSample[]>;
+  /** (v4.19.0) Persiste el METAR real de salida/llegada del vuelo si
+   *  todavía no lo tiene (COALESCE — nunca pisa lo ya capturado). */
+  saveFlightMetar: (
+    flightId: number,
+    metarOrigin: string | null,
+    metarDest: string | null,
+  ) => Promise<void>;
   /** (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo. */
   analyzeFlightDamage: (flightId: number) => Promise<DamageReport>;
   /** Edita campos manualmente — `null` deja sin tocar la columna.
@@ -567,6 +574,8 @@ const realApi: Api = {
     invoke<FlightTrackFullPoint[]>("get_flight_track_full", { flightId }),
   getFlightWeather: (flightId) =>
     invoke<WeatherSample[]>("get_flight_weather", { flightId }),
+  saveFlightMetar: (flightId, metarOrigin, metarDest) =>
+    invoke<void>("save_flight_metar", { flightId, metarOrigin, metarDest }),
   analyzeFlightDamage: (flightId) =>
     invoke<DamageReport>("analyze_flight_damage", { flightId }),
   updateFlightLogEntry: (id, input) =>
@@ -1336,6 +1345,7 @@ const demoApi: Api = {
   async getFlightWeather() {
     return [];
   },
+  async saveFlightMetar() {},
   async analyzeFlightDamage() {
     return {
       verdict: "no_data" as const,

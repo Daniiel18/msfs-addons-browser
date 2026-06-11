@@ -52,6 +52,34 @@ pub async fn get_flight_track_full(
         .map_err(|e| e.to_string())
 }
 
+/// (v4.19.0) Persiste el METAR real de salida/llegada de un vuelo si
+/// todavía no lo tiene — lo invoca el WeatherModal cuando el briefing
+/// live de SimBrief coincide con el vuelo abierto, para que el METAR
+/// quede guardado PARA SIEMPRE aunque el OFP cambie con el próximo
+/// vuelo (feedback usuario: "el metar no se queda"). COALESCE: nunca
+/// pisa un METAR ya capturado.
+#[tauri::command]
+pub async fn save_flight_metar(
+    flight_id: i64,
+    metar_origin: Option<String>,
+    metar_dest: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE flight_log
+            SET metar_origin = COALESCE(metar_origin, ?2),
+                metar_dest = COALESCE(metar_dest, ?3)
+          WHERE id = ?1",
+    )
+    .bind(flight_id)
+    .bind(metar_origin.filter(|s| !s.trim().is_empty()))
+    .bind(metar_dest.filter(|s| !s.trim().is_empty()))
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// (v4.0.0 P7.9b) Weather samples de un vuelo — viento/temp/presión/
 /// precipitación capturados por sample durante el vuelo.
 ///

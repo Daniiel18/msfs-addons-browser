@@ -724,6 +724,34 @@ pub async fn finalize_after_finish(
     // sin tener que cambiar de pantalla y volver (bug reportado).
     let _ = app.emit("flightlog://changed", ());
 
+    // (v4.19.0) Log POR VUELO: archivo `ORIG-DEST-CALLSIGN.log` en
+    // <data>/logs/flights con el track completo (luces, flaps, gear,
+    // velocidades, fases) + el resultado de la evaluación — para
+    // auditar si la Flight Evaluation hace bien su trabajo. Best-effort:
+    // jamás bloquea el cierre del vuelo.
+    match crate::resolve_portable_data_dir() {
+        Ok(data_dir) => {
+            match crate::flight_report::write_flight_report(pool, flight_id, &report, &data_dir)
+                .await
+            {
+                Ok(p) => tracing::info!(
+                    target: "scoring",
+                    "flight report escrito: {}",
+                    p.display()
+                ),
+                Err(e) => tracing::warn!(
+                    target: "scoring",
+                    "flight report({}) falló: {:#}",
+                    flight_id, e
+                ),
+            }
+        }
+        Err(e) => tracing::warn!(
+            target: "scoring",
+            "flight report: data dir no resuelto: {:#}", e
+        ),
+    }
+
     // Auto-upload to cloud (non-blocking — spawn detached). Toma el
     // reqwest::Client del AppState compartido (Manager::state).
     let pool_c = pool.clone();
