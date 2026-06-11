@@ -56,9 +56,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const setMinimizeToTray = useSettingsStore((s) => s.setMinimizeToTray);
   const setUnitPref = useSettingsStore((s) => s.setUnitPref);
   const applyUnitPreset = useSettingsStore((s) => s.applyUnitPreset);
-  // (v4.14.1 #1) Colapsar/expandir las opciones de unidades. Empieza
-  // expandido; el botón en la cabecera de la casilla "Units" las pliega.
-  const [unitsOpen, setUnitsOpen] = useState(true);
+  // (v4.14.1 #1 → v4.21.0) Colapsar/expandir las opciones de unidades.
+  // Empieza COLAPSADO (pedido del usuario) — él decide cuándo expandir.
+  const [unitsOpen, setUnitsOpen] = useState(false);
   const clearCaches = useSettingsStore((s) => s.clearCaches);
   const resetSettings = useSettingsStore((s) => s.resetSettings);
 

@@ -2024,18 +2024,22 @@ function AirlineTagFilter() {
           e.currentTarget.scrollLeft += e.deltaY;
         }
       }}
-      className="flex w-full items-center gap-1.5 overflow-x-auto rounded-full border border-slate-700/70 bg-slate-950/65 px-2 py-1.5 ring-1 ring-slate-800/70 [scrollbar-width:thin]"
+      className="flex w-full items-center gap-2 overflow-x-auto rounded-2xl border border-slate-700/50 bg-slate-950/70 px-2.5 py-2 shadow-lg ring-1 ring-slate-800/50 backdrop-blur-md [scrollbar-width:thin]"
     >
+      {/* (v4.21.0) Chips rediseñados: cada uno con borde + fondo propio
+          (antes texto plano), contador en mini-pill, glow suave en el
+          activo y transición de hover — armonía visual pedida. */}
       <button
         onClick={() => setSelected(null)}
-        className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+        className={`shrink-0 rounded-full border px-3 py-1 text-[11px] font-semibold transition-all duration-150 ${
           selected == null
-            ? "bg-emerald-500/25 text-emerald-100 ring-1 ring-emerald-500/40"
-            : "text-slate-300 hover:bg-slate-800/70"
+            ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-100 shadow-[0_0_10px_rgba(52,211,153,0.25)]"
+            : "border-slate-700/60 bg-slate-900/60 text-slate-400 hover:border-slate-500/60 hover:bg-slate-800/80 hover:text-slate-100"
         }`}
       >
         {t("fb.airline.all")}
       </button>
+      <span className="h-4 w-px shrink-0 bg-slate-700/60" />
       {visible.map((a) => {
         const key = a.icao ?? a.name;
         const isActive = selected
@@ -2052,17 +2056,26 @@ function AirlineTagFilter() {
               )
             }
             title={a.name}
-            className={`flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+            className={`group flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all duration-150 ${
               isActive
-                ? "bg-amber-500/25 text-amber-100 ring-1 ring-amber-500/40"
-                : "text-slate-300 hover:bg-slate-800/70"
+                ? "border-amber-400/50 bg-amber-500/20 text-amber-100 shadow-[0_0_10px_rgba(251,191,36,0.25)]"
+                : "border-slate-700/60 bg-slate-900/60 text-slate-300 hover:border-slate-500/60 hover:bg-slate-800/80 hover:text-slate-100"
             }`}
           >
             {/* (v4.8.0) Mini logo de aerolínea en el chip de filtro. */}
-            <AirlineLogo icao={a.icao} name={a.name} size={14} />
-            <span className="font-mono">{a.icao ?? a.name.slice(0, 3).toUpperCase()}</span>
-            <span className="text-slate-500">·</span>
-            <span className="tabular-nums">{a.flightCount}</span>
+            <AirlineLogo icao={a.icao} name={a.name} size={15} />
+            <span className="font-mono font-semibold tracking-wide">
+              {a.icao ?? a.name.slice(0, 3).toUpperCase()}
+            </span>
+            <span
+              className={`rounded-full px-1.5 py-px text-[9px] font-semibold tabular-nums transition-colors ${
+                isActive
+                  ? "bg-amber-400/20 text-amber-200"
+                  : "bg-slate-800 text-slate-400 group-hover:bg-slate-700 group-hover:text-slate-200"
+              }`}
+            >
+              {a.flightCount}
+            </span>
           </button>
         );
       })}

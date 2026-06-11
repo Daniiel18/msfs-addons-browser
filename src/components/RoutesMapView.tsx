@@ -19,16 +19,20 @@ import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 import { buildTerminatorPolygon } from "../lib/terminator";
 
-/** (v4.18.1) Bandas del terminator día/noche. Cada banda es el polígono
- *  donde el sol está por debajo de `altitudeDeg`; al apilarlas la
- *  oscuridad crece gradualmente hacia la noche cerrada (-18°, crepúsculo
- *  astronómico). Opacidades compuestas: borde 0° ≈ 0.15 (apenas sombra
- *  justo al ponerse el sol) → noche profunda ≈ 0.55. */
+/** (v4.18.1 → v4.21.0) Bandas del terminator día/noche. Cada banda es el
+ *  polígono donde el sol está por debajo de `altitudeDeg`; al apilarlas
+ *  la oscuridad crece hacia la noche cerrada (-18°, crepúsculo
+ *  astronómico). v4.21.0: opacidades MÁS marcadas — con 0.15 el borde
+ *  geométrico (0°) era invisible sobre el basemap satelital y el primer
+ *  oscurecimiento perceptible quedaba ~1500 km dentro de la noche, así
+ *  que el planeta "parecía" 2-3 horas más temprano (bug reportado).
+ *  Ahora la división arranca visible JUSTO en la puesta de sol real
+ *  (sincronizada con UTC vía SunCalc) y profundiza a ≈0.57. */
 const TERMINATOR_BANDS = [
-  { source: "rt-term-0", altitudeDeg: 0, opacity: 0.15 },
-  { source: "rt-term-civil", altitudeDeg: -6, opacity: 0.18 },
+  { source: "rt-term-0", altitudeDeg: 0, opacity: 0.22 },
+  { source: "rt-term-civil", altitudeDeg: -6, opacity: 0.2 },
   { source: "rt-term-nautical", altitudeDeg: -12, opacity: 0.18 },
-  { source: "rt-term-astro", altitudeDeg: -18, opacity: 0.2 },
+  { source: "rt-term-astro", altitudeDeg: -18, opacity: 0.16 },
 ] as const;
 
 /** (v2.0.0) Icono del avión — silueta TOP-VIEW (vista cenital) tal
@@ -442,7 +446,9 @@ export function RoutesMapView({
       }
     };
     refresh();
-    const id = window.setInterval(refresh, 60_000);
+    // (v4.21.0) 30s (antes 60s) — la Tierra rota 0.25°/min; con 30s el
+    // terminator queda siempre a <0.13° de su posición UTC real.
+    const id = window.setInterval(refresh, 30_000);
     return () => window.clearInterval(id);
   }, [mapReady]);
 
