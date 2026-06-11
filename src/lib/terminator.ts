@@ -143,30 +143,4 @@ export function buildTerminatorPolygon(
   };
 }
 
-/**
- * Devuelve el `Point` del lugar de la Tierra donde el sol está
- * directamente arriba en `date`. Útil para debug y para ubicar un
- * indicador opcional del "punto subsolar" en el mapa.
- */
-export function subsolarPoint(date: Date = new Date()): {
-  lat: number;
-  lon: number;
-} {
-  // Bruteforce: el sol está donde altitude es máximo. Buscamos por
-  // grid grueso + refine. Suficiente porque solo lo usamos para
-  // mostrar un dot de debug — no necesita precisión de arcominutos.
-  let bestLat = 0;
-  let bestLon = 0;
-  let bestAlt = -90;
-  for (let lat = -23; lat <= 23; lat += 1) {
-    for (let lon = -180; lon < 180; lon += 5) {
-      const a = SunCalc.getPosition(date, lat, lon).altitude;
-      if (a > bestAlt) {
-        bestAlt = a;
-        bestLat = lat;
-        bestLon = lon;
-      }
-    }
-  }
-  return { lat: bestLat, lon: bestLon };
-}
+// (v4.22.0) `subsolarPoint` eliminado — helper de debug nunca importado.

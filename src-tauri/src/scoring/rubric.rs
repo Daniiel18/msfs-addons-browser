@@ -160,6 +160,8 @@ pub fn rule_applies_to(rule_id: &str, cat: Category) -> bool {
                 | "pushback_nav_light"
                 | "pushback_beacon_light"
                 | "pushback_doors_closed"
+                // (v4.22.0) GA no tiene ground spoilers auto-deploy.
+                | "landing_spoilers_deployed"
         ),
     }
 }
@@ -479,13 +481,6 @@ pub static RULES: &[Rule] = &[
         evaluator: eval_final_approach_gear_down,
     },
     Rule {
-        id: "final_approach_spoilers_stowed",
-        label: "Spoilers not deployed",
-        phase: Phase::FinalApproach,
-        points_max: 40,
-        evaluator: eval_final_approach_spoilers_stowed,
-    },
-    Rule {
         id: "final_approach_ias_limit",
         label: "Indicated airspeed ≤ 250 kt (below 10,000 ft)",
         phase: Phase::FinalApproach,
@@ -493,14 +488,26 @@ pub static RULES: &[Rule] = &[
         evaluator: eval_final_approach_ias_limit,
     },
     // ============================================================
-    // LANDING (50 pts) — Touchdown
+    // LANDING (90 pts) — Touchdown
     // ============================================================
     Rule {
         id: "landing_smooth",
-        label: "Touchdown suave o firme (≥ -400 fpm; duro < -400)",
+        label: "Touchdown smooth or firm (≥ -600 fpm)",
         phase: Phase::Landing,
         points_max: 50,
         evaluator: eval_landing_smooth,
+    },
+    // (v4.22.0) Reemplaza a "final_approach_spoilers_stowed": el SOP de
+    // airliner es spoilers ARMADOS en final (el Fenix/A320 reporta el
+    // armado como spoilers_pct alto y la regla vieja lo castigaba — al
+    // revés de la aviación real). Lo correcto a verificar: que los
+    // ground spoilers se DESPLIEGUEN en el touchdown/rollout.
+    Rule {
+        id: "landing_spoilers_deployed",
+        label: "Ground spoilers deployed on touchdown",
+        phase: Phase::Landing,
+        points_max: 40,
+        evaluator: eval_landing_spoilers_deployed,
     },
     // ============================================================
     // TAXI-IN (80 pts) — Rollout + rodaje a gate
@@ -791,17 +798,6 @@ where
     samples.iter().any(|s| extract(s).is_some())
 }
 
-/// Max absoluto de un campo f64 sobre los samples.
-fn max_abs_f64<F>(samples: &[&TrackSample], extract: F) -> Option<f64>
-where
-    F: Fn(&TrackSample) -> Option<f64>,
-{
-    samples
-        .iter()
-        .filter_map(|s| extract(s))
-        .map(f64::abs)
-        .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v))))
-}
 
 /// Max de un campo f64 (con signo).
 fn max_f64<F>(samples: &[&TrackSample], extract: F) -> Option<f64>
@@ -1047,6 +1043,9 @@ fn eval_predep_engines_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
         .iter()
         .filter_map(|s| s.eng_n1_max)
         .fold(f64::INFINITY, f64::min);
+    // (v4.22.0) Clamp de denormales: el sim reporta N1 como 2.2e-208 con
+    // motores apagados — en la evidencia se veía ese número ilegible.
+    let min_n1 = if min_n1 < 0.01 { 0.0 } else { min_n1 };
     let evidence = json!({ "min_n1_pct_pre_departure": min_n1 });
     if min_n1 < 5.0 {
         pass(rule, evidence)
@@ -1168,8 +1167,25 @@ fn eval_taxi_out_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if samples.is_empty() {
         return skip(rule, "no_taxi_out_phase");
     }
-    let max_gs = max_i64(&samples, |s| s.gs_kt).unwrap_or(0);
-    let evidence = json!({ "max_gs_kt": max_gs });
+    // (v4.22.0) La fase no cambia a "takeoff" hasta ~60-75 kt, así que el
+    // ARRANQUE de la carrera de despegue caía dentro de taxi_out y la
+    // regla fallaba en falso (57 kt en el log del CTV210, que era ya el
+    // takeoff roll). Recortamos la racha FINAL de aceleración monótona
+    // (la entrada a pista + roll); el resto del taxi se evalúa normal.
+    let gss: Vec<i64> = samples.iter().filter_map(|s| s.gs_kt).collect();
+    if gss.is_empty() {
+        return skip(rule, "no_gs_data");
+    }
+    let mut end = gss.len();
+    while end >= 2 && gss[end - 1] > gss[end - 2] {
+        end -= 1;
+    }
+    let slice = if end >= 1 { &gss[..end] } else { &gss[..] };
+    let max_gs = slice.iter().copied().max().unwrap_or(0);
+    let evidence = json!({
+        "max_gs_kt": max_gs,
+        "takeoff_roll_samples_skipped": gss.len() - slice.len(),
+    });
     match max_gs {
         n if n <= 30 => pass(rule, evidence),
         n if n <= 40 => partial(rule, (rule.points_max * 2) / 3, evidence),
@@ -1676,21 +1692,22 @@ fn eval_final_approach_gear_down(ctx: &FlightContext, rule: &Rule) -> ScoreItem 
     }
 }
 
-fn eval_final_approach_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_final_approach(ctx);
+/// (v4.22.0) Ground spoilers desplegados en el touchdown/rollout — la
+/// verificación correcta por SOP (la regla vieja castigaba el ARMADO en
+/// final, que es justamente lo obligatorio).
+fn eval_landing_spoilers_deployed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let samples = ctx.samples_in_phase("landing");
     if samples.is_empty() {
-        return skip(rule, "no_final_approach_data");
+        return skip(rule, "no_landing_phase_data");
     }
     if !any_present(&samples, |s| s.spoilers_pct) {
         return skip(rule, "no_spoilers_data");
     }
-    // Spoilers armed (no deployed) — flight spoilers en armado son OK,
-    // pero deployed (>30%) durante final approach es malo. Aceptamos ≤ 30%.
     let max_sp = max_i64(&samples, |s| s.spoilers_pct).unwrap_or(0);
-    let evidence = json!({ "max_spoilers_pct_final_approach": max_sp });
-    if max_sp <= 30 {
+    let evidence = json!({ "max_spoilers_pct_landing": max_sp });
+    if max_sp >= 50 {
         pass(rule, evidence)
-    } else if max_sp <= 60 {
+    } else if max_sp >= 20 {
         partial(rule, rule.points_max / 2, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1725,31 +1742,24 @@ fn eval_landing_smooth(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let Some(fpm) = ctx.landing_fpm else {
         return skip(rule, "no_landing_fpm");
     };
-    // (v3.29.0 #8) Banda + categoría legible en la evidencia para que el
-    // usuario entienda por qué ganó/perdió puntos.
+    // (v4.22.0) Bandas recalibradas a la aviación real: el umbral de
+    // inspección por hard landing en Airbus es ~-600 fpm / 2.6G. Un
+    // touchdown de -517 fpm es FIRME (técnica correcta en pistas cortas
+    // tipo WAPP), no un fallo — el log del CTV210 lo marcaba ✗ injusto.
+    //   suave   > -300 fpm      → ✓
+    //   firme   -300..-600      → ✓ (toque positivo, dentro de límites)
+    //   duro    -600..-1000     → ✗ parcial (umbral de inspección)
+    //   peor que -1000          → ✗ (daño estructural probable)
     let category = match fpm {
-        f if f > -240 => "smooth",
-        f if f > -400 => "firm",
-        f if f > -600 => "hard",
-        f if f > -1000 => "very_hard",
+        f if f > -300 => "smooth",
+        f if f > -600 => "firm",
+        f if f > -1000 => "hard",
         _ => "structural_damage",
     };
     let evidence = json!({ "landing_fpm": fpm, "category": category });
-    // Escala alineada con aviación real y con el color del FlightBook:
-    //   suave  ≳ -240 fpm       → pase completo
-    //   firme   -240..-400      → 3/4
-    //   duro    -400..-600      → 1/2
-    //   muy duro -600..-1000    → 1/5 (probable daño)
-    //   peor que -1000          → 0 (daño estructural)
-    // (v4.6.0) En el checklist (✓/✗) un aterrizaje SUAVE o FIRME es un
-    // pase: -388 fpm es un toque normal, no un fallo. Solo "duro"
-    // (≤ -400) o peor cuentan como no cumplido. Antes firme caía en
-    // `partial` (3/4) → status "missed" → ✗, lo que el usuario reportó
-    // como injusto.
     match fpm {
-        f if f > -400 => pass(rule, evidence), // suave o firme → ✓
-        f if f > -600 => partial(rule, rule.points_max / 2, evidence), // duro
-        f if f > -1000 => partial(rule, rule.points_max / 5, evidence), // muy duro
+        f if f > -600 => pass(rule, evidence), // suave o firme → ✓
+        f if f > -1000 => partial(rule, rule.points_max / 2, evidence), // duro
         _ => fail(rule, "fail", 0, evidence), // daño estructural
     }
 }
@@ -1786,25 +1796,30 @@ fn eval_taxi_in_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if samples.is_empty() {
         return skip(rule, "no_taxi_in_data");
     }
-    // (v4.6.0) La cola del rollout (desaceleración en pista) cae dentro de
-    // "taxi_in" porque separamos las fases por velocidad, no por geometría
-    // de pista. Esa bajada monótona desde ~40 kt NO es "taxi rápido". La
-    // excluimos: saltamos la racha inicial en la que la velocidad SOLO
-    // baja y medimos la máxima a partir de que el avión deja de frenar (ya
-    // maniobrando en calle de rodaje). Así un taxi rápido real (acelera en
-    // taxiway) sí se detecta, pero el frenado post-touchdown no penaliza.
+    // (v4.6.0 → v4.22.0) La cola del rollout + la SALIDA RÁPIDA de pista
+    // caen dentro de "taxi_in". Los rapid-exit taxiways están diseñados
+    // para abandonar a ≤ 50 kt — eso NO es "taxi rápido" (el log del
+    // CTV210 fallaba con 38 kt saliendo por el high-speed). Saltamos
+    // todos los samples iniciales hasta que la velocidad baja de 30 kt
+    // (rollout + salida); desde ahí el límite de taxi aplica normal. Si
+    // nunca baja de 30 (taxi a lo loco hasta el gate), se evalúa todo.
     let gss: Vec<i64> = samples.iter().filter_map(|s| s.gs_kt).collect();
     if gss.is_empty() {
         return skip(rule, "no_gs_data");
     }
     let mut start = 0usize;
-    while start + 1 < gss.len() && gss[start + 1] < gss[start] {
+    while start < gss.len() && gss[start] > 30 {
         start += 1;
     }
-    let max_gs = gss[start..].iter().copied().max().unwrap_or(0);
+    let (slice, skipped) = if start >= gss.len() {
+        (&gss[..], 0usize)
+    } else {
+        (&gss[start..], start)
+    };
+    let max_gs = slice.iter().copied().max().unwrap_or(0);
     let evidence = json!({
         "max_gs_kt_taxi_in": max_gs,
-        "rollout_samples_skipped": start,
+        "rollout_exit_samples_skipped": skipped,
     });
     match max_gs {
         n if n <= 30 => pass(rule, evidence),
@@ -1843,9 +1858,20 @@ fn eval_taxi_in_taxi_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if !any_present(&samples, |s| s.light_taxi) {
         return skip(rule, "no_light_taxi_data");
     }
-    let pct = pct_bool_true(&samples, |s| s.light_taxi).unwrap_or(0.0);
-    let evidence = json!({ "taxi_light_on_pct_taxi_in": (pct * 100.0) as i32 });
-    if pct >= 0.8 {
+    // (v4.22.0) Excluimos el TRAMO FINAL llegando al gate (~últimos 60 s,
+    // 30 samples a 2 s): apagar la taxi light entrando a la plataforma
+    // para no encandilar al personal de tierra es BUENA práctica, no un
+    // fallo (el log del CTV210 marcaba ✗ con 71% por ese tramo). Solo se
+    // recorta si el taxi es lo bastante largo para que quede señal útil.
+    let n = samples.len();
+    let cutoff = if n > 45 { n - 30 } else { n };
+    let kept = &samples[..cutoff];
+    let pct = pct_bool_true(kept, |s| s.light_taxi).unwrap_or(0.0);
+    let evidence = json!({
+        "taxi_light_on_pct_taxi_in": (pct * 100.0) as i32,
+        "gate_approach_samples_excluded": n - cutoff,
+    });
+    if pct >= 0.75 {
         pass(rule, evidence)
     } else if pct >= 0.4 {
         partial(rule, rule.points_max / 2, evidence)

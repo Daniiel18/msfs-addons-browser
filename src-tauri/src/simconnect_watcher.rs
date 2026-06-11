@@ -649,13 +649,6 @@ mod windows_simconnect {
     /// AddToFacilityDefinition se llama una vez con esta ID; MSFS la
     /// recuerda y la usa para todas las RequestFacilityData siguientes.
     const DEFINE_ID_AIRPORT_PARKING: u32 = 200;
-    /// Ranges de request_id para las requests de parking. Los OUT
-    /// usan 1000-1999, IN 2000-2999, preflight (v3.0.0) 3000-3999.
-    /// Wrapping circular dentro del rango (el usuario rara vez hace
-    /// > 1000 vuelos en una sesión).
-    const REQUEST_ID_GATE_DEP_BASE: u32 = 1000;
-    const REQUEST_ID_GATE_ARR_BASE: u32 = 2000;
-    const REQUEST_ID_GATE_PRE_BASE: u32 = 3000;
 
     /// Cuántos ticks de gs < 1 kt hay que ver en `Landed` antes de
     /// cerrar el vuelo si los engines no se han apagado. Fallback para
@@ -843,50 +836,10 @@ mod windows_simconnect {
         }
     }
 
-    /// (v2.0.3) Snapshot del estado de un vuelo restaurado, usado para
-    /// validar al recibir la primera muestra de SimConnect si el
-    /// player está "donde lo dejamos" o se trata de una sesión nueva.
-    #[derive(Debug, Clone)]
-    struct RestoreCheck {
-        flight_id: i64,
-        last_lat: f64,
-        last_lon: f64,
-        last_at: Option<String>,
-    }
-
-    /// (v2.0.3) Decide si el restore es válido. Si el player está a
-    /// >50nm del último punto guardado, O han pasado >6h desde el
-    /// último tick, lo consideramos huérfano: cerramos el vuelo viejo
-    /// y reseteamos el state para empezar fresco.
-    fn restore_is_stale(check: &RestoreCheck, cur_lat: f64, cur_lon: f64) -> bool {
-        let dist =
-            crate::flight_log::haversine_nm(check.last_lat, check.last_lon, cur_lat, cur_lon);
-        if dist > 50.0 {
-            tracing::info!(
-                target: "simconnect",
-                "restore stale por distancia: {:.1} nm desde último punto",
-                dist
-            );
-            return true;
-        }
-        if let Some(ref ts) = check.last_at {
-            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
-                let then = dt.and_utc();
-                let elapsed = chrono::Utc::now()
-                    .signed_duration_since(then)
-                    .num_seconds();
-                if elapsed > 6 * 60 * 60 {
-                    tracing::info!(
-                        target: "simconnect",
-                        "restore stale por tiempo: {} s desde último tick",
-                        elapsed
-                    );
-                    return true;
-                }
-            }
-        }
-        false
-    }
+    // (v4.22.0) `RestoreCheck` + `restore_is_stale` eliminados — la
+    // validación del restore se hace ahora vía distancia+tiempo dentro
+    // de `close_stale_open_flights` y el flujo de reconexión (v2.0.4+);
+    // esta copia quedó huérfana sin llamadores.
 
     /// Bucle principal — corre en un thread blocking dedicado.
     /// Patrón: try_connect → poll loop → on disconnect, sleep + retry.
@@ -1674,7 +1627,6 @@ mod windows_simconnect {
         let mut prev_on_ground: Option<bool> = None;
         let mut stream_b_recent_vs: std::collections::VecDeque<f64> =
             std::collections::VecDeque::with_capacity(30);
-        let mut touchdown_g_force: Option<f64> = None;
 
         // (v4.0.0 P7.7) Replay/Slew detection state.
         //
@@ -1738,15 +1690,6 @@ mod windows_simconnect {
         // entró al Hangar y cambió livery).
         let mut aircraft_meta_cache: Option<AircraftMeta> = None;
 
-        // (v2.0.3) Datos del restore pendiente — los necesitamos para
-        // hacer el "smart restore check" al recibir la primera muestra
-        // de SimConnect: si el player está LEJOS de la última posición
-        // guardada (>50 nm) o ha pasado mucho tiempo desde el último
-        // tick (>6h), tratamos el vuelo viejo como huérfano y empezamos
-        // limpio. Sin esto, restaurábamos el vuelo y al despegar
-        // sumábamos distancias absurdas (e.g. EBBR→KJFK volviéndose
-        // EBBR→Dubai porque el usuario voló otra cosa).
-        let mut restore_check: Option<RestoreCheck> = None;
         if let Some(open) = restore_result {
             tracing::info!(
                 target: "simconnect",
@@ -1768,17 +1711,6 @@ mod windows_simconnect {
                 }
             }
             engines_seen_running = true;
-
-            if let (Some(lat), Some(lon)) =
-                (open.last_position_lat, open.last_position_lon)
-            {
-                restore_check = Some(RestoreCheck {
-                    flight_id: open.id,
-                    last_lat: lat,
-                    last_lon: lon,
-                    last_at: open.last_position_at.clone(),
-                });
-            }
         } else {
             tracing::debug!(target: "simconnect", "no hay vuelo abierto previo — empezamos limpio");
         }
@@ -2074,7 +2006,6 @@ mod windows_simconnect {
 
                                 if should_update {
                                     captured_landing_fpm = Some(fpm_val);
-                                    touchdown_g_force = Some(g);
 
                                     let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
                                     if let Some(id) = id_opt {
@@ -4707,9 +4638,14 @@ mod windows_simconnect {
         // Takeoff roll: gs alto en suelo (o recién levantado del
         // suelo). Aplica desde BlockOut o Airborne — la condición de
         // velocidad domina al phase enum.
+        // (v4.22.0) En el aire, además, exigimos VS POSITIVO: antes el
+        // corto final (gs ~140, alt < 500 ft, descendiendo) se etiquetaba
+        // "takeoff" segundos antes de tocar pista (bug visto en el log
+        // del vuelo CTV210). Un touch-and-go/go-around real sí tiene VS
+        // positivo y sigue detectándose.
         if matches!(phase, FlightPhase::BlockOut | FlightPhase::Airborne)
             && gs >= 60.0
-            && (on_ground || alt_ft < 500.0)
+            && (on_ground || (alt_ft < 500.0 && vs_fpm > 100.0))
         {
             return "takeoff".to_string();
         }
@@ -4840,9 +4776,13 @@ mod windows_simconnect {
         engines_seen_running: bool,
     ) -> Option<String> {
         // Takeoff roll: gs alto en pista (o recién levantado).
+        // (v4.22.0) Mismo guard que derive_phase_label: en el aire se
+        // exige VS positivo — el flare del aterrizaje (gs alto, AGL < 50,
+        // descendiendo) generaba una fase "takeoff" fantasma en pleno
+        // final que contaminaba la evaluación.
         if matches!(phase, FlightPhase::BlockOut | FlightPhase::Airborne)
             && gs >= 60.0
-            && (on_ground || agl_ft < 50.0)
+            && (on_ground || (agl_ft < 50.0 && vs_fpm > 100.0))
         {
             return Some("takeoff".to_string());
         }

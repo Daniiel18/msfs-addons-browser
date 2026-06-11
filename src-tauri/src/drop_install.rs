@@ -472,7 +472,6 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
     // ─── Variant detection ──────────────────────────────────────────
     let mut variants: Vec<String> = Vec::new();
     let stem_lower = stem.to_ascii_lowercase();
-    let rel_lower = rel.to_ascii_lowercase();
 
     // Por extensión.
     if ext == "py" {

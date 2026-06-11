@@ -1119,7 +1119,12 @@ fn parse_track_payload(data: &[u8]) -> Option<VasFlightTrack> {
                 }
             }
             $cur = PartialSample::default();
-            $last_field = 0;
+            // El último flush del loop deja esta asignación sin leer —
+            // es inherente al patrón del accumulator, no un bug.
+            #[allow(unused_assignments)]
+            {
+                $last_field = 0;
+            }
         }};
     }
 
