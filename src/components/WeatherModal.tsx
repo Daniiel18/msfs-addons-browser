@@ -151,13 +151,18 @@ export function WeatherModal({
     };
   }, [entry.id]);
 
-  const originOk =
-    Number.isFinite(entry.originLat) && Number.isFinite(entry.originLon);
-  const destOk =
-    entry.destinationLat != null &&
-    entry.destinationLon != null &&
-    Number.isFinite(entry.destinationLat) &&
-    Number.isFinite(entry.destinationLon);
+  // (v4.17.1) Coordenada válida = finita Y lejos de (0,0). Algunos vuelos
+  // guardan el destino con coords basura ≈(0,0) (lookup fallido) — eso
+  // ponía un marcador fantasma frente a África y el fitBounds encuadraba
+  // medio planeta (bug reportado con KSEA→PAJN).
+  const coordOk = (lat: number | null | undefined, lon: number | null | undefined) =>
+    lat != null &&
+    lon != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    !(Math.abs(lat) < 0.05 && Math.abs(lon) < 0.05);
+  const originOk = coordOk(entry.originLat, entry.originLon);
+  const destOk = coordOk(entry.destinationLat, entry.destinationLon);
 
   // (v4.16.0 #5a) Inicializa el mapa MapLibre UNA vez (basemap oscuro CARTO).
   // Sources/layers de la ruta se crean vacíos; los effects de abajo hacen
@@ -244,11 +249,17 @@ export function WeatherModal({
   // (v4.16.0 #5a) Ruta (línea + waypoints + endpoints) + encuadre.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    // (v4.17.1) Solo exigimos que el mapa exista: `mapRef` se asigna DENTRO
+    // de map.on("load"), tras crear los sources — así que si no es null,
+    // los sources existen y setData/fitBounds funcionan. El guard anterior
+    // `isStyleLoaded()` devolvía false mientras cargaban tiles y el effect
+    // hacía return SIN reintento → la ruta/marcadores no se dibujaban nunca
+    // (bug reportado: "no me está trazando la ruta").
+    if (!map) return;
     const coords: [number, number][] = [];
     if (originOk) coords.push([entry.originLon, entry.originLat]);
     for (const f of routeFixes) {
-      if (Number.isFinite(f.lon) && Number.isFinite(f.lat)) coords.push([f.lon, f.lat]);
+      if (coordOk(f.lat, f.lon)) coords.push([f.lon, f.lat]);
     }
     if (destOk) {
       coords.push([entry.destinationLon as number, entry.destinationLat as number]);
@@ -271,7 +282,7 @@ export function WeatherModal({
     (map.getSource("wx-fixes") as maplibregl.GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection",
       features: routeFixes
-        .filter((f) => Number.isFinite(f.lon) && Number.isFinite(f.lat))
+        .filter((f) => coordOk(f.lat, f.lon))
         .map((f) => ({
           type: "Feature",
           properties: { ident: f.ident },
@@ -319,7 +330,9 @@ export function WeatherModal({
   // capa activa + la key. Se inserta DEBAJO de la ruta para no taparla.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    // (v4.17.1) Mismo fix que la ruta: sin `isStyleLoaded()` — bloqueaba
+    // la capa meteo inicial mientras cargaban tiles, sin reintento.
+    if (!map) return;
     if (map.getLayer("wx-owm-layer")) map.removeLayer("wx-owm-layer");
     if (map.getSource("wx-owm")) map.removeSource("wx-owm");
     const def = LAYERS.find((l) => l.key === activeLayer);
