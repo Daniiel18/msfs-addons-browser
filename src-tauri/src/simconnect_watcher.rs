@@ -248,13 +248,30 @@ struct LatestFlight {
 }
 
 async fn latest_recent_simbrief(pool: &SqlitePool) -> anyhow::Result<Option<LatestFlight>> {
+    // (v4.20.0) Excluimos OFPs ya CONSUMIDOS: si un vuelo COMPLETADO con
+    // el mismo origen→destino (o linkeado a ese ofp_id) terminó DESPUÉS
+    // de que el OFP fue generado, ese plan ya se voló. Antes, tras
+    // terminar el vuelo, el OFP seguía siendo "reciente" (<6h) y el
+    // status volvía a mostrar la ruta vieja con fase PRE-FLIGHT en el
+    // panel del mapa y el badge del header (bug reportado).
     let row = sqlx::query_as::<_, LatestFlight>(
         r#"
         SELECT origin_icao, origin_name, destination_icao, destination_name,
                aircraft_icao, distance_nm
-        FROM simbrief_flights
+        FROM simbrief_flights sf
         WHERE generated_at IS NOT NULL
           AND CAST(generated_at AS INTEGER) > strftime('%s', 'now', '-6 hours')
+          AND NOT EXISTS (
+            SELECT 1 FROM flight_log fl
+            WHERE fl.ended_at IS NOT NULL
+              AND (
+                fl.simbrief_ofp_id = sf.ofp_id
+                OR (fl.origin_icao = sf.origin_icao
+                    AND fl.destination_icao = sf.destination_icao)
+              )
+              AND CAST(strftime('%s', fl.ended_at) AS INTEGER)
+                  > CAST(sf.generated_at AS INTEGER)
+          )
         ORDER BY CAST(generated_at AS INTEGER) DESC
         LIMIT 1
         "#,

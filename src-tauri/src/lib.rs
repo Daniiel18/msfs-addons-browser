@@ -450,6 +450,13 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         Ok(_) => tracing::debug!("flight_log: sin vuelos abandonados que cerrar"),
         Err(e) => tracing::warn!("flight_log: close_stale_open_flights falló: {e:#}"),
     }
+    // (v4.20.0) Limpieza del caché de OFPs de SimBrief al arrancar:
+    // borra planes >72h no linkeados a vuelos. Evita que el modal de
+    // confirmación al cierre se llene de OFPs viejos irrelevantes
+    // (cuenta compartida acumulaba 10+).
+    if let Err(e) = simbrief::cleanup_stale_ofps(&db).await {
+        tracing::warn!("simbrief: cleanup_stale_ofps falló: {e:#}");
+    }
     // Cliente GSX comparte el `reqwest::Client` con las fuentes — mismo
     // pool de conexiones, mismo timeout, misma resolución DNS.
     let gsx = GsxClient::new(http.clone());

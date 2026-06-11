@@ -223,11 +223,44 @@ pub async fn refresh_latest(
     .execute(pool)
     .await?;
 
+    // (v4.20.0) Higiene del caché en cada refresh — best-effort.
+    if let Err(e) = cleanup_stale_ofps(pool).await {
+        tracing::debug!(target: "simbrief", "cleanup tras refresh falló: {e:#}");
+    }
+
     Ok(SimBriefRefreshResult {
         added: if already_known { 0 } else { 1 },
         already_known,
         flight: Some(flight),
     })
+}
+
+/// (v4.20.0) Limpieza automática del caché de OFPs: borra los planes con
+/// más de 72 h (generated_at) que NO estén linkeados a ningún vuelo del
+/// flight_log. Con la cuenta SimBrief compartida el caché acumulaba
+/// docenas de OFPs viejos y el modal de confirmación al cierre del vuelo
+/// se llenaba de candidatos irrelevantes (bug reportado: "hay más de 10
+/// vuelos viejos almacenados"). Se invoca al arrancar la app y tras cada
+/// refresh — el caché se mantiene solo.
+pub async fn cleanup_stale_ofps(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let res = sqlx::query(
+        r#"
+        DELETE FROM simbrief_flights
+        WHERE generated_at IS NOT NULL
+          AND CAST(generated_at AS INTEGER) < strftime('%s', 'now', '-72 hours')
+          AND ofp_id NOT IN (
+            SELECT simbrief_ofp_id FROM flight_log
+            WHERE simbrief_ofp_id IS NOT NULL
+          )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    let n = res.rows_affected();
+    if n > 0 {
+        tracing::info!(target: "simbrief", "cleanup: {} OFP(s) viejos eliminados del caché", n);
+    }
+    Ok(n)
 }
 
 pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFlight>> {
