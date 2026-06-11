@@ -655,6 +655,14 @@ mod windows_simconnect {
     /// Ticks entre cada persist de live position + track point. ~10s
     /// igual que antes (10 ticks a 1Hz).
     const PERSIST_INTERVAL_TICKS: u32 = 10 * TICKS_PER_SECOND;
+    /// (v4.18.0) Cadencia ACELERADA del track cuando el avión RUEDA en
+    /// tierra (on_ground + gs ≥ 2 kt): un punto cada 2 s ≈ 15-20 m en taxi
+    /// → la traza sigue las taxiways con precisión estilo VATSIM-Radar.
+    /// Con 10 s salían esquinas angulosas imposibles de suavizar sin
+    /// falsear (bug reportado). En el aire se mantienen los 10 s (a 450 kt
+    /// ya es suficiente densidad) y parado en gate también (el buffer
+    /// pre-departure conserva su ventana de ~40 min).
+    const GROUND_MOVING_PERSIST_TICKS: u32 = 2 * TICKS_PER_SECOND;
     /// Cada cuántos ticks emitimos `flight://current` al frontend.
     /// Sin throttle, 4Hz inunda la UI; con 4 ticks emitimos cada ~1s
     /// que es lo mismo que antes desde el punto de vista del usuario.
@@ -3648,7 +3656,15 @@ mod windows_simconnect {
         //      ORDER BY ts reconstruye la traza real del vuelo —
         //      lo que pinta el FlightBook detail map.
         *ticks_since_persist = ticks_since_persist.saturating_add(1);
-        if *ticks_since_persist >= PERSIST_INTERVAL_TICKS {
+        // (v4.18.0) Cadencia adaptativa: rodando en tierra (gs ≥ 2 kt) un
+        // punto cada 2 s para que el track siga las taxiways con precisión;
+        // en el aire o parado, los 10 s de siempre.
+        let persist_interval = if on_ground && gs >= 2.0 {
+            GROUND_MOVING_PERSIST_TICKS
+        } else {
+            PERSIST_INTERVAL_TICKS
+        };
+        if *ticks_since_persist >= persist_interval {
             *ticks_since_persist = 0;
             let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
             // (v3.30.0 #2) Captura/flush PRE-DEPARTURE (cold-and-dark).

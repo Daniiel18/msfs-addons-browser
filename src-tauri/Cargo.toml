@@ -1,7 +1,7 @@
 [package]
 name = "simfleet"
-version = "4.17.1"
-description = "SimFleet — flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
+version = "4.18.0"
+description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
 rust-version = "1.77"
@@ -22,14 +22,14 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 # Selector de archivos nativo para el instalador manual ("Instalar desde
-# archivo…"). Usado sólo desde el frontend — aquí lo registramos para
+# archivoâ€¦"). Usado sÃ³lo desde el frontend â€” aquÃ­ lo registramos para
 # que exista el endpoint IPC correspondiente.
 tauri-plugin-dialog = "2"
-# Autostart con el SO — usado por la sección «Settings» para que el
+# Autostart con el SO â€” usado por la secciÃ³n Â«SettingsÂ» para que el
 # usuario active "arrancar con Windows". El plugin maneja la entrada
-# en `HKEY_CURRENT_USER\…\Run` automáticamente.
+# en `HKEY_CURRENT_USER\â€¦\Run` automÃ¡ticamente.
 tauri-plugin-autostart = "2"
-# (v2.2.0) Instancia única — si el usuario abre la app y ya hay una
+# (v2.2.0) Instancia Ãºnica â€” si el usuario abre la app y ya hay una
 # corriendo, le pasamos el control a la existente (la traemos al frente)
 # en vez de spawn un proceso nuevo.
 tauri-plugin-single-instance = "2"
@@ -41,8 +41,8 @@ async-trait = "0.1"
 futures-util = "0.3"
 
 # TLS: use the OS-native backend (schannel on Windows, Secure Transport on
-# macOS). Avoids pulling in aws-lc-sys — which needs NASM at build time on
-# Windows — via librqbit's transitive rustls dep.
+# macOS). Avoids pulling in aws-lc-sys â€” which needs NASM at build time on
+# Windows â€” via librqbit's transitive rustls dep.
 reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "brotli", "stream", "cookies"] }
 scraper = "0.20"
 url = "2"
@@ -52,24 +52,24 @@ uuid = { version = "1", features = ["v4"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # (v4.0.1) gzip para comprimir el snapshot de cloud sync antes de
 # subirlo a Drive. La DB de tracks puede pesar cientos de MB; el JSON
-# comprime ~15-20x y evita el timeout de subida que el usuario reportó.
+# comprime ~15-20x y evita el timeout de subida que el usuario reportÃ³.
 flate2 = "1"
-# Walker recursivo para zip de la carpeta Community en backup —
-# evita el ruido de glob/find a mano y respeta enlaces simbólicos.
+# Walker recursivo para zip de la carpeta Community en backup â€”
+# evita el ruido de glob/find a mano y respeta enlaces simbÃ³licos.
 walkdir = "2"
-# Descompresores para los formatos que la escena MSFS usa más:
-#   · RAR — la mayoría de torrents de SceneryAddons/Simplaza llegan así.
-#     `unrar` envuelve el código C de RARLAB y maneja volúmenes
-#     múltiples (foo.part1.rar + foo.part2.rar…) automáticamente.
-#   · 7z  — ocasional pero común en paquetes grandes. `sevenz-rust2` es
+# Descompresores para los formatos que la escena MSFS usa mÃ¡s:
+#   Â· RAR â€” la mayorÃ­a de torrents de SceneryAddons/Simplaza llegan asÃ­.
+#     `unrar` envuelve el cÃ³digo C de RARLAB y maneja volÃºmenes
+#     mÃºltiples (foo.part1.rar + foo.part2.rarâ€¦) automÃ¡ticamente.
+#   Â· 7z  â€” ocasional pero comÃºn en paquetes grandes. `sevenz-rust2` es
 #     un fork puro-Rust, activo y sin dependencias nativas.
 unrar = "0.5"
 sevenz-rust2 = "0.13"
 tempfile = "3"
 
 # Embedded BitTorrent client. Using default TLS (via reqwest/default-tls)
-# keeps us on schannel on Windows — the `rust-tls` feature pulls in
-# rustls → aws-lc-sys, which requires NASM at build time on Windows.
+# keeps us on schannel on Windows â€” the `rust-tls` feature pulls in
+# rustls â†’ aws-lc-sys, which requires NASM at build time on Windows.
 librqbit = { version = "8", default-features = false, features = ["default-tls"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
@@ -84,7 +84,7 @@ once_cell = "1"
 # Evita los problemas de scope del asset protocol con paths
 # arbitrarios en la carpeta Community.
 base64 = "0.22"
-# Comparación de versiones para el chequeo de actualizaciones — el tag
+# ComparaciÃ³n de versiones para el chequeo de actualizaciones â€” el tag
 # de GitHub se parsea con `Version::parse` y se compara contra
 # `CARGO_PKG_VERSION`. Standard de facto en el ecosistema Rust.
 semver = "1"
@@ -96,29 +96,29 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 tracing-appender = "0.2"
 
-# Detector de procesos para saber si MSFS está corriendo. Lo
-# usamos como fallback rápido (proceso detectado) y para saber
-# cuándo arrancar el FFI a SimConnect.
+# Detector de procesos para saber si MSFS estÃ¡ corriendo. Lo
+# usamos como fallback rÃ¡pido (proceso detectado) y para saber
+# cuÃ¡ndo arrancar el FFI a SimConnect.
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # `libloading` carga `SimConnect.dll` en runtime sin necesidad de
-# bindgen/libclang en build — escribimos a mano las pocas signatures
-# que usamos. Cross-platform pero la implementación SimConnect sólo
+# bindgen/libclang en build â€” escribimos a mano las pocas signatures
+# que usamos. Cross-platform pero la implementaciÃ³n SimConnect sÃ³lo
 # se compila en Windows.
 libloading = "0.8"
 
 # (v4.3.0) Lectura del registro para resolver el root de FSDT/GSX
-# (`HKCU\Software\Fsdreamteam\root`) y de ahí el archivo del menú de GSX,
+# (`HKCU\Software\Fsdreamteam\root`) y de ahÃ­ el archivo del menÃº de GSX,
 # que usamos para rellenar el gate cuando un aeropuerto no tiene perfil
-# GSX. Sólo Windows; ya estaba en el árbol como dep transitiva, así que no
-# añade coste de compilación.
+# GSX. SÃ³lo Windows; ya estaba en el Ã¡rbol como dep transitiva, asÃ­ que no
+# aÃ±ade coste de compilaciÃ³n.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 
-# SimConnect — sólo Windows. El crate `simconnect-sdk` carga la
-# `SimConnect.dll` que viene con MSFS en runtime; no añade nada al
-# binario en otras plataformas (sólo se compila si target_os=windows).
-# Si la dll no está al ejecutar, `SimConnect::new()` falla y el
-# watcher queda en `Disconnected` reintentando — la app no se rompe.
+# SimConnect â€” sÃ³lo Windows. El crate `simconnect-sdk` carga la
+# `SimConnect.dll` que viene con MSFS en runtime; no aÃ±ade nada al
+# binario en otras plataformas (sÃ³lo se compila si target_os=windows).
+# Si la dll no estÃ¡ al ejecutar, `SimConnect::new()` falla y el
+# watcher queda en `Disconnected` reintentando â€” la app no se rompe.

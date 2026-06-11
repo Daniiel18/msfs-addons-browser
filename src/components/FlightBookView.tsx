@@ -30,7 +30,7 @@ import { WeatherModal } from "./WeatherModal";
 import { NotamsModal } from "./NotamsModal";
 import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
-import { Pencil, Minimize2, Maximize2 } from "lucide-react";
+import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-react";
 
 /**
  * Vista completa del FlightBook — bitácora de vuelos reales
@@ -67,6 +67,9 @@ export function FlightBookView() {
   // (v3.5.0) Filtro de búsqueda del sidebar — matchea ICAO origen,
   // destino, aerolínea, registration, ATC type. Vacío = todos.
   const [sidebarQuery, setSidebarQuery] = useState("");
+  // (v4.18.0) Colapso lateral del sidebar de vuelos — el mapa toma todo
+  // el ancho. Botón chevron en la barra del filtro / franja de reapertura.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
   // (v4.0.0 — P7) Estado del Weather modal.
@@ -348,8 +351,25 @@ export function FlightBookView() {
           Patrón visual a lo Flightradar24 / Polarsteps: el mapa es el
           contexto permanente, los datos son overlays semitransparentes
           que dejan ver el geografía detrás. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[300px_minmax(0,1fr)]">
-        {/* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */}
+      <div
+        className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${
+          sidebarCollapsed
+            ? "lg:grid-cols-[26px_minmax(0,1fr)]"
+            : "lg:grid-cols-[300px_minmax(0,1fr)]"
+        }`}
+      >
+        {/* (v4.18.0) Franja de reapertura cuando el sidebar está oculto —
+            el mapa toma todo el espacio. */}
+        {sidebarCollapsed ? (
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            title={t("fb.sidebar.expand")}
+            className="hidden items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500 hover:bg-slate-800/60 hover:text-slate-200 lg:flex"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        ) : (
+        /* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */
         <aside className="flex min-h-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/40">
           <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-2xl border-b border-slate-800 bg-slate-900/80 px-3 py-2 backdrop-blur">
             <Search className="h-3.5 w-3.5 shrink-0 text-slate-500" />
@@ -362,6 +382,13 @@ export function FlightBookView() {
             <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400">
               {filteredCompleted.length}
             </span>
+            <button
+              onClick={() => setSidebarCollapsed(true)}
+              title={t("fb.sidebar.collapse")}
+              className="shrink-0 rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
             {completed.length === 0 ? (
@@ -397,6 +424,7 @@ export function FlightBookView() {
             )}
           </div>
         </aside>
+        )}
 
         {/* COLUMNA DERECHA — apila vertical (v3.6.3 reorganización):
               · AirlineTagFilter chips (siempre, FUERA del mapa).

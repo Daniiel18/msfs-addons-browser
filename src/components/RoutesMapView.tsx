@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
+import { Crosshair, ChevronUp, ChevronDown, X } from "lucide-react";
 
 const tracingLog = (msg: string) =>
   console.info(`[RoutesMapView] ${msg}`);
@@ -68,6 +69,16 @@ export function RoutesMapView({
   // poder hacer setLngLat + rotación sin reconstruir el elemento cada
   // tick — el rerender de React no toca el mapa, sólo este efecto.
   const planeMarkerRef = useRef<maplibregl.Marker | null>(null);
+  // (v4.18.0) Panel de detalle del vuelo EN VIVO (estilo VATSIM-Radar):
+  // X lo cierra, ^ lo minimiza, ⌖ centra el mapa en el avión, y un click
+  // en el icono del avión del mapa lo reabre.
+  const [livePanelOpen, setLivePanelOpen] = useState(true);
+  const [livePanelMin, setLivePanelMin] = useState(false);
+  const liveReopenRef = useRef<() => void>(() => {});
+  liveReopenRef.current = () => {
+    setLivePanelOpen(true);
+    setLivePanelMin(false);
+  };
   const planeElementRef = useRef<HTMLDivElement | null>(null);
   // (v1.1.3) Flag para saber si los sources/layers ya están
   // inicializados en el mapa. Resuelve el bug intermitente del
@@ -960,6 +971,12 @@ export function RoutesMapView({
       el.style.justifyContent = "center";
       el.style.filter = "drop-shadow(0 0 6px rgba(251, 191, 36, 0.55))";
       el.style.transition = "transform 250ms linear";
+      // (v4.18.0) Click en el avión → reabre el panel de detalle en vivo.
+      el.style.cursor = "pointer";
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        liveReopenRef.current();
+      });
       el.innerHTML = PLANE_SVG;
       planeElementRef.current = el;
       planeMarkerRef.current = new maplibregl.Marker({
@@ -1128,6 +1145,230 @@ export function RoutesMapView({
           <br />
           {t("fb.map.empty_hint")}
         </div>
+      )}
+      {/* (v4.18.0) Panel de detalle del vuelo EN VIVO (estilo VATSIM-Radar).
+          Visible solo con vuelo activo (SimConnect + sin vuelo seleccionado).
+          X cierra · ^ minimiza · ⌖ centra en el avión · click en el avión
+          del mapa lo reabre. */}
+      {selectedFlightId == null &&
+        flightStatus?.simconnectConnected &&
+        flightStatus.originIcao &&
+        livePanelOpen && (
+          <LiveFlightPanel
+            status={flightStatus}
+            ofp={simbriefFlights.find(
+              (f) => f.originIcao === flightStatus.originIcao,
+            )}
+            minimized={livePanelMin}
+            onToggleMin={() => setLivePanelMin((v) => !v)}
+            onClose={() => setLivePanelOpen(false)}
+            onCenter={() => {
+              const map = mapRef.current;
+              if (
+                map &&
+                flightStatus.currentLat != null &&
+                flightStatus.currentLon != null
+              ) {
+                map.easeTo({
+                  center: [flightStatus.currentLon, flightStatus.currentLat],
+                  zoom: Math.max(map.getZoom(), 8),
+                  duration: 600,
+                });
+              }
+            }}
+          />
+        )}
+    </div>
+  );
+}
+
+/** (v4.18.0) Distancia great-circle en NM (haversine). */
+function gcNm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R_NM = 3440.065;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_NM * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/** (v4.18.0) Panel flotante de detalle del vuelo en vivo — estilo
+ *  VATSIM-Radar: progreso origen→destino con NM recorridas/restantes y
+ *  ETA en HORA LOCAL del PC (regla de la app: nunca UTC), más cards de
+ *  GS / altitud / rumbo y los nombres de los aeropuertos. */
+function LiveFlightPanel({
+  status,
+  ofp,
+  minimized,
+  onToggleMin,
+  onClose,
+  onCenter,
+}: {
+  status: import("../lib/types").FlightStatus;
+  ofp: import("../lib/types").SimBriefFlight | undefined;
+  minimized: boolean;
+  onToggleMin: () => void;
+  onClose: () => void;
+  onCenter: () => void;
+}) {
+  const lat = status.currentLat;
+  const lon = status.currentLon;
+  // Progreso por great-circle contra las coords del OFP (si hay). El %
+  // usa recorrida/(recorrida+restante) — robusto aunque el avión desvíe.
+  let doneNm: number | null = null;
+  let remainNm: number | null = null;
+  if (ofp && lat != null && lon != null) {
+    doneNm = gcNm(ofp.originLat, ofp.originLon, lat, lon);
+    remainNm = gcNm(lat, lon, ofp.destinationLat, ofp.destinationLon);
+  }
+  const pct =
+    doneNm != null && remainNm != null && doneNm + remainNm > 0
+      ? Math.min(100, (doneNm / (doneNm + remainNm)) * 100)
+      : null;
+  // ETA en HORA LOCAL del PC: restante / GS.
+  const gs = status.currentGroundSpeedKt;
+  let etaLocal: string | null = null;
+  if (remainNm != null && gs != null && gs > 30) {
+    const ms = (remainNm / gs) * 3600 * 1000;
+    etaLocal = new Date(Date.now() + ms).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  const phase = (status.phaseLabel ?? "").replace(/_/g, " ");
+
+  return (
+    <div className="absolute bottom-3 right-3 z-10 w-[300px] rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur">
+      {/* Botonera ⌖ ^ X */}
+      <div className="absolute right-2 top-2 flex items-center gap-1">
+        <button
+          onClick={onCenter}
+          title={t("fb.live.center")}
+          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+        >
+          <Crosshair className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={onToggleMin}
+          title={minimized ? t("fb.live.expand") : t("fb.live.minimize")}
+          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+        >
+          {minimized ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronUp className="h-3.5 w-3.5" />
+          )}
+        </button>
+        <button
+          onClick={onClose}
+          title={t("common.close")}
+          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Header: origen · fase · destino */}
+      <div className="flex items-center gap-2 pr-20">
+        <span className="font-mono text-sm font-bold text-slate-100">
+          {status.originIcao ?? "—"}
+        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-300">
+          {phase || "—"}
+        </span>
+        <span className="font-mono text-sm font-bold text-slate-100">
+          {status.destinationIcao ?? "—"}
+        </span>
+      </div>
+
+      {!minimized && (
+        <>
+          {/* Barra de progreso con avión */}
+          {pct != null && (
+            <div className="relative mt-2 h-1.5 w-full rounded-full bg-slate-800">
+              <div
+                className="h-full rounded-full bg-sky-400"
+                style={{ width: `${pct}%` }}
+              />
+              <span
+                className="absolute -top-[5px] text-[11px] leading-none text-sky-200"
+                style={{ left: `calc(${pct}% - 6px)` }}
+              >
+                ✈
+              </span>
+            </div>
+          )}
+          {(doneNm != null || remainNm != null) && (
+            <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] text-slate-400">
+              <span>
+                {doneNm != null ? `${Math.round(doneNm)} NM` : "—"}
+              </span>
+              <span>
+                {remainNm != null ? `${Math.round(remainNm)} NM` : "—"}
+                {etaLocal ? ` · ETA ${etaLocal}` : ""}
+              </span>
+            </div>
+          )}
+
+          {/* Cards GS / Alt / HDG */}
+          <div className="mt-2 grid grid-cols-3 gap-1.5">
+            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5 text-center">
+              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                GS
+              </div>
+              <div className="font-mono text-xs text-slate-100">
+                {gs != null ? `${Math.round(gs)} kt` : "—"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5 text-center">
+              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                {t("fb.live.altitude")}
+              </div>
+              <div className="font-mono text-xs text-slate-100">
+                {status.currentAltFt != null
+                  ? `${Math.round(status.currentAltFt).toLocaleString()} ft`
+                  : "—"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5 text-center">
+              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                {t("fb.live.heading")}
+              </div>
+              <div className="font-mono text-xs text-slate-100">
+                {status.currentHeadingDeg != null
+                  ? `${Math.round(status.currentHeadingDeg)}°`
+                  : "—"}
+              </div>
+            </div>
+          </div>
+
+          {/* Aeropuertos + aeronave */}
+          <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px]">
+            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
+              <div className="font-mono font-semibold text-slate-200">
+                {status.originIcao ?? "—"}
+              </div>
+              <div className="truncate text-slate-500">
+                {status.originName ?? ""}
+              </div>
+            </div>
+            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
+              <div className="font-mono font-semibold text-slate-200">
+                {status.destinationIcao ?? "—"}
+              </div>
+              <div className="truncate text-slate-500">
+                {status.destinationName ?? ""}
+              </div>
+            </div>
+          </div>
+          {status.aircraftIcao && (
+            <div className="mt-1.5 text-center font-mono text-[10px] text-slate-500">
+              {t("fb.live.aircraft")}: {status.aircraftIcao}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
