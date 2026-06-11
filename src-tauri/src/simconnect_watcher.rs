@@ -3274,6 +3274,7 @@ mod windows_simconnect {
                                 lat_c,
                                 lon_c,
                                 Some(fuel_lb_at_out),
+                                false, // OUT: pre-populate clásico (badge en vivo)
                             ).await;
                         });
                     } else {
@@ -3579,7 +3580,11 @@ mod windows_simconnect {
                                     // no es comparable con plan_ramp. El
                                     // scorer cae al match por reg+type+
                                     // freshness, que ya es robusto.
-                                    populate_simbrief_async(&pool_c, &app_c, id, lat_c, lon_c, None).await;
+                                    // (v4.17.0) confirm_mode=true: al apagado
+                                    // de motores NO se auto-linkea — se emite
+                                    // simbrief://confirm con los candidatos y
+                                    // el usuario decide en el modal.
+                                    populate_simbrief_async(&pool_c, &app_c, id, lat_c, lon_c, None, true).await;
                                     let _ = app_c.emit("flightlog://changed", ());
 
                                     // (v3.6.0 Phase H — H13) Cierra el
@@ -4295,6 +4300,12 @@ mod windows_simconnect {
         lat: f64,
         lon: f64,
         fuel_loaded_lb: Option<f64>,
+        // (v4.17.0) `true` cuando se invoca al CIERRE del vuelo (apagado de
+        // motores): en ese modo NUNCA se auto-linkea — se emiten los OFP
+        // candidatos para que el usuario confirme en el modal (cuenta
+        // SimBrief compartida). `false` en el OUT: comportamiento clásico
+        // (pre-populate del badge en vivo).
+        confirm_mode: bool,
     ) {
         // (v4.0.0 P7.5b) Leemos meta del vuelo incluyendo
         // aircraft_registration que update_aircraft_meta poblaró por
@@ -4321,8 +4332,11 @@ mod windows_simconnect {
         // (no solo aircraft type) — si el score no llega a viable,
         // lo deslinkamos. Esto cubre el caso de start_flight pre-v3.11
         // que pudo haber linkeado por matching legacy.
+        // (v4.17.0) En confirm_mode este bloque se SALTA por completo
+        // (filter !confirm_mode): al cierre el usuario decide en el modal;
+        // no re-validamos ni deslinkeamos por nuestra cuenta.
         if let Some(linked_ofp_id) =
-            ofp_id_from_db.as_deref().filter(|s| !s.is_empty())
+            ofp_id_from_db.as_deref().filter(|s| !s.is_empty() && !confirm_mode)
         {
             // Re-validamos: si la decisión inicial sigue siendo el top
             // ganador del scorer actual, la respetamos. Si no, deslinkamos.
@@ -4399,6 +4413,58 @@ mod windows_simconnect {
                 return;
             }
         };
+
+        // (v4.17.0) Apagado de motores con cuenta SimBrief compartida:
+        // NUNCA auto-linkeamos. Construimos la lista de OFP candidatos —
+        // el mejor puntuado primero, luego el resto de OFPs recientes del
+        // caché local (simbrief_flights) — y la emitimos para que el
+        // usuario confirme en el modal (carrusel SÍ/NO). La doble
+        // validación por matrícula ocurre al confirmar (link_simbrief_ofp).
+        if confirm_mode {
+            let mut ordered: Vec<crate::simbrief::SimBriefFlight> = Vec::new();
+            match scored {
+                crate::simbrief::MatchResult::Auto { ofp, .. } => ordered.push(ofp),
+                crate::simbrief::MatchResult::Ambiguous { candidates } => {
+                    ordered.extend(candidates.into_iter().map(|c| c.ofp));
+                }
+                crate::simbrief::MatchResult::NoMatch => {}
+            }
+            if let Ok(all) = crate::simbrief::list_flights(pool).await {
+                for f in all {
+                    if ordered.len() >= 10 {
+                        break;
+                    }
+                    if !ordered.iter().any(|o| o.ofp_id == f.ofp_id) {
+                        ordered.push(f);
+                    }
+                }
+            }
+            if ordered.is_empty() {
+                tracing::info!(
+                    target: "simbrief",
+                    "confirm: caché de OFPs vacío para flight {} — nada que confirmar",
+                    flight_id
+                );
+                return;
+            }
+            #[derive(serde::Serialize, Clone)]
+            #[serde(rename_all = "camelCase")]
+            struct ConfirmPayload {
+                flight_id: i64,
+                candidates: Vec<crate::simbrief::SimBriefFlight>,
+            }
+            tracing::info!(
+                target: "simbrief",
+                "confirm: emitiendo {} OFP candidatos para flight {} (modal de confirmación)",
+                ordered.len(),
+                flight_id
+            );
+            let _ = app.emit(
+                "simbrief://confirm",
+                ConfirmPayload { flight_id, candidates: ordered },
+            );
+            return;
+        }
 
         match scored {
             crate::simbrief::MatchResult::Auto { ofp, score, breakdown } => {

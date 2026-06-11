@@ -387,7 +387,7 @@ pub static RULES: &[Rule] = &[
     },
     Rule {
         id: "initial_climb_landing_light_off",
-        label: "Landing lights off before 10,000 ft",
+        label: "Landing lights off after 10,000 ft",
         phase: Phase::InitialClimb,
         points_max: 10,
         evaluator: eval_initial_climb_landing_light_off,
@@ -1415,26 +1415,51 @@ fn eval_initial_climb_flaps_retracted(ctx: &FlightContext, rule: &Rule) -> Score
 }
 
 fn eval_initial_climb_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_initial_climb(ctx);
-    if samples.is_empty() {
-        return skip(rule, "no_initial_climb_data");
+    // (v4.17.0) Evaluación por ALTITUD INDICADA (alt_ft del track, lo que
+    // marca el altímetro), no por banda de fase. Procedimiento real: las
+    // luces se apagan AL CRUZAR 10.000 ft — o sea, justo DESPUÉS de pasar
+    // 10k. El evaluador anterior miraba el último sample del initial climb
+    // (~9.9k), donde llevar la luz aún encendida ES correcto → ✗ injusto
+    // (bug reportado). Ahora: buscamos el primer cruce ASCENDENTE de
+    // 11.000 ft indicados (10k + margen regulatorio) y exigimos la luz
+    // apagada ahí. Si se apaga dentro de los ~3 samples siguientes
+    // (apagado tardío leve) → parcial.
+    let mut crossing_idx: Option<usize> = None;
+    let mut prev_alt: Option<i64> = None;
+    for (i, s) in ctx.track.iter().enumerate() {
+        if let Some(a) = s.alt_ft {
+            if a >= 11_000 && prev_alt.map(|p| p < 11_000).unwrap_or(false) {
+                crossing_idx = Some(i);
+                break;
+            }
+            prev_alt = Some(a);
+        }
     }
-    if !any_present(&samples, |s| s.light_landing) {
+    let Some(idx) = crossing_idx else {
+        // El vuelo nunca superó 11.000 ft — las luces pueden ir encendidas
+        // legítimamente todo el vuelo. No aplica.
+        return skip(rule, "never_above_11000ft");
+    };
+    let window: Vec<&TrackSample> = ctx.track[idx..].iter().take(4).collect();
+    if !any_present(&window, |s| s.light_landing) {
         return skip(rule, "no_light_landing_data");
     }
-    // (v3.29.0 #8) Banda de gracia: NO fallar en seco en el borde de los
-    // 10.000 ft. El corte real es ~10k con margen práctico hasta ~11k.
-    // La fase initial_climb tope a 10.000 ft AGL, así que si en su tope
-    // la landing light SIGUE encendida damos un WARN parcial, no un fail
-    // (el enforcement duro por encima de 10k lo hace la regla de cruise,
-    // que además tolera el apagado tardío vía porcentaje). Si ya está
-    // apagada, pase completo.
-    let last_ll = samples.last().and_then(|s| s.light_landing).unwrap_or(true);
-    let evidence = json!({ "landing_light_on_at_top_of_climb": last_ll });
-    if !last_ll {
+    let at_crossing = window
+        .first()
+        .and_then(|s| s.light_landing)
+        .unwrap_or(false);
+    let off_soon = window.iter().skip(1).any(|s| s.light_landing == Some(false));
+    let alt_at = window.first().and_then(|s| s.alt_ft).unwrap_or(11_000);
+    let evidence = json!({
+        "indicated_alt_ft_at_check": alt_at,
+        "landing_light_on_above_11000ft": at_crossing,
+    });
+    if !at_crossing {
         pass(rule, evidence)
-    } else {
+    } else if off_soon {
         partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
     }
 }
 

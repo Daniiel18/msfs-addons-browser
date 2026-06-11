@@ -9,12 +9,28 @@ pub async fn flight_route_fixes(
     flight_id: i64,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<RouteFix>, String> {
+    // (v4.17.0) Cadena de fallbacks para que la ruta SIEMPRE se dibuje si
+    // existe un plan compatible (el mapa de Weather la traza encima de las
+    // capas meteo):
+    //   1. route_fixes pegado al vuelo (NULLIF '[]' para no cortar la
+    //      cadena con un JSON vacío).
+    //   2. route_fixes del OFP linkeado (simbrief_ofp_id).
+    //   3. OFP MÁS RECIENTE del caché cuyo origen+destino coinciden con el
+    //      vuelo — cubre los vuelos sin link (cuenta SimBrief compartida)
+    //      sin inventar nada: el plan es del mismo par de aeropuertos.
     let json: Option<String> = sqlx::query_scalar(
         r#"
         SELECT COALESCE(
-            fl.route_fixes,
-            (SELECT sf.route_fixes FROM simbrief_flights sf
-             WHERE sf.ofp_id = fl.simbrief_ofp_id)
+            NULLIF(fl.route_fixes, '[]'),
+            NULLIF((SELECT sf.route_fixes FROM simbrief_flights sf
+                    WHERE sf.ofp_id = fl.simbrief_ofp_id), '[]'),
+            (SELECT sf2.route_fixes FROM simbrief_flights sf2
+             WHERE UPPER(sf2.origin_icao) = UPPER(COALESCE(fl.origin_icao, ''))
+               AND UPPER(sf2.destination_icao) = UPPER(COALESCE(fl.destination_icao, ''))
+               AND sf2.route_fixes IS NOT NULL
+               AND sf2.route_fixes <> '[]'
+             ORDER BY CAST(sf2.generated_at AS INTEGER) DESC
+             LIMIT 1)
         )
         FROM flight_log fl
         WHERE fl.id = ?1
@@ -123,13 +139,26 @@ pub async fn delete_simbrief_flight(
 /// - El vuelo debe existir y NO estar cerrado (ended_at IS NULL).
 ///   Si está cerrado, devolvemos error — un OFP ya consumido por otro
 ///   vuelo no debería re-linkear sobre uno terminado.
+/// (v4.17.0) Resultado del intento de link — la UI reacciona según el
+/// status: "linked" → toast de éxito; "regMismatch" → alerta de conflicto
+/// de matrícula que exige una última confirmación manual (reintenta con
+/// `force = true`).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOutcome {
+    pub status: String,
+    pub simbrief_reg: Option<String>,
+    pub sim_reg: Option<String>,
+}
+
 #[tauri::command]
 pub async fn link_simbrief_ofp(
     flight_id: i64,
     ofp_id: String,
+    force: Option<bool>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<LinkOutcome, String> {
     use tauri::Emitter;
     let ofp = sqlx::query_as::<_, SimBriefFlight>(
         r#"
@@ -138,7 +167,8 @@ pub async fn link_simbrief_ofp(
                destination_icao, destination_name, destination_lat, destination_lon,
                route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
                pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg
+               aircraft_reg, plan_ramp_kg,
+               COALESCE(route_fixes, '[]') AS route_fixes
         FROM simbrief_flights
         WHERE ofp_id = ?1
         LIMIT 1
@@ -150,25 +180,64 @@ pub async fn link_simbrief_ofp(
     .map_err(|e| e.to_string())?
     .ok_or_else(|| format!("OFP {} no existe en simbrief_flights", ofp_id))?;
 
+    // (v4.17.0) DOBLE VALIDACIÓN por matrícula (cuenta SimBrief compartida):
+    // comparamos el ATC TAIL NUMBER capturado por SimConnect contra el
+    // `registration` del OFP, con estas reglas de negocio:
+    //   · OFP sin matrícula (campo vacío/null) → bypass: la confirmación
+    //     manual del usuario ("SÍ") basta — se linkea.
+    //   · Match exacto (normalizado) → se linkea.
+    //   · Mismatch y `force` no seteado → NO se guarda; devolvemos
+    //     "regMismatch" para que la UI muestre la alerta de conflicto y
+    //     exija la última confirmación (reintento con force=true).
+    let sim_reg: Option<String> = sqlx::query_scalar(
+        "SELECT aircraft_registration FROM flight_log WHERE id = ?1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?
+    .flatten();
+    let ofp_reg_norm = ofp
+        .aircraft_reg
+        .as_deref()
+        .map(crate::simbrief::normalize_reg)
+        .filter(|s| !s.is_empty());
+    let sim_reg_norm = sim_reg
+        .as_deref()
+        .map(crate::simbrief::normalize_reg)
+        .filter(|s| !s.is_empty());
+    if let (Some(ofp_n), Some(sim_n)) = (ofp_reg_norm.as_deref(), sim_reg_norm.as_deref()) {
+        if ofp_n != sim_n && !force.unwrap_or(false) {
+            tracing::warn!(
+                target: "simbrief",
+                "link BLOQUEADO por mismatch de matrícula: OFP={:?} vs sim={:?} (flight {})",
+                ofp.aircraft_reg, sim_reg, flight_id
+            );
+            return Ok(LinkOutcome {
+                status: "regMismatch".to_string(),
+                simbrief_reg: ofp.aircraft_reg.clone(),
+                sim_reg,
+            });
+        }
+    }
+
     let derived_airline =
         crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
 
-    // (v4.0.0 P7.6b iter 4) Permitimos link tanto en vuelos abiertos
-    // como cerrados. Si el toast aparece despues del engine shutdown
-    // (caso bug que arreglamos en esta iter, pero seguimos siendo
-    // defensivos), el usuario debe poder elegir y que el link funcione
-    // retroactivamente.
+    // (v4.17.0) En confirmación EXPLÍCITA del usuario, el OFP elegido
+    // SOBRESCRIBE flight_number/callsign/airline (puede haber un link
+    // automático previo equivocado de la cuenta compartida). pax/cargo/fuel
+    // conservan COALESCE para no pisar ediciones manuales.
     let res = sqlx::query(
         r#"
         UPDATE flight_log
         SET simbrief_ofp_id  = ?1,
-            flight_number    = COALESCE(flight_number, ?2),
-            callsign         = COALESCE(callsign, ?3),
-            airline_icao     = COALESCE(airline_icao, ?4),
+            flight_number    = ?2,
+            callsign         = ?3,
+            airline_icao     = ?4,
             passengers       = COALESCE(passengers, ?5),
             cargo_kg         = COALESCE(cargo_kg, ?6),
             fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
-            route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
+            route_fixes      = COALESCE(NULLIF(?9, '[]'), route_fixes)
         WHERE id = ?8
         "#,
     )
@@ -191,10 +260,14 @@ pub async fn link_simbrief_ofp(
 
     tracing::info!(
         target: "simbrief",
-        "MANUAL LINK ofp_id={} → flight_id={} (user choice) fn={:?} cs={:?}",
-        ofp.ofp_id, flight_id, ofp.flight_number, ofp.callsign
+        "MANUAL LINK ofp_id={} → flight_id={} (user confirm, force={}) fn={:?} cs={:?}",
+        ofp.ofp_id, flight_id, force.unwrap_or(false), ofp.flight_number, ofp.callsign
     );
 
     let _ = app.emit("flightlog://changed", ());
-    Ok(())
+    Ok(LinkOutcome {
+        status: "linked".to_string(),
+        simbrief_reg: ofp.aircraft_reg.clone(),
+        sim_reg,
+    })
 }

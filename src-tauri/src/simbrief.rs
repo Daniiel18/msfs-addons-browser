@@ -573,7 +573,7 @@ pub async fn score_simbrief_candidates(
 
 /// Normaliza una matrícula: uppercase, sin espacios ni guiones. Cubre
 /// formatos `PT-TMC` / `PT TMC` / `pttmc` → `PTTMC`.
-fn normalize_reg(s: &str) -> String {
+pub fn normalize_reg(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>()

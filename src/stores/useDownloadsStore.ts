@@ -6,6 +6,7 @@ import type {
   InstalledAddon,
 } from "../lib/types";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 import { useCommunityStore } from "./useCommunityStore";
 import { useToastStore } from "./useToastStore";
 
@@ -126,7 +127,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     if (job.phase === "completed" && prev?.phase !== "completed") {
       useToastStore.getState().push({
         kind: "success",
-        title: "Instalación completada",
+        title: t("toast.download.installed"),
         message: job.addonTitle,
         onClick: () => useDownloadsStore.getState().openPanelAt("installed"),
       });
@@ -140,7 +141,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     } else if (job.phase === "error" && prev?.phase !== "error") {
       useToastStore.getState().push({
         kind: "error",
-        title: "Falló la descarga / instalación",
+        title: t("toast.download.failed"),
         message: job.error ?? job.addonTitle,
         onClick: () => useDownloadsStore.getState().openPanelAt("active"),
         ttlMs: null, // los errores se quedan hasta que el usuario los cierra
@@ -162,14 +163,14 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
       // sin obligarle a abrir el panel de descargas.
       useToastStore.getState().push({
         kind: "info",
-        title: "Descarga iniciada",
+        title: t("toast.download.started"),
         message: `${addonTitle} (${method.kind})`,
         onClick: () => useDownloadsStore.getState().openPanelAt("active"),
       });
     } catch (e) {
       useToastStore.getState().push({
         kind: "error",
-        title: "No se pudo iniciar la descarga",
+        title: t("toast.download.start_error"),
         message: String(e),
       });
       throw e;

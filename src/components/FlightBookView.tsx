@@ -2348,6 +2348,35 @@ function ChecklistWidget({
     };
   }, [flightId]);
 
+  // (v4.17.0) Refresco EN VIVO: cuando el scoring del backend termina
+  // (`score:done`, emitido al finalizar el vuelo o tras re-score), si el
+  // report es de ESTE vuelo lo aplicamos directo del payload — sin tener
+  // que cerrar/reabrir el widget ni cambiar de pantalla (bug reportado:
+  // "la evaluation no aparece hasta que no cambio de pantalla").
+  useEffect(() => {
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
+    import("../lib/tauri")
+      .then(({ api }) =>
+        api.onScoreDone((rep) => {
+          if (!cancelled && rep.flightId === flightId) {
+            setReport(rep);
+            setLoading(false);
+            setError(null);
+          }
+        }),
+      )
+      .then((u) => {
+        if (cancelled) u();
+        else unsub = u;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+  }, [flightId]);
+
   // (v4.1.0) Agrupa por fase, cuenta cumplidos/aplicables (los "na" no
   // cuentan), y ORDENA cronológicamente. Antes el render preservaba el
   // orden de `items`, que al venir persistido era alfabético → "approach"

@@ -55,6 +55,7 @@ import type {
   ScanReport,
   SimBriefBriefing,
   SimBriefFlight,
+  LinkOutcome,
   SimBriefRefreshResult,
   SourceDescriptor,
   UninstallReport,
@@ -292,7 +293,13 @@ interface Api {
   simbriefBriefing: () => Promise<SimBriefBriefing>;
   listSimbriefFlights: () => Promise<SimBriefFlight[]>;
   deleteSimbriefFlight: (ofpId: string) => Promise<void>;
-  linkSimbriefOfp: (flightId: number, ofpId: string) => Promise<void>;
+  /** (v4.17.0) Link manual de OFP con doble validación de matrícula.
+   *  `force=true` salta la alerta de mismatch (última confirmación). */
+  linkSimbriefOfp: (
+    flightId: number,
+    ofpId: string,
+    force?: boolean,
+  ) => Promise<LinkOutcome>;
 
   // Dismiss de updates
   dismissUpdate: (folderName: string) => Promise<void>;
@@ -540,8 +547,12 @@ const realApi: Api = {
   listSimbriefFlights: () => invoke<SimBriefFlight[]>("list_simbrief_flights"),
   deleteSimbriefFlight: (ofpId) =>
     invoke<void>("delete_simbrief_flight", { ofpId }),
-  linkSimbriefOfp: (flightId, ofpId) =>
-    invoke<void>("link_simbrief_ofp", { flightId, ofpId }),
+  linkSimbriefOfp: (flightId, ofpId, force) =>
+    invoke<LinkOutcome>("link_simbrief_ofp", {
+      flightId,
+      ofpId,
+      force: force ?? false,
+    }),
 
   dismissUpdate: (folderName) => invoke<void>("dismiss_update", { folderName }),
   dismissAllUpdates: () => invoke<void>("dismiss_all_updates"),
@@ -1234,7 +1245,9 @@ const demoApi: Api = {
     return [];
   },
   async deleteSimbriefFlight() {},
-  async linkSimbriefOfp() {},
+  async linkSimbriefOfp() {
+    return { status: "linked", simbriefReg: null, simReg: null };
+  },
   async fetchChangelog(pageUrl) {
     return {
       sourceUrl: pageUrl,

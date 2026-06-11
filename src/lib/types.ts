@@ -166,6 +166,9 @@ export interface SimBriefFlight {
   fuelBurnKg: number | null;
   /** "lbs" o "kgs" del OFP — sólo trazabilidad. */
   units: string | null;
+  /** (v4.17.0) Matrícula (registration) del OFP — usada por la doble
+   *  validación del link y mostrada en el modal de confirmación. */
+  aircraftReg?: string | null;
   /** (v4.10.0) Puntos del plan de ruta (navlog). Vacío si el OFP no
    *  trae navlog. Se usa para dibujar la ruta planificada en el mapa. */
   routeFixes?: RouteFix[];
@@ -816,6 +819,15 @@ export interface CloudOauthStart {
 }
 
 /** (v2.0.0) Evento emitido al terminar el flow OAuth. */
+/** (v4.17.0) Resultado del link de OFP con doble validación de matrícula.
+ *  `status`: "linked" (guardado OK) | "regMismatch" (conflicto — la UI
+ *  debe pedir la última confirmación y reintentar con force=true). */
+export interface LinkOutcome {
+  status: "linked" | "regMismatch";
+  simbriefReg: string | null;
+  simReg: string | null;
+}
+
 export interface CloudOauthCompletedEvent {
   ok: boolean;
   userEmail: string | null;
