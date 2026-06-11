@@ -33,7 +33,6 @@ import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
-import { SimBriefAmbiguityToast } from "./components/SimBriefAmbiguityToast";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { ReplayBanner } from "./components/ReplayBanner";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
@@ -765,7 +764,6 @@ export default function App() {
       <DragDropOverlay />
       <UpdateWizard />
       <Toaster />
-      <SimBriefAmbiguityToast />
       <SimBriefConfirmModal />
       <ReplayBanner />
     </div>

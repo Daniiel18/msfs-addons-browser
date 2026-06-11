@@ -4532,20 +4532,15 @@ mod windows_simconnect {
                 }
             }
             crate::simbrief::MatchResult::Ambiguous { candidates } => {
-                tracing::warn!(
+                // (v4.19.1) Ya NO se emite `simbrief://ambiguous` ni existe
+                // el toast de elección en pleno vuelo — el usuario decidió
+                // que el ÚNICO flujo de atribución es el modal de
+                // confirmación al apagar motores (confirm_mode arriba).
+                // El vuelo queda sin atribuir hasta entonces.
+                tracing::info!(
                     target: "simbrief",
-                    "AMBIGUOUS — {} candidatos viables para flight_id={} reg_sim={:?} ac_sim={:?} — UI debe pedir confirmación",
+                    "AMBIGUOUS — {} candidatos viables para flight_id={} reg_sim={:?} ac_sim={:?} — se resolverá en el modal de confirmación al cierre",
                     candidates.len(), flight_id, aircraft_reg_from_db, aircraft_atc_from_db
-                );
-                #[derive(serde::Serialize, Clone)]
-                #[serde(rename_all = "camelCase")]
-                struct AmbiguousPayload {
-                    flight_id: i64,
-                    candidates: Vec<crate::simbrief::ScoredOfp>,
-                }
-                let _ = app.emit(
-                    "simbrief://ambiguous",
-                    AmbiguousPayload { flight_id, candidates },
                 );
             }
             crate::simbrief::MatchResult::NoMatch => {

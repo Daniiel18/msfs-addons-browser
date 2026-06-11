@@ -502,7 +502,9 @@ export function RoutesMapView({
         .catch((e) => console.warn("getFlightTrack (live) falló:", e));
     };
     tick();
-    const t = setInterval(tick, 10_000);
+    // (v4.19.1) 5s (antes 10s): con el muestreo de tierra cada 2s el
+    // rodaje se ve casi en vivo y el chord live↔poleado queda corto.
+    const t = setInterval(tick, 5_000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -517,36 +519,58 @@ export function RoutesMapView({
     if (inFlightId == null) {
       return { type: "FeatureCollection", features: [] };
     }
-    // (v4.13.0) No dibujar el track durante el PUSHBACK: el avión es
-    // remolcado en una curva cerrada que generaba un artefacto naranja
-    // en el mapa (el usuario lo reportó). El track empieza a dibujarse
-    // desde el taxi en adelante.
-    if (flightStatus?.phaseLabel === "pushback") {
+    // (v4.13.0 → v4.19.1) No dibujar NADA durante pushback NI en las
+    // fases previas (preflight/engine_running): con GSX el remolque
+    // arranca antes de que la máquina de fases diga "pushback" y la
+    // línea aparecía igual (bug reportado por segunda vez).
+    const ph = flightStatus?.phaseLabel;
+    if (ph === "pushback" || ph === "preflight" || ph === "engine_running") {
       return { type: "FeatureCollection", features: [] };
+    }
+    // (v4.19.1) El live track ARRANCA EN EL TAXI: descartamos el tramo
+    // inicial de baja velocidad (cluster del spawn en el gate, remolque
+    // y pushback, gs < 8 kt). Ese tramo dibujaba rectas/diagonales desde
+    // el gate apenas empezaba el rodaje. El track COMPLETO (incl. la
+    // curva del pushback) sigue visible al abrir el vuelo terminado.
+    let firstTaxi = 0;
+    while (
+      firstTaxi < liveTrackPoints.length &&
+      (liveTrackPoints[firstTaxi].gsKt ?? 0) < 8
+    ) {
+      firstTaxi++;
     }
     // (v3.4.0) Llevamos timestamp al sanitizador para detectar gaps
     // de tiempo reales (sim pausado, reconexión) además de los saltos
     // geométricos. Esto resuelve la "línea recta fea" que el usuario
     // reportó cuando el flight log tenía un segmento posterior a una
     // pausa de varios minutos.
-    const rawPoints = liveTrackPoints.map((p) => ({
+    const rawPoints = liveTrackPoints.slice(firstTaxi).map((p) => ({
       lon: p.lon,
       lat: p.lat,
       ts: p.ts,
     }));
-    // Append posición live si el watcher reporta coords. Sin ts
-    // exacto, pero el sanitizador lo trata como "siempre cercano al
-    // anterior" — sólo aplica los thresholds geométricos.
+    // Append posición live si el watcher reporta coords — PERO solo si
+    // está razonablemente cerca del último punto poleado (≤ ~0.06° ≈
+    // 3.5 NM, cubre el gap de polling de 10 s incluso en crucero).
+    // (v4.19.1) Antes se anexaba SIEMPRE: con el track poleado stale el
+    // chord recto "rotaba" desde el gate siguiendo al avión.
     if (
       flightStatus?.simconnectConnected &&
       flightStatus.currentLat != null &&
       flightStatus.currentLon != null
     ) {
-      rawPoints.push({
-        lon: flightStatus.currentLon,
-        lat: flightStatus.currentLat,
-        ts: new Date().toISOString(),
-      });
+      const last = rawPoints[rawPoints.length - 1];
+      const closeEnough =
+        last != null &&
+        Math.abs(last.lon - flightStatus.currentLon) < 0.06 &&
+        Math.abs(last.lat - flightStatus.currentLat) < 0.06;
+      if (closeEnough) {
+        rawPoints.push({
+          lon: flightStatus.currentLon,
+          lat: flightStatus.currentLat,
+          ts: new Date().toISOString(),
+        });
+      }
     }
     // (v3.23.0) Segmentamos en saltos/gaps → MultiLineString (cada
     // tramo suavizado por separado). Evita la recta larga cuando hay
