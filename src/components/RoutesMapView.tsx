@@ -19,6 +19,18 @@ import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 import { buildTerminatorPolygon } from "../lib/terminator";
 
+/** (v4.18.1) Bandas del terminator día/noche. Cada banda es el polígono
+ *  donde el sol está por debajo de `altitudeDeg`; al apilarlas la
+ *  oscuridad crece gradualmente hacia la noche cerrada (-18°, crepúsculo
+ *  astronómico). Opacidades compuestas: borde 0° ≈ 0.15 (apenas sombra
+ *  justo al ponerse el sol) → noche profunda ≈ 0.55. */
+const TERMINATOR_BANDS = [
+  { source: "rt-term-0", altitudeDeg: 0, opacity: 0.15 },
+  { source: "rt-term-civil", altitudeDeg: -6, opacity: 0.18 },
+  { source: "rt-term-nautical", altitudeDeg: -12, opacity: 0.18 },
+  { source: "rt-term-astro", altitudeDeg: -18, opacity: 0.2 },
+] as const;
+
 /** (v2.0.0) Icono del avión — silueta TOP-VIEW (vista cenital) tal
  *  como se ve un avión desde arriba en mapas de aviación. La punta
  *  está en y=2 (norte, heading 0°) y el viewBox está centrado en
@@ -355,51 +367,39 @@ export function RoutesMapView({
         },
       });
 
-      // (v4.0.0 — P6) Terminator día/noche con gradiente suave.
-      // Dos polígonos apilados crean tres niveles de oscuridad:
-      // día (transparente) → crepúsculo (0.25) → noche profunda (0.62).
-      //
-      // Two sources porque el polígono del civil twilight (sol -6°
-      // bajo horizonte) es geométricamente MÁS GRANDE que el del
-      // terminator estándar (sol = 0°): la noche real está ADENTRO
-      // de la penumbra. Apilando ambos con fill-color negro se
-      // obtiene el gradiente automáticamente.
+      // (v4.0.0 — P6 → v4.18.1) Terminator día/noche con gradiente
+      // REAL de 4 bandas (sol a 0° / -6° / -12° / -18°, los crepúsculos
+      // astronómicos estándar). La versión anterior pintaba el polígono
+      // del terminator geométrico (0°) con opacidad 0.62 — un borde duro
+      // exactamente en la línea de salida del sol, que hacía ver "de
+      // noche" zonas donde el sol acababa de salir y movía visualmente
+      // la división varios grados (feedback usuario: en RD a las 6 am
+      // parecía que ya eran las 8-9). Geometría correcta: el polígono
+      // de -18° (noche cerrada) es el MÁS CHICO y está contenido en el
+      // de 0° — apilando los 4 con opacidades crecientes hacia adentro
+      // se obtiene la transición suave estilo Windy: amanecer/atardecer
+      // apenas sombreados, noche profunda oscura.
       //
       // **City lights removidas** (feedback usuario): el dataset
-      // puntual con dots ámbar se veía artificial — los dots no se
-      // mezclan visualmente con el basemap satelital diurno y daban
-      // aspecto de "puntos pegados encima". Para Black Marble real
-      // necesitamos masking de raster tiles que MapLibre v5 no
-      // soporta nativamente. Se queda para v4.x si el usuario insiste.
+      // puntual con dots ámbar se veía artificial. Se queda para v4.x
+      // si el usuario insiste.
       const now0 = new Date();
-      map.addSource("rt-twilight", {
-        type: "geojson",
-        data: buildTerminatorPolygon(now0, 2, -6),
-      });
-      map.addSource("rt-terminator", {
-        type: "geojson",
-        data: buildTerminatorPolygon(now0),
-      });
-      map.addLayer({
-        id: "rt-twilight-band",
-        type: "fill",
-        source: "rt-twilight",
-        paint: {
-          "fill-color": "#020617",
-          "fill-opacity": 0.25,
-          "fill-antialias": true,
-        },
-      });
-      map.addLayer({
-        id: "rt-terminator-shadow",
-        type: "fill",
-        source: "rt-terminator",
-        paint: {
-          "fill-color": "#020617",
-          "fill-opacity": 0.62,
-          "fill-antialias": true,
-        },
-      });
+      for (const band of TERMINATOR_BANDS) {
+        map.addSource(band.source, {
+          type: "geojson",
+          data: buildTerminatorPolygon(now0, 2, band.altitudeDeg),
+        });
+        map.addLayer({
+          id: `${band.source}-fill`,
+          type: "fill",
+          source: band.source,
+          paint: {
+            "fill-color": "#020617",
+            "fill-opacity": band.opacity,
+            "fill-antialias": true,
+          },
+        });
+      }
 
       setMapReady(true);
     };
@@ -423,12 +423,9 @@ export function RoutesMapView({
     };
   }, []);
 
-  // (v4.0.0 — P6) Refresca el terminator + twilight cada 60s para
-  // que se muevan con la rotación de la Tierra. La Tierra rota
-  // 0.25°/min, así que un update por minuto produce un movimiento
-  // perceptible pero suave (no animación de cada frame, eso sería
-  // overkill). Ambos polígonos se recomputan a partir del mismo
-  // `Date.now()` para que estén siempre sincronizados.
+  // (v4.0.0 — P6) Refresca las 4 bandas del terminator cada 60s para
+  // que se muevan con la rotación de la Tierra (0.25°/min). Todas se
+  // recomputan a partir del mismo `Date` para mantenerse sincronizadas.
   useEffect(() => {
     if (!mapReady) return;
     const map = mapRef.current;
@@ -436,12 +433,10 @@ export function RoutesMapView({
     const refresh = () => {
       try {
         const now = new Date();
-        const term = map.getSource("rt-terminator") as
-          | GeoJSONSource
-          | undefined;
-        if (term) term.setData(buildTerminatorPolygon(now));
-        const twi = map.getSource("rt-twilight") as GeoJSONSource | undefined;
-        if (twi) twi.setData(buildTerminatorPolygon(now, 2, -6));
+        for (const band of TERMINATOR_BANDS) {
+          const src = map.getSource(band.source) as GeoJSONSource | undefined;
+          if (src) src.setData(buildTerminatorPolygon(now, 2, band.altitudeDeg));
+        }
       } catch (e) {
         console.warn("[RoutesMapView] terminator refresh falló:", e);
       }
@@ -614,6 +609,11 @@ export function RoutesMapView({
 
     const curLat = flightStatus.currentLat;
     const curLon = flightStatus.currentLon;
+    // (v4.18.1) EN TIERRA la ruta NO se ancla al avión: en pushback/taxi
+    // el head dibujaba una diagonal gate→fix que cruzaba el aeropuerto
+    // (artefacto reportado). En tierra la ruta arranca en el primer fix
+    // del navlog (la pista); solo en el aire conectamos desde el avión.
+    const airborne = flightStatus.onGround === false;
     let remaining: RouteFix[] = allFixes;
     let head: [number, number] | null = null;
     if (curLat != null && curLon != null) {
@@ -626,19 +626,26 @@ export function RoutesMapView({
           bestIdx = i;
         }
       }
-      // Si el avión ya pasó el fix más cercano (está más cerca del
-      // siguiente que la longitud del tramo), avanzamos uno para no
-      // dibujar hacia atrás.
-      let startIdx = bestIdx;
-      if (bestIdx < allFixes.length - 1) {
-        const a = allFixes[bestIdx];
-        const b = allFixes[bestIdx + 1];
-        if (dist2(curLat, curLon, b.lat, b.lon) < dist2(a.lat, a.lon, b.lat, b.lon)) {
-          startIdx = bestIdx + 1;
+      if (airborne) {
+        // Si el avión ya pasó el fix más cercano (está más cerca del
+        // siguiente que la longitud del tramo), avanzamos uno para no
+        // dibujar hacia atrás.
+        let startIdx = bestIdx;
+        if (bestIdx < allFixes.length - 1) {
+          const a = allFixes[bestIdx];
+          const b = allFixes[bestIdx + 1];
+          if (dist2(curLat, curLon, b.lat, b.lon) < dist2(a.lat, a.lon, b.lat, b.lon)) {
+            startIdx = bestIdx + 1;
+          }
         }
+        remaining = allFixes.slice(startIdx);
+        head = [curLon, curLat];
+      } else {
+        // En tierra: desde el fix más cercano hacia adelante, sin
+        // segmento avión→fix. En el gate de salida eso es la ruta
+        // completa desde la pista; tras aterrizar, el tramo final.
+        remaining = allFixes.slice(bestIdx);
       }
-      remaining = allFixes.slice(startIdx);
-      head = [curLon, curLat];
     }
     if (remaining.length < 1) return { line: emptyLine, fixes: emptyFix };
 
@@ -678,6 +685,7 @@ export function RoutesMapView({
     flightStatus?.originIcao,
     flightStatus?.currentLat,
     flightStatus?.currentLon,
+    flightStatus?.onGround,
     simbriefFlights,
   ]);
 
@@ -1270,16 +1278,14 @@ function LiveFlightPanel({
         </button>
       </div>
 
-      {/* Header: origen · fase · destino */}
+      {/* (v4.18.1) Header: ICAO - ICAO estado (feedback usuario; antes
+          la fase iba en medio de los dos ICAO). */}
       <div className="flex items-center gap-2 pr-20">
         <span className="font-mono text-sm font-bold text-slate-100">
-          {status.originIcao ?? "—"}
+          {status.originIcao ?? "—"} - {status.destinationIcao ?? "—"}
         </span>
         <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-300">
           {phase || "—"}
-        </span>
-        <span className="font-mono text-sm font-bold text-slate-100">
-          {status.destinationIcao ?? "—"}
         </span>
       </div>
 

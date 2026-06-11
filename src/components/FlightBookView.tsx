@@ -14,7 +14,6 @@ import {
   Package,
   Plane,
   PlaneLanding,
-  PlaneTakeoff,
   Ruler,
   Search,
   Trash2,
@@ -274,14 +273,15 @@ export function FlightBookView() {
     });
   }, [completed, sidebarQuery, selectedAirline]);
 
-  // (v3.5.0) Pieza central del overlay flotante — escoge contenido
-  // según el estado: vuelo seleccionado > vuelo activo > preflight >
-  // stats (cuando hay vuelos pero ninguno seleccionado).
-  const overlayKind: "selected" | "active" | "preflight" | "stats" | "none" =
+  // (v3.5.0 → v4.18.1) Pieza central del overlay flotante. Con vuelo
+  // ACTIVO ya no se muestra el card "FLYING NOW" (feedback usuario: el
+  // LiveFlightPanel del mapa da más detalle) — el overlay queda
+  // reservado para el detalle de un vuelo viejo al clickearlo.
+  const overlayKind: "selected" | "preflight" | "stats" | "none" =
     selectedFlight
       ? "selected"
       : inFlight
-        ? "active"
+        ? "none"
         : status?.simconnectConnected && status.currentAirportIcao
           ? "preflight"
           : completed.length > 0
@@ -538,9 +538,6 @@ export function FlightBookView() {
                         collapsed={panelCollapsed}
                         onToggleCollapse={() => setPanelCollapsed((v) => !v)}
                       />
-                    )}
-                    {overlayKind === "active" && inFlight && (
-                      <ActiveFlightCard entry={inFlight} />
                     )}
                     {overlayKind === "preflight" && status && (
                       <PreflightCard status={status} />
@@ -1210,59 +1207,9 @@ function formatTime(iso: string): string {
   }
 }
 
-/** (v3.1.2) Card del vuelo activo. Cruza el `originIcao` del entry
- *  con el OFP más reciente de SimBrief para mostrar el destino real
- *  (antes hardcodeaba "en ruta…"). Si no hay match, mostramos "?"
- *  hasta que el sync ocurra. */
-function ActiveFlightCard({ entry }: { entry: FlightLogEntry }) {
-  const simbriefFlights = useSimBriefStore((s) => s.flights);
-  // (v3.4.13) Status del watcher para derivar label contextual del
-  // título — "Volando ahora" solo cuando realmente está en el aire,
-  // sino "Pushback / Taxi / Llegada" según la fase real.
-  const status = useFlightLogStore((s) => s.status);
-  const matchedOfp = (() => {
-    if (!entry.originIcao || !simbriefFlights.length) return null;
-    const sorted = [...simbriefFlights].sort((a, b) => {
-      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
-      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
-      return bTs - aTs;
-    });
-    return sorted.find((f) => f.originIcao === entry.originIcao) ?? null;
-  })();
-  const destIcao =
-    entry.destinationIcao ?? matchedOfp?.destinationIcao ?? null;
-  const activeTitle = activeFlightTitleForPhase(status?.phaseLabel ?? null);
-  return (
-    <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20">
-      <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-emerald-300">
-        <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-        </span>
-        {activeTitle}
-      </div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-sm text-emerald-100">
-        <span>
-          <PlaneTakeoff className="mr-1 inline h-3.5 w-3.5" />
-          {entry.originIcao ?? "?"}
-        </span>
-        <span className="text-emerald-300">→</span>
-        <span>
-          <PlaneLanding className="mr-1 inline h-3.5 w-3.5" />
-          {destIcao ?? "?"}
-        </span>
-      </div>
-      <div className="mt-0.5 text-[10px] text-emerald-300/80">
-        {entry.aircraftAtcType ?? entry.aircraftTitle ?? "?"}
-        {!entry.destinationIcao && matchedOfp && (
-          <span className="ml-1.5 italic text-emerald-300/60">
-            · destination from SimBrief OFP
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
+// (v4.18.1) `ActiveFlightCard` ("FLYING NOW") eliminado — el
+// LiveFlightPanel del RoutesMapView muestra el vuelo activo con más
+// detalle; el overlay queda para el detalle del vuelo seleccionado.
 
 // (v3.3.0) `Metric` legacy component eliminado — DetailBlock +
 // BlockRow lo reemplazan completamente.
@@ -1400,42 +1347,6 @@ function phaseCardMeta(phase: string): { titleKey?: string; subKey?: string } {
         titleKey: "fb.preflight.title.at_gate",
         subKey: "fb.preflight.sub.waiting_pushback",
       };
-  }
-}
-
-/** (v3.4.13) Título del ActiveFlightCard según phase real. Antes
- *  decía siempre "Volando ahora" (verde) aunque el avión estuviera
- *  en pushback o taxi. Ahora refleja el estado:
- *
- *    pushback        → "Pushback"
- *    taxi_out        → "Rodaje a pista"
- *    takeoff         → "Despegue"
- *    climbing..approach → "Volando ahora"
- *    landed_rollout  → "Aterrizaje"
- *    taxi_in         → "Rodaje a llegada"
- *    parking/deboarding → "En gate destino" */
-function activeFlightTitleForPhase(phase: string | null): string {
-  switch (phase) {
-    case "pushback":
-      return t("fb.active.title.pushback");
-    case "taxi_out":
-      return t("fb.active.title.taxi_out");
-    case "takeoff":
-      return t("fb.active.title.takeoff");
-    case "landed_rollout":
-      return t("fb.active.title.landing");
-    case "taxi_in":
-      return t("fb.active.title.taxi_in");
-    case "parking":
-    case "deboarding":
-      return t("fb.active.title.at_destination");
-    case "climbing":
-    case "cruise":
-    case "descent":
-    case "approach":
-      return t("fb.flying_now");
-    default:
-      return t("fb.flying_now");
   }
 }
 
