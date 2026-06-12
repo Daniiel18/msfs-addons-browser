@@ -28,6 +28,22 @@ import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
 import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-react";
 
+// (v4.24.2) Persistencia del colapso del sidebar de vuelos. El
+// FlightBook se DESMONTA al cambiar de pestaña (App.tsx lo renderiza
+// condicionalmente), así que un useState plano volvía al default y el
+// usuario perdía el estado que había elegido. Espejamos a localStorage
+// (lectura síncrona, mismo patrón que i18n/units) para que quede
+// exactamente como lo dejó hasta que él mismo lo cambie.
+const SIDEBAR_COLLAPSED_KEY = "simfleet.fb.sidebarCollapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Vista completa del FlightBook — bitácora de vuelos reales
  * capturados por SimConnect.
@@ -65,7 +81,17 @@ export function FlightBookView() {
   const [sidebarQuery, setSidebarQuery] = useState("");
   // (v4.18.0) Colapso lateral del sidebar de vuelos — el mapa toma todo
   // el ancho. Botón chevron en la barra del filtro / franja de reapertura.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // (v4.24.2) Inicializa desde localStorage y espeja cada cambio: el
+  // estado sobrevive a cambios de pestaña y a reinicios de la app.
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(readSidebarCollapsed);
+  const setSidebarCollapsed = (v: boolean) => {
+    setSidebarCollapsedState(v);
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, v ? "1" : "0");
+    } catch {
+      // localStorage lleno/deshabilitado — el estado en memoria sigue ok.
+    }
+  };
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
   // (v4.0.0 — P7) Estado del Weather modal.
