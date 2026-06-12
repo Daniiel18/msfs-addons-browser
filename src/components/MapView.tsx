@@ -67,6 +67,13 @@ export function MapView() {
   // exactamente `packages`. Mantenemos la variable separada por
   // claridad y por si en el futuro queremos filtrar por viewport.
   const geolocated = packages;
+  // (v4.24.1) El CONTEO del chip cuenta AEROPUERTOS (ICAOs distintos),
+  // no paquetes: dos sceneries del mismo aeropuerto (LEBL ×2) = 1.
+  // Igual que el KPI del dashboard (DISTINCT icao en backend).
+  const distinctAirports = useMemo(
+    () => new Set(packages.map((p) => p.icao!.toUpperCase())).size,
+    [packages],
+  );
 
   // Paquete enfocado para centrar la cámara y resaltar la sidebar.
   const focusedPkg = useMemo(
@@ -267,7 +274,7 @@ export function MapView() {
         <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-2">
           <div className="pointer-events-auto inline-flex items-center gap-2 rounded-md bg-slate-950/80 px-3 py-1.5 text-xs text-slate-200 backdrop-blur ring-1 ring-slate-800">
             <MapPin className="h-3.5 w-3.5 text-emerald-300" />
-            {geolocated.length} {geolocated.length === 1 ? t("map.airport_singular") : t("map.airport_plural")}
+            {distinctAirports} {distinctAirports === 1 ? t("map.airport_singular") : t("map.airport_plural")}
             {/* El contador del mapa muestra sólo updates de SCENERY
                 (los que sí están pintados como markers). Antes
                 contábamos `updates.length` total e incluía AIRCRAFT,

@@ -190,7 +190,12 @@ export function isAirport(p: CommunityPackage): boolean {
     !!p.icao &&
     p.latitude !== null &&
     p.longitude !== null &&
-    !looksLikeLibraryPack(p)
+    // (v4.24.1) La clasificación la computa el BACKEND (is_library_pack
+    // en Rust: AIRAC, night lights, enhancements, excludes…) — la misma
+    // que usa el conteo de AIRPORTS del dashboard, así ambos números
+    // coinciden siempre. La heurística local queda de fallback para el
+    // modo demo (sin backend).
+    !(p.isLibraryPack ?? looksLikeLibraryPack(p))
   );
 }
 

@@ -471,6 +471,15 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     .fetch_all(pool)
     .await?;
     for (folder, title) in unresolved {
+        // (v4.24.1) Los packs librería/complemento NO se rescatan: el
+        // rescue v4.24.0 promovía pseudo-ICAOs reales escondidos en
+        // palabras comunes (ENHA en "enhanced", SING en "singapore",
+        // VIGR en "navigraph") y llenó el mapa de night-lights/AIRAC
+        // como si fueran aeropuertos (verificado en la DB del usuario:
+        // 58 packs "Night Enhanced" rescatados por error).
+        if is_library_pack(title.as_deref().unwrap_or(""), &folder) {
+            continue;
+        }
         let mut rescued: Option<String> = None;
         for text in [Some(folder.as_str()), title.as_deref()].into_iter().flatten() {
             if let Some(icao) = rescue_embedded_icao(pool, text).await {
@@ -493,6 +502,34 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     }
 
     Ok(report.packages.len())
+}
+
+/// (v4.24.1) ¿El paquete es una LIBRERÍA / complemento y no un
+/// aeropuerto? Única fuente de verdad para el mapa Y el dashboard: el
+/// flag viaja en CommunityPackageRow (`isLibraryPack`) y el conteo de
+/// AIRPORTS del dashboard lo usa igual — así ambos números coinciden
+/// SIEMPRE y los packs de AIRAC/night lights/enhancements/excludes no
+/// aparecen como aeropuertos (pedido del usuario).
+pub fn is_library_pack(title: &str, folder_name: &str) -> bool {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?ix)\b(
+              librar(?:y|ies) | developers?\s*pack | object\s*pack | asset\s*pack |
+              jetways? | vehicles? | vehicle\s*pack | vegetation | trees? | grass |
+              autogen | landmark\s*packs? | asobo\s*objects? | simobjects? | sdk | placeholder |
+              airac | navdata | navigraph |
+              night\s*-?\s*lights? | nightlights? | lights?\s*pack |
+              enhancements? | enhanced |
+              excludes? | excluder | merge | aerials? | ortho | mesh | photogrammetry |
+              city\s*pack | citypack | static\s*aircraft
+            )\b",
+        )
+        .unwrap()
+    });
+    let hay = format!("{} {}", title, folder_name);
+    RE.is_match(&hay)
 }
 
 /// (v4.24.0) Busca un ICAO embebido en `text` sin word boundaries: prueba
@@ -541,19 +578,17 @@ async fn rescue_embedded_icao(pool: &SqlitePool, text: &str) -> Option<String> {
         .iter()
         .filter(|(_, w)| valid.contains(w))
         .collect();
-    // 1. Sufijo exacto.
+    // (v4.24.1) SOLO sufijo o prefijo exactos. La regla anterior de
+    // "único match interior" promovía pseudo-ICAOs escondidos en
+    // palabras comunes (ENHA en "enhanced", SING en "singapore",
+    // VIGR en "navigraph") y llenaba el mapa de basura.
+    // 1. Sufijo exacto (`montevideosumu` → SUMU).
     if let Some((_, w)) = hits.iter().find(|(i, _)| i + 4 == bytes.len()) {
         return Some(w.clone());
     }
-    // 2. Prefijo exacto.
+    // 2. Prefijo exacto (`sumu-montevideo` → SUMU).
     if let Some((_, w)) = hits.iter().find(|(i, _)| *i == 0) {
         return Some(w.clone());
-    }
-    // 3. Único ICAO distinto.
-    let distinct: std::collections::HashSet<&str> =
-        hits.iter().map(|(_, w)| w.as_str()).collect();
-    if distinct.len() == 1 {
-        return Some(hits[0].1.clone());
     }
     None
 }

@@ -92,6 +92,8 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
         icao: Option<String>,
         size_bytes: Option<i64>,
         icao_resolvable: bool,
+        title: String,
+        folder_name: String,
     }
     let raws: Vec<RawRow> = sqlx::query_as(
         r#"
@@ -99,7 +101,9 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
                cp.dependencies_count,
                cp.icao,
                cp.size_bytes,
-               (a.icao IS NOT NULL) AS icao_resolvable
+               (a.icao IS NOT NULL) AS icao_resolvable,
+               cp.title,
+               cp.folder_name
         FROM community_packages cp
         LEFT JOIN airports a ON a.icao = UPPER(cp.icao)
         "#,
@@ -118,7 +122,13 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
         ("Otros", 0, 0),
     ];
 
-    let mut airports_count: i64 = 0;
+    // (v4.24.1) AIRPORTS = ICAOs DISTINTOS de paquetes SCENERY que
+    // resuelven a un aeropuerto real Y que NO son librerías/complementos
+    // (AIRAC, night lights, enhancements, excludes, merges…). El MISMO
+    // criterio que el mapa de scenery (`is_library_pack` compartido) y
+    // deduplicado por ICAO — dashboard y mapa siempre coinciden.
+    let mut airport_icaos: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut aircraft_count: i64 = 0;
     let mut liveries_count: i64 = 0;
 
@@ -137,13 +147,17 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
 
         let bucket_idx: usize = match ct.as_str() {
             "SCENERY" => {
-                // (v3.1.0) airports_count = SCENERY + ICAO que match
-                // un aeropuerto REAL en OurAirports. Antes contábamos
-                // cualquier SCENERY con icao_present (172) — incluyendo
-                // librerías con título sugestivo. Ahora el counter (121)
-                // coincide con el mapa.
-                if r.icao_resolvable {
-                    airports_count += 1;
+                // (v3.1.0 → v4.24.1) SCENERY + ICAO real + NO librería,
+                // deduplicado por ICAO — igual que el mapa.
+                if r.icao_resolvable
+                    && !crate::community_scanner::is_library_pack(
+                        &r.title,
+                        &r.folder_name,
+                    )
+                {
+                    if let Some(ic) = r.icao.as_deref() {
+                        airport_icaos.insert(ic.trim().to_ascii_uppercase());
+                    }
                 }
                 0
             }
@@ -246,7 +260,7 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
         top_creators,
         largest_packages,
         recently_added,
-        airports_count,
+        airports_count: airport_icaos.len() as i64,
         liveries_count,
         aircraft_count,
     })

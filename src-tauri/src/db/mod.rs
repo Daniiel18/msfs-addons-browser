@@ -466,6 +466,12 @@ pub mod repo {
         pub airport_name: Option<String>,
         pub latitude: Option<f64>,
         pub longitude: Option<f64>,
+        /// (v4.24.1) Computado en Rust (no es columna): true si el
+        /// paquete parece librería/complemento (AIRAC, night lights,
+        /// enhancements, excludes…). El mapa lo usa para NO pintarlo y
+        /// el dashboard para no contarlo — misma lógica para ambos.
+        #[sqlx(default)]
+        pub is_library_pack: bool,
     }
 
     pub async fn list_community_packages(
@@ -495,6 +501,13 @@ pub mod repo {
         )
         .fetch_all(pool)
         .await?;
+        // (v4.24.1) Clasificación library/complemento computada acá —
+        // única fuente de verdad compartida con el dashboard.
+        let mut rows = rows;
+        for r in &mut rows {
+            r.is_library_pack =
+                crate::community_scanner::is_library_pack(&r.title, &r.folder_name);
+        }
         Ok(rows)
     }
 

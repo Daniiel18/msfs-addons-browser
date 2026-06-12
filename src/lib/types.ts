@@ -482,6 +482,11 @@ export interface CommunityPackage {
   airportName: string | null;
   latitude: number | null;
   longitude: number | null;
+  /** (v4.24.1) Computado en el backend: true si el paquete es una
+   *  librería/complemento (AIRAC, night lights, enhancements,
+   *  excludes…) y NO un aeropuerto. Única fuente de verdad compartida
+   *  entre el mapa y el conteo del dashboard. */
+  isLibraryPack?: boolean;
 }
 
 /** Resultado de un scan de la carpeta Community. */
