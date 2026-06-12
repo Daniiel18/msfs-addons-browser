@@ -739,7 +739,17 @@ mod tests {
 
     #[test]
     fn parses_minimal_flight_message() {
-        // Construye un mensaje protobuf con solo UUID (f2) + flight_info (f6) con callsign.
+        // Construye un mensaje protobuf con UUID (f2) + flight_info (f6).
+        //
+        // OJO: el payload de f6 debe superar los 16 bytes. VAS-ACARS
+        // reutiliza los fields f4/f5/f6 del top-level — primero como
+        // estructuras (FlightInfo/User/Aircraft, siempre >40 bytes en
+        // records reales) y después como timestamps OOOI (11-12 bytes)
+        // — y `parse_flight_message` desambigua por tamaño (≤16 →
+        // timestamp). Un FlightInfo sintético de 8 bytes caía en la
+        // rama de timestamp y el callsign salía None (test roto desde
+        // v3.5.0 F2; verificado contra el data.db real: 111/111
+        // vuelos parsean callsign/destino/airline correctamente).
         let uuid = b"019bf7ad-e887-7fdd-99d1-9517870d9b74";
 
         let mut msg = Vec::new();
@@ -747,16 +757,25 @@ mod tests {
         msg.push(0x12);
         msg.push(36);
         msg.extend_from_slice(uuid);
-        // f6 wire 2, length 8, FlightInfo { f2: "ABC123" }
+        // f6 wire 2, length 20, FlightInfo {
+        //   f2: "ABC123", f10: "DL115", f12: "115"
+        // } — 20 bytes > 16 para tomar la rama de estructura.
         msg.push(0x32); // (6<<3)|2 = 50 = 0x32
-        msg.push(0x08); // length 8 = 2 (header) + 6 (string)
-        msg.push(0x12);
+        msg.push(0x14); // length 20 = (2+6) + (2+5) + (2+3)
+        msg.push(0x12); // f2 wire 2 (callsign)
         msg.push(0x06);
         msg.extend_from_slice(b"ABC123");
+        msg.push(0x52); // (10<<3)|2 = 82 (flight number)
+        msg.push(0x05);
+        msg.extend_from_slice(b"DL115");
+        msg.push(0x62); // (12<<3)|2 = 98 (número corto — ignorado)
+        msg.push(0x03);
+        msg.extend_from_slice(b"115");
 
         let parsed = parse_flight_message(&msg).unwrap();
         assert_eq!(parsed.uuid, "019bf7ad-e887-7fdd-99d1-9517870d9b74");
         assert_eq!(parsed.callsign.as_deref(), Some("ABC123"));
+        assert_eq!(parsed.flight_number.as_deref(), Some("DL115"));
     }
 
     /// Smoke test contra el data.db real del usuario.
