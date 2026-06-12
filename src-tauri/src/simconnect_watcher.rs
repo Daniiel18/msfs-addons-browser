@@ -4744,17 +4744,29 @@ mod windows_simconnect {
         passed_taxi_threshold: bool,
         in_pushback: bool,
     ) -> String {
-        // Takeoff roll: gs alto en suelo (o recién levantado del
-        // suelo). Aplica desde BlockOut o Airborne — la condición de
-        // velocidad domina al phase enum.
-        // (v4.22.0) En el aire, además, exigimos VS POSITIVO: antes el
-        // corto final (gs ~140, alt < 500 ft, descendiendo) se etiquetaba
-        // "takeoff" segundos antes de tocar pista (bug visto en el log
-        // del vuelo CTV210). Un touch-and-go/go-around real sí tiene VS
-        // positivo y sigue detectándose.
-        if matches!(phase, FlightPhase::BlockOut | FlightPhase::Airborne)
-            && gs >= 60.0
-            && (on_ground || (alt_ft < 500.0 && vs_fpm > 100.0))
+        // (v4.24.0) ROLLOUT del aterrizaje: si venimos del aire (enum aún
+        // Airborne) y ya estamos EN TIERRA, eso es un aterrizaje — jamás
+        // "takeoff". El bug (visto en el vuelo 150 en SBGR): el branch
+        // on_ground del takeoff atrapaba el rollout (gs 139→69
+        // decelerando) porque el enum tarda unos ticks en pasar a Landed,
+        // y el badge mostraba TAKEOFF justo al tocar pista.
+        if matches!(phase, FlightPhase::Airborne) && on_ground {
+            return if gs >= 30.0 {
+                "landed_rollout".to_string()
+            } else {
+                "taxi_in".to_string()
+            };
+        }
+
+        // Takeoff roll: SOLO desde BlockOut en tierra (carrera de
+        // despegue real), o recién levantado con VS POSITIVO (v4.22.0 —
+        // el corto final descendiendo no cuenta; un touch-and-go sí).
+        if gs >= 60.0
+            && ((matches!(phase, FlightPhase::BlockOut) && on_ground)
+                || (matches!(phase, FlightPhase::BlockOut | FlightPhase::Airborne)
+                    && !on_ground
+                    && alt_ft < 500.0
+                    && vs_fpm > 100.0))
         {
             return "takeoff".to_string();
         }
@@ -4884,14 +4896,24 @@ mod windows_simconnect {
         in_pushback: bool,
         engines_seen_running: bool,
     ) -> Option<String> {
-        // Takeoff roll: gs alto en pista (o recién levantado).
-        // (v4.22.0) Mismo guard que derive_phase_label: en el aire se
-        // exige VS positivo — el flare del aterrizaje (gs alto, AGL < 50,
-        // descendiendo) generaba una fase "takeoff" fantasma en pleno
-        // final que contaminaba la evaluación.
-        if matches!(phase, FlightPhase::BlockOut | FlightPhase::Airborne)
-            && gs >= 60.0
-            && (on_ground || (agl_ft < 50.0 && vs_fpm > 100.0))
+        // (v4.24.0) ROLLOUT del aterrizaje: viniendo del aire (enum aún
+        // Airborne) + en tierra = fase "landing" (gs alto) o taxi_in.
+        // Antes el branch on_ground del takeoff etiquetaba el rollout
+        // como "takeoff" (vuelo 150 en SBGR: 23 s de rollout robados a
+        // la fase landing — afectaba la regla de spoilers desplegados).
+        if matches!(phase, FlightPhase::Airborne) && on_ground {
+            return Some(if gs >= 40.0 {
+                "landing".to_string()
+            } else {
+                "taxi_in".to_string()
+            });
+        }
+
+        // Takeoff roll: SOLO desde BlockOut en tierra, o recién
+        // levantado con VS positivo (v4.22.0).
+        if gs >= 60.0
+            && ((matches!(phase, FlightPhase::BlockOut) && on_ground)
+                || (!on_ground && agl_ft < 50.0 && vs_fpm > 100.0))
         {
             return Some("takeoff".to_string());
         }

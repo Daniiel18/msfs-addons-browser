@@ -14,6 +14,7 @@ import {
 import type { DashboardStats } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { isAirport } from "../lib/packageType";
 import { t } from "../lib/i18n";
 
 /**
@@ -36,6 +37,14 @@ export function DashboardView() {
   // false para recargar las stats.
   const scanning = useCommunityStore((s) => s.scanning);
   const packagesCount = useCommunityStore((s) => s.packages.length);
+  // (v4.24.0) Conteo de aeropuertos con EXACTAMENTE el mismo filtro que
+  // el mapa de scenery (`isAirport`: SCENERY + ICAO resoluble + coords +
+  // no library-pack). Antes el dashboard usaba el conteo del backend
+  // (sin el filtro de library packs) y mostraba 154 vs 153 del mapa
+  // (bug reportado).
+  const airportsLikeMap = useCommunityStore(
+    (s) => s.packages.filter(isAirport).length,
+  );
 
   const load = () => {
     setLoading(true);
@@ -109,7 +118,7 @@ export function DashboardView() {
             <KpiCard
               icon={<Landmark className="h-4 w-4" />}
               label={t("dashboard.kpi.airports")}
-              value={stats.airportsCount.toLocaleString("es-ES")}
+              value={airportsLikeMap.toLocaleString("es-ES")}
               hint={t("dashboard.kpi.airports.hint", { aircraft: stats.aircraftCount, liveries: stats.liveriesCount })}
               tone="emerald"
             />

@@ -453,7 +453,109 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     }
 
     tx.commit().await?;
+
+    // (v4.24.0) RESCATE de ICAOs embebidos SIN separador. `extract_icao`
+    // exige word boundaries, así que folders tipo `montevideosumu` (el
+    // ICAO pegado al final) quedaban con icao NULL y el aeropuerto no
+    // aparecía en el mapa (bug reportado con SUMU). Acá probamos TODAS
+    // las ventanas de 4 letras del folder/título VALIDÁNDOLAS contra la
+    // tabla `airports` (OurAirports) — solo se acepta un match real, con
+    // preferencia por sufijo/prefijo para evitar falsos positivos.
+    let unresolved: Vec<(String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT folder_name, title FROM community_packages
+        WHERE (icao IS NULL OR icao = '')
+          AND UPPER(COALESCE(content_type, '')) = 'SCENERY'
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    for (folder, title) in unresolved {
+        let mut rescued: Option<String> = None;
+        for text in [Some(folder.as_str()), title.as_deref()].into_iter().flatten() {
+            if let Some(icao) = rescue_embedded_icao(pool, text).await {
+                rescued = Some(icao);
+                break;
+            }
+        }
+        if let Some(icao) = rescued {
+            sqlx::query("UPDATE community_packages SET icao = ?1 WHERE folder_name = ?2")
+                .bind(&icao)
+                .bind(&folder)
+                .execute(pool)
+                .await?;
+            tracing::info!(
+                target: "scan",
+                "icao rescatado para '{}': {} (substring validado contra airports)",
+                folder, icao
+            );
+        }
+    }
+
     Ok(report.packages.len())
+}
+
+/// (v4.24.0) Busca un ICAO embebido en `text` sin word boundaries: prueba
+/// cada ventana de 4 letras contra la tabla `airports`. Selección:
+///   1. ventana al FINAL del string (`montevideosumu` → SUMU),
+///   2. ventana al INICIO,
+///   3. único match distinto en el interior.
+/// Varios matches interiores distintos → ambiguo → None.
+async fn rescue_embedded_icao(pool: &SqlitePool, text: &str) -> Option<String> {
+    let upper = text.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    if bytes.len() < 4 {
+        return None;
+    }
+    let mut windows: Vec<(usize, String)> = Vec::new();
+    for i in 0..=bytes.len() - 4 {
+        let w = &bytes[i..i + 4];
+        if w.iter().all(|b| b.is_ascii_alphabetic()) {
+            if let Ok(s) = String::from_utf8(w.to_vec()) {
+                windows.push((i, s));
+            }
+        }
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    // Una sola query con IN (...) para validar todas las ventanas.
+    let mut sql = String::from("SELECT icao FROM airports WHERE icao IN (");
+    for (k, _) in windows.iter().enumerate() {
+        if k > 0 {
+            sql.push(',');
+        }
+        sql.push('?');
+    }
+    sql.push(')');
+    let mut q = sqlx::query_scalar::<_, String>(&sql);
+    for (_, w) in &windows {
+        q = q.bind(w.clone());
+    }
+    let valid: std::collections::HashSet<String> =
+        q.fetch_all(pool).await.ok()?.into_iter().collect();
+    if valid.is_empty() {
+        return None;
+    }
+    let hits: Vec<&(usize, String)> = windows
+        .iter()
+        .filter(|(_, w)| valid.contains(w))
+        .collect();
+    // 1. Sufijo exacto.
+    if let Some((_, w)) = hits.iter().find(|(i, _)| i + 4 == bytes.len()) {
+        return Some(w.clone());
+    }
+    // 2. Prefijo exacto.
+    if let Some((_, w)) = hits.iter().find(|(i, _)| *i == 0) {
+        return Some(w.clone());
+    }
+    // 3. Único ICAO distinto.
+    let distinct: std::collections::HashSet<&str> =
+        hits.iter().map(|(_, w)| w.as_str()).collect();
+    if distinct.len() == 1 {
+        return Some(hits[0].1.clone());
+    }
+    None
 }
 
 #[cfg(test)]
