@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import type { AvailableUpdate, CommunityPackage } from "../lib/types";
+import type {
+  AvailableUpdate,
+  CommunityPackage,
+  ToggleReport,
+} from "../lib/types";
 import { api } from "../lib/tauri";
 
 /**
@@ -55,6 +59,16 @@ interface CommunityState {
   refreshUpdates: () => Promise<void>;
   setFocused: (folderName: string | null) => void;
   openDetails: (folderName: string | null) => void;
+
+  /** (v4.25.0) Enciende/apaga UN paquete con cascada por el Link Map
+   *  (los enlazados siguen al padre). Actualiza el estado en memoria
+   *  para todos los folders que el backend reporta como cambiados. */
+  setEnabled: (folderName: string, enabled: boolean) => Promise<ToggleReport>;
+  /** (v4.25.0) Toggle masivo — Enable All / Disable All. */
+  setManyEnabled: (
+    folderNames: string[],
+    enabled: boolean,
+  ) => Promise<ToggleReport>;
 
   // Dismiss API (delegan a backend)
   dismissUpdate: (folderName: string) => Promise<void>;
@@ -158,6 +172,31 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
 
   setFocused: (folderName) => set({ focused: folderName }),
   openDetails: (folderName) => set({ detailsFor: folderName }),
+
+  async setEnabled(folderName, enabled) {
+    // cascade=true SIEMPRE desde la UI: encender un aircraft enciende
+    // sus liveries/sonidos enlazados; apagarlo los apaga. El backend
+    // hace BFS cycle-safe y devuelve la lista real de cambiados.
+    const report = await api.setPackageEnabled(folderName, enabled, true);
+    const changed = new Set(report.changed);
+    set((s) => ({
+      packages: s.packages.map((p) =>
+        changed.has(p.folderName) ? { ...p, enabled } : p,
+      ),
+    }));
+    return report;
+  },
+
+  async setManyEnabled(folderNames, enabled) {
+    const report = await api.setPackagesEnabled(folderNames, enabled);
+    const changed = new Set(report.changed);
+    set((s) => ({
+      packages: s.packages.map((p) =>
+        changed.has(p.folderName) ? { ...p, enabled } : p,
+      ),
+    }));
+    return report;
+  },
 
   async dismissUpdate(folderName) {
     // Optimista: lo quitamos de la lista en memoria al instante.

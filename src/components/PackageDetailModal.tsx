@@ -422,7 +422,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
  * mirrors abren el navegador). Cancela vuelve al modal sin tocar
  * nada.
  */
-function RepairMethodPicker({
+export function RepairMethodPicker({
   pkg,
   matches,
   searching,
@@ -571,7 +571,7 @@ function groupBySourceWithMethods(matches: Addon[]): Grouped[] {
   }));
 }
 
-function Detail({
+export function Detail({
   label,
   value,
   mono,
@@ -595,7 +595,7 @@ function Detail({
 
 /** (v1.1.4) Renderiza la fila "Perfil GSX" con badge instalado/no
  *  instalado. Lee del store local hidratado al boot. */
-function GsxProfileRow({ icao }: { icao: string | null }) {
+export function GsxProfileRow({ icao }: { icao: string | null }) {
   const installedIcaos = useGsxLocalStore((s) => s.installedIcaos);
   if (!icao) return null;
   const has = installedIcaos.has(icao.toUpperCase());
@@ -615,7 +615,7 @@ function GsxProfileRow({ icao }: { icao: string | null }) {
   );
 }
 
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const k = ["KB", "MB", "GB", "TB"];
   let v = n / 1024;

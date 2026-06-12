@@ -1,48 +1,94 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Boxes,
+  CircleOff,
   Cog,
+  GitBranch,
+  HardDrive,
+  LayoutGrid,
+  Loader2,
   Music,
   Package,
+  Pencil,
   Plane,
   Palette,
+  Power,
+  PowerOff,
+  RefreshCcw,
   Search,
   HelpCircle,
 } from "lucide-react";
 import type { CommunityPackage, PmdgLivery } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { useToastStore } from "../stores/useToastStore";
 import { PackageDetailModal } from "./PackageDetailModal";
+import { LinkMapView } from "./LinkMapView";
 import {
   derivedType,
   isAddon,
   looksLikePlaceholderTitle,
   type DerivedType,
 } from "../lib/packageType";
+import { useThumbnail } from "../lib/thumbnails";
+import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+
+/** (v4.25.0) Píldoras de categoría estilo "My Content": All /
+ *  Aircraft / Liveries / Utilities / Others. SIN Airports — los
+ *  aeropuertos se centralizan en la pestaña Map (scenery). */
+type PillFilter = "ALL" | "AIRCRAFT" | "LIVERY" | "UTILITIES" | "OTHERS";
+
+function pillMatches(pill: PillFilter, ty: DerivedType): boolean {
+  switch (pill) {
+    case "ALL":
+      return true;
+    case "AIRCRAFT":
+      return ty === "AIRCRAFT";
+    case "LIVERY":
+      return ty === "LIVERY";
+    case "UTILITIES":
+      return ty === "INSTRUMENT";
+    case "OTHERS":
+      return ty === "MISC" || ty === "UNKNOWN";
+  }
+}
 
 /**
  * Vista de addons no-escenario: aviones, liveries, instrumentos,
  * misc, unknown.
  *
- * Layout actualizado:
- *   · Header con search global + filtros como **chips** (no
- *     dropdown). Cada chip muestra el icono + label + contador.
- *   · Cuerpo: cuando no hay filtro de tipo, agrupamos por
- *     categoría con cabeceras stickies. Cuando hay filtro de tipo
- *     activo, lista plana sin cabeceras.
- *   · Cards en grid 1/2/3/4 columnas según ancho de pantalla.
- *     Cards más limpios — thumbnail rectangular arriba (no cuadrada
- *     a la izquierda) con el contenido debajo.
+ * (v4.25.0) Rediseño "panel de control" estilo My Content:
+ *   · Fila de métricas: addons totales, activos, desactivados y
+ *     storage total en disco.
+ *   · Batch actions: Enable All / Disable All (con confirmación) +
+ *     Refresh (re-scan de Community).
+ *   · Píldoras de categoría (sin Airports — viven en el Map).
+ *   · Cards con toggle físico para encender/apagar el addon en el
+ *     sim (renombra layout.json; cascada vía Link Map) + botón de
+ *     metadatos que abre el modal de detalle.
+ *   · Vista alternativa **Link Map**: grafo de dependencias con
+ *     activación en cascada (LinkMapView).
  */
 export function AddonsView() {
   const allPackages = useCommunityStore((s) => s.packages);
   const detailsFor = useCommunityStore((s) => s.detailsFor);
   const openDetails = useCommunityStore((s) => s.openDetails);
   const updates = useCommunityStore((s) => s.updates);
+  const scanning = useCommunityStore((s) => s.scanning);
+  const rescan = useCommunityStore((s) => s.rescan);
+  const setManyEnabled = useCommunityStore((s) => s.setManyEnabled);
+  const pushToast = useToastStore((s) => s.push);
 
   const [filter, setFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState<DerivedType | "ALL">("ALL");
+  const [typeFilter, setTypeFilter] = useState<PillFilter>("ALL");
+  // (v4.25.0) Vista activa: grid clásico o grafo de dependencias.
+  const [view, setView] = useState<"grid" | "linkmap">("grid");
+  // (v4.25.0) Confirmación pendiente de un batch (null = ninguna).
+  const [confirmBatch, setConfirmBatch] = useState<"enable" | "disable" | null>(
+    null,
+  );
+  const [batchBusy, setBatchBusy] = useState(false);
 
   // Excluimos escenarios — son del MapView. Lo que queda son
   // AIRCRAFT, LIVERY (derivado), INSTRUMENT, MISC, UNKNOWN.
@@ -69,16 +115,59 @@ export function AddonsView() {
     return order.filter((t) => (counts.get(t) ?? 0) > 0);
   }, [counts]);
 
+  // (v4.25.0) Métricas globales del panel. Storage = suma de bytes de
+  // todos los addons no-escenario; enabled trata undefined (demo)
+  // como activo.
+  const metrics = useMemo(() => {
+    let enabled = 0;
+    let bytes = 0;
+    for (const { p } of addons) {
+      if (p.enabled !== false) enabled += 1;
+      bytes += p.sizeBytes ?? 0;
+    }
+    return {
+      total: addons.length,
+      enabled,
+      disabled: addons.length - enabled,
+      bytes,
+    };
+  }, [addons]);
+
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return addons.filter(({ p, t }) => {
-      if (typeFilter !== "ALL" && t !== typeFilter) return false;
+      if (!pillMatches(typeFilter, t)) return false;
       if (!q) return true;
       return [p.title, p.creator, p.folderName]
         .filter(Boolean)
         .some((s) => s!.toLowerCase().includes(q));
     });
   }, [addons, filter, typeFilter]);
+
+  // (v4.25.0) Batch Enable/Disable sobre los addons VISIBLES (lo que
+  // el filtro actual muestra es lo que se toca — predecible).
+  const runBatch = async (enabled: boolean) => {
+    setBatchBusy(true);
+    try {
+      const folders = visible.map(({ p }) => p.folderName);
+      const report = await setManyEnabled(folders, enabled);
+      pushToast({
+        kind: report.failed.length > 0 ? "error" : "success",
+        title: enabled
+          ? t("addons.batch.enabled_toast", { n: report.changed.length })
+          : t("addons.batch.disabled_toast", { n: report.changed.length }),
+        message:
+          report.failed.length > 0
+            ? t("addons.batch.failed_toast", { n: report.failed.length })
+            : undefined,
+      });
+    } catch (e) {
+      pushToast({ kind: "error", title: t("addons.toggle.error"), message: String(e) });
+    } finally {
+      setBatchBusy(false);
+      setConfirmBatch(null);
+    }
+  };
 
   // Agrupar por tipo cuando no hay filtro de tipo activo. En cada
   // grupo respetamos el orden alfabético del título.
@@ -109,33 +198,116 @@ export function AddonsView() {
 
   return (
     <div className="space-y-3">
-      {/* Header — título + search + chips de filtro de tipo. */}
-      <header className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Boxes className="h-4 w-4 text-brand-300" />
-          <h2 className="text-sm font-semibold text-slate-100">
-            Mis addons
-          </h2>
-          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
-            {addons.length}
-          </span>
-        </div>
+      {/* Header — título + métricas globales + batch actions + search. */}
+      <header className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Boxes className="h-4 w-4 text-brand-300" />
+            <h2 className="text-sm font-semibold text-slate-100">
+              {t("addons.title")}
+            </h2>
+          </div>
 
-        <div className="ml-auto flex flex-1 flex-wrap items-center gap-2 md:flex-none">
-          <div className="relative flex-1 md:flex-none">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-            <input
-              type="text"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder={t("addons.search.placeholder")}
-              className="w-full rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 md:w-72"
+          {/* (v4.25.0) Fila de métricas con micro-iconos. */}
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <MetricChip
+              icon={<Package className="h-3 w-3 text-brand-300" />}
+              value={metrics.total}
+              label={t("addons.metrics.addons")}
             />
+            <MetricChip
+              icon={<Power className="h-3 w-3 text-emerald-400" />}
+              value={metrics.enabled}
+              label={t("addons.metrics.enabled")}
+            />
+            <MetricChip
+              icon={<CircleOff className="h-3 w-3 text-slate-500" />}
+              value={metrics.disabled}
+              label={t("addons.metrics.disabled")}
+            />
+            <MetricChip
+              icon={<HardDrive className="h-3 w-3 text-sky-300" />}
+              value={formatStorage(metrics.bytes)}
+              label={t("addons.metrics.storage")}
+            />
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {/* (v4.25.0) Batch actions. Operan sobre los addons
+                visibles con el filtro actual. */}
+            <button
+              onClick={() => setConfirmBatch("enable")}
+              disabled={batchBusy || visible.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+            >
+              <Power className="h-3 w-3" />
+              {t("addons.batch.enable_all")}
+            </button>
+            <button
+              onClick={() => setConfirmBatch("disable")}
+              disabled={batchBusy || visible.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-200 disabled:opacity-50"
+            >
+              <PowerOff className="h-3 w-3" />
+              {t("addons.batch.disable_all")}
+            </button>
+            <button
+              onClick={() => void rescan()}
+              disabled={scanning}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-medium text-sky-200 hover:border-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
+            >
+              {scanning ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-3 w-3" />
+              )}
+              {t("addons.batch.refresh")}
+            </button>
+
+            {/* (v4.25.0) Switch de vista Grid ⇄ Link Map. */}
+            <div className="flex overflow-hidden rounded-lg border border-slate-700">
+              <button
+                onClick={() => setView("grid")}
+                title={t("addons.view.grid")}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                  view === "grid"
+                    ? "bg-brand-500/20 text-brand-100"
+                    : "bg-slate-900/40 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <LayoutGrid className="h-3 w-3" />
+                {t("addons.view.grid")}
+              </button>
+              <button
+                onClick={() => setView("linkmap")}
+                title={t("addons.view.linkmap")}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                  view === "linkmap"
+                    ? "bg-amber-500/20 text-amber-100"
+                    : "bg-slate-900/40 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <GitBranch className="h-3 w-3" />
+                {t("addons.view.linkmap")}
+              </button>
+            </div>
+
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder={t("addons.search.placeholder")}
+                className="w-48 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 xl:w-64"
+              />
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Chips de tipo — fila con conteos visibles. */}
+      {/* (v4.25.0) Píldoras de categoría — All / Aircraft / Liveries /
+          Utilities / Others. SIN Airports (viven en Map scenery). */}
       <div className="flex flex-wrap gap-1.5">
         <TypeChip
           active={typeFilter === "ALL"}
@@ -144,64 +316,87 @@ export function AddonsView() {
           label={t("addons.chip.all")}
           count={addons.length}
         />
-        {presentTypes.map((t) => (
-          <TypeChip
-            key={t}
-            active={typeFilter === t}
-            onClick={() => setTypeFilter(t)}
-            icon={typeIcon(t)}
-            label={typeLabel(t)}
-            count={counts.get(t) ?? 0}
-          />
-        ))}
+        <TypeChip
+          active={typeFilter === "AIRCRAFT"}
+          onClick={() => setTypeFilter("AIRCRAFT")}
+          icon={<Plane className="h-3.5 w-3.5" />}
+          label={t("addons.chip.aircraft")}
+          count={counts.get("AIRCRAFT") ?? 0}
+        />
+        <TypeChip
+          active={typeFilter === "LIVERY"}
+          onClick={() => setTypeFilter("LIVERY")}
+          icon={<Palette className="h-3.5 w-3.5" />}
+          label={t("addons.chip.liveries")}
+          count={counts.get("LIVERY") ?? 0}
+        />
+        <TypeChip
+          active={typeFilter === "UTILITIES"}
+          onClick={() => setTypeFilter("UTILITIES")}
+          icon={<Cog className="h-3.5 w-3.5" />}
+          label={t("addons.chip.utilities")}
+          count={counts.get("INSTRUMENT") ?? 0}
+        />
+        <TypeChip
+          active={typeFilter === "OTHERS"}
+          onClick={() => setTypeFilter("OTHERS")}
+          icon={<Music className="h-3.5 w-3.5" />}
+          label={t("addons.chip.others")}
+          count={(counts.get("MISC") ?? 0) + (counts.get("UNKNOWN") ?? 0)}
+        />
       </div>
 
-      {/* Cuerpo */}
-      {visible.length === 0 ? (
-        <EmptyState hasAny={addons.length > 0} hasFilter={!!filter || typeFilter !== "ALL"} />
-      ) : typeFilter !== "ALL" || filter.trim() !== "" ? (
-        // Lista plana — el usuario ya filtró, no agrupamos.
-        <CardsGrid
-          items={visible}
-          updates={updates}
-          onOpen={openDetails}
-        />
+      {/* Cuerpo: grafo o grid según vista activa. */}
+      {view === "linkmap" ? (
+        <LinkMapView addons={addons} />
       ) : (
-        // Agrupado por tipo con cabeceras.
-        <div className="space-y-5">
-          {presentTypes.map((t) => {
-            const items = grouped.get(t) ?? [];
-            if (items.length === 0) return null;
-            return (
-              <section key={t}>
-                <h3 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  {typeIcon(t)}
-                  {typeLabel(t)}
-                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
-                    {items.length}
-                  </span>
-                </h3>
-                <CardsGrid
-                  items={items}
-                  updates={updates}
-                  onOpen={openDetails}
-                />
-              </section>
-            );
-          })}
-        </div>
-      )}
+        <>
+          {visible.length === 0 ? (
+            <EmptyState
+              hasAny={addons.length > 0}
+              hasFilter={!!filter || typeFilter !== "ALL"}
+            />
+          ) : typeFilter !== "ALL" || filter.trim() !== "" ? (
+            // Lista plana — el usuario ya filtró, no agrupamos.
+            <CardsGrid items={visible} updates={updates} onOpen={openDetails} />
+          ) : (
+            // Agrupado por tipo con cabeceras.
+            <div className="space-y-5">
+              {presentTypes.map((t) => {
+                const items = grouped.get(t) ?? [];
+                if (items.length === 0) return null;
+                return (
+                  <section key={t}>
+                    <h3 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      {typeIcon(t)}
+                      {typeLabel(t)}
+                      <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                        {items.length}
+                      </span>
+                    </h3>
+                    <CardsGrid
+                      items={items}
+                      updates={updates}
+                      onOpen={openDetails}
+                    />
+                  </section>
+                );
+              })}
+            </div>
+          )}
 
-      {/* (v3.0.0 / v3.1.0 / v3.1.3) Sección Aircraft Liveries —
-          escaneo dedicado de paquetes `*-aircraft-*` (PMDG + Fenix +
-          iniBuilds + FlyByWire…) con parsing del aircraft.cfg.
-          Recibe el filtro de búsqueda global del header.
-          v3.1.3: SÓLO se muestra cuando typeFilter es "ALL" o
-          "LIVERY". Antes aparecía también con AIRCRAFT / MISC /
-          UNKNOWN seleccionados, lo que el usuario reportó como
-          "se cuela en todos los filtros". */}
-      {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
-        <AircraftLiveriesSection filter={filter} />
+          {/* (v3.0.0 / v3.1.0 / v3.1.3) Sección Aircraft Liveries —
+              escaneo dedicado de paquetes `*-aircraft-*` (PMDG + Fenix +
+              iniBuilds + FlyByWire…) con parsing del aircraft.cfg.
+              Recibe el filtro de búsqueda global del header.
+              v3.1.3: SÓLO se muestra cuando typeFilter es "ALL" o
+              "LIVERY". Antes aparecía también con AIRCRAFT / MISC /
+              UNKNOWN seleccionados, lo que el usuario reportó como
+              "se cuela en todos los filtros". */}
+          {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
+            <AircraftLiveriesSection filter={filter} />
+          )}
+        </>
       )}
 
       {detailsPkg && (
@@ -211,8 +406,87 @@ export function AddonsView() {
           onClose={() => openDetails(null)}
         />
       )}
+
+      {/* (v4.25.0) Confirmación de batch — apagar/encender N addons de
+          golpe toca el filesystem de Community; merece un "¿seguro?". */}
+      {confirmBatch && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm"
+          onClick={() => !batchBusy && setConfirmBatch(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-[min(420px,calc(100vw-2rem))] rounded-xl border border-slate-800 bg-slate-950 p-5 shadow-2xl ring-1 ring-slate-800"
+          >
+            <h3 className="text-sm font-semibold text-slate-100">
+              {confirmBatch === "enable"
+                ? t("addons.batch.confirm_enable.title", { n: visible.length })
+                : t("addons.batch.confirm_disable.title", { n: visible.length })}
+            </h3>
+            <p className="mt-2 text-xs text-slate-400">
+              {confirmBatch === "enable"
+                ? t("addons.batch.confirm_enable.body")
+                : t("addons.batch.confirm_disable.body")}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmBatch(null)}
+                disabled={batchBusy}
+                className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={() => void runBatch(confirmBatch === "enable")}
+                disabled={batchBusy}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+                  confirmBatch === "enable"
+                    ? "bg-emerald-500 text-emerald-950 hover:bg-emerald-400"
+                    : "bg-rose-500 text-rose-950 hover:bg-rose-400"
+                }`}
+              >
+                {batchBusy ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : confirmBatch === "enable" ? (
+                  <Power className="h-3 w-3" />
+                ) : (
+                  <PowerOff className="h-3 w-3" />
+                )}
+                {t("common.confirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/** (v4.25.0) Chip de métrica del header: icono + valor + label. */
+function MetricChip({
+  icon,
+  value,
+  label,
+}: {
+  icon: React.ReactNode;
+  value: number | string;
+  label: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/50 px-2 py-1">
+      {icon}
+      <span className="font-semibold tabular-nums text-slate-100">{value}</span>
+      <span className="text-slate-500">{label}</span>
+    </span>
+  );
+}
+
+/** (v4.25.0) Formatea bytes como storage humano (GB con 2 decimales
+ *  estilo "205.86 GB", MB para totales chicos). */
+export function formatStorage(bytes: number): string {
+  const gb = bytes / 1_000_000_000;
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${(bytes / 1_000_000).toFixed(0)} MB`;
 }
 
 // ----------------------------------------------------------------------------
@@ -568,51 +842,6 @@ function EmptyState({
 // Card individual
 // ----------------------------------------------------------------------------
 
-const thumbnailCache = new Map<string, string | null>();
-
-function useThumbnail(folderName: string, skip: boolean = false): string | null {
-  const cached = thumbnailCache.get(folderName);
-  const [src, setSrc] = useState<string | null>(cached ?? null);
-  useEffect(() => {
-    // Si el caller dice "skip" (título de placeholder/test), ni
-    // siquiera intentamos cargar el thumbnail. Cacheamos null para
-    // evitar re-intentos.
-    if (skip) {
-      thumbnailCache.set(folderName, null);
-      setSrc(null);
-      return;
-    }
-    if (thumbnailCache.has(folderName)) {
-      setSrc(thumbnailCache.get(folderName) ?? null);
-      return;
-    }
-    let cancelled = false;
-    api
-      .packageThumbnail(folderName)
-      .then((dataUrl) => {
-        if (cancelled) return;
-        // Heurística anti-placeholder: si el data URL es muy chico
-        // (<3 KB de base64 ≈ <2 KB de imagen real), probablemente
-        // es un PNG genérico "PLACEHOLDER" que el dev dejó como
-        // marcador. Cacheamos null y renderemos el icono de
-        // categoría en su lugar.
-        const looksTiny = dataUrl !== null && dataUrl.length < 3000;
-        const finalUrl = looksTiny ? null : dataUrl;
-        thumbnailCache.set(folderName, finalUrl);
-        setSrc(finalUrl);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        thumbnailCache.set(folderName, null);
-        setSrc(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [folderName, skip]);
-  return src;
-}
-
 function PackageCard({
   pkg,
   derived,
@@ -629,18 +858,23 @@ function PackageCard({
   // PNG gris "PLACEHOLDER" en esos casos.
   const skipThumb = looksLikePlaceholderTitle(pkg.title);
   const thumb = useThumbnail(pkg.folderName, skipThumb);
-  const sizeMb =
-    pkg.sizeBytes != null ? (pkg.sizeBytes / 1_000_000).toFixed(0) : null;
+  const sizeLabel =
+    pkg.sizeBytes != null ? formatStorage(pkg.sizeBytes) : null;
+  const { enabled, busy, toggle } = usePackageToggle(pkg);
 
   return (
     <li>
-      <button
+      {/* div clickable (no <button>) — el footer anida el toggle y el
+          botón de metadatos, y HTML no permite button dentro de button. */}
+      <div
         onClick={onClick}
-        className="group flex h-full w-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-brand-500/40 hover:bg-slate-900"
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" && onClick()}
+        className="group flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-brand-500/40 hover:bg-slate-900"
       >
-        {/* Thumbnail rectangular arriba (16:9). Más espacio que el
-            cuadrado lateral del diseño anterior, mejor para fotos
-            de aviones que son apaisadas. */}
+        {/* Thumbnail rectangular arriba (16:9). Cuando el addon está
+            apagado, la imagen se apaga con él (grayscale + dim). */}
         <div className="relative aspect-[16/9] w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
           {thumb ? (
             <img
@@ -648,7 +882,9 @@ function PackageCard({
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+              className={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] ${
+                enabled ? "" : "opacity-40 grayscale"
+              }`}
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = "none";
               }}
@@ -668,33 +904,46 @@ function PackageCard({
                 Update
               </span>
             )}
+            {!enabled && (
+              <span className="rounded bg-slate-900/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400 ring-1 ring-slate-700">
+                {t("addons.card.disabled_badge")}
+              </span>
+            )}
           </div>
         </div>
 
         <div className="flex flex-1 flex-col p-3">
-          <div className="line-clamp-2 text-sm font-medium leading-snug text-slate-100">
+          <div
+            className={`line-clamp-2 text-sm font-medium leading-snug ${
+              enabled ? "text-slate-100" : "text-slate-500"
+            }`}
+          >
             {pkg.title}
           </div>
           <div className="mt-1 truncate text-[11px] text-slate-500">
             {pkg.creator ?? t("dashboard.unknown_author")}
+            {pkg.packageVersion && ` · v${pkg.packageVersion}`}
           </div>
-          {/* Footer con metadata: versión + tamaño */}
-          <div className="mt-auto flex items-center justify-between gap-2 pt-2 text-[10px] text-slate-500">
-            {pkg.packageVersion ? (
-              <span className="truncate font-mono text-slate-400">
-                v{pkg.packageVersion}
-              </span>
-            ) : (
-              <span />
-            )}
-            {sizeMb && (
-              <span className="shrink-0 tabular-nums text-slate-500">
-                {sizeMb} MB
-              </span>
-            )}
+          {/* (v4.25.0) Footer estilo My Content: toggle físico a la
+              izquierda, tamaño + botón de metadatos a la derecha. */}
+          <div className="mt-auto flex items-center gap-2 pt-2.5">
+            <ToggleSwitch on={enabled} busy={busy} onToggle={toggle} small />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClick();
+              }}
+              title={t("addons.card.edit_title")}
+              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+            <span className="ml-auto shrink-0 text-[10px] font-medium tabular-nums text-slate-500">
+              {sizeLabel}
+            </span>
           </div>
         </div>
-      </button>
+      </div>
     </li>
   );
 }

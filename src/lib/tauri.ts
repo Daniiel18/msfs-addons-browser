@@ -7,6 +7,8 @@ import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 // navegador puro).
 import type {
   Addon,
+  AddonLink,
+  AddonNodePosition,
   AddonOnMap,
   AirportBrief,
   RouteFix,
@@ -58,6 +60,7 @@ import type {
   LinkOutcome,
   SimBriefRefreshResult,
   SourceDescriptor,
+  ToggleReport,
   UninstallReport,
   UpdateDiagnostic,
   UpdateFlightInput,
@@ -280,6 +283,34 @@ interface Api {
    *  `pmdg-aircraft-*-liveries` y devuelve título, tail number,
    *  airline y thumbnail (path absoluto). */
   listPmdgLiveries: () => Promise<PmdgLivery[]>;
+
+  /** (v4.25.0) Enciende/apaga un paquete renombrando su layout.json.
+   *  Con cascade=true propaga a los addons enlazados en el Link Map
+   *  (transitivo y cycle-safe). */
+  setPackageEnabled: (
+    folderName: string,
+    enabled: boolean,
+    cascade: boolean,
+  ) => Promise<ToggleReport>;
+  /** (v4.25.0) Toggle masivo — Enable All / Disable All. La lista de
+   *  folders define el scope exacto (el backend no decide). */
+  setPackagesEnabled: (
+    folderNames: string[],
+    enabled: boolean,
+  ) => Promise<ToggleReport>;
+  /** (v4.25.0) Aristas del Link Map (auto del manifest + manuales). */
+  listAddonLinks: () => Promise<AddonLink[]>;
+  /** (v4.25.0) Crea una arista manual source → target. */
+  addAddonLink: (sourceFolder: string, targetFolder: string) => Promise<void>;
+  /** (v4.25.0) Elimina una arista (auto o manual). */
+  removeAddonLink: (
+    sourceFolder: string,
+    targetFolder: string,
+  ) => Promise<void>;
+  /** (v4.25.0) Posiciones persistidas de los nodos del Link Map. */
+  listAddonNodePositions: () => Promise<AddonNodePosition[]>;
+  /** (v4.25.0) Guarda posiciones tras un drag (upsert masivo). */
+  saveAddonNodePositions: (positions: AddonNodePosition[]) => Promise<void>;
 
   /** Scrape el changelog desde la página de detalle del addon. */
   fetchChangelog: (pageUrl: string) => Promise<Changelog>;
@@ -548,6 +579,23 @@ const realApi: Api = {
     invoke<string | null>("package_thumbnail", { folderName }),
   listPmdgLiveries: () =>
     invoke<PmdgLivery[]>("list_pmdg_liveries", { communityPath: null }),
+  setPackageEnabled: (folderName, enabled, cascade) =>
+    invoke<ToggleReport>("set_package_enabled", {
+      folderName,
+      enabled,
+      cascade,
+    }),
+  setPackagesEnabled: (folderNames, enabled) =>
+    invoke<ToggleReport>("set_packages_enabled", { folderNames, enabled }),
+  listAddonLinks: () => invoke<AddonLink[]>("list_addon_links"),
+  addAddonLink: (sourceFolder, targetFolder) =>
+    invoke<void>("add_addon_link", { sourceFolder, targetFolder }),
+  removeAddonLink: (sourceFolder, targetFolder) =>
+    invoke<void>("remove_addon_link", { sourceFolder, targetFolder }),
+  listAddonNodePositions: () =>
+    invoke<AddonNodePosition[]>("list_addon_node_positions"),
+  saveAddonNodePositions: (positions) =>
+    invoke<void>("save_addon_node_positions", { positions }),
   fetchChangelog: (pageUrl) =>
     invoke<Changelog>("fetch_changelog", { pageUrl }),
 
@@ -1236,6 +1284,23 @@ const demoApi: Api = {
   async listPmdgLiveries() {
     return [];
   },
+  async setPackageEnabled(folderName, enabled) {
+    await sleep(80);
+    return { enabled, changed: [folderName], failed: [] };
+  },
+  async setPackagesEnabled(folderNames, enabled) {
+    await sleep(150);
+    return { enabled, changed: [...folderNames], failed: [] };
+  },
+  async listAddonLinks() {
+    return [];
+  },
+  async addAddonLink() {},
+  async removeAddonLink() {},
+  async listAddonNodePositions() {
+    return [];
+  },
+  async saveAddonNodePositions() {},
   async getSimbriefPilotId() {
     return null;
   },

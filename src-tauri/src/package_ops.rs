@@ -261,6 +261,201 @@ fn sanity_check(path: &Path, expected_folder: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// (v4.25.0) Enable / Disable de paquetes + cascada por el Link Map
+// ---------------------------------------------------------------------------
+
+/// Reporte del toggle. `changed` lista los folders cuyo estado cambió
+/// (incluye los alcanzados por cascada) para que la UI anime los
+/// switches en cadena; `failed` los que no se pudieron tocar (p.ej.
+/// archivo bloqueado) con su error.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToggleReport {
+    pub enabled: bool,
+    pub changed: Vec<String>,
+    pub failed: Vec<RemovalFailure>,
+}
+
+/// Renombra `layout.json` ⇄ `layout.json.disabled` dentro del paquete.
+/// MSFS solo carga paquetes con `layout.json` presente, así que esto
+/// los apaga/enciende sin mover la carpeta (instantáneo aun con addons
+/// de varios GB, reversible al 100%). Devuelve `true` si el FS cambió.
+fn toggle_layout_file(install_path: &Path, enabled: bool) -> std::io::Result<bool> {
+    let on = install_path.join("layout.json");
+    let off = install_path.join("layout.json.disabled");
+    if enabled {
+        if on.exists() {
+            return Ok(false); // ya activo
+        }
+        if off.exists() {
+            std::fs::rename(&off, &on)?;
+            return Ok(true);
+        }
+        Ok(false) // paquete sin layout — nada que restaurar
+    } else {
+        if on.exists() {
+            // Si quedó un .disabled huérfano de un toggle anterior lo
+            // pisamos: rename falla en Windows si el destino existe.
+            if off.exists() {
+                std::fs::remove_file(&off)?;
+            }
+            std::fs::rename(&on, &off)?;
+            return Ok(true);
+        }
+        Ok(false) // ya inactivo (o sin layout)
+    }
+}
+
+/// Calcula el cierre transitivo hacia ABAJO del grafo de links
+/// (source → target) partiendo de `root`. BFS con set de visitados —
+/// cycle-safe por construcción (un nodo nunca se encola dos veces) y
+/// asimétrico (solo seguimos aristas salientes: encender una livery
+/// NO enciende su aircraft; encender el aircraft SÍ enciende sus
+/// liveries/sonidos a cualquier profundidad).
+fn transitive_targets(
+    root: &str,
+    links: &[(String, String)],
+) -> Vec<String> {
+    use std::collections::{HashSet, VecDeque};
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    visited.insert(root.to_lowercase());
+    queue.push_back(root.to_string());
+    while let Some(current) = queue.pop_front() {
+        order.push(current.clone());
+        for (source, target) in links {
+            if source.eq_ignore_ascii_case(&current)
+                && visited.insert(target.to_lowercase())
+            {
+                queue.push_back(target.clone());
+            }
+        }
+    }
+    order
+}
+
+/// Enciende/apaga un paquete y, con `cascade`, todos sus dependientes
+/// enlazados (transitivo, cycle-safe). Actualiza el FS primero y la
+/// columna `enabled` después — la DB es espejo, el FS manda.
+pub async fn set_package_enabled(
+    pool: &sqlx::SqlitePool,
+    folder_name: &str,
+    enabled: bool,
+    cascade: bool,
+) -> Result<ToggleReport, PackageOpError> {
+    let pkgs = repo::list_community_packages(pool).await?;
+    let by_folder: std::collections::HashMap<String, &repo::CommunityPackageRow> = pkgs
+        .iter()
+        .map(|p| (p.folder_name.to_lowercase(), p))
+        .collect();
+    if !by_folder.contains_key(&folder_name.to_lowercase()) {
+        return Err(PackageOpError::UnknownPackage(folder_name.to_string()));
+    }
+
+    let affected: Vec<String> = if cascade {
+        let links: Vec<(String, String)> = repo::list_addon_links(pool)
+            .await?
+            .into_iter()
+            .map(|l| (l.source_folder, l.target_folder))
+            .collect();
+        transitive_targets(folder_name, &links)
+    } else {
+        vec![folder_name.to_string()]
+    };
+
+    let mut report = ToggleReport {
+        enabled,
+        ..Default::default()
+    };
+    for folder in &affected {
+        let Some(pkg) = by_folder.get(&folder.to_lowercase()) else {
+            continue; // link hacia un paquete ya desinstalado
+        };
+        match toggle_layout_file(Path::new(&pkg.install_path), enabled) {
+            Ok(_) => {
+                // El estado en DB se actualiza aunque el FS no cambiara
+                // (idempotencia: re-aplicar el mismo estado no es error).
+                sqlx::query("UPDATE community_packages SET enabled = ?1 WHERE folder_name = ?2")
+                    .bind(enabled)
+                    .bind(&pkg.folder_name)
+                    .execute(pool)
+                    .await?;
+                report.changed.push(pkg.folder_name.clone());
+                tracing::info!(
+                    target: "install",
+                    "toggle: '{}' → {}",
+                    pkg.folder_name,
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "install",
+                    "toggle: '{}' falló: {}",
+                    pkg.folder_name,
+                    e
+                );
+                report.failed.push(RemovalFailure {
+                    path: pkg.install_path.clone(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Toggle masivo (Enable All / Disable All). El frontend pasa la lista
+/// explícita de folders en scope (p.ej. solo los addons no-escenario
+/// visibles) — el backend no decide el alcance. Sin cascada: la lista
+/// ya es exhaustiva.
+pub async fn set_packages_enabled(
+    pool: &sqlx::SqlitePool,
+    folder_names: &[String],
+    enabled: bool,
+) -> Result<ToggleReport, PackageOpError> {
+    let pkgs = repo::list_community_packages(pool).await?;
+    let by_folder: std::collections::HashMap<String, &repo::CommunityPackageRow> = pkgs
+        .iter()
+        .map(|p| (p.folder_name.to_lowercase(), p))
+        .collect();
+    let mut report = ToggleReport {
+        enabled,
+        ..Default::default()
+    };
+    for folder in folder_names {
+        let Some(pkg) = by_folder.get(&folder.to_lowercase()) else {
+            continue;
+        };
+        match toggle_layout_file(Path::new(&pkg.install_path), enabled) {
+            Ok(_) => {
+                sqlx::query("UPDATE community_packages SET enabled = ?1 WHERE folder_name = ?2")
+                    .bind(enabled)
+                    .bind(&pkg.folder_name)
+                    .execute(pool)
+                    .await?;
+                report.changed.push(pkg.folder_name.clone());
+            }
+            Err(e) => {
+                report.failed.push(RemovalFailure {
+                    path: pkg.install_path.clone(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+    tracing::info!(
+        target: "install",
+        "toggle masivo → {}: {} cambiados, {} fallaron",
+        if enabled { "enabled" } else { "disabled" },
+        report.changed.len(),
+        report.failed.len()
+    );
+    Ok(report)
+}
+
 async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<u64, PackageOpError> {
     // Quitar de community_packages — el próximo scan lo confirmaría
     // de todas formas, pero hacerlo aquí mantiene la UI consistente

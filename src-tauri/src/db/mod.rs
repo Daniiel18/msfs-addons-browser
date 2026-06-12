@@ -463,6 +463,10 @@ pub mod repo {
         pub folder_modified_at: Option<String>,
         pub dependencies_count: i64,
         pub scanned_at: String,
+        /// (v4.25.0) Estado del paquete en el sim. `false` = el toggle
+        /// renombró layout.json → layout.json.disabled y MSFS lo
+        /// ignora. El scanner lo recalcula del FS en cada scan.
+        pub enabled: bool,
         pub airport_name: Option<String>,
         pub latitude: Option<f64>,
         pub longitude: Option<f64>,
@@ -491,6 +495,7 @@ pub mod repo {
                    cp.folder_modified_at,
                    cp.dependencies_count,
                    cp.scanned_at,
+                   cp.enabled,
                    ap.name      AS airport_name,
                    ap.latitude  AS latitude,
                    ap.longitude AS longitude
@@ -509,6 +514,108 @@ pub mod repo {
                 crate::community_scanner::is_library_pack(&r.title, &r.folder_name);
         }
         Ok(rows)
+    }
+
+    // -----------------------------------------------------------------
+    // (v4.25.0) Link Map — aristas y posiciones del grafo de addons
+    // -----------------------------------------------------------------
+
+    /// Arista dirigida del grafo de dependencias: `source` (paquete
+    /// base, p.ej. el aircraft) → `target` (dependiente: livery,
+    /// soundpack, tweak). `origin` = 'auto' (sembrada del manifest)
+    /// o 'manual' (creada por el usuario en el Link Map).
+    #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AddonLinkRow {
+        pub id: i64,
+        pub source_folder: String,
+        pub target_folder: String,
+        pub origin: String,
+    }
+
+    pub async fn list_addon_links(pool: &SqlitePool) -> anyhow::Result<Vec<AddonLinkRow>> {
+        let rows = sqlx::query_as::<_, AddonLinkRow>(
+            "SELECT id, source_folder, target_folder, origin FROM addon_links ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn add_addon_link(
+        pool: &SqlitePool,
+        source_folder: &str,
+        target_folder: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO addon_links (source_folder, target_folder, origin)
+            VALUES (?1, ?2, 'manual')
+            "#,
+        )
+        .bind(source_folder)
+        .bind(target_folder)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_addon_link(
+        pool: &SqlitePool,
+        source_folder: &str,
+        target_folder: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "DELETE FROM addon_links WHERE source_folder = ?1 AND target_folder = ?2",
+        )
+        .bind(source_folder)
+        .bind(target_folder)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Posición persistida de un nodo en el lienzo del Link Map.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AddonNodePosition {
+        pub folder_name: String,
+        pub x: f64,
+        pub y: f64,
+    }
+
+    pub async fn list_addon_node_positions(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<Vec<AddonNodePosition>> {
+        let rows = sqlx::query_as::<_, AddonNodePosition>(
+            "SELECT folder_name, x, y FROM addon_link_positions",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn save_addon_node_positions(
+        pool: &SqlitePool,
+        positions: &[AddonNodePosition],
+    ) -> anyhow::Result<()> {
+        let mut tx = pool.begin().await?;
+        for p in positions {
+            sqlx::query(
+                r#"
+                INSERT INTO addon_link_positions (folder_name, x, y)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(folder_name) DO UPDATE SET x = excluded.x, y = excluded.y
+                "#,
+            )
+            .bind(&p.folder_name)
+            .bind(p.x)
+            .bind(p.y)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Devuelve los ICAO únicos detectados en Community que tienen

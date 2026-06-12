@@ -1,7 +1,7 @@
 {
   "name": "simfleet",
   "private": true,
-  "version": "4.24.2",
+  "version": "4.25.0",
   "type": "module",
   "scripts": {
     "start": "tauri dev",
@@ -12,10 +12,12 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.0.1",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-shell": "^2.0.1",
+    "@xyflow/react": "^12.11.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.17",
     "lucide-react": "^0.460.0",

@@ -141,6 +141,110 @@ pub async fn uninstall_community_package(
     }
 }
 
+/// (v4.25.0) Enciende/apaga un paquete en el sim renombrando su
+/// `layout.json` ⇄ `layout.json.disabled`. Con `cascade=true` propaga
+/// el estado a todos los addons enlazados en el Link Map (transitivo,
+/// asimétrico — solo hacia los dependientes — y cycle-safe vía BFS
+/// con set de visitados).
+#[tauri::command]
+pub async fn set_package_enabled(
+    folder_name: String,
+    enabled: bool,
+    cascade: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<package_ops::ToggleReport, String> {
+    cmd_log!(
+        "set_package_enabled",
+        "folder={} enabled={} cascade={}",
+        folder_name,
+        enabled,
+        cascade
+    );
+    package_ops::set_package_enabled(&state.db, &folder_name, enabled, cascade)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.25.0) Toggle masivo — Enable All / Disable All del dashboard de
+/// Addons. El frontend manda la lista explícita de folders en scope.
+#[tauri::command]
+pub async fn set_packages_enabled(
+    folder_names: Vec<String>,
+    enabled: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<package_ops::ToggleReport, String> {
+    cmd_log!(
+        "set_packages_enabled",
+        "n={} enabled={}",
+        folder_names.len(),
+        enabled
+    );
+    let _t = CmdTimer::start("set_packages_enabled");
+    package_ops::set_packages_enabled(&state.db, &folder_names, enabled)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.25.0) Aristas del Link Map ('auto' del manifest + 'manual').
+#[tauri::command]
+pub async fn list_addon_links(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<repo::AddonLinkRow>, String> {
+    repo::list_addon_links(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.25.0) Crea una arista manual source → target en el Link Map.
+#[tauri::command]
+pub async fn add_addon_link(
+    source_folder: String,
+    target_folder: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if source_folder.eq_ignore_ascii_case(&target_folder) {
+        return Err("un addon no puede enlazarse consigo mismo".to_string());
+    }
+    cmd_log!("add_addon_link", "{} -> {}", source_folder, target_folder);
+    repo::add_addon_link(&state.db, &source_folder, &target_folder)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.25.0) Elimina una arista del Link Map (auto o manual).
+#[tauri::command]
+pub async fn remove_addon_link(
+    source_folder: String,
+    target_folder: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    cmd_log!("remove_addon_link", "{} -> {}", source_folder, target_folder);
+    repo::remove_addon_link(&state.db, &source_folder, &target_folder)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.25.0) Posiciones persistidas de los nodos del Link Map.
+#[tauri::command]
+pub async fn list_addon_node_positions(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<repo::AddonNodePosition>, String> {
+    repo::list_addon_node_positions(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.25.0) Guarda posiciones de nodos tras un drag en el Link Map.
+#[tauri::command]
+pub async fn save_addon_node_positions(
+    positions: Vec<repo::AddonNodePosition>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    repo::save_addon_node_positions(&state.db, &positions)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Diagnóstico exhaustivo del estado de detección de updates para
 /// un folder concreto. Devuelve toda la cadena: paquete escaneado,
 /// match de aeropuerto, entradas del catálogo, cache de chequeos y

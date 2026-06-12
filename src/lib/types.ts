@@ -487,6 +487,37 @@ export interface CommunityPackage {
    *  excludes…) y NO un aeropuerto. Única fuente de verdad compartida
    *  entre el mapa y el conteo del dashboard. */
   isLibraryPack?: boolean;
+  /** (v4.25.0) Estado del paquete en el sim. `false` = SimFleet
+   *  renombró su layout.json → layout.json.disabled y MSFS lo ignora.
+   *  Optional para el modo demo; tratar undefined como activo. */
+  enabled?: boolean;
+}
+
+/** (v4.25.0) Reporte de un toggle enable/disable (individual con
+ *  cascada, o masivo). `changed` incluye los addons alcanzados por la
+ *  cascada del Link Map para animar los switches en cadena. */
+export interface ToggleReport {
+  enabled: boolean;
+  changed: string[];
+  failed: { path: string; error: string }[];
+}
+
+/** (v4.25.0) Arista dirigida del Link Map: source (paquete base, p.ej.
+ *  el aircraft) → target (dependiente: livery, soundpack, tweak).
+ *  origin 'auto' = sembrada desde manifest.dependencies en cada scan;
+ *  'manual' = creada por el usuario. */
+export interface AddonLink {
+  id: number;
+  sourceFolder: string;
+  targetFolder: string;
+  origin: "auto" | "manual";
+}
+
+/** (v4.25.0) Posición persistida de un nodo en el lienzo del Link Map. */
+export interface AddonNodePosition {
+  folderName: string;
+  x: number;
+  y: number;
 }
 
 /** Resultado de un scan de la carpeta Community. */

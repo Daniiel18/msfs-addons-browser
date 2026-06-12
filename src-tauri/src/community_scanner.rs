@@ -36,6 +36,16 @@ pub struct ScannedPackage {
     /// `content_type=AIRCRAFT` con dependencia al aircraft base, así
     /// que `AIRCRAFT + deps>0` distingue livery de aircraft completo.
     pub dependencies_count: usize,
+    /// (v4.25.0) Nombres de paquete declarados en
+    /// `manifest.dependencies[].name`. Siembran las aristas 'auto' del
+    /// Link Map (livery → su aircraft base) sin que el usuario tenga
+    /// que enlazarlos a mano.
+    pub dependency_names: Vec<String>,
+    /// (v4.25.0) Estado físico del paquete en el simulador. MSFS solo
+    /// carga paquetes con `layout.json` presente — nuestro toggle lo
+    /// renombra a `layout.json.disabled` para apagarlos sin mover la
+    /// carpeta. El scanner refleja ese estado acá.
+    pub enabled: bool,
 }
 
 /// Estructura literal del `manifest.json` de MSFS. Sólo
@@ -102,9 +112,17 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
             continue;
         }
 
+        // (v4.25.0) Estado enabled/disabled del paquete. Disabled =
+        // nuestro toggle renombró `layout.json` → `layout.json.disabled`
+        // (MSFS ignora paquetes sin layout). Si no hay NINGUNO de los
+        // dos lo tratamos como enabled — paquetes raros sin layout no
+        // deben aparecer como "apagados por SimFleet".
+        let enabled = path.join("layout.json").is_file()
+            || !path.join("layout.json.disabled").is_file();
+
         match parse_manifest(&manifest_path) {
             Ok(raw) => {
-                packages.push(materialize(&path, &folder_name, raw));
+                packages.push(materialize(&path, &folder_name, raw, enabled));
             }
             Err(e) => {
                 tracing::debug!(
@@ -117,7 +135,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                 // permite que el usuario lo vea en el mapa con un
                 // título plausible y nuestra heurística de ICAO.
                 skipped_invalid_manifest += 1;
-                packages.push(materialize_fallback(&path, &folder_name));
+                packages.push(materialize_fallback(&path, &folder_name, enabled));
             }
         }
     }
@@ -139,7 +157,12 @@ fn parse_manifest(path: &Path) -> anyhow::Result<RawManifest> {
     Ok(parsed)
 }
 
-fn materialize(path: &Path, folder_name: &str, raw: RawManifest) -> ScannedPackage {
+fn materialize(
+    path: &Path,
+    folder_name: &str,
+    raw: RawManifest,
+    enabled: bool,
+) -> ScannedPackage {
     let title = raw
         .title
         .as_ref()
@@ -181,6 +204,18 @@ fn materialize(path: &Path, folder_name: &str, raw: RawManifest) -> ScannedPacka
 
     let (size_bytes, folder_modified_at) = folder_metadata(path);
 
+    // (v4.25.0) Nombres de las dependencias del manifest. Cada entry
+    // suele ser `{ "name": "fnx-aircraft-320", "package_version": … }`
+    // — el name ES el folder name del paquete base, lo que nos permite
+    // auto-enlazar livery → aircraft en el Link Map.
+    let dependency_names: Vec<String> = raw
+        .dependencies
+        .iter()
+        .filter_map(|v| v.get("name").and_then(|n| n.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     ScannedPackage {
         folder_name: folder_name.to_string(),
         install_path: path.to_string_lossy().into_owned(),
@@ -196,10 +231,12 @@ fn materialize(path: &Path, folder_name: &str, raw: RawManifest) -> ScannedPacka
         size_bytes,
         folder_modified_at,
         dependencies_count: raw.dependencies.len(),
+        dependency_names,
+        enabled,
     }
 }
 
-fn materialize_fallback(path: &Path, folder_name: &str) -> ScannedPackage {
+fn materialize_fallback(path: &Path, folder_name: &str, enabled: bool) -> ScannedPackage {
     let (size_bytes, folder_modified_at) = folder_metadata(path);
     let title = pretty_folder_name(folder_name);
     // Sin manifest válido no podemos saber si es SCENERY. Conservador:
@@ -217,6 +254,8 @@ fn materialize_fallback(path: &Path, folder_name: &str) -> ScannedPackage {
         size_bytes,
         folder_modified_at,
         dependencies_count: 0,
+        dependency_names: Vec::new(),
+        enabled,
     }
 }
 
@@ -420,9 +459,9 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
             INSERT INTO community_packages (
                 folder_name, install_path, title, creator, content_type,
                 package_version, minimum_game_version, icao, size_bytes,
-                folder_modified_at, dependencies_count, scanned_at
+                folder_modified_at, dependencies_count, scanned_at, enabled
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12)
             ON CONFLICT(folder_name) DO UPDATE SET
                 install_path = excluded.install_path,
                 title = excluded.title,
@@ -434,7 +473,8 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 size_bytes = excluded.size_bytes,
                 folder_modified_at = excluded.folder_modified_at,
                 dependencies_count = excluded.dependencies_count,
-                scanned_at = datetime('now')
+                scanned_at = datetime('now'),
+                enabled = excluded.enabled
             "#,
         )
         .bind(&pkg.folder_name)
@@ -448,8 +488,63 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         .bind(pkg.size_bytes.map(|n| n as i64))
         .bind(&pkg.folder_modified_at)
         .bind(pkg.dependencies_count as i64)
+        .bind(pkg.enabled)
         .execute(&mut *tx)
         .await?;
+    }
+
+    // (v4.25.0) Mantenimiento del grafo de enlaces (Link Map):
+    //   1. Borra aristas y posiciones cuyos extremos ya no existen
+    //      (paquete desinstalado fuera de la app).
+    //   2. Re-siembra las aristas 'auto' desde manifest.dependencies —
+    //      cada livery/soundpack declara su paquete base por folder
+    //      name. Las aristas 'manual' del usuario nunca se tocan.
+    sqlx::query(
+        r#"
+        DELETE FROM addon_links
+        WHERE source_folder NOT IN (SELECT folder_name FROM community_packages)
+           OR target_folder NOT IN (SELECT folder_name FROM community_packages)
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        DELETE FROM addon_link_positions
+        WHERE folder_name NOT IN (SELECT folder_name FROM community_packages)
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    {
+        // Lookup case-insensitive: el manifest puede declarar el name
+        // con casing distinto al folder real en disco.
+        let by_lower: std::collections::HashMap<String, &str> = report
+            .packages
+            .iter()
+            .map(|p| (p.folder_name.to_lowercase(), p.folder_name.as_str()))
+            .collect();
+        for pkg in &report.packages {
+            for dep in &pkg.dependency_names {
+                let Some(source) = by_lower.get(&dep.to_lowercase()) else {
+                    continue; // dependencia no instalada — nada que enlazar
+                };
+                if source.eq_ignore_ascii_case(&pkg.folder_name) {
+                    continue; // self-loop defensivo
+                }
+                sqlx::query(
+                    r#"
+                    INSERT OR IGNORE INTO addon_links
+                        (source_folder, target_folder, origin)
+                    VALUES (?1, ?2, 'auto')
+                    "#,
+                )
+                .bind(source)
+                .bind(&pkg.folder_name)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
     }
 
     tx.commit().await?;

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { AnimatePresence } from "framer-motion";
 import {
   AlertCircle,
-  Info,
   MapPin,
   Search,
   Sparkles,
@@ -13,7 +13,7 @@ import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { api } from "../lib/tauri";
-import { PackageDetailModal } from "./PackageDetailModal";
+import { MapAirportCard } from "./MapAirportCard";
 import { t } from "../lib/i18n";
 
 /**
@@ -44,8 +44,6 @@ export function MapView() {
   const updates = useCommunityStore((s) => s.updates);
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
-  const detailsFor = useCommunityStore((s) => s.detailsFor);
-  const openDetails = useCommunityStore((s) => s.openDetails);
   const lastScanError = useCommunityStore((s) => s.lastScanError);
   // (v4.0.0 — P3.1) Necesitamos el set de ICAOs con GSX al nivel del
   // padre para alimentar el GeoJSON con la prop `hasGsx`. El layer del
@@ -75,23 +73,17 @@ export function MapView() {
     [packages],
   );
 
-  // Paquete enfocado para centrar la cámara y resaltar la sidebar.
+  // Paquete enfocado para centrar la cámara, resaltar la sidebar y
+  // mostrar la card contextual flotante (v4.25.0 — sustituye al
+  // modal emergente en esta vista).
   const focusedPkg = useMemo(
     () => allPackages.find((p) => p.folderName === focused) ?? null,
     [allPackages, focused],
   );
-  // Paquete cuyo modal está abierto. Distinto de `focused` porque
-  // el modal se abre vía botón explícito, no por click directo.
-  const detailsPkg = useMemo(
-    () => allPackages.find((p) => p.folderName === detailsFor) ?? null,
-    [allPackages, detailsFor],
-  );
-  const detailsUpdate = useMemo(
+  const focusedUpdate = useMemo(
     () =>
-      detailsFor
-        ? updates.find((u) => u.folderName === detailsFor) ?? null
-        : null,
-    [updates, detailsFor],
+      focused ? updates.find((u) => u.folderName === focused) ?? null : null,
+    [updates, focused],
   );
 
   // Sólo las updates de paquetes que están en el mapa (SCENERY +
@@ -221,14 +213,15 @@ export function MapView() {
         },
       });
 
-      // Click en un punto: enfoca + abre modal de detalle.
+      // Click en un punto: enfoca el aeropuerto. (v4.25.0) Ya NO se
+      // abre el modal — la card contextual flotante con acordeón +
+      // acciones aparece sola al enfocar.
       map.on("click", "package-point", (e) => {
         const feat = e.features?.[0];
         if (!feat) return;
         const props = feat.properties as Record<string, string> | null;
         if (!props || !props.folderName) return;
         setFocused(props.folderName);
-        useCommunityStore.getState().openDetails(props.folderName);
       });
 
       map.on("mouseenter", "package-point", () => {
@@ -297,6 +290,19 @@ export function MapView() {
             </div>
           )}
         </div>
+
+        {/* (v4.25.0) Card contextual del aeropuerto seleccionado —
+            cabecera con preview + acordeón "Ficha técnica" + acciones
+            críticas siempre visibles. Sustituye al modal en esta vista. */}
+        <AnimatePresence>
+          {focusedPkg && (
+            <MapAirportCard
+              pkg={focusedPkg}
+              update={focusedUpdate}
+              onClose={() => setFocused(null)}
+            />
+          )}
+        </AnimatePresence>
       </div>
 
       <Sidebar
@@ -306,16 +312,7 @@ export function MapView() {
         onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}
         focused={focused}
         onFocus={setFocused}
-        onShowDetails={openDetails}
       />
-
-      {detailsPkg && (
-        <PackageDetailModal
-          pkg={detailsPkg}
-          update={detailsUpdate}
-          onClose={() => openDetails(null)}
-        />
-      )}
     </div>
   );
 }
@@ -327,7 +324,6 @@ function Sidebar({
   onUpdateAll,
   focused,
   onFocus,
-  onShowDetails,
 }: {
   packages: CommunityPackage[];
   updatesByFolder: Map<string, AvailableUpdate>;
@@ -335,7 +331,6 @@ function Sidebar({
   onUpdateAll: () => void;
   focused: string | null;
   onFocus: (folder: string) => void;
-  onShowDetails: (folder: string) => void;
 }) {
   const [filter, setFilter] = useState("");
   // (v4.0.0 — P2) Filtro GSX. `"all"` = sin filtro (default), `"gsx"` =
@@ -459,9 +454,10 @@ function Sidebar({
                   isFocused ? "bg-brand-500/15" : "hover:bg-slate-800/50"
                 }`}
               >
-                {/* Click principal: enfocar en el mapa. NO abre modal —
-                    eso permite al usuario apreciar el zoom sin overlay
-                    encima. El modal se abre con el botón "i" a la derecha. */}
+                {/* Click principal: enfocar en el mapa. (v4.25.0) El
+                    enfoque también muestra la card contextual con la
+                    ficha técnica y las acciones — el botón "i" y el
+                    modal desaparecieron de esta vista. */}
                 <button
                   onClick={() => onFocus(p.folderName)}
                   className="flex flex-1 items-start gap-2 text-left"
@@ -526,15 +522,6 @@ function Sidebar({
                       </div>
                     )}
                   </div>
-                </button>
-                {/* Botón secundario: abre el modal de detalles. Visible
-                    al hover, separado para no robar el click principal. */}
-                <button
-                  onClick={() => onShowDetails(p.folderName)}
-                  title={t("map.details_tooltip")}
-                  className="shrink-0 self-center rounded p-1 text-slate-500 opacity-0 transition-opacity hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
-                >
-                  <Info className="h-3.5 w-3.5" />
                 </button>
               </li>
             );
