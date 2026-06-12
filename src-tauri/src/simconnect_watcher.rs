@@ -1690,6 +1690,14 @@ mod windows_simconnect {
         // entró al Hangar y cambió livery).
         let mut aircraft_meta_cache: Option<AircraftMeta> = None;
 
+        // (v4.23.0) Datos para el SMART RESTORE CHECK: al recibir la
+        // PRIMERA muestra de SimConnect comparamos la posición real del
+        // avión contra el último punto guardado del vuelo restaurado.
+        // Si está a >20 nm o el último tick tiene >6 h (PC apagada a
+        // mitad de vuelo, sesión nueva del sim), el vuelo se cierra
+        // como 'partial' (NO completed) y el modal de vuelos
+        // incompletos pregunta al usuario si mantenerlo o eliminarlo.
+        let mut restore_check: Option<(i64, f64, f64, Option<String>)> = None;
         if let Some(open) = restore_result {
             tracing::info!(
                 target: "simconnect",
@@ -1711,6 +1719,12 @@ mod windows_simconnect {
                 }
             }
             engines_seen_running = true;
+            if let (Some(lat), Some(lon)) =
+                (open.last_position_lat, open.last_position_lon)
+            {
+                restore_check =
+                    Some((open.id, lat, lon, open.last_position_at.clone()));
+            }
         } else {
             tracing::debug!(target: "simconnect", "no hay vuelo abierto previo — empezamos limpio");
         }
@@ -2046,8 +2060,22 @@ mod windows_simconnect {
                         let meta = unsafe { *data_ptr };
                         let title = read_cstr(&meta.title);
                         let atc_type = read_cstr(&meta.atc_type);
-                        let airline = read_cstr(&meta.atc_airline);
-                        let registration = read_cstr(&meta.atc_id);
+                        // (v4.23.0) Extracción INTELIGENTE: los creadores de
+                        // liveries rellenan ATC AIRLINE con el dev ("Fly By
+                        // Wire") y ATC ID con basura ("'"), pero el TITLE trae
+                        // la aerolínea y matrícula reales. `livery_meta` valida
+                        // el raw y, si es placeholder, las extrae del TITLE
+                        // (diccionario de ~90 aerolíneas + regex de matrícula).
+                        let raw_airline = read_cstr(&meta.atc_airline);
+                        let raw_reg = read_cstr(&meta.atc_id);
+                        let airline = crate::livery_meta::smart_airline(
+                            raw_airline.as_deref(),
+                            title.as_deref(),
+                        );
+                        let registration = crate::livery_meta::smart_registration(
+                            raw_reg.as_deref(),
+                            title.as_deref(),
+                        );
                         // Derivamos `model` del TITLE — la simvar
                         // `ATC MODEL` no existe en el SDK. Heurística
                         // simple: nos quedamos con la primera fragmento
@@ -2064,13 +2092,16 @@ mod windows_simconnect {
                         // 60+ líneas/min idénticas en el log sin perder
                         // la traza del primer fetch ni de un cambio de
                         // avión mid-session.
+                        // (v4.23.0) Comparamos contra los valores RAW del
+                        // cache (no los sanitizados) para que el throttle del
+                        // log siga funcionando.
                         let changed = match &aircraft_meta_cache {
                             None => true,
                             Some(prev) => {
                                 read_cstr(&prev.title) != title
                                     || read_cstr(&prev.atc_type) != atc_type
-                                    || read_cstr(&prev.atc_airline) != airline
-                                    || read_cstr(&prev.atc_id) != registration
+                                    || read_cstr(&prev.atc_airline) != raw_airline
+                                    || read_cstr(&prev.atc_id) != raw_reg
                             }
                         };
                         if changed {
@@ -2126,6 +2157,84 @@ mod windows_simconnect {
                         continue;
                     }
                     let data = unsafe { *data_ptr };
+
+                    // (v4.23.0) SMART RESTORE CHECK — un solo intento con la
+                    // primera muestra real. Si el avión apareció lejos del
+                    // último punto del vuelo restaurado (>20 nm) o el último
+                    // tick es viejo (>6 h), el vuelo anterior quedó huérfano
+                    // (PC apagada / sim cerrado a mitad de vuelo): se cierra
+                    // como 'partial' y se resetea el estado para empezar
+                    // limpio. Antes ese vuelo se "completaba" falsamente al
+                    // detectar engines-off en el nuevo spawn (bug reportado).
+                    if let Some((rid, rlat, rlon, rts)) = restore_check.take() {
+                        let dist = crate::flight_log::haversine_nm(
+                            rlat, rlon, data.latitude_deg, data.longitude_deg,
+                        );
+                        let stale_by_time = rts
+                            .as_deref()
+                            .and_then(|ts| {
+                                chrono::NaiveDateTime::parse_from_str(
+                                    ts, "%Y-%m-%d %H:%M:%S",
+                                )
+                                .or_else(|_| {
+                                    chrono::NaiveDateTime::parse_from_str(
+                                        ts.trim_end_matches('Z'),
+                                        "%Y-%m-%dT%H:%M:%S",
+                                    )
+                                })
+                                .ok()
+                            })
+                            .map(|dt| {
+                                chrono::Utc::now()
+                                    .signed_duration_since(dt.and_utc())
+                                    .num_seconds()
+                                    > 6 * 60 * 60
+                            })
+                            .unwrap_or(false);
+                        if dist > 20.0 || stale_by_time {
+                            tracing::warn!(
+                                target: "simconnect",
+                                "restore HUÉRFANO: flight {} a {:.1} nm del último punto (stale_time={}) — cerrando como 'partial'",
+                                rid, dist, stale_by_time
+                            );
+                            if let Ok(mut g) = current_flight_id.lock() {
+                                *g = None;
+                            }
+                            phase = if data.on_ground >= 0.5 {
+                                FlightPhase::OnGround
+                            } else {
+                                FlightPhase::Airborne
+                            };
+                            max_alt_ft = 0;
+                            max_gs_kt = 0;
+                            max_tas_kt = 0;
+                            engines_seen_running = false;
+                            let pool_c = pool.clone();
+                            let app_c = app.clone();
+                            std::thread::spawn(move || {
+                                let rt = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .ok();
+                                if let Some(rt) = rt {
+                                    let _ = rt.block_on(
+                                        crate::flight_log::close_flight_as_partial(
+                                            &pool_c, rid,
+                                        ),
+                                    );
+                                    let _ = app_c.emit("flightlog://changed", ());
+                                    let _ = app_c.emit("flightlog://incomplete", ());
+                                }
+                            });
+                        } else {
+                            tracing::info!(
+                                target: "simconnect",
+                                "restore VALIDADO: flight {} a {:.1} nm del último punto — continuamos el vuelo",
+                                rid, dist
+                            );
+                        }
+                    }
+
                     let prev_phase = phase;
                     handle_aircraft_data(
                         data,

@@ -771,10 +771,15 @@ pub async fn close_stale_open_flights(
     pool: &SqlitePool,
     max_idle_seconds: i64,
 ) -> anyhow::Result<u64> {
+    // (v4.23.0) Los vuelos abandonados se cierran como 'partial' (NO
+    // 'completed') con partial_ack=0 — al abrir la app, el modal de
+    // vuelos incompletos pregunta si mantener o eliminar.
     let r = sqlx::query(
         r#"
         UPDATE flight_log
-        SET ended_at = COALESCE(last_position_at, started_at)
+        SET ended_at = COALESCE(last_position_at, started_at),
+            status = 'partial',
+            partial_ack = 0
         WHERE ended_at IS NULL
           AND (
             last_position_at IS NULL
@@ -786,6 +791,76 @@ pub async fn close_stale_open_flights(
     .execute(pool)
     .await?;
     Ok(r.rows_affected())
+}
+
+/// (v4.23.0) Cierra un vuelo restaurado que resultó ser HUÉRFANO (la PC
+/// se apagó / el sim murió a mitad de vuelo y al reconectar el avión
+/// apareció lejos del último punto). Se marca 'partial' + partial_ack=0
+/// para que el modal de vuelos incompletos pregunte mantener/eliminar.
+/// NO toca finish_flight ni la captura de FPM — es un cierre artificial.
+pub async fn close_flight_as_partial(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET ended_at        = COALESCE(last_position_at, datetime('now')),
+            status          = 'partial',
+            partial_ack     = 0,
+            destination_lat = COALESCE(destination_lat, last_position_lat),
+            destination_lon = COALESCE(destination_lon, last_position_lon)
+        WHERE id = ?1
+          AND ended_at IS NULL
+        "#,
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// (v4.23.0) Vuelos 'partial' aún no revisados por el usuario — el
+/// frontend muestra el modal de "vuelo incompleto" para cada uno.
+/// Solo vuelos del sim (los partial de imports VAS no aplican).
+pub async fn list_unacked_partial(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntry>> {
+    let rows = sqlx::query_as::<_, FlightLogEntry>(
+        r#"
+        SELECT id, started_at, ended_at,
+               origin_lat, origin_lon, origin_icao, origin_name,
+               destination_lat, destination_lon, destination_icao, destination_name,
+               aircraft_title, aircraft_atc_type,
+               aircraft_model, aircraft_airline, aircraft_registration,
+               distance_nm, flight_time_s,
+               max_altitude_ft,
+               landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
+               departure_gate, arrival_gate,
+               passengers, cargo_kg, fuel_used_kg, paused_seconds,
+               source,
+               flight_number, callsign, airline_icao, status,
+               score_total, score_max, score_grade,
+               COALESCE(bounced, 0) AS bounced,
+               max_brake_temp_c,
+               metar_origin, metar_dest
+        FROM flight_log
+        WHERE status = 'partial'
+          AND partial_ack = 0
+          AND source = 'simconnect'
+        ORDER BY started_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// (v4.23.0) "Mantener" un vuelo incompleto: pasa a 'completed' (aparece
+/// en el FlightBook con su track parcial) y se marca como revisado.
+pub async fn keep_partial_flight(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE flight_log SET status = 'completed', partial_ack = 1 WHERE id = ?1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// (v2.0.3) Cierre forzado de un vuelo concreto por id. Usado por la
@@ -1053,6 +1128,14 @@ pub async fn insert_track_point_full_at(
 
 /// Lee toda la traza de un vuelo, ordenada cronológicamente. El
 /// frontend la convierte en GeoJSON LineString para pintar.
+///
+/// (v4.23.0) ORDER BY **ts** (no id): el volcado async del buffer
+/// pre-departure corre concurrente con el primer insert realtime del
+/// pushback, así que los ids pueden quedar intercalados (verificado en
+/// el vuelo SBBV id=149: un punto de pushback con id MENOR que el resto
+/// del buffer del gate). Ordenando por id, la polyline saltaba
+/// gate→pushback→gate→pushback = la "doble línea" del pushback que el
+/// usuario reportó tres veces. Por ts el track es cronológico siempre.
 pub async fn list_track_for_flight(
     pool: &SqlitePool,
     flight_id: i64,
@@ -1062,7 +1145,7 @@ pub async fn list_track_for_flight(
         SELECT lat, lon, alt_ft, gs_kt, ts
         FROM flight_log_track
         WHERE flight_id = ?1
-        ORDER BY id ASC
+        ORDER BY ts ASC, id ASC
         "#,
     )
     .bind(flight_id)
@@ -1112,7 +1195,7 @@ pub async fn list_weather_for_flight(
         WHERE flight_id = ?1
           AND (wind_speed_kt IS NOT NULL OR oat_c IS NOT NULL
                OR cloud_cover_pct IS NOT NULL)
-        ORDER BY id ASC
+        ORDER BY ts ASC, id ASC
         "#,
     )
     .bind(flight_id)

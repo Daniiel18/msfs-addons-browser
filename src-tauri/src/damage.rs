@@ -42,7 +42,7 @@ pub async fn analyze(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<Damage
         SELECT g_force, overspeed_warning, oil_press_warning, stall_warning
         FROM flight_log_track
         WHERE flight_id = ?1
-        ORDER BY id ASC
+        ORDER BY ts ASC, id ASC
         "#,
     )
     .bind(flight_id)

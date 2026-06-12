@@ -9,6 +9,7 @@ pub mod drop_install;
 pub mod download;
 pub mod flight_log;
 pub mod flight_report;
+pub mod livery_meta;
 pub mod gsx;
 // (v4.3.0) Lector del gate que GSX muestra en su menú in-sim (archivo en
 // disco). Cubre aeropuertos SIN perfil de GSX, donde el INI no da match y
@@ -175,6 +176,8 @@ pub fn run() {
             commands::weather::get_openweather_key,
             commands::stats::get_dashboard_stats,
             commands::flight_log::list_flight_log,
+            commands::flight_log::list_incomplete_flights,
+            commands::flight_log::keep_partial_flight,
             commands::flight_log::delete_flight_log_entry,
             commands::flight_log::force_close_flight_log_entry,
             commands::flight_log::debug_seed_flight_log,

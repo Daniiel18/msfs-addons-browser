@@ -357,6 +357,11 @@ interface Api {
     metarOrigin: string | null,
     metarDest: string | null,
   ) => Promise<void>;
+  /** (v4.23.0) Vuelos interrumpidos (apagón/cierre abrupto) pendientes
+   *  de revisión — el modal pregunta mantener o eliminar. */
+  listIncompleteFlights: () => Promise<FlightLogEntry[]>;
+  /** (v4.23.0) Mantener un vuelo incompleto: pasa a completed. */
+  keepPartialFlight: (id: number) => Promise<void>;
   /** (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo. */
   analyzeFlightDamage: (flightId: number) => Promise<DamageReport>;
   /** Edita campos manualmente — `null` deja sin tocar la columna.
@@ -576,6 +581,9 @@ const realApi: Api = {
     invoke<WeatherSample[]>("get_flight_weather", { flightId }),
   saveFlightMetar: (flightId, metarOrigin, metarDest) =>
     invoke<void>("save_flight_metar", { flightId, metarOrigin, metarDest }),
+  listIncompleteFlights: () =>
+    invoke<FlightLogEntry[]>("list_incomplete_flights"),
+  keepPartialFlight: (id) => invoke<void>("keep_partial_flight", { id }),
   analyzeFlightDamage: (flightId) =>
     invoke<DamageReport>("analyze_flight_damage", { flightId }),
   updateFlightLogEntry: (id, input) =>
@@ -1346,6 +1354,10 @@ const demoApi: Api = {
     return [];
   },
   async saveFlightMetar() {},
+  async listIncompleteFlights() {
+    return [];
+  },
+  async keepPartialFlight() {},
   async analyzeFlightDamage() {
     return {
       verdict: "no_data" as const,

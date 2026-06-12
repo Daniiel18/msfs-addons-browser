@@ -7,7 +7,7 @@ import { api, isTauri } from "../lib/tauri";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
-import { DropSelectModal } from "./DropSelectModal";
+import { DropSelectModal, DeleteConfirm } from "./DropSelectModal";
 import { t } from "../lib/i18n";
 
 /**
@@ -33,6 +33,16 @@ export function DragDropOverlay() {
     DropInspection[] | null
   >(null);
   const [results, setResults] = useState<DropFlowResult[]>([]);
+  // (v4.23.0) Confirmación de borrado del archivo origen para el
+  // FAST-PATH (archivos de 1 solo item, p.ej. liveries): antes ese
+  // camino instalaba directo y nunca preguntaba si borrar el archivo —
+  // el modal solo salía con GSX/escenarios multi-item (bug reportado).
+  const [fastDelete, setFastDelete] = useState<{
+    archives: string[];
+    inspections: DropInspection[];
+    reports: DropCommitReport[];
+  } | null>(null);
+  const [fastDeleting, setFastDeleting] = useState(false);
 
   const refreshInstalled = useDownloadsStore((s) => s.refreshInstalled);
   const rescanCommunity = useCommunityStore((s) => s.rescan);
@@ -122,6 +132,7 @@ export function DragDropOverlay() {
       validInspections.every((i) => i.items.length === 1);
     if (allSingle) {
       const reports: DropCommitReport[] = [];
+      const committed: string[] = [];
       for (const insp of validInspections) {
         try {
           const r = await api.dropCommit(
@@ -130,6 +141,12 @@ export function DragDropOverlay() {
             null,
           );
           reports.push(r);
+          // (v4.23.0) Igual que el modal: si se instaló algo desde este
+          // archivo, ofrecemos borrarlo — TODO lo que entre por drag &
+          // drop pregunta, no solo GSX/escenarios.
+          if (r.installedGsx.length > 0 || r.installedPackages.length > 0) {
+            committed.push(insp.archivePath);
+          }
         } catch (e) {
           reports.push({
             installedGsx: [],
@@ -137,6 +154,15 @@ export function DragDropOverlay() {
             errors: [String(e)],
           });
         }
+      }
+      const uniqueArchives = Array.from(new Set(committed));
+      if (uniqueArchives.length > 0) {
+        setFastDelete({
+          archives: uniqueArchives,
+          inspections: validInspections,
+          reports,
+        });
+        return;
       }
       onDoneBatch(validInspections, reports);
       return;
@@ -217,6 +243,31 @@ export function DragDropOverlay() {
           onClose={onModalClose}
           onDone={(reports) => onDoneBatch(activeInspections, reports)}
         />
+      )}
+
+      {/* (v4.23.0) Confirmación de borrado del archivo origen para el
+          fast-path (liveries y cualquier drop de 1 item). */}
+      {fastDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950 shadow-2xl ring-1 ring-slate-800/70">
+            <DeleteConfirm
+              archives={fastDelete.archives}
+              deleting={fastDeleting}
+              onResolve={async (doDelete) => {
+                if (doDelete) {
+                  setFastDeleting(true);
+                  for (const p of fastDelete.archives) {
+                    await api.deleteDroppedArchive(p).catch(() => {});
+                  }
+                  setFastDeleting(false);
+                }
+                const fd = fastDelete;
+                setFastDelete(null);
+                void onDoneBatch(fd.inspections, fd.reports);
+              }}
+            />
+          </div>
+        </div>
       )}
 
       {results.length > 0 && (

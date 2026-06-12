@@ -444,8 +444,11 @@ function InstalledSuccess({ reports }: { reports: DropCommitReport[] }) {
   );
 }
 
-/** (v4.7.0) Paso de confirmación: ¿borrar el/los archivo(s) original(es)? */
-function DeleteConfirm({
+/** (v4.7.0) Paso de confirmación: ¿borrar el/los archivo(s) original(es)?
+ *  (v4.23.0) Exportado: el fast-path de DragDropOverlay (archivos de 1
+ *  solo item, p.ej. liveries) lo reutiliza — antes ese camino instalaba
+ *  directo y NUNCA ofrecía borrar el archivo (bug reportado). */
+export function DeleteConfirm({
   archives,
   deleting,
   onResolve,

@@ -23,6 +23,34 @@ pub async fn list_flight_log(
         .map_err(|e| e.to_string())
 }
 
+/// (v4.23.0) Vuelos INTERRUMPIDOS (status='partial', sin revisar) — el
+/// frontend muestra un modal por cada uno al abrir la app preguntando
+/// si mantenerlo o eliminarlo.
+#[tauri::command]
+pub async fn list_incomplete_flights(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FlightLogEntry>, String> {
+    flight_log::list_unacked_partial(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v4.23.0) "Mantener" un vuelo incompleto: pasa a completed (visible
+/// en el FlightBook con su track parcial) y no vuelve a preguntar.
+#[tauri::command]
+pub async fn keep_partial_flight(
+    id: i64,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    flight_log::keep_partial_flight(&state.db, id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("flightlog://changed", ());
+    Ok(())
+}
+
 /// Devuelve la polyline real (lista de track points cada ~10s)
 /// para el vuelo indicado. La UI lo invoca al clicar un vuelo en
 /// la lista de FlightBook para mostrar la ruta real en el mapa

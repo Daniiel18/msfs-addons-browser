@@ -34,6 +34,7 @@ import { UpdateWizard } from "./components/UpdateWizard";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
+import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsModal } from "./components/SettingsModal";
@@ -765,6 +766,7 @@ export default function App() {
       <UpdateWizard />
       <Toaster />
       <SimBriefConfirmModal />
+      <IncompleteFlightModal />
       <ReplayBanner />
     </div>
   );
