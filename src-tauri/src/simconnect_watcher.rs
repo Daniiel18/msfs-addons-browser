@@ -1719,6 +1719,20 @@ mod windows_simconnect {
                 }
             }
             engines_seen_running = true;
+            // (v4.30.0) Seedear origin_icao en el status compartido al
+            // recuperar el vuelo. Sin esto, el FlyingNowBadge se
+            // ocultaba (guard `if live && !currentAirportIcao &&
+            // !originIcao → null`) porque en crucero currentAirportIcao
+            // es None y el restore no reconstruía el origen — el badge,
+            // el panel de destino y la ruta en vivo desaparecían tras
+            // actualizar/reiniciar a mitad de vuelo. Con el origen
+            // presente, además el match del OFP de SimBrief resuelve el
+            // destino, así que todo el contexto del vuelo reaparece.
+            if let Some(ref oicao) = open.origin_icao {
+                if let Ok(mut g) = state.try_lock() {
+                    g.status.origin_icao = Some(oicao.clone());
+                }
+            }
             if let (Some(lat), Some(lon)) =
                 (open.last_position_lat, open.last_position_lon)
             {
