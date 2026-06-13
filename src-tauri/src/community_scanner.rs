@@ -46,6 +46,15 @@ pub struct ScannedPackage {
     /// renombra a `layout.json.disabled` para apagarlos sin mover la
     /// carpeta. El scanner refleja ese estado acá.
     pub enabled: bool,
+    /// (v4.26.0) Nombres de las carpetas bajo `SimObjects/Airplanes`
+    /// (y Rotorcraft) del paquete. Un aircraft base "posee" su
+    /// contenedor (p.ej. `FNX_320`); las liveries lo referencian.
+    pub simobject_dirs: Vec<String>,
+    /// (v4.26.0) Valores de `base_container` extraídos de los
+    /// aircraft.cfg del paquete (último componente del path, p.ej.
+    /// `FNX_320`). Es la referencia REAL livery → aircraft base que
+    /// usa MSFS — mucho más fiable que adivinar por folder name.
+    pub base_containers: Vec<String>,
 }
 
 /// Estructura literal del `manifest.json` de MSFS. Sólo
@@ -120,9 +129,20 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
         let enabled = path.join("layout.json").is_file()
             || !path.join("layout.json.disabled").is_file();
 
+        // (v4.26.0) Contenedores SimObjects propios + base_container
+        // referenciados — alimentan el auto-link del Link Map.
+        let (simobject_dirs, base_containers) = scan_simobjects(&path);
+
         match parse_manifest(&manifest_path) {
             Ok(raw) => {
-                packages.push(materialize(&path, &folder_name, raw, enabled));
+                packages.push(materialize(
+                    &path,
+                    &folder_name,
+                    raw,
+                    enabled,
+                    simobject_dirs,
+                    base_containers,
+                ));
             }
             Err(e) => {
                 tracing::debug!(
@@ -135,7 +155,13 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                 // permite que el usuario lo vea en el mapa con un
                 // título plausible y nuestra heurística de ICAO.
                 skipped_invalid_manifest += 1;
-                packages.push(materialize_fallback(&path, &folder_name, enabled));
+                packages.push(materialize_fallback(
+                    &path,
+                    &folder_name,
+                    enabled,
+                    simobject_dirs,
+                    base_containers,
+                ));
             }
         }
     }
@@ -146,6 +172,57 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
         skipped_invalid_manifest,
         community_path: community_path.to_string_lossy().into_owned(),
     })
+}
+
+/// (v4.26.0) Inspecciona `SimObjects/{Airplanes,Rotorcraft}` del
+/// paquete: nombres de contenedores propios + los `base_container`
+/// que referencian sus aircraft.cfg. Barato: lista 1-2 dirs y lee
+/// los primeros KB de cada aircraft.cfg.
+fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>) {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut bases: Vec<String> = Vec::new();
+    for kind in ["Airplanes", "Rotorcraft"] {
+        let so = root.join("SimObjects").join(kind);
+        let Ok(entries) = std::fs::read_dir(&so) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                dirs.push(name.to_string());
+            }
+            let cfg = path.join("aircraft.cfg");
+            if let Ok(raw) = std::fs::read_to_string(&cfg) {
+                // `base_container = "..\Asobo_A320_NEO"` (o con más ..\).
+                // Tomamos el último componente del path entre comillas.
+                for line in raw.lines().take(200) {
+                    let lower = line.trim_start();
+                    if !lower.to_ascii_lowercase().starts_with("base_container") {
+                        continue;
+                    }
+                    if let Some(value) = line.split('=').nth(1) {
+                        let value = value.trim().trim_matches('"');
+                        let last = value
+                            .rsplit(['\\', '/'])
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !last.is_empty() && !last.starts_with('.') {
+                            bases.push(last);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    bases.sort();
+    bases.dedup();
+    (dirs, bases)
 }
 
 fn parse_manifest(path: &Path) -> anyhow::Result<RawManifest> {
@@ -162,6 +239,8 @@ fn materialize(
     folder_name: &str,
     raw: RawManifest,
     enabled: bool,
+    simobject_dirs: Vec<String>,
+    base_containers: Vec<String>,
 ) -> ScannedPackage {
     let title = raw
         .title
@@ -233,10 +312,18 @@ fn materialize(
         dependencies_count: raw.dependencies.len(),
         dependency_names,
         enabled,
+        simobject_dirs,
+        base_containers,
     }
 }
 
-fn materialize_fallback(path: &Path, folder_name: &str, enabled: bool) -> ScannedPackage {
+fn materialize_fallback(
+    path: &Path,
+    folder_name: &str,
+    enabled: bool,
+    simobject_dirs: Vec<String>,
+    base_containers: Vec<String>,
+) -> ScannedPackage {
     let (size_bytes, folder_modified_at) = folder_metadata(path);
     let title = pretty_folder_name(folder_name);
     // Sin manifest válido no podemos saber si es SCENERY. Conservador:
@@ -256,6 +343,8 @@ fn materialize_fallback(path: &Path, folder_name: &str, enabled: bool) -> Scanne
         dependencies_count: 0,
         dependency_names: Vec::new(),
         enabled,
+        simobject_dirs,
+        base_containers,
     }
 }
 
@@ -517,22 +606,76 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     .execute(&mut *tx)
     .await?;
     {
-        // Lookup case-insensitive: el manifest puede declarar el name
-        // con casing distinto al folder real en disco.
+        // (v4.26.0) Auto-link v2 — tres niveles de evidencia, en orden
+        // de fiabilidad. Solo entre ADDONS (no SCENERY): el Link Map
+        // es de aviones/liveries/sonidos, y los aeropuertos comparten
+        // prefijos de vendor que generarían falsos enlaces.
+        //   1. manifest.dependencies[].name == folder instalado.
+        //   2. base_container del aircraft.cfg de la livery apunta al
+        //      contenedor SimObjects de OTRO paquete (la referencia
+        //      REAL que usa MSFS — cubre liveries cuyo folder no se
+        //      parece en nada al avión, p.ej. "Etihad A6-API").
+        //   3. Prefijo de folder: `fnx-aircraft-320-DLHDAIQSAL-CFM`
+        //      empieza con `fnx-aircraft-320` (≥6 chars, el más largo
+        //      gana).
+        let is_addon =
+            |p: &ScannedPackage| !matches_scenery(&p.content_type);
         let by_lower: std::collections::HashMap<String, &str> = report
             .packages
             .iter()
+            .filter(|p| is_addon(p))
             .map(|p| (p.folder_name.to_lowercase(), p.folder_name.as_str()))
             .collect();
-        for pkg in &report.packages {
+        // Dueño de cada contenedor SimObjects (en minúsculas).
+        let mut owner_of_container: std::collections::HashMap<String, &str> =
+            std::collections::HashMap::new();
+        for p in report.packages.iter().filter(|p| is_addon(p)) {
+            for d in &p.simobject_dirs {
+                owner_of_container
+                    .entry(d.to_lowercase())
+                    .or_insert(p.folder_name.as_str());
+            }
+        }
+        let mut seeded = 0usize;
+        for pkg in report.packages.iter().filter(|p| is_addon(p)) {
+            let mut sources: Vec<&str> = Vec::new();
+            // Nivel 1 — dependencias del manifest.
             for dep in &pkg.dependency_names {
-                let Some(source) = by_lower.get(&dep.to_lowercase()) else {
-                    continue; // dependencia no instalada — nada que enlazar
-                };
-                if source.eq_ignore_ascii_case(&pkg.folder_name) {
-                    continue; // self-loop defensivo
+                if let Some(s) = by_lower.get(&dep.to_lowercase()) {
+                    sources.push(s);
                 }
-                sqlx::query(
+            }
+            // Nivel 2 — base_container del aircraft.cfg.
+            for bc in &pkg.base_containers {
+                if let Some(s) = owner_of_container.get(&bc.to_lowercase()) {
+                    sources.push(s);
+                }
+            }
+            // Nivel 3 — prefijo de folder (solo si 1 y 2 no dieron nada).
+            if sources
+                .iter()
+                .all(|s| s.eq_ignore_ascii_case(&pkg.folder_name))
+            {
+                let pkg_lower = pkg.folder_name.to_lowercase();
+                let mut best: Option<&str> = None;
+                for (cand_lower, cand) in &by_lower {
+                    if cand_lower.len() >= 6
+                        && *cand_lower != pkg_lower
+                        && pkg_lower.starts_with(cand_lower.as_str())
+                        && best.map_or(true, |b| cand.len() > b.len())
+                    {
+                        best = Some(cand);
+                    }
+                }
+                if let Some(b) = best {
+                    sources.push(b);
+                }
+            }
+            for source in sources {
+                if source.eq_ignore_ascii_case(&pkg.folder_name) {
+                    continue; // self-loop (el avión referencia su propio contenedor)
+                }
+                let r = sqlx::query(
                     r#"
                     INSERT OR IGNORE INTO addon_links
                         (source_folder, target_folder, origin)
@@ -543,7 +686,11 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 .bind(&pkg.folder_name)
                 .execute(&mut *tx)
                 .await?;
+                seeded += r.rows_affected() as usize;
             }
+        }
+        if seeded > 0 {
+            tracing::info!(target: "scan", "auto-link: {} enlaces nuevos sembrados", seeded);
         }
     }
 
@@ -618,7 +765,12 @@ pub fn is_library_pack(title: &str, folder_name: &str) -> bool {
               night\s*-?\s*lights? | nightlights? | lights?\s*pack |
               enhancements? | enhanced |
               excludes? | excluder | merge | aerials? | ortho | mesh | photogrammetry |
-              city\s*pack | citypack | static\s*aircraft
+              city\s*pack | citypack | static\s*aircraft |
+              # v4.26.0 - GSX y sus packs de reemplazo NO son aeropuertos.
+              # El rescue de prefijos validaba FSDR -fsdreamteam- contra
+              # Desroches Airport y GSX Pro aparecia en el mapa; los
+              # z-fsdreamteam-gsx-x de HAECO/CASL/catering igual.
+              fsdreamteam-gsx | gsx[\s-]*pro | gsx\s*world
             )\b",
         )
         .unwrap()

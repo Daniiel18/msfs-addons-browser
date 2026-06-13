@@ -4,6 +4,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { AnimatePresence } from "framer-motion";
 import {
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
   MapPin,
   Search,
   Sparkles,
@@ -12,9 +14,23 @@ import type { AvailableUpdate, CommunityPackage } from "../lib/types";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useSettingsStore } from "../stores/useSettingsStore";
 import { api } from "../lib/tauri";
 import { MapAirportCard } from "./MapAirportCard";
 import { t } from "../lib/i18n";
+
+// (v4.26.0) Colapso persistente del listado de aeropuertos — mismo
+// patrón que el sidebar del FlightBook: la vista se desmonta al
+// cambiar de pestaña, así que el estado vive en localStorage.
+const SIDEBAR_COLLAPSED_KEY = "simfleet.map.sidebarCollapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Vista de mapa mundial con sidebar lateral.
@@ -45,6 +61,23 @@ export function MapView() {
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const lastScanError = useCommunityStore((s) => s.lastScanError);
+  // (v4.26.0) Tema de la app — el basemap lo sigue (oscuro/claro).
+  const theme = useSettingsStore((s) => s.settings.theme);
+  // (v4.26.0) Colapso del listado, persistido en localStorage.
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(readSidebarCollapsed);
+  const setSidebarCollapsed = (v: boolean) => {
+    setSidebarCollapsedState(v);
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, v ? "1" : "0");
+    } catch {
+      // localStorage lleno/deshabilitado — el estado en memoria sigue ok.
+    }
+  };
+  // (v4.26.0) Tras un map.setStyle() hay que re-añadir el source y el
+  // layer de markers (setStyle los borra). Este contador fuerza el
+  // re-run del efecto del geojson cuando el estilo nuevo carga.
+  const [styleEpoch, setStyleEpoch] = useState(0);
+  const handlersBoundRef = useRef(false);
   // (v4.0.0 — P3.1) Necesitamos el set de ICAOs con GSX al nivel del
   // padre para alimentar el GeoJSON con la prop `hasGsx`. El layer del
   // mapa luego pinta rojo los puntos sin GSX (mismo patrón que el
@@ -106,7 +139,9 @@ export function MapView() {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: OSM_STYLE,
+      // El estilo inicial respeta el tema vigente al montar; los
+      // cambios posteriores los maneja el efecto de tema (setStyle).
+      style: styleFor(useSettingsStore.getState().settings.theme),
       center: [0, 20],
       zoom: 1,
       minZoom: 1,
@@ -147,6 +182,21 @@ export function MapView() {
       mapRef.current = null;
     };
   }, []);
+
+  // (v4.26.0) El basemap sigue al tema de la app: CARTO dark_all en
+  // modo oscuro, OSM estándar en claro. setStyle borra sources/layers
+  // custom — cuando el estilo nuevo termina de cargar bumpeamos
+  // styleEpoch para que el efecto del geojson re-añada los markers.
+  const themeAppliedRef = useRef(theme);
+  useEffect(() => {
+    const map = mapRef.current;
+    // El mount ya creó el mapa con el estilo del tema actual — solo
+    // reaccionamos a CAMBIOS posteriores.
+    if (!map || themeAppliedRef.current === theme) return;
+    themeAppliedRef.current = theme;
+    map.setStyle(styleFor(theme));
+    map.once("styledata", () => setStyleEpoch((e) => e + 1));
+  }, [theme]);
 
   const geojson = useMemo(
     () => buildGeoJSON(geolocated, updatesByFolder, gsxInstalledIcaos),
@@ -213,31 +263,41 @@ export function MapView() {
         },
       });
 
-      // Click en un punto: enfoca el aeropuerto. (v4.25.0) Ya NO se
-      // abre el modal — la card contextual flotante con acordeón +
-      // acciones aparece sola al enfocar.
-      map.on("click", "package-point", (e) => {
-        const feat = e.features?.[0];
-        if (!feat) return;
-        const props = feat.properties as Record<string, string> | null;
-        if (!props || !props.folderName) return;
-        setFocused(props.folderName);
-      });
+      // (v4.26.0) Los handlers se registran UNA sola vez — tras un
+      // setStyle (cambio de tema) el layer se re-añade con el mismo
+      // id y los handlers existentes siguen funcionando; sin este
+      // guard se duplicarían en cada cambio de tema.
+      if (!handlersBoundRef.current) {
+        handlersBoundRef.current = true;
+        // Click en un punto: enfoca el aeropuerto. (v4.25.0) Ya NO se
+        // abre el modal — la card contextual flotante con acordeón +
+        // acciones aparece sola al enfocar.
+        map.on("click", "package-point", (e) => {
+          const feat = e.features?.[0];
+          if (!feat) return;
+          const props = feat.properties as Record<string, string> | null;
+          if (!props || !props.folderName) return;
+          setFocused(props.folderName);
+        });
 
-      map.on("mouseenter", "package-point", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", "package-point", () => {
-        map.getCanvas().style.cursor = "";
-      });
+        map.on("mouseenter", "package-point", () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", "package-point", () => {
+          map.getCanvas().style.cursor = "";
+        });
+      }
 
       // Primera vez con layers — encuadrar a los datos.
       fitToData();
     };
 
+    // (v4.26.0) `styledata` en vez de `load`: `load` dispara una sola
+    // vez en la vida del mapa, pero tras un setStyle (tema) hay que
+    // esperar a que el estilo NUEVO cargue para re-añadir el source.
     if (map.isStyleLoaded()) apply();
-    else map.once("load", apply);
-  }, [geojson, setFocused]);
+    else map.once("styledata", apply);
+  }, [geojson, setFocused, styleEpoch]);
 
   // Cuando cambia el paquete enfocado (por click en sidebar o
   // marker), centramos la cámara. El modal se renderiza aparte.
@@ -256,11 +316,40 @@ export function MapView() {
   // rutas tengan su propio mapa elegante en FlightBook.
 
   return (
-    // Layout responsive: en pantallas grandes la sidebar crece a 380px
-    // y el mapa ocupa el resto (era fijo 320px antes, se quedaba
-    // chico). Mantenemos h-screen-minus-chrome para que el mapa
-    // siempre llene visiblemente.
-    <div className="grid h-[calc(100vh-12rem)] min-h-[520px] grid-cols-[1fr_360px] gap-4 xl:grid-cols-[1fr_400px]">
+    // (v4.26.0) Layout: HANDLE de colapso pegado al borde izquierdo
+    // de la app + listado de aeropuertos a la IZQUIERDA + mapa a la
+    // derecha (antes el listado iba a la derecha). El handle es una
+    // columna fina full-height — mismo patrón que el FlightBook.
+    <div
+      className={`grid h-[calc(100vh-12rem)] min-h-[520px] gap-3 ${
+        sidebarCollapsed
+          ? "grid-cols-[18px_1fr]"
+          : "grid-cols-[18px_360px_1fr] xl:grid-cols-[18px_400px_1fr]"
+      }`}
+    >
+      <button
+        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+        title={sidebarCollapsed ? t("map.sidebar.expand") : t("map.sidebar.collapse")}
+        className="flex items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500 hover:bg-slate-800/60 hover:text-slate-200"
+      >
+        {sidebarCollapsed ? (
+          <ChevronRight className="h-4 w-4" />
+        ) : (
+          <ChevronLeft className="h-4 w-4" />
+        )}
+      </button>
+
+      {!sidebarCollapsed && (
+        <Sidebar
+          packages={packages}
+          updatesByFolder={updatesByFolder}
+          updatesCount={updatesByFolder.size}
+          onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}
+          focused={focused}
+          onFocus={setFocused}
+        />
+      )}
+
       <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
         <div ref={containerRef} className="absolute inset-0" />
 
@@ -304,15 +393,6 @@ export function MapView() {
           )}
         </AnimatePresence>
       </div>
-
-      <Sidebar
-        packages={packages}
-        updatesByFolder={updatesByFolder}
-        updatesCount={updatesByFolder.size}
-        onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}
-        focused={focused}
-        onFocus={setFocused}
-      />
     </div>
   );
 }
@@ -622,6 +702,34 @@ function GsxFilterChip({
     </button>
   );
 }
+
+/** (v4.26.0) Basemap según el tema de la app: CARTO dark_all (mismo
+ *  proveedor de labels que usa el FlightBook) cuando la app está en
+ *  oscuro, OSM estándar en claro. */
+function styleFor(theme: string): maplibregl.StyleSpecification {
+  return theme === "light" ? OSM_STYLE : CARTO_DARK_STYLE;
+}
+
+const CARTO_DARK_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    carto: {
+      type: "raster",
+      tiles: [
+        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      maxzoom: 19,
+    },
+  },
+  layers: [{ id: "carto", type: "raster", source: "carto" }],
+  glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+};
 
 const OSM_STYLE: maplibregl.StyleSpecification = {
   version: 8,

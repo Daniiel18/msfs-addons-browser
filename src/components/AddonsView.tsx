@@ -30,7 +30,9 @@ import {
   type DerivedType,
 } from "../lib/packageType";
 import { useThumbnail } from "../lib/thumbnails";
+import { disambiguateTitles } from "../lib/displayTitle";
 import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
+import { AddonFallbackArt } from "./AddonArt";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 
@@ -92,10 +94,20 @@ export function AddonsView() {
 
   // Excluimos escenarios — son del MapView. Lo que queda son
   // AIRCRAFT, LIVERY (derivado), INSTRUMENT, MISC, UNKNOWN.
-  const addons = useMemo(
-    () => allPackages.filter(isAddon).map((p) => ({ p, t: derivedType(p) })),
-    [allPackages],
-  );
+  // (v4.26.0) Los títulos duplicados (manifest genérico: dos
+  // "737-800", varias "Liveries") se desambiguan con un sufijo
+  // derivado del folder — el mismo displayTitle se usa en el grid y
+  // en el Link Map.
+  const addons = useMemo(() => {
+    const base = allPackages.filter(isAddon);
+    const display = disambiguateTitles(base);
+    return base.map((p) => ({
+      p: display.has(p.folderName)
+        ? { ...p, title: display.get(p.folderName)! }
+        : p,
+      t: derivedType(p),
+    }));
+  }, [allPackages]);
 
   const counts = useMemo(() => {
     const m = new Map<DerivedType, number>();
@@ -890,8 +902,10 @@ function PackageCard({
               }}
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-slate-700">
-              {typeIcon(derived, "h-8 w-8")}
+            // (v4.26.0) Sin thumbnail → arte tipado (gradiente +
+            // iniciales + marca de agua) en vez del fondo vacío.
+            <div className={`h-full w-full ${enabled ? "" : "opacity-40 grayscale"}`}>
+              <AddonFallbackArt derived={derived} title={pkg.title} />
             </div>
           )}
           {/* Badges superpuestos sobre la imagen — tipo y update. */}

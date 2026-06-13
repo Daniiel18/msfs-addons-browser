@@ -366,21 +366,26 @@ export function FlightBookView() {
       <div
         className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${
           sidebarCollapsed
-            ? "lg:grid-cols-[26px_minmax(0,1fr)]"
-            : "lg:grid-cols-[300px_minmax(0,1fr)]"
+            ? "lg:grid-cols-[18px_minmax(0,1fr)]"
+            : "lg:grid-cols-[18px_300px_minmax(0,1fr)]"
         }`}
       >
-        {/* (v4.18.0) Franja de reapertura cuando el sidebar está oculto —
-            el mapa toma todo el espacio. */}
-        {sidebarCollapsed ? (
-          <button
-            onClick={() => setSidebarCollapsed(false)}
-            title={t("fb.sidebar.expand")}
-            className="hidden items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500 hover:bg-slate-800/60 hover:text-slate-200 lg:flex"
-          >
+        {/* (v4.26.0) HANDLE de colapso pegado al borde izquierdo de la
+            app — columna fina full-height SIEMPRE visible, mismo
+            patrón que el Map (scenery). Reemplaza al chevron que vivía
+            dentro de la barra del filtro + la franja de reapertura. */}
+        <button
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          title={sidebarCollapsed ? t("fb.sidebar.expand") : t("fb.sidebar.collapse")}
+          className="hidden items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500 hover:bg-slate-800/60 hover:text-slate-200 lg:flex"
+        >
+          {sidebarCollapsed ? (
             <ChevronRight className="h-4 w-4" />
-          </button>
-        ) : (
+          ) : (
+            <ChevronLeft className="h-4 w-4" />
+          )}
+        </button>
+        {!sidebarCollapsed && (
         /* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */
         <aside className="flex min-h-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/40">
           <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-2xl border-b border-slate-800 bg-slate-900/80 px-3 py-2 backdrop-blur">
@@ -394,13 +399,6 @@ export function FlightBookView() {
             <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400">
               {filteredCompleted.length}
             </span>
-            <button
-              onClick={() => setSidebarCollapsed(true)}
-              title={t("fb.sidebar.collapse")}
-              className="shrink-0 rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
             {completed.length === 0 ? (

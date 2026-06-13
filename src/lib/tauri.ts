@@ -311,6 +311,9 @@ interface Api {
   listAddonNodePositions: () => Promise<AddonNodePosition[]>;
   /** (v4.25.0) Guarda posiciones tras un drag (upsert masivo). */
   saveAddonNodePositions: (positions: AddonNodePosition[]) => Promise<void>;
+  /** (v4.26.0) El backend bajó imágenes nuevas de Wikipedia para
+   *  aeropuertos sin thumbnail — el frontend debe invalidar su cache. */
+  onThumbsUpdated: (cb: (count: number) => void) => Promise<UnlistenFn>;
 
   /** Scrape el changelog desde la página de detalle del addon. */
   fetchChangelog: (pageUrl: string) => Promise<Changelog>;
@@ -596,6 +599,8 @@ const realApi: Api = {
     invoke<AddonNodePosition[]>("list_addon_node_positions"),
   saveAddonNodePositions: (positions) =>
     invoke<void>("save_addon_node_positions", { positions }),
+  onThumbsUpdated: (cb) =>
+    listen<number>("thumbs://updated", (e) => cb(e.payload)),
   fetchChangelog: (pageUrl) =>
     invoke<Changelog>("fetch_changelog", { pageUrl }),
 
@@ -1301,6 +1306,9 @@ const demoApi: Api = {
     return [];
   },
   async saveAddonNodePositions() {},
+  async onThumbsUpdated() {
+    return () => {};
+  },
   async getSimbriefPilotId() {
     return null;
   },

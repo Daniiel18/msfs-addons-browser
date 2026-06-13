@@ -15,6 +15,7 @@ use crate::{cmd_log, AppState};
 pub async fn scan_community(
     community_path: Option<String>,
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<ScanReport, String> {
     cmd_log!("scan_community", "path={:?}", community_path);
     let _t = CmdTimer::start("scan_community");
@@ -44,6 +45,27 @@ pub async fn scan_community(
             tracing::error!(target: "scan", "scan_community: sync_to_db error: {e:#}");
             e.to_string()
         })?;
+
+    // (v4.26.0) Best-effort en background: bajar de Wikipedia las
+    // imágenes de aeropuertos sin thumbnail (o con el placeholder del
+    // SDK) y guardarlas en el paquete. No bloquea el scan; al
+    // terminar emite thumbs://updated y el frontend refresca.
+    {
+        let pool = state.db.clone();
+        let http = state.http.clone();
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            match crate::airport_thumbs::fetch_missing(&pool, &http, &app2).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(target: "scan", "thumbs: {} imágenes bajadas de Wikipedia", n);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(target: "scan", "thumbs: fetch_missing falló: {e:#}");
+                }
+            }
+        });
+    }
     Ok(report)
 }
 
@@ -386,14 +408,26 @@ fn encode_image_as_data_url(path: &std::path::Path) -> anyhow::Result<String> {
     Ok(format!("data:{mime};base64,{b64}"))
 }
 
-/// Dos pasadas:
+/// Tres pasadas:
+///   0. (v4.26.0) `simfleet-thumbnail.{jpg,png}` en la raíz — la
+///      imagen que NOSOTROS bajamos de Wikipedia (airport_thumbs).
+///      Gana siempre: es la cura para los packs con arte
+///      "PLACEHOLDER" del SDK.
 ///   1. Imágenes con keyword conocida (thumbnail/preview/icon/...).
 ///   2. Cualquier `.jpg`/`.png`/`.webp` >= 8 KB (skip iconos
 ///      diminutos que se ven feos como banner).
 ///
 /// Cubre el caso de Aerosoft, Drzewiecki, FSDreamTeam — distribuyen
 /// previews con nombres arbitrarios que el filtro estricto rechazaba.
-fn find_thumbnail(dir: &std::path::Path, _depth: usize) -> Option<String> {
+/// `pub(crate)` porque airport_thumbs lo usa para decidir si un
+/// paquete necesita imagen.
+pub(crate) fn find_thumbnail(dir: &std::path::Path, _depth: usize) -> Option<String> {
+    for ext in ["jpg", "jpeg", "png", "webp"] {
+        let custom = dir.join(format!("simfleet-thumbnail.{ext}"));
+        if custom.is_file() {
+            return Some(custom.to_string_lossy().into_owned());
+        }
+    }
     if let Some(p) = find_image_named(dir, 0) {
         return Some(p);
     }
@@ -406,6 +440,12 @@ fn is_image_ext(ext: &str) -> bool {
 
 fn looks_like_thumbnail(name: &str) -> bool {
     let lower = name.to_lowercase();
+    // (v4.26.0) Los archivos llamados *placeholder* son el arte gris
+    // del SDK — mostrarlos es peor que no mostrar nada (el card cae
+    // al arte tipado del frontend o a la foto de Wikipedia).
+    if lower.contains("placeholder") {
+        return false;
+    }
     [
         "thumbnail",
         "preview",
@@ -471,7 +511,14 @@ fn find_any_image(dir: &std::path::Path, depth: usize) -> Option<String> {
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_ascii_lowercase())
                 .unwrap_or_default();
-            if is_image_ext(&ext) {
+            // (v4.26.0) Mismo veto que en looks_like_thumbnail: el
+            // arte *placeholder* del SDK no cuenta como imagen.
+            let is_placeholder = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.to_lowercase().contains("placeholder"))
+                .unwrap_or(false);
+            if is_image_ext(&ext) && !is_placeholder {
                 if let Ok(meta) = std::fs::metadata(&path) {
                     if meta.len() >= 8 * 1024 {
                         return Some(path.to_string_lossy().into_owned());

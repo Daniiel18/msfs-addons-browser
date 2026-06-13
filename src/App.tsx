@@ -110,6 +110,15 @@ export default function App() {
           });
         });
         unsubs.push(u1, u2);
+        // (v4.26.0) El backend baja imágenes de Wikipedia para
+        // aeropuertos sin thumbnail tras cada scan — al terminar
+        // invalidamos el cache para que cards/popovers refresquen
+        // sin reiniciar la app.
+        const { clearThumbnailCache } = await import("./lib/thumbnails");
+        const u3 = await api.onThumbsUpdated(() => {
+          if (!cancelled) clearThumbnailCache();
+        });
+        unsubs.push(u3);
       } catch (e) {
         console.warn("score event subscribe failed:", e);
       }

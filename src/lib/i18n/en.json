@@ -694,7 +694,9 @@
   "linkmap.modal.origin_auto": "auto",
   "linkmap.modal.origin_manual": "manual",
   "linkmap.modal.delete": "Remove link",
-  "map.card.tech_info": "Technical info",
+  "map.card.tech_info": "Info",
+  "map.sidebar.collapse": "Hide airport list",
+  "map.sidebar.expand": "Show airport list",
 
   "dashboard.title": "Dashboard",
   "dashboard.title.community": "Community dashboard",

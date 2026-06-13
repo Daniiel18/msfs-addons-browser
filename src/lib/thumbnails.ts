@@ -11,12 +11,32 @@ import { api } from "./tauri";
  */
 const thumbnailCache = new Map<string, string | null>();
 
+// (v4.26.0) Invalidación en vivo: cuando el backend baja imágenes
+// nuevas de Wikipedia (evento thumbs://updated), limpiamos el cache y
+// avisamos a todos los hooks montados para que re-pidan su thumbnail.
+let generation = 0;
+const listeners = new Set<() => void>();
+
+export function clearThumbnailCache(): void {
+  thumbnailCache.clear();
+  generation += 1;
+  for (const l of listeners) l();
+}
+
 export function useThumbnail(
   folderName: string,
   skip: boolean = false,
 ): string | null {
   const cached = thumbnailCache.get(folderName);
   const [src, setSrc] = useState<string | null>(cached ?? null);
+  const [gen, setGen] = useState(generation);
+  useEffect(() => {
+    const onInvalidate = () => setGen(generation);
+    listeners.add(onInvalidate);
+    return () => {
+      listeners.delete(onInvalidate);
+    };
+  }, []);
   useEffect(() => {
     // Si el caller dice "skip" (título de placeholder/test), ni
     // siquiera intentamos cargar el thumbnail. Cacheamos null para
@@ -53,6 +73,6 @@ export function useThumbnail(
     return () => {
       cancelled = true;
     };
-  }, [folderName, skip]);
+  }, [folderName, skip, gen]);
   return src;
 }

@@ -1,3 +1,4 @@
+pub mod airport_thumbs;
 pub mod airports;
 pub mod cloud_sync;
 pub mod commands;

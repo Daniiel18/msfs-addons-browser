@@ -39,6 +39,7 @@ import type { DerivedType } from "../lib/packageType";
 import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { useThumbnail } from "../lib/thumbnails";
 import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
+import { AddonFallbackArt } from "./AddonArt";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
 import { t } from "../lib/i18n";
@@ -113,8 +114,9 @@ function AddonNode({ data }: NodeProps<AddonNodeType>) {
             }}
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center text-slate-700">
-            {nodeTypeIcon(derived)}
+          // (v4.26.0) Sin thumbnail → mismo arte tipado que el grid.
+          <div className={`h-full w-full ${enabled ? "" : "opacity-40 grayscale"}`}>
+            <AddonFallbackArt derived={derived} title={pkg.title} />
           </div>
         )}
         <span className={nodeBadgeClass(derived)}>{nodeBadgeLabel(derived)}</span>
@@ -241,6 +243,10 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
           id: folder,
           type: "addon" as const,
           position: pos ? { x: pos.x, y: pos.y } : fallback,
+          // Supr solo borra ARISTAS: la membresía se recalcula de
+          // links+posiciones y un nodo "borrado" reaparecería en el
+          // próximo rebuild — mejor no permitirlo.
+          deletable: false,
           data: { pkg: item.p, derived: item.t },
         };
       });
@@ -468,10 +474,6 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
         deleteKeyCode={["Delete", "Backspace"]}
-        // Supr solo borra ARISTAS. Borrar nodos confundiría: la
-        // membresía se recalcula de links+posiciones y el nodo
-        // "borrado" reaparecería en el próximo rebuild.
-        nodesDeletable={false}
         nodesConnectable
         colorMode="dark"
       >
@@ -701,9 +703,13 @@ function ManageLinksModal({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Auto-layout dagre (izquierda → derecha) SOLO para los nodos sin
- *  posición persistida. Los aislados caen en una grilla aparte para
- *  no apilarse en (0,0). */
+/** Auto-layout para los nodos sin posición persistida.
+ *
+ *  (v4.26.0) Dos zonas: los nodos CONECTADOS van con dagre (izquierda
+ *  → derecha, clusters avión → liveries); los AISLADOS van en una
+ *  GRILLA compacta debajo. Antes dagre metía a los aislados en un
+ *  único rank → una columna vertical interminable, justo lo que el
+ *  usuario reportó. */
 function layoutWithDagre(
   unpositioned: string[],
   allMembers: string[],
@@ -712,24 +718,57 @@ function layoutWithDagre(
   const out = new Map<string, { x: number; y: number }>();
   if (unpositioned.length === 0) return out;
 
+  const memberSet = new Set(allMembers);
+  const linked = new Set<string>();
+  for (const l of links) {
+    if (memberSet.has(l.sourceFolder) && memberSet.has(l.targetFolder)) {
+      linked.add(l.sourceFolder);
+      linked.add(l.targetFolder);
+    }
+  }
+
+  // Zona 1 — dagre solo con los nodos que participan en links.
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 110, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
-  const memberSet = new Set(allMembers);
   for (const m of allMembers) {
-    g.setNode(m, { width: NODE_W, height: NODE_H });
+    if (linked.has(m)) {
+      g.setNode(m, { width: NODE_W, height: NODE_H });
+    }
   }
   for (const l of links) {
-    if (memberSet.has(l.sourceFolder) && memberSet.has(l.targetFolder)) {
+    if (linked.has(l.sourceFolder) && linked.has(l.targetFolder)) {
       g.setEdge(l.sourceFolder, l.targetFolder);
     }
   }
-  dagre.layout(g);
-  for (const m of unpositioned) {
-    const n = g.node(m);
-    if (n) {
-      out.set(m, { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 });
+  let maxY = 0;
+  if (linked.size > 0) {
+    dagre.layout(g);
+    for (const m of allMembers) {
+      if (!linked.has(m)) continue;
+      const n = g.node(m);
+      if (n) {
+        maxY = Math.max(maxY, n.y + NODE_H / 2);
+        if (unpositioned.includes(m)) {
+          out.set(m, { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 });
+        }
+      }
     }
+  }
+
+  // Zona 2 — grilla para los aislados, debajo de los clusters.
+  const isolated = unpositioned.filter((m) => !linked.has(m));
+  if (isolated.length > 0) {
+    const cols = Math.max(4, Math.ceil(Math.sqrt(isolated.length * 1.6)));
+    const gapX = NODE_W + 46;
+    const gapY = NODE_H + 46;
+    const startY = maxY > 0 ? maxY + 90 : 0;
+    isolated.forEach((m, i) => {
+      out.set(m, {
+        x: (i % cols) * gapX,
+        y: startY + Math.floor(i / cols) * gapY,
+      });
+    });
   }
   return out;
 }
