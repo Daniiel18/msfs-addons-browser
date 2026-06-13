@@ -25,6 +25,7 @@ import { PackageDetailModal } from "./PackageDetailModal";
 import { LinkMapView } from "./LinkMapView";
 import {
   derivedType,
+  is3rdParty,
   isAddon,
   looksLikePlaceholderTitle,
   type DerivedType,
@@ -960,11 +961,17 @@ function PackageCard({
               <AddonFallbackArt derived={derived} title={pkg.title} />
             </div>
           )}
-          {/* Badges superpuestos sobre la imagen — tipo y update. */}
+          {/* Badges superpuestos sobre la imagen — tipo, 3rd-party,
+              update y estado. */}
           <div className="pointer-events-none absolute left-2 top-2 flex flex-wrap gap-1">
             <span className={typeBadgeClass(derived)}>
               {typeLabel(derived)}
             </span>
+            {is3rdParty(pkg) && (
+              <span className="rounded-md bg-orange-500/85 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-50 shadow-md backdrop-blur">
+                {t("addons.card.third_party")}
+              </span>
+            )}
             {hasUpdate && (
               <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/30">
                 Update

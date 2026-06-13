@@ -500,6 +500,12 @@ export interface CommunityPackage {
    *  Si TODOS los base_containers están en `simobjectDirsJson` →
    *  AIRCRAFT self-contained; si apuntan fuera → LIVERY. */
   baseContainersJson?: string;
+  /** (v4.31.0) true si tiene geometría 3D propia bajo
+   *  SimObjects/Airplanes (avión real). false = modificación de
+   *  texturas/cabina aunque declare content_type AIRCRAFT. */
+  hasOwnModel?: boolean;
+  /** (v4.31.0) false si el paquete no trae manifest.json → 3rd-party. */
+  hasManifest?: boolean;
 }
 
 /** (v4.25.0) Reporte de un toggle enable/disable (individual con

@@ -64,6 +64,15 @@ pub struct ScannedPackage {
     ///      "thumbnail" — fallback ultra-seguro de la spec MSFS.
     /// None ⇒ el frontend pinta la silueta premium.
     pub thumbnail_path: Option<String>,
+    /// (v4.31.0) true si algún container bajo SimObjects/Airplanes
+    /// tiene carpeta `model*` con geometría 3D propia → es un AVIÓN
+    /// real. Si tiene containers pero NINGUNO con modelo propio, es
+    /// una modificación (texturas de cabina, etc.) aunque el manifest
+    /// diga content_type=AIRCRAFT.
+    pub has_own_model: bool,
+    /// (v4.31.0) false si el paquete NO trae manifest.json — 3rd-party
+    /// no estándar (badge en la UI).
+    pub has_manifest: bool,
 }
 
 /// Estructura literal del `manifest.json` de MSFS. Sólo
@@ -124,12 +133,6 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
             None => continue,
         };
 
-        let manifest_path = path.join("manifest.json");
-        if !manifest_path.is_file() {
-            skipped_no_manifest += 1;
-            continue;
-        }
-
         // (v4.25.0) Estado enabled/disabled del paquete. Disabled =
         // nuestro toggle renombró `layout.json` → `layout.json.disabled`
         // (MSFS ignora paquetes sin layout). Si no hay NINGUNO de los
@@ -140,10 +143,41 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
 
         // (v4.26.0) Contenedores SimObjects propios + base_container
         // referenciados — alimentan el auto-link del Link Map.
-        let (simobject_dirs, base_containers) = scan_simobjects(&path);
+        // (v4.31.0) + has_own_model: ¿hay geometría 3D propia?
+        let (simobject_dirs, base_containers, has_own_model) = scan_simobjects(&path);
         // (v4.29.0) Thumbnail resuelto UNA vez (no en runtime por la
         // UI). Persistido en DB para que `package_thumbnail` sea O(1).
         let thumbnail_path = resolve_thumbnail(&path);
+
+        let manifest_path = path.join("manifest.json");
+        let has_manifest = manifest_path.is_file();
+
+        if !has_manifest {
+            // (v4.31.0) Sin manifest.json. MSFS no carga estos paquetes
+            // por sí mismo, PERO el usuario quiere verlos marcados como
+            // 3rd-party SI tienen estructura de addon real (layout.json
+            // o SimObjects). Carpetas sueltas sin nada de eso (backups,
+            // basura) las seguimos saltando.
+            let looks_like_addon = path.join("layout.json").is_file()
+                || !simobject_dirs.is_empty()
+                || path.join("SimObjects").is_dir()
+                || path.join("scenery").is_dir();
+            if !looks_like_addon {
+                skipped_no_manifest += 1;
+                continue;
+            }
+            packages.push(materialize_fallback(
+                &path,
+                &folder_name,
+                enabled,
+                simobject_dirs,
+                base_containers,
+                thumbnail_path,
+                has_own_model,
+                false, // has_manifest
+            ));
+            continue;
+        }
 
         match parse_manifest(&manifest_path) {
             Ok(raw) => {
@@ -155,6 +189,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                     simobject_dirs,
                     base_containers,
                     thumbnail_path.clone(),
+                    has_own_model,
                 ));
             }
             Err(e) => {
@@ -175,6 +210,8 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                     simobject_dirs,
                     base_containers,
                     thumbnail_path,
+                    has_own_model,
+                    true, // tiene manifest pero está corrupto
                 ));
             }
         }
@@ -192,9 +229,14 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
 /// paquete: nombres de contenedores propios + los `base_container`
 /// que referencian sus aircraft.cfg. Barato: lista 1-2 dirs y lee
 /// los primeros KB de cada aircraft.cfg.
-fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>) {
+fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool) {
     let mut dirs: Vec<String> = Vec::new();
     let mut bases: Vec<String> = Vec::new();
+    // (v4.31.0) ¿Algún container tiene geometría 3D propia? Un AVIÓN
+    // real trae `model/` o `model.<variant>/` con .gltf/.bin; una
+    // modificación (texturas de cabina, sonido) sólo trae `texture.*`
+    // o `panel/` y reusa el modelo del avión base.
+    let mut has_own_model = false;
     for kind in ["Airplanes", "Rotorcraft"] {
         let so = root.join("SimObjects").join(kind);
         let Ok(entries) = std::fs::read_dir(&so) else {
@@ -207,6 +249,29 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>) {
             }
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                 dirs.push(name.to_string());
+            }
+            // Buscar una subcarpeta model* con geometría real.
+            if !has_own_model {
+                if let Ok(subs) = std::fs::read_dir(&path) {
+                    for sub in subs.flatten() {
+                        let sp = sub.path();
+                        if !sp.is_dir() {
+                            continue;
+                        }
+                        let sname = sp
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        // `model`, `model.300ER`, `model.WL`, etc.
+                        if sname == "model" || sname.starts_with("model.") {
+                            if dir_has_geometry(&sp) {
+                                has_own_model = true;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             let cfg = path.join("aircraft.cfg");
             if let Ok(raw) = std::fs::read_to_string(&cfg) {
@@ -236,7 +301,29 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>) {
     }
     bases.sort();
     bases.dedup();
-    (dirs, bases)
+    (dirs, bases, has_own_model)
+}
+
+/// ¿La carpeta `model*` contiene geometría 3D real? Un avión trae
+/// `.gltf`/`.bin`; las modificaciones que crean un `model.cfg` vacío
+/// apuntando al base no traen geometría. Comprobamos los primeros
+/// archivos sin recursión profunda.
+fn dir_has_geometry(model_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(model_dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if matches!(ext.as_str(), "gltf" | "glb" | "bin") {
+            return true;
+        }
+    }
+    false
 }
 
 /// (v4.29.0) Resuelve el thumbnail del paquete UNA vez por scan
@@ -245,7 +332,17 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>) {
 /// clave para que con cientos de GB de liveries el escaneo no se
 /// vuelva I/O-bound.
 fn resolve_thumbnail(root: &Path) -> Option<String> {
+    // (0) (v4.31.0) `ContentInfo/<pkg>/Thumbnail.jpg` — EL thumbnail
+    //     oficial del marketplace de MSFS. Es la imagen exacta que el
+    //     sim muestra en su menú (Fenix, PMDG, DominicDesignTeam… lo
+    //     ponen aquí). Gana sobre todo: es la imagen REAL del addon.
+    //     Antes no lo mirábamos, así que Fenix/aeropuertos quedaban sin
+    //     foto nativa y la descarga de internet ponía una incorrecta.
+    if let Some(p) = find_in_content_info(root) {
+        return Some(p);
+    }
     // (1) `<pkg>/thumbnail.{jpg,png,webp,jpeg}` — la convención MSFS.
+    //     (Windows es case-insensitive: matchea Thumbnail.JPG.)
     for ext in ["jpg", "png", "jpeg", "webp"] {
         let p = root.join(format!("thumbnail.{ext}"));
         if p.is_file() && is_real_image(&p) {
@@ -253,8 +350,8 @@ fn resolve_thumbnail(root: &Path) -> Option<String> {
         }
     }
     // (2) `<pkg>/simfleet-thumbnail.jpg` — el que descargamos nosotros
-    //     en pases anteriores (Wikipedia / Simplaza). Si está, gana
-    //     sobre el deep search.
+    //     (Wikipedia). Va DESPUÉS del nativo/ContentInfo: si el addon
+    //     trae su imagen oficial, esa manda.
     let custom = root.join("simfleet-thumbnail.jpg");
     if custom.is_file() && is_real_image(&custom) {
         return Some(custom.to_string_lossy().into_owned());
@@ -304,6 +401,29 @@ fn resolve_thumbnail(root: &Path) -> Option<String> {
     //     pesan MB).
     if let Some(p) = thumbnail_from_layout(root) {
         return Some(p);
+    }
+    None
+}
+
+/// (v4.31.0) Busca `ContentInfo/<algo>/thumbnail.{jpg,png}` — el
+/// thumbnail oficial del marketplace. ContentInfo tiene una subcarpeta
+/// por paquete; buscamos un nivel adentro.
+fn find_in_content_info(root: &Path) -> Option<String> {
+    let ci = root.join("ContentInfo");
+    let Ok(subs) = std::fs::read_dir(&ci) else {
+        return None;
+    };
+    for sub in subs.flatten() {
+        let dir = sub.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        for ext in ["jpg", "png", "jpeg", "webp"] {
+            let p = dir.join(format!("thumbnail.{ext}"));
+            if p.is_file() && is_real_image(&p) {
+                return Some(p.to_string_lossy().into_owned());
+            }
+        }
     }
     None
 }
@@ -393,6 +513,7 @@ fn materialize(
     simobject_dirs: Vec<String>,
     base_containers: Vec<String>,
     thumbnail_path: Option<String>,
+    has_own_model: bool,
 ) -> ScannedPackage {
     let title = raw
         .title
@@ -467,6 +588,8 @@ fn materialize(
         simobject_dirs,
         base_containers,
         thumbnail_path,
+        has_own_model,
+        has_manifest: true,
     }
 }
 
@@ -477,6 +600,8 @@ fn materialize_fallback(
     simobject_dirs: Vec<String>,
     base_containers: Vec<String>,
     thumbnail_path: Option<String>,
+    has_own_model: bool,
+    has_manifest: bool,
 ) -> ScannedPackage {
     let (size_bytes, folder_modified_at) = folder_metadata(path);
     let title = pretty_folder_name(folder_name);
@@ -500,6 +625,8 @@ fn materialize_fallback(
         simobject_dirs,
         base_containers,
         thumbnail_path,
+        has_own_model,
+        has_manifest,
     }
 }
 
@@ -720,9 +847,10 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 folder_name, install_path, title, creator, content_type,
                 package_version, minimum_game_version, icao, size_bytes,
                 folder_modified_at, dependencies_count, scanned_at, enabled,
-                simobject_dirs_json, base_containers_json, thumbnail_path
+                simobject_dirs_json, base_containers_json, thumbnail_path,
+                has_own_model, has_manifest
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15, ?16, ?17)
             ON CONFLICT(folder_name) DO UPDATE SET
                 install_path = excluded.install_path,
                 title = excluded.title,
@@ -738,7 +866,9 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 enabled = excluded.enabled,
                 simobject_dirs_json = excluded.simobject_dirs_json,
                 base_containers_json = excluded.base_containers_json,
-                thumbnail_path = excluded.thumbnail_path
+                thumbnail_path = excluded.thumbnail_path,
+                has_own_model = excluded.has_own_model,
+                has_manifest = excluded.has_manifest
             "#,
         )
         .bind(&pkg.folder_name)
@@ -756,6 +886,8 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         .bind(&simobject_dirs_json)
         .bind(&base_containers_json)
         .bind(&pkg.thumbnail_path)
+        .bind(pkg.has_own_model)
+        .bind(pkg.has_manifest)
         .execute(&mut *tx)
         .await?;
     }
@@ -900,26 +1032,15 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         if is_library_pack(title.as_deref().unwrap_or(""), &folder) {
             continue;
         }
-        let mut rescued: Option<String> = None;
-        // (v4.27.0) PRIMERO buscar por NOMBRE del aeropuerto en
-        // `airports`. "gakki-taiyuanwushu" tenía sufijo "USHU" (Uray)
-        // pero name='Taiyuan Wusu International Airport' resuelve a
-        // ZBYN — el dato real. Solo si no hay match por nombre caemos
-        // al rescue por sufijo/prefijo.
-        for text in [Some(folder.as_str()), title.as_deref()].into_iter().flatten() {
-            if let Some(icao) = rescue_by_airport_name(pool, text).await {
-                rescued = Some(icao);
-                break;
-            }
-        }
-        if rescued.is_none() {
-            for text in [Some(folder.as_str()), title.as_deref()].into_iter().flatten() {
-                if let Some(icao) = rescue_embedded_icao(pool, text).await {
-                    rescued = Some(icao);
-                    break;
-                }
-            }
-        }
+        // (v4.31.0) Rescue inteligente que resuelve AMBOS casos
+        // patológicos del usuario:
+        //   · `montevideosumu` → SUMU (sufijo ICAO deliberado: el
+        //     prefijo "montevideo" es EXACTAMENTE el municipio de un
+        //     aeropuerto, así que "sumu" es el código que el dev pegó).
+        //   · `gakki-taiyuanwushu` → ZBYN (el sufijo "ushu"/USHU es
+        //     coincidencia con el nombre "Wushu"; el prefijo "taiyuanw"
+        //     NO es un municipio exacto, así que ganamos por nombre).
+        let rescued = smart_rescue_icao(pool, &folder, title.as_deref()).await;
         if let Some(icao) = rescued {
             sqlx::query("UPDATE community_packages SET icao = ?1 WHERE folder_name = ?2")
                 .bind(&icao)
@@ -977,6 +1098,75 @@ pub fn is_library_pack(title: &str, folder_name: &str) -> bool {
 /// coincidencias apuntan al mismo aeropuerto** (resultado único).
 /// Caso real verificado: gakki-taiyuanwushu → "taiyuan" matchea
 /// "Taiyuan Wusu International Airport" → ZBYN.
+/// (v4.31.0) Orquestador del rescue. Combina tres señales en orden
+/// de fiabilidad para distinguir un ICAO deliberado de una
+/// coincidencia ortográfica:
+///   1. **Sufijo ICAO ciudad-pegada**: las últimas 4 letras del
+///      folder son un ICAO válido Y el prefijo restante es EXACTAMENTE
+///      el municipio de un aeropuerto → deliberado (montevideo+sumu).
+///   2. **Nombre del aeropuerto**: un token del folder matchea único
+///      en airports.name/municipality (taiyuan → ZBYN).
+///   3. **Sufijo/prefijo embebido** como último recurso.
+async fn smart_rescue_icao(
+    pool: &SqlitePool,
+    folder: &str,
+    title: Option<&str>,
+) -> Option<String> {
+    // (1) Sufijo ICAO con ciudad pegada delante.
+    let lower = folder.to_lowercase();
+    let alpha: String = lower.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    if alpha.len() >= 6 {
+        let suffix = &alpha[alpha.len() - 4..];
+        let prefix = &alpha[..alpha.len() - 4];
+        let suffix_upper = suffix.to_uppercase();
+        // ¿El sufijo es un ICAO real?
+        let suffix_is_icao = sqlx::query_scalar::<_, String>(
+            "SELECT icao FROM airports WHERE icao = ?1 LIMIT 1",
+        )
+        .bind(&suffix_upper)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+        if suffix_is_icao && prefix.len() >= 4 {
+            // ¿El prefijo es EXACTAMENTE el municipio (o nombre sin
+            // espacios) de algún aeropuerto? Entonces el dev escribió
+            // ciudad+ICAO a propósito.
+            let prefix_is_city = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT 1 FROM airports
+                WHERE LOWER(REPLACE(municipality,' ','')) = ?1
+                   OR LOWER(REPLACE(name,' ','')) = ?1
+                LIMIT 1
+                "#,
+            )
+            .bind(prefix)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+            if prefix_is_city {
+                return Some(suffix_upper);
+            }
+        }
+    }
+    // (2) Por nombre del aeropuerto.
+    for text in [Some(folder), title].into_iter().flatten() {
+        if let Some(icao) = rescue_by_airport_name(pool, text).await {
+            return Some(icao);
+        }
+    }
+    // (3) Sufijo/prefijo embebido (último recurso).
+    for text in [Some(folder), title].into_iter().flatten() {
+        if let Some(icao) = rescue_embedded_icao(pool, text).await {
+            return Some(icao);
+        }
+    }
+    None
+}
+
 async fn rescue_by_airport_name(pool: &SqlitePool, text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let mut tokens: std::collections::HashSet<String> = std::collections::HashSet::new();

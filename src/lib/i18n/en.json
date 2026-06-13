@@ -669,6 +669,7 @@
   "addons.chip.utilities": "Utilities",
   "addons.chip.sound_misc": "Sound / Misc",
   "addons.card.disabled_badge": "OFF",
+  "addons.card.third_party": "3rd party",
   "addons.card.edit_title": "View details / edit",
   "addons.toggle.on_title": "Enabled in the sim — click to disable",
   "addons.toggle.off_title": "Disabled — click to enable",

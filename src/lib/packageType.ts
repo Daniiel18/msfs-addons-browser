@@ -31,16 +31,25 @@ export type DerivedType =
 // ---------------------------------------------------------------------------
 
 /** Keywords que delatan UTILITY/INSTRUMENT (panel, EFB, mod, tweak,
- *  tráfico AI, GSX-extras, FS2Crew, Navigraph, SimBrief…). */
+ *  tráfico AI, GSX-extras, FS2Crew, Navigraph, SimBrief, AICopilot,
+ *  Flow scripts…). */
 const UTILITY_RE =
-  /\b(fsltl|fs2crew|raaspro|gsx[\s-]*(?:cobus|profile|fuel|hydrant|catering|menzies|haeco)|simbrief|navigraph|tablet|efb|companion|toolbar|enhancement|improver|plugin|module|tweak|flow\s*pro|command\s*center|truflite|toliss|gauge|wxr|weather\s*radar)\b/i;
+  /\b(fsltl|fs2crew|raaspro|aicopilot|ai\s*copilot|gsx[\s-]*(?:cobus|profile|fuel|hydrant|catering|menzies|haeco)|simbrief|navigraph|tablet|efb|companion|toolbar|enhancement|improver|plugin|module|tweak|flow\s*(?:pro|scripts?)|command\s*center|truflite|toliss|gauge|wxr|weather\s*radar)\b/i;
 
 /** Keywords de vehículos/objetos no-avión → MISC. */
 const VEHICLE_RE =
   /\b(driveable|driver|car\b|cars\b|vehicle|bus(?:es)?|truck|boat|train)\b/i;
 
-/** Keywords de sonido / efectos visuales → MISC. */
-const SOUND_RE = /\b(soundpack|sound\s*pack|audio\s*pack|immersion|vfx)\b/i;
+/** Keywords de sonido / efectos visuales → MISC. `soundset` cubre los
+ *  packs de Boris Audio Works (xbaw-*-soundset-*). */
+const SOUND_RE =
+  /\b(sound\s*set|soundset|soundpack|sound\s*pack|audio\s*pack|immersion|vfx|boris\s*audio)\b/i;
+
+/** Keywords de modificación de texturas / cabina → MISC (no es avión
+ *  aunque declare AIRCRAFT). "downscaled textures", "improve fps",
+ *  "new cockpit", "rev"/"revisited" de texturas. */
+const TEXTURE_MOD_RE =
+  /\b(downscaled|improve\s*fps|new\s*cockpit|cockpit\s*texture|texture\s*(?:pack|mod|overhaul)|retexture|4k\s*texture|cockpit\s*overhaul)\b/i;
 
 /** Señales TEXTUALES explícitas de livery (no deps>0, que es engañoso). */
 function looksLikeLivery(p: CommunityPackage): boolean {
@@ -150,56 +159,65 @@ export function derivedType(p: CommunityPackage): DerivedType {
   const hay = `${p.title} ${p.folderName}`;
 
   // 1) Library packs (AIRAC, night lights, replacements) marcados ya
-  //    por el backend — los mandamos a MISC para que no contaminen las
-  //    categorías visibles del grid.
+  //    por el backend → MISC.
   if (p.isLibraryPack) return "MISC";
 
-  // 2) UTILITIES por keyword ANTES de cualquier otra cosa — FSLTL/
-  //    FS2Crew/GSX-Cobus declaran a veces AIRCRAFT/LIVERY/null y se
-  //    colaban donde no debían.
+  // 2) UTILITIES por keyword (FSLTL/FS2Crew/AICopilot/Flow/GSX-extras).
+  //    El usuario: "AICopilot FBW A320 debe ser other con tag 3rd party".
   if (UTILITY_RE.test(hay)) return "INSTRUMENT";
 
-  // 3) Vehículos no-avión.
+  // 3) Vehículos no-avión (Library Driveable Car).
   if (VEHICLE_RE.test(hay)) return "MISC";
 
-  // 4) SCENERY no-airport (las airport ya se fueron al Mapa) — son
-  //    replacements, jetways sueltos, etc. → MISC.
-  if (ct === "SCENERY") return "MISC";
-
-  // 5) Sonido / VFX.
+  // 4) Sonido (BAW soundsets, Boris Audio Works).
   if (["SOUND", "SOUNDPACK", "SOUND-PACK", "MUSIC"].includes(ct)) return "MISC";
   if (SOUND_RE.test(hay)) return "MISC";
+
+  // 5) SCENERY no-airport → MISC.
+  if (ct === "SCENERY") return "MISC";
 
   // 6) INSTRUMENTS explícitos del manifest.
   if (ct === "INSTRUMENT") return "INSTRUMENT";
 
-  // 7) (v4.28.0) DIAGNÓSTICO ESTRUCTURAL — la verdad de la spec MSFS:
-  //    base_container del aircraft.cfg apuntando fuera ⇒ LIVERY.
+  // 7) base_container apuntando FUERA ⇒ LIVERY (spec MSFS).
   const diag = diagnosePackage(p);
   if (diag.isLivery) return "LIVERY";
 
-  // 8) AIRCRAFT con container propio (Y base_container in own OR sin
-  //    base_container) → AIRCRAFT real (PMDG, Fenix, Salty, FBW…).
-  if (diag.hasOwnAirplane && ct === "AIRCRAFT") return "AIRCRAFT";
-
-  // 9) MOD para avión existente: declara AIRCRAFT/MISC con deps>0
-  //    pero NO aporta container propio. Cockpit mods, ImproveLights,
-  //    AICopilot, Flow scripts, etc → MISC (cabe en "Others").
-  if (!diag.hasOwnAirplane && (ct === "AIRCRAFT" || ct === "MISC") && p.dependenciesCount > 0) {
-    return "MISC";
+  // 8) (v4.31.0) SEÑAL MAESTRA — ¿tiene geometría 3D propia?
+  //    Un AVIÓN real trae model/ con .gltf bajo SimObjects/Airplanes.
+  //    Las "texturas de cabina" (zHUES PMDG, A330 New Cockpit) tienen
+  //    carpeta SimObjects pero SOLO texture.* — NO model. Declaran
+  //    content_type=AIRCRAFT pero NO son aviones → MISC.
+  const hasContainers =
+    parseJsonArray(p.simobjectDirsJson).length > 0;
+  if (ct === "AIRCRAFT") {
+    if (p.hasOwnModel) return "AIRCRAFT"; // avión de verdad
+    if (hasContainers) return "MISC"; // modifica un avión (texturas/cabina)
+    // AIRCRAFT sin containers ni modelo: keywords de textura → MISC,
+    // si no, lo dejamos como AIRCRAFT (manifest correcto sin SimObjects
+    // parseable — raro pero posible).
+    if (TEXTURE_MOD_RE.test(hay)) return "MISC";
+    return "AIRCRAFT";
   }
+
+  // 9) Texturas/mods por keyword aunque no declaren AIRCRAFT.
+  if (TEXTURE_MOD_RE.test(hay)) return "MISC";
 
   // 10) Señales textuales de livery (manifest mal declarado).
   if (looksLikeLivery(p)) return "LIVERY";
 
-  // 11) AIRCRAFT declarado sin container detectado (manifest correcto,
-  //     pero no pudimos parsear simobjects).
-  if (ct === "AIRCRAFT") return "AIRCRAFT";
-
-  // 12) Sin content_type — fallback de aircraft por keyword del título.
+  // 11) Sin content_type: si tiene modelo propio es avión.
+  if (p.hasOwnModel) return "AIRCRAFT";
   if (looksLikeAircraft(p)) return "AIRCRAFT";
   if (ct === "MISC") return "MISC";
   return "UNKNOWN";
+}
+
+/** (v4.31.0) ¿Es contenido 3rd-party no estándar? Criterio del
+ *  usuario: "addons sin manifest son 3rd party por lógica". Lo
+ *  consume la UI para el badge. */
+export function is3rdParty(p: CommunityPackage): boolean {
+  return p.hasManifest === false;
 }
 
 /** True si el thumbnail del paquete es probablemente un placeholder

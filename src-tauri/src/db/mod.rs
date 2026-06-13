@@ -477,6 +477,11 @@ pub mod repo {
         /// (último componente del path, JSON-encoded).
         #[sqlx(default)]
         pub base_containers_json: String,
+        /// (v4.31.0) true si tiene geometría 3D propia (avión real vs
+        /// modificación de texturas/cabina).
+        pub has_own_model: bool,
+        /// (v4.31.0) false si el paquete no trae manifest.json (3rd-party).
+        pub has_manifest: bool,
         /// (v4.29.0) Ruta absoluta del thumbnail resuelto durante el
         /// scan (`<pkg>/thumbnail.jpg`, `SimObjects/Airplanes/*/…`, o
         /// `layout.json` fallback). NULL → frontend pinta silueta
@@ -515,6 +520,8 @@ pub mod repo {
                    cp.simobject_dirs_json,
                    cp.base_containers_json,
                    cp.thumbnail_path,
+                   cp.has_own_model,
+                   cp.has_manifest,
                    ap.name      AS airport_name,
                    ap.latitude  AS latitude,
                    ap.longitude AS longitude

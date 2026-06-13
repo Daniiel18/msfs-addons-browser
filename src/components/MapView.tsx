@@ -179,15 +179,21 @@ export function MapView() {
     [visible],
   );
   // Conteos crudos por bucket GSX — alimentan los chips de la sidebar.
+  // (v4.31.0) Conteos GSX/No-GSX por ICAO DISTINTO (no por paquete),
+  // para que GSX + No-GSX == nº de aeropuertos del chip/dashboard.
+  // Antes contaba paquetes: LEBL ×2 sumaba 2 y daba 135+24=159 vs 155.
   const { gsxCount, noGsxCount } = useMemo(() => {
-    let g = 0;
-    let n = 0;
+    const withGsx = new Set<string>();
+    const withoutGsx = new Set<string>();
     for (const p of packages) {
-      const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
-      if (has) g += 1;
-      else n += 1;
+      if (!p.icao) continue;
+      const icao = p.icao.toUpperCase();
+      if (gsxInstalledIcaos.has(icao)) withGsx.add(icao);
+      else withoutGsx.add(icao);
     }
-    return { gsxCount: g, noGsxCount: n };
+    // Un ICAO con AL MENOS un scenery con GSX cuenta como GSX (no en ambos).
+    for (const icao of withGsx) withoutGsx.delete(icao);
+    return { gsxCount: withGsx.size, noGsxCount: withoutGsx.size };
   }, [packages, gsxInstalledIcaos]);
 
   // Paquete enfocado para centrar la cámara, resaltar la sidebar y
@@ -664,8 +670,13 @@ function Sidebar({
                         </span>
                       )}
                     </div>
+                    {/* (v4.31.0) Nombre REAL del aeropuerto (de la
+                        tabla airports). Muchos packs traen un title
+                        genérico ("Airport" en los DominicDesignTeam);
+                        airportName da "Chubu Centrair International
+                        Airport". Fallback al title si no hay nombre. */}
                     <div className="mt-0.5 truncate text-xs text-slate-200">
-                      {p.title}
+                      {p.airportName ?? p.title}
                     </div>
                     {p.creator && (
                       <div className="mt-0.5 truncate text-[11px] text-slate-500">

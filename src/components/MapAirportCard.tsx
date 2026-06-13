@@ -220,12 +220,16 @@ export function MapAirportCard({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="px-4 pb-1 pt-3">
-          <h3 className="truncate text-sm font-semibold text-slate-100" title={pkg.title}>
-            {pkg.title}
+          {/* (v4.31.0) Nombre real del aeropuerto como título (los
+              packs DominicDesignTeam traen title genérico "Airport"). */}
+          <h3
+            className="truncate text-sm font-semibold text-slate-100"
+            title={pkg.airportName ?? pkg.title}
+          >
+            {pkg.airportName ?? pkg.title}
           </h3>
           <p className="mt-0.5 truncate text-[11px] text-slate-500">
-            {pkg.airportName ?? pkg.creator ?? "—"}
-            {pkg.creator && pkg.airportName && ` · ${pkg.creator}`}
+            {pkg.creator ?? "—"}
             {pkg.packageVersion && ` · v${pkg.packageVersion}`}
           </p>
         </div>
