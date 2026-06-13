@@ -35,12 +35,27 @@ import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-
 // (lectura síncrona, mismo patrón que i18n/units) para que quede
 // exactamente como lo dejó hasta que él mismo lo cambie.
 const SIDEBAR_COLLAPSED_KEY = "simfleet.fb.sidebarCollapsed";
+// (v4.27.0) Misma idea para el vuelo seleccionado — al volver de
+// otra pestaña, el panel y el track del vuelo deben seguir visibles
+// hasta que el usuario lo deseleccione explícitamente.
+const SELECTED_FLIGHT_KEY = "simfleet.fb.selectedFlightId";
 
 function readSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
   } catch {
     return false;
+  }
+}
+
+function readSelectedFlightId(): number | null {
+  try {
+    const raw = localStorage.getItem(SELECTED_FLIGHT_KEY);
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
   }
 }
 
@@ -70,7 +85,22 @@ export function FlightBookView() {
 
   // Selección de vuelo para mostrar su track real en el mapa.
   // null/undefined = modo globo (todos los vuelos a la vez).
-  const [selectedFlightId, setSelectedFlightId] = useState<number | null>(null);
+  // (v4.27.0) Inicializado desde localStorage y espejado en cada
+  // cambio: sobrevive a remounts (cambio de pestaña) y reinicios de
+  // la app, mismo patrón que el colapso del sidebar.
+  const [selectedFlightId, setSelectedFlightIdState] = useState<number | null>(
+    readSelectedFlightId,
+  );
+  const setSelectedFlightId: typeof setSelectedFlightIdState = (value) => {
+    setSelectedFlightIdState(value);
+    try {
+      const next = typeof value === "function" ? value(selectedFlightId) : value;
+      if (next == null) localStorage.removeItem(SELECTED_FLIGHT_KEY);
+      else localStorage.setItem(SELECTED_FLIGHT_KEY, String(next));
+    } catch {
+      // localStorage no disponible — el estado en memoria sigue ok.
+    }
+  };
   // (v3.2.0) Modal de confirmación de borrado — reemplaza window.confirm
   // por una UI estética. `null` = oculto. Guardamos el entry completo
   // para mostrar contexto (orig→dest + fecha) y el id para llamar

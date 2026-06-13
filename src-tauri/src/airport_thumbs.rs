@@ -25,6 +25,41 @@ use tauri::Emitter;
 use crate::commands::community::find_thumbnail;
 use crate::db::repo;
 
+/// (v4.27.0) Extrae el modelo de avión del título para buscar en
+/// Wikipedia ("Airbus A320", "Boeing 777", "CRJ-700"). Devuelve None
+/// si no encuentra patrón conocido — el AddonArt del frontend se
+/// encarga del fallback.
+fn extract_aircraft_query(title: &str) -> Option<String> {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)\b(?:(?P<a>airbus)\s*)?(?P<aa>a3(?:1[89]|2[01]|30|40|50|80)(?:[\s-]?neo)?)
+            |\b(?:(?P<b>boeing)\s*)?(?P<bb>7[3-9][0-9](?:[\s-]?(?:max|er|lr|f))?)
+            |\b(?P<crj>crj[\s-]?(?:200|700|900|1000))
+            |\b(?P<atr>atr[\s-]?(?:42|72))
+            |\b(?P<emb>(?:e\s?-?)?(?:170|175|190|195|jet[\s-]?14[05]))
+            |\b(?P<cs>cessna\s*\d+|c1?7[2358]|c20[8])
+            |\b(?P<tbm>tbm[\s-]?9[34]0)
+            |\b(?P<dh>dh[c]?[\s-]?8|q400)",
+        )
+        .unwrap()
+    });
+    let caps = RE.captures(title)?;
+    if let Some(m) = caps.name("aa") {
+        return Some(format!("Airbus {}", m.as_str().to_uppercase()));
+    }
+    if let Some(m) = caps.name("bb") {
+        return Some(format!("Boeing {}", m.as_str().to_uppercase()));
+    }
+    for k in ["crj", "atr", "emb", "cs", "tbm", "dh"] {
+        if let Some(m) = caps.name(k) {
+            return Some(m.as_str().to_string());
+        }
+    }
+    None
+}
+
 /// Punto de entrada — best-effort, pensado para correr en background
 /// después de cada scan. Devuelve cuántas imágenes nuevas se bajaron.
 pub async fn fetch_missing(
@@ -33,16 +68,25 @@ pub async fn fetch_missing(
     app: &tauri::AppHandle,
 ) -> anyhow::Result<usize> {
     let pkgs = repo::list_community_packages(pool).await?;
+    // (v4.27.0) Dos tipos de candidatos: aeropuertos (busca por
+    // ICAO/nombre en Wikipedia) y addons aircraft (busca por modelo
+    // de avión extraído del título). El usuario quiere imagen en
+    // TODOS, no solo en aeropuertos.
+    let is_scenery = |p: &repo::CommunityPackageRow| {
+        p.content_type
+            .as_deref()
+            .map(|c| c.trim().eq_ignore_ascii_case("SCENERY"))
+            .unwrap_or(false)
+    };
     let candidates: Vec<_> = pkgs
         .iter()
+        .filter(|p| !p.is_library_pack)
         .filter(|p| {
-            p.icao.is_some()
-                && p.airport_name.is_some()
-                && !p.is_library_pack
-                && p.content_type
-                    .as_deref()
-                    .map(|c| c.trim().eq_ignore_ascii_case("SCENERY"))
-                    .unwrap_or(false)
+            // Aeropuerto: SCENERY con ICAO resuelto.
+            let is_airport = is_scenery(p) && p.icao.is_some() && p.airport_name.is_some();
+            // Avión: tiene query de modelo extraíble del título.
+            let is_aircraft = extract_aircraft_query(&p.title).is_some();
+            is_airport || is_aircraft
         })
         .collect();
 
@@ -52,9 +96,16 @@ pub async fn fetch_missing(
         if !needs_thumbnail(root) {
             continue;
         }
-        let icao = pkg.icao.as_deref().unwrap_or_default();
-        let name = pkg.airport_name.as_deref().unwrap_or_default();
-        match fetch_one(http, icao, name).await {
+        let result = if is_scenery(pkg) {
+            let icao = pkg.icao.as_deref().unwrap_or_default();
+            let name = pkg.airport_name.as_deref().unwrap_or_default();
+            fetch_one(http, icao, name, "airport").await
+        } else {
+            // Avión — primer término el modelo, fallback al título.
+            let model = extract_aircraft_query(&pkg.title).unwrap_or_default();
+            fetch_one(http, &model, &pkg.title, "aircraft").await
+        };
+        match result {
             Ok(Some(bytes)) => {
                 let out = root.join("simfleet-thumbnail.jpg");
                 if let Err(e) = std::fs::write(&out, &bytes) {
@@ -62,9 +113,8 @@ pub async fn fetch_missing(
                 } else {
                     tracing::info!(
                         target: "scan",
-                        "thumbs: {} ({}) ← Wikipedia ({} KB)",
+                        "thumbs: {} ← Wikipedia ({} KB)",
                         pkg.folder_name,
-                        icao,
                         bytes.len() / 1024
                     );
                     downloaded += 1;
@@ -118,16 +168,17 @@ fn needs_thumbnail(root: &Path) -> bool {
     }
 }
 
-/// Busca el artículo en Wikipedia (inglés) — primero por ICAO (hay
-/// redirects para casi todos), luego por nombre del aeropuerto — y
-/// descarga la imagen principal. Devuelve Ok(None) si no hay artículo
-/// o el artículo no parece de un aeropuerto (guard anti-ambigüedad).
+/// Busca el artículo en Wikipedia y descarga la imagen principal.
+/// `kind` = "airport" → exige keyword de aeropuerto en title/desc;
+/// "aircraft" → exige keyword de avión. Sin guard, "Boeing 777"
+/// podría aterrizar en la página de Boeing the company.
 async fn fetch_one(
     http: &reqwest::Client,
-    icao: &str,
-    airport_name: &str,
+    primary: &str,
+    secondary: &str,
+    kind: &str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    for term in [icao, airport_name] {
+    for term in [primary, secondary] {
         if term.is_empty() {
             continue;
         }
@@ -149,18 +200,37 @@ async fn fetch_one(
             continue; // 404 → probar siguiente término
         }
         let body: serde_json::Value = resp.json().await?;
-        // Guard: el redirect del ICAO debe aterrizar en un artículo de
-        // aeropuerto, no en una sigla cualquiera.
+        // Guard: el redirect debe aterrizar en el tipo de artículo
+        // esperado (aeropuerto / avión), no en una sigla cualquiera.
         let hay = format!(
             "{} {}",
             body.get("title").and_then(|v| v.as_str()).unwrap_or(""),
             body.get("description").and_then(|v| v.as_str()).unwrap_or("")
         )
         .to_lowercase();
-        let looks_airport = ["airport", "aerodrome", "airfield", "air base", "airpark"]
+        let looks_right = match kind {
+            "airport" => ["airport", "aerodrome", "airfield", "air base", "airpark"]
+                .iter()
+                .any(|k| hay.contains(k)),
+            "aircraft" => [
+                "aircraft",
+                "airliner",
+                "airplane",
+                "narrow-body",
+                "wide-body",
+                "twinjet",
+                "trijet",
+                "quadjet",
+                "regional jet",
+                "turboprop",
+                "freighter",
+                "family of",
+            ]
             .iter()
-            .any(|k| hay.contains(k));
-        if !looks_airport {
+            .any(|k| hay.contains(k)),
+            _ => true,
+        };
+        if !looks_right {
             continue;
         }
         let img_url = body

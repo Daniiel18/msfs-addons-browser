@@ -109,6 +109,28 @@ export function RoutesMapView({
   // (v1.1.4) Estado en vivo del watcher SimConnect — usado para
   // pintar el avión en el mapa cuando hay vuelo en curso.
   const flightStatus = useFlightLogStore((s) => s.status);
+  // (v4.27.0) Seguimiento sticky del avión en vivo. Cuando el usuario
+  // pulsa "Center on aircraft" lo activamos; cada nueva posición del
+  // watcher re-centra el mapa automáticamente. Solo un DRAG del mapa
+  // lo apaga — el zoom NO debe perder el focus (pedido explícito).
+  // El ref es síncrono porque lo lee el handler 'dragstart' que se
+  // registra una sola vez al montar el mapa.
+  const followAircraftRef = useRef(false);
+  const [followAircraft, setFollowAircraft] = useState(false);
+  useEffect(() => {
+    followAircraftRef.current = followAircraft;
+  }, [followAircraft]);
+  // Re-centra al avión cada vez que llega una posición nueva del
+  // watcher, mientras el seguimiento esté activo. Preserva el zoom
+  // actual del usuario — solo mueve el centro.
+  const followLat = flightStatus?.currentLat ?? null;
+  const followLon = flightStatus?.currentLon ?? null;
+  useEffect(() => {
+    if (!followAircraft) return;
+    const map = mapRef.current;
+    if (!map || followLat == null || followLon == null) return;
+    map.easeTo({ center: [followLon, followLat], duration: 400 });
+  }, [followAircraft, followLat, followLon]);
   // Cache local de la traza real del vuelo seleccionado — la
   // pedimos al backend con `getFlightTrack` y la convertimos en
   // GeoJSON LineString. Cuando `selectedFlightId` es null/undefined,
@@ -417,6 +439,16 @@ export function RoutesMapView({
     // toggle de tema) no deberían reinitializar todo — además los
     // sources sobreviven al style swap en maplibre.
     map.once("load", initSources);
+    // (v4.27.0) Solo un drag del usuario apaga el seguimiento sticky
+    // del avión. El zoom NO toca el flag — el usuario quiere poder
+    // acercarse sin perder el centrado. `originalEvent` distingue el
+    // drag del usuario de un `easeTo()` programático (este último no
+    // trae OriginalEvent).
+    map.on("dragstart", (e) => {
+      if (e.originalEvent && followAircraftRef.current) {
+        setFollowAircraft(false);
+      }
+    });
 
     mapRef.current = map;
     return () => {
@@ -1212,6 +1244,9 @@ export function RoutesMapView({
                   zoom: Math.max(map.getZoom(), 8),
                   duration: 600,
                 });
+                // (v4.27.0) Activa el seguimiento sticky: las próximas
+                // posiciones re-centran solas; el zoom NO lo apaga.
+                setFollowAircraft(true);
               }
             }}
           />

@@ -654,16 +654,13 @@ export default function App() {
 
       <DownloadsPanel open={isPanelOpen} onClose={() => setPanelOpen(false)} />
 
-      {/* `main` truly fluid — sin max-w para que el contenido llene
-          el ancho disponible en monitores grandes. Sólo Buscar
-          mantiene un cap razonable porque las cards muy anchas
-          dejan demasiado whitespace en el medio. */}
-      <main
-        className={`w-full px-6 py-5 ${
-          view === "search" ? "mx-auto max-w-[1600px]" : ""
-        }`}
-      >
-        <nav className="mb-5 flex gap-1 rounded-xl bg-slate-900/60 p-1 ring-1 ring-slate-800">
+      {/* (v4.27.0) Nav FUERA del main para que:
+          1. Mantenga el MISMO ancho en todas las pantallas (antes en
+             Search se encogía con `max-w-[1600px]`).
+          2. Sea sticky en scroll — siempre accesible aunque la vista
+             tenga contenido largo.
+          El cap de Search se aplica solo a su contenido (más abajo). */}
+      <nav className="sticky top-0 z-30 mx-6 mt-5 flex gap-1 rounded-xl bg-slate-900/80 p-1 ring-1 ring-slate-800 backdrop-blur">
           <ViewTab
             active={view === "dashboard"}
             onClick={() => setView("dashboard")}
@@ -699,8 +696,13 @@ export default function App() {
             label={t("nav.flightbook")}
             tourId="nav-flightbook"
           />
-        </nav>
+      </nav>
 
+      <main
+        className={`w-full px-6 pb-5 pt-4 ${
+          view === "search" ? "mx-auto max-w-[1600px]" : ""
+        }`}
+      >
         {view === "dashboard" && <DashboardView />}
 
         {view === "search" && (

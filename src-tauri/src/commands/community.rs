@@ -462,7 +462,7 @@ fn find_image_named(dir: &std::path::Path, depth: usize) -> Option<String> {
     // Depth 6 cubre: <pkg>/SimObjects/Airplanes/<plane>/texture.<code>/thumbnail.jpg
     // (5 niveles bajo el root). PMDG, Fenix y similares ponen el
     // thumbnail ahí. Profundidad 4 anterior los dejaba fuera.
-    if depth > 6 || !dir.is_dir() {
+    if depth > 8 || !dir.is_dir() {
         return None;
     }
     let entries = std::fs::read_dir(dir).ok()?;
@@ -497,7 +497,7 @@ fn find_any_image(dir: &std::path::Path, depth: usize) -> Option<String> {
     // Depth 6 cubre: <pkg>/SimObjects/Airplanes/<plane>/texture.<code>/thumbnail.jpg
     // (5 niveles bajo el root). PMDG, Fenix y similares ponen el
     // thumbnail ahí. Profundidad 4 anterior los dejaba fuera.
-    if depth > 6 || !dir.is_dir() {
+    if depth > 8 || !dir.is_dir() {
         return None;
     }
     let entries = std::fs::read_dir(dir).ok()?;

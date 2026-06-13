@@ -723,10 +723,23 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
             continue;
         }
         let mut rescued: Option<String> = None;
+        // (v4.27.0) PRIMERO buscar por NOMBRE del aeropuerto en
+        // `airports`. "gakki-taiyuanwushu" tenía sufijo "USHU" (Uray)
+        // pero name='Taiyuan Wusu International Airport' resuelve a
+        // ZBYN — el dato real. Solo si no hay match por nombre caemos
+        // al rescue por sufijo/prefijo.
         for text in [Some(folder.as_str()), title.as_deref()].into_iter().flatten() {
-            if let Some(icao) = rescue_embedded_icao(pool, text).await {
+            if let Some(icao) = rescue_by_airport_name(pool, text).await {
                 rescued = Some(icao);
                 break;
+            }
+        }
+        if rescued.is_none() {
+            for text in [Some(folder.as_str()), title.as_deref()].into_iter().flatten() {
+                if let Some(icao) = rescue_embedded_icao(pool, text).await {
+                    rescued = Some(icao);
+                    break;
+                }
             }
         }
         if let Some(icao) = rescued {
@@ -777,6 +790,55 @@ pub fn is_library_pack(title: &str, folder_name: &str) -> bool {
     });
     let hay = format!("{} {}", title, folder_name);
     RE.is_match(&hay)
+}
+
+/// (v4.27.0) Resuelve ICAO por NOMBRE del aeropuerto. Tokeniza el
+/// folder/title (incluyendo prefijos progresivos para "taiyuanwushu"
+/// sin separador), busca cada token >=5 chars contra `airports.name`
+/// (`LIKE '%token%'`), y devuelve el ICAO **sólo si todas las
+/// coincidencias apuntan al mismo aeropuerto** (resultado único).
+/// Caso real verificado: gakki-taiyuanwushu → "taiyuan" matchea
+/// "Taiyuan Wusu International Airport" → ZBYN.
+async fn rescue_by_airport_name(pool: &SqlitePool, text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let mut tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for raw in lower.split(|c: char| !c.is_ascii_alphabetic()) {
+        if raw.len() >= 5 {
+            tokens.insert(raw.to_string());
+        }
+        // Sin separador (`taiyuanwushu`) → probamos prefijos progresivos
+        // de 5..=11 caracteres. Si "taiyuan" matchea único y nada más
+        // contradice, ganamos.
+        if raw.len() > 11 {
+            for n in 5..=11 {
+                tokens.insert(raw[..n].to_string());
+            }
+        }
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut winners: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for tok in &tokens {
+        let pattern = format!("%{}%", tok);
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT icao FROM airports WHERE LOWER(name) LIKE ?1 LIMIT 2",
+        )
+        .bind(&pattern)
+        .fetch_all(pool)
+        .await
+        .ok()?;
+        // Tokens que matchean MUCHOS aeropuertos no son útiles
+        // ("inter"/"airport" matchearían cientos) — los descartamos.
+        if rows.len() == 1 {
+            winners.insert(rows[0].clone());
+        }
+    }
+    if winners.len() == 1 {
+        return winners.into_iter().next();
+    }
+    None
 }
 
 /// (v4.24.0) Busca un ICAO embebido en `text` sin word boundaries: prueba

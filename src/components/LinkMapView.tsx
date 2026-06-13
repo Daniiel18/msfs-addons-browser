@@ -368,7 +368,11 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
   }, [addons, members, addQuery]);
 
   return (
-    <div className="relative h-[calc(100vh-21rem)] min-h-[480px] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
+    // (v4.27.0) Pantalla casi completa — antes el lienzo quedaba con
+    // ~480px y tocaba dar zoom + arrastrar para ver todo. Ahora el
+    // contenedor llena el viewport descontando el header + nav
+    // sticky + métricas + chips de vista (~10rem).
+    <div className="relative h-[calc(100vh-11rem)] min-h-[560px] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
       {/* Barra superior del lienzo — contadores + acciones. */}
       <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-950/80 px-2.5 py-1.5 text-[11px] text-slate-300 ring-1 ring-slate-800 backdrop-blur">
@@ -757,9 +761,15 @@ function layoutWithDagre(
   }
 
   // Zona 2 — grilla para los aislados, debajo de los clusters.
+  // (v4.27.0) Más columnas (sqrt * 3 ≈ relación 16:9 visual) para
+  // que las filas queden anchas y horizontales en vez de una columna
+  // vertical infinita que el usuario reportó.
   const isolated = unpositioned.filter((m) => !linked.has(m));
   if (isolated.length > 0) {
-    const cols = Math.max(4, Math.ceil(Math.sqrt(isolated.length * 1.6)));
+    const cols = Math.max(
+      6,
+      Math.min(20, Math.ceil(Math.sqrt(isolated.length * 3))),
+    );
     const gapX = NODE_W + 46;
     const gapY = NODE_H + 46;
     const startY = maxY > 0 ? maxY + 90 : 0;

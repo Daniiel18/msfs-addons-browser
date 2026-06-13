@@ -78,6 +78,12 @@ export function MapView() {
   // re-run del efecto del geojson cuando el estilo nuevo carga.
   const [styleEpoch, setStyleEpoch] = useState(0);
   const handlersBoundRef = useRef(false);
+  // (v4.27.0) Filtros y búsqueda SUBIDOS al padre para que afecten
+  // también al GeoJSON del mapa (antes solo filtraban la sidebar) y
+  // para que la búsqueda matchee por NOMBRE del aeropuerto, no solo
+  // por ICAO/folder.
+  const [filter, setFilter] = useState("");
+  const [gsxFilter, setGsxFilter] = useState<"all" | "gsx" | "no-gsx">("all");
   // (v4.0.0 — P3.1) Necesitamos el set de ICAOs con GSX al nivel del
   // padre para alimentar el GeoJSON con la prop `hasGsx`. El layer del
   // mapa luego pinta rojo los puntos sin GSX (mismo patrón que el
@@ -94,17 +100,50 @@ export function MapView() {
     [allPackages],
   );
 
-  // Como `isAirport` ya garantiza coords, el listado del mapa es
-  // exactamente `packages`. Mantenemos la variable separada por
-  // claridad y por si en el futuro queremos filtrar por viewport.
-  const geolocated = packages;
+  // (v4.27.0) Aplicación de filtros — mismo pool para sidebar y mapa.
+  // Antes el GeoJSON usaba `packages` (sin filtrar) y la sidebar el
+  // pool filtrado; eso causaba que "No GSX" no escondiera los markers
+  // del mapa.
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    let pool = packages;
+    if (q) {
+      pool = pool.filter((p) =>
+        [p.title, p.creator, p.icao, p.folderName, p.airportName]
+          .filter(Boolean)
+          .some((s) => s!.toLowerCase().includes(q)),
+      );
+    }
+    if (gsxFilter !== "all") {
+      pool = pool.filter((p) => {
+        const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
+        return gsxFilter === "gsx" ? has : !has;
+      });
+    }
+    return pool;
+  }, [packages, filter, gsxFilter, gsxInstalledIcaos]);
+  // Marcadores del mapa = exactamente lo visible en la sidebar.
+  const geolocated = visible;
   // (v4.24.1) El CONTEO del chip cuenta AEROPUERTOS (ICAOs distintos),
   // no paquetes: dos sceneries del mismo aeropuerto (LEBL ×2) = 1.
   // Igual que el KPI del dashboard (DISTINCT icao en backend).
+  // El chip de la esquina del mapa cuenta ICAOs DISTINTOS — ahora del
+  // pool visible (refleja "X aeropuertos coinciden con el filtro").
   const distinctAirports = useMemo(
-    () => new Set(packages.map((p) => p.icao!.toUpperCase())).size,
-    [packages],
+    () => new Set(visible.map((p) => p.icao!.toUpperCase())).size,
+    [visible],
   );
+  // Conteos crudos por bucket GSX — alimentan los chips de la sidebar.
+  const { gsxCount, noGsxCount } = useMemo(() => {
+    let g = 0;
+    let n = 0;
+    for (const p of packages) {
+      const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
+      if (has) g += 1;
+      else n += 1;
+    }
+    return { gsxCount: g, noGsxCount: n };
+  }, [packages, gsxInstalledIcaos]);
 
   // Paquete enfocado para centrar la cámara, resaltar la sidebar y
   // mostrar la card contextual flotante (v4.25.0 — sustituye al
@@ -194,8 +233,12 @@ export function MapView() {
     // reaccionamos a CAMBIOS posteriores.
     if (!map || themeAppliedRef.current === theme) return;
     themeAppliedRef.current = theme;
+    handlersBoundRef.current = false; // setStyle borra TODOS los listeners
     map.setStyle(styleFor(theme));
-    map.once("styledata", () => setStyleEpoch((e) => e + 1));
+    // (v4.27.0) `style.load` es el evento de carga COMPLETA del estilo
+    // nuevo (no `styledata`, que dispara durante la carga y dejaba a
+    // los aeropuertos sin pintarse hasta el siguiente remount).
+    map.once("style.load", () => setStyleEpoch((e) => e + 1));
   }, [theme]);
 
   const geojson = useMemo(
@@ -296,7 +339,7 @@ export function MapView() {
     // vez en la vida del mapa, pero tras un setStyle (tema) hay que
     // esperar a que el estilo NUEVO cargue para re-añadir el source.
     if (map.isStyleLoaded()) apply();
-    else map.once("styledata", apply);
+    else map.once("style.load", apply);
   }, [geojson, setFocused, styleEpoch]);
 
   // Cuando cambia el paquete enfocado (por click en sidebar o
@@ -320,8 +363,12 @@ export function MapView() {
     // de la app + listado de aeropuertos a la IZQUIERDA + mapa a la
     // derecha (antes el listado iba a la derecha). El handle es una
     // columna fina full-height — mismo patrón que el FlightBook.
+    /* (v4.27.0) `h-[calc(100vh-9rem)]` (antes 12rem) ahora que el nav
+       es sticky y ocupa menos. `overflow-hidden` en el wrapper evita
+       el scroll vertical residual — esta vista llena el viewport pero
+       nada se desborda. */
     <div
-      className={`grid h-[calc(100vh-12rem)] min-h-[520px] gap-3 ${
+      className={`grid h-[calc(100vh-9rem)] min-h-[520px] gap-3 overflow-hidden ${
         sidebarCollapsed
           ? "grid-cols-[18px_1fr]"
           : "grid-cols-[18px_360px_1fr] xl:grid-cols-[18px_400px_1fr]"
@@ -341,12 +388,19 @@ export function MapView() {
 
       {!sidebarCollapsed && (
         <Sidebar
-          packages={packages}
+          visible={visible}
+          totalPackages={packages.length}
           updatesByFolder={updatesByFolder}
           updatesCount={updatesByFolder.size}
           onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}
           focused={focused}
           onFocus={setFocused}
+          filter={filter}
+          setFilter={setFilter}
+          gsxFilter={gsxFilter}
+          setGsxFilter={setGsxFilter}
+          gsxCount={gsxCount}
+          noGsxCount={noGsxCount}
         />
       )}
 
@@ -398,64 +452,37 @@ export function MapView() {
 }
 
 function Sidebar({
-  packages,
+  visible,
+  totalPackages,
   updatesByFolder,
   updatesCount,
   onUpdateAll,
   focused,
   onFocus,
+  filter,
+  setFilter,
+  gsxFilter,
+  setGsxFilter,
+  gsxCount,
+  noGsxCount,
 }: {
-  packages: CommunityPackage[];
+  visible: CommunityPackage[];
+  totalPackages: number;
   updatesByFolder: Map<string, AvailableUpdate>;
   updatesCount: number;
   onUpdateAll: () => void;
   focused: string | null;
   onFocus: (folder: string) => void;
+  filter: string;
+  setFilter: (v: string) => void;
+  gsxFilter: "all" | "gsx" | "no-gsx";
+  setGsxFilter: (v: "all" | "gsx" | "no-gsx") => void;
+  gsxCount: number;
+  noGsxCount: number;
 }) {
-  const [filter, setFilter] = useState("");
-  // (v4.0.0 — P2) Filtro GSX. `"all"` = sin filtro (default), `"gsx"` =
-  // sólo escenarios con perfil GSX instalado, `"no-gsx"` = sólo los que
-  // NO lo tienen. Mutuamente exclusivo: activar uno desactiva el otro.
-  // Click en el chip activo lo desactiva y vuelve a `"all"`.
-  const [gsxFilter, setGsxFilter] = useState<"all" | "gsx" | "no-gsx">("all");
-  // (v2.0.0) Set de ICAOs con perfil GSX local — para badge por
-  // escenario en esta lista (no ya sólo en results de búsqueda).
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
-
-  const visible = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    let pool = packages;
-    if (q) {
-      pool = pool.filter((p) =>
-        [p.title, p.creator, p.icao, p.folderName]
-          .filter(Boolean)
-          .some((s) => s!.toLowerCase().includes(q)),
-      );
-    }
-    if (gsxFilter !== "all") {
-      pool = pool.filter((p) => {
-        const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
-        return gsxFilter === "gsx" ? has : !has;
-      });
-    }
-    return pool;
-  }, [filter, packages, gsxFilter, gsxInstalledIcaos]);
-
-  // Contadores para mostrar dentro de cada chip — ayudan a entender
-  // de un vistazo cuántos sceneries caen en cada bucket.
-  const { gsxCount, noGsxCount } = useMemo(() => {
-    let g = 0;
-    let n = 0;
-    for (const p of packages) {
-      const has = !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
-      if (has) g += 1;
-      else n += 1;
-    }
-    return { gsxCount: g, noGsxCount: n };
-  }, [packages, gsxInstalledIcaos]);
-
   const toggleGsx = (target: "gsx" | "no-gsx") => {
-    setGsxFilter((cur) => (cur === target ? "all" : target));
+    setGsxFilter(gsxFilter === target ? "all" : target);
   };
 
   return (
@@ -463,7 +490,7 @@ function Sidebar({
       <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
         <div>
           <h3 className="text-sm font-semibold text-slate-100">
-            {t("map.installed")} ({packages.length})
+            {t("map.installed")} ({totalPackages})
           </h3>
         </div>
       </header>
@@ -514,7 +541,7 @@ function Sidebar({
       <div className="flex-1 overflow-y-auto">
         {visible.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-slate-500">
-            {packages.length === 0
+            {totalPackages === 0
               ? t("map.empty.no_packages")
               : t("map.empty.no_match")}
           </div>

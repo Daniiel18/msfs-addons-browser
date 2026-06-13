@@ -84,8 +84,26 @@ export function AddonsView() {
 
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState<PillFilter>("ALL");
-  // (v4.25.0) Vista activa: grid clásico o grafo de dependencias.
-  const [view, setView] = useState<"grid" | "linkmap">("grid");
+  // (v4.27.0) Vista activa: el Link Map es ahora la vista por defecto
+  // (pedido del usuario), persistente entre sesiones. Las píldoras y
+  // el buscador SOLO se muestran cuando la vista es grid (el Link Map
+  // tiene su propio search/Manage Links en el lienzo).
+  const [view, setView] = useState<"grid" | "linkmap">(() => {
+    try {
+      return localStorage.getItem("simfleet.addons.view") === "grid"
+        ? "grid"
+        : "linkmap";
+    } catch {
+      return "linkmap";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("simfleet.addons.view", view);
+    } catch {
+      // localStorage lleno — el estado vive en memoria igualmente.
+    }
+  }, [view]);
   // (v4.25.0) Confirmación pendiente de un batch (null = ninguna).
   const [confirmBatch, setConfirmBatch] = useState<"enable" | "disable" | null>(
     null,
@@ -304,22 +322,29 @@ export function AddonsView() {
               </button>
             </div>
 
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder={t("addons.search.placeholder")}
-                className="w-48 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 xl:w-64"
-              />
-            </div>
+            {/* (v4.27.0) Search del grid — el Link Map tiene el suyo
+                propio en el lienzo, no tiene sentido duplicar. */}
+            {view === "grid" && (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                <input
+                  type="text"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder={t("addons.search.placeholder")}
+                  className="w-48 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 xl:w-64"
+                />
+              </div>
+            )}
           </div>
         </div>
       </header>
 
       {/* (v4.25.0) Píldoras de categoría — All / Aircraft / Liveries /
-          Utilities / Others. SIN Airports (viven en Map scenery). */}
+          Utilities / Others. SIN Airports (viven en Map scenery).
+          (v4.27.0) Solo visibles en modo grid: el Link Map se centra
+          en relaciones, no en filtros por tipo. */}
+      {view === "grid" && (
       <div className="flex flex-wrap gap-1.5">
         <TypeChip
           active={typeFilter === "ALL"}
@@ -354,9 +379,14 @@ export function AddonsView() {
           onClick={() => setTypeFilter("OTHERS")}
           icon={<Music className="h-3.5 w-3.5" />}
           label={t("addons.chip.others")}
-          count={(counts.get("MISC") ?? 0) + (counts.get("UNKNOWN") ?? 0)}
+          count={
+            (counts.get("MISC") ?? 0) +
+            (counts.get("UNKNOWN") ?? 0) +
+            (counts.get("SCENERY") ?? 0)
+          }
         />
       </div>
+      )}
 
       {/* Cuerpo: grafo o grid según vista activa. */}
       {view === "linkmap" ? (
