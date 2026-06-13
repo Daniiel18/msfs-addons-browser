@@ -543,14 +543,31 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     // Upsert por folder_name. Reemplazamos todos los campos en cada
     // scan — más simple que diff incremental y suficientemente rápido.
     for pkg in &report.packages {
+        // (v4.28.0) Limpieza de icaos basura del scanner viejo: si el
+        // pack es library_pack OR no es SCENERY → forzamos icao=NULL
+        // para que no se cuele en el mapa. El extract_icao() de
+        // materialize() ya no asigna a no-SCENERY, pero rows de scans
+        // anteriores quedaron con icao=BASE/CITY/MISC/MSFS/HONG…
+        let icao_to_persist = if matches_scenery(&pkg.content_type)
+            && !is_library_pack(&pkg.title, &pkg.folder_name)
+        {
+            pkg.icao.clone()
+        } else {
+            None
+        };
+        let simobject_dirs_json = serde_json::to_string(&pkg.simobject_dirs)
+            .unwrap_or_else(|_| "[]".to_string());
+        let base_containers_json = serde_json::to_string(&pkg.base_containers)
+            .unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
             r#"
             INSERT INTO community_packages (
                 folder_name, install_path, title, creator, content_type,
                 package_version, minimum_game_version, icao, size_bytes,
-                folder_modified_at, dependencies_count, scanned_at, enabled
+                folder_modified_at, dependencies_count, scanned_at, enabled,
+                simobject_dirs_json, base_containers_json
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14)
             ON CONFLICT(folder_name) DO UPDATE SET
                 install_path = excluded.install_path,
                 title = excluded.title,
@@ -563,7 +580,9 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 folder_modified_at = excluded.folder_modified_at,
                 dependencies_count = excluded.dependencies_count,
                 scanned_at = datetime('now'),
-                enabled = excluded.enabled
+                enabled = excluded.enabled,
+                simobject_dirs_json = excluded.simobject_dirs_json,
+                base_containers_json = excluded.base_containers_json
             "#,
         )
         .bind(&pkg.folder_name)
@@ -573,11 +592,13 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         .bind(&pkg.content_type)
         .bind(&pkg.package_version)
         .bind(&pkg.minimum_game_version)
-        .bind(&pkg.icao)
+        .bind(&icao_to_persist)
         .bind(pkg.size_bytes.map(|n| n as i64))
         .bind(&pkg.folder_modified_at)
         .bind(pkg.dependencies_count as i64)
         .bind(pkg.enabled)
+        .bind(&simobject_dirs_json)
+        .bind(&base_containers_json)
         .execute(&mut *tx)
         .await?;
     }

@@ -491,6 +491,15 @@ export interface CommunityPackage {
    *  renombró su layout.json → layout.json.disabled y MSFS lo ignora.
    *  Optional para el modo demo; tratar undefined como activo. */
   enabled?: boolean;
+  /** (v4.28.0) JSON-encoded array de los containers que viven en
+   *  `SimObjects/Airplanes` del paquete (p.ej. ["FNX_320"]). Si está
+   *  vacío, el paquete no aporta avión propio (no es AIRCRAFT). */
+  simobjectDirsJson?: string;
+  /** (v4.28.0) JSON-encoded array de los `base_container` referenciados
+   *  por los `aircraft.cfg` del paquete (último componente del path).
+   *  Si TODOS los base_containers están en `simobjectDirsJson` →
+   *  AIRCRAFT self-contained; si apuntan fuera → LIVERY. */
+  baseContainersJson?: string;
 }
 
 /** (v4.25.0) Reporte de un toggle enable/disable (individual con

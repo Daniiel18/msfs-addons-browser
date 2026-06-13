@@ -53,9 +53,10 @@ pub async fn scan_community(
     {
         let pool = state.db.clone();
         let http = state.http.clone();
+        let sources = state.sources.clone();
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            match crate::airport_thumbs::fetch_missing(&pool, &http, &app2).await {
+            match crate::airport_thumbs::fetch_missing(&pool, &http, &sources, &app2).await {
                 Ok(n) if n > 0 => {
                     tracing::info!(target: "scan", "thumbs: {} imágenes bajadas de Wikipedia", n);
                 }

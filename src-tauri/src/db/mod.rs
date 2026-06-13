@@ -467,6 +467,16 @@ pub mod repo {
         /// renombró layout.json → layout.json.disabled y MSFS lo
         /// ignora. El scanner lo recalcula del FS en cada scan.
         pub enabled: bool,
+        /// (v4.28.0) Contenedores SimObjects/Airplanes propios del
+        /// paquete (JSON-encoded). El frontend los necesita para
+        /// distinguir un avión real (con sus propios containers) de
+        /// una livery (sin containers o con base_container fuera).
+        #[sqlx(default)]
+        pub simobject_dirs_json: String,
+        /// (v4.28.0) Valores de `base_container` del aircraft.cfg
+        /// (último componente del path, JSON-encoded).
+        #[sqlx(default)]
+        pub base_containers_json: String,
         pub airport_name: Option<String>,
         pub latitude: Option<f64>,
         pub longitude: Option<f64>,
@@ -496,6 +506,8 @@ pub mod repo {
                    cp.dependencies_count,
                    cp.scanned_at,
                    cp.enabled,
+                   cp.simobject_dirs_json,
+                   cp.base_containers_json,
                    ap.name      AS airport_name,
                    ap.latitude  AS latitude,
                    ap.longitude AS longitude

@@ -59,6 +59,21 @@ body {
      la pantalla `auto` no la pinta, y si no cabe la pinta una
      sola vez. */
   overflow-y: auto;
+  /* (v4.28.0) Scrollbar GLOBAL invisible — pedido del usuario:
+     "elimina el scrollbar que esta en la pantalla addons, la app debe
+     ser responsive. lo mismo para la pantalla map". El scroll por
+     rueda/teclado sigue funcionando; solo desaparece la barra visual.
+     Firefox + Chromium/WebView2 cubiertos. */
+  scrollbar-width: none;
+}
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+* {
+  scrollbar-width: none;
 }
 
 /*

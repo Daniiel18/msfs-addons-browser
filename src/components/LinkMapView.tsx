@@ -192,21 +192,14 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
     void reloadGraph();
   }, [reloadGraph]);
 
-  // Membresía del lienzo: extremos de links + posiciones guardadas.
-  // Solo addons que EXISTEN en el inventario actual (byFolder).
-  const members = useMemo(() => {
-    const set = new Set<string>();
-    for (const l of links) {
-      if (byFolder.has(l.sourceFolder) && byFolder.has(l.targetFolder)) {
-        set.add(l.sourceFolder);
-        set.add(l.targetFolder);
-      }
-    }
-    for (const f of positions.keys()) {
-      if (byFolder.has(f)) set.add(f);
-    }
-    return Array.from(set);
-  }, [links, positions, byFolder]);
+  // (v4.28.0) Membresía del lienzo: TODOS los addons del inventario
+  // — el usuario pidió que el Link Map muestre todo, no solo lo
+  // linkeado. Antes solo aparecían los que estaban en algún link o
+  // tenían posición guardada.
+  const members = useMemo(
+    () => addons.map((a) => a.p.folderName),
+    [addons],
+  );
 
   const visibleLinks = useMemo(
     () =>
@@ -230,6 +223,7 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
         members.filter((m) => !positions.has(m) && !currentPos.has(m)),
         members,
         visibleLinks,
+        byFolder,
       );
       return members.map((folder) => {
         const item = byFolder.get(folder)!;
@@ -707,77 +701,136 @@ function ManageLinksModal({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Auto-layout para los nodos sin posición persistida.
- *
- *  (v4.26.0) Dos zonas: los nodos CONECTADOS van con dagre (izquierda
- *  → derecha, clusters avión → liveries); los AISLADOS van en una
- *  GRILLA compacta debajo. Antes dagre metía a los aislados en un
- *  único rank → una columna vertical interminable, justo lo que el
- *  usuario reportó. */
+/** (v4.28.0) Clasifica un nodo por marca para el layout del Link Map.
+ *  - Airbus → bucket izquierdo
+ *  - Boeing → bucket derecho
+ *  - Otros aviones (CRJ, ATR, Embraer, MD, Cessna…) → bucket central
+ *  - Resto (sound packs, utilities, mods sin avión) → bucket "misc"
+ *    abajo. */
+function brandOf(item: AddonItem): "airbus" | "boeing" | "other" | "misc" {
+  const hay = `${item.p.title} ${item.p.folderName}`.toLowerCase();
+  // Airbus: A3xx + A32NX/A380X.
+  if (/\b(airbus|a3(?:1[89]|2[01]|30|40|50|80)|a32nx|a380x)\b/.test(hay)) {
+    return "airbus";
+  }
+  // Boeing: 7xx + dreamliner + B7xx.
+  if (/\b(boeing|7[3-9][0-9](?:[\s-]?(?:max|er|lr|f))?|b73[6-9]|b74[78]|b75[7]|b76[7]|b77[7]|b78[7]|dreamliner|salty\s*747)\b/.test(hay)) {
+    return "boeing";
+  }
+  // Otros aviones reales.
+  if (
+    item.t === "AIRCRAFT" ||
+    item.t === "LIVERY" ||
+    /\b(crj|atr|embraer|md-?\d+|cessna|piper|king\s*air|tbm|c1?7[2358]|c20[8]|dh[c]?-?8|q400|cj4|airliner|aircraft|airplane|jet)\b/.test(hay)
+  ) {
+    return "other";
+  }
+  return "misc";
+}
+
+/** Layout en 4 buckets verticales (Airbus | Otros | Boeing | Misc).
+ *  Cada bucket organiza internamente sus nodos con dagre LR — así un
+ *  avión + sus liveries siguen apareciendo como cluster horizontal,
+ *  pero distintos aviones se apilan verticalmente DENTRO de su marca.
+ *  Buckets dispuestos lado a lado con offsets X grandes para que no
+ *  se solapen. */
 function layoutWithDagre(
   unpositioned: string[],
   allMembers: string[],
   links: AddonLink[],
+  byFolder: Map<string, AddonItem>,
 ): Map<string, { x: number; y: number }> {
   const out = new Map<string, { x: number; y: number }>();
   if (unpositioned.length === 0) return out;
 
-  const memberSet = new Set(allMembers);
-  const linked = new Set<string>();
+  // Para evaluar la marca de un livery enlazado, usamos la marca del
+  // padre (el aircraft base) — así "PMDG 777 (PMDG772)" va al lado
+  // derecho con su avión Boeing.
+  const parentOf: Map<string, string> = new Map();
   for (const l of links) {
-    if (memberSet.has(l.sourceFolder) && memberSet.has(l.targetFolder)) {
-      linked.add(l.sourceFolder);
-      linked.add(l.targetFolder);
+    parentOf.set(l.targetFolder, l.sourceFolder);
+  }
+  const brandFor = (folder: string): "airbus" | "boeing" | "other" | "misc" => {
+    const item = byFolder.get(folder);
+    if (!item) return "misc";
+    const direct = brandOf(item);
+    if (direct !== "misc" && direct !== "other") return direct;
+    // Si el direct es "other" o "misc" pero el padre es Boeing/Airbus,
+    // hereda la marca del padre.
+    const parent = parentOf.get(folder);
+    if (parent) {
+      const parentItem = byFolder.get(parent);
+      if (parentItem) {
+        const parentBrand = brandOf(parentItem);
+        if (parentBrand !== "misc") return parentBrand;
+      }
     }
+    return direct;
+  };
+
+  // Buckets disjuntos por marca.
+  const buckets: Record<string, string[]> = {
+    airbus: [],
+    other: [],
+    boeing: [],
+    misc: [],
+  };
+  for (const m of allMembers) {
+    buckets[brandFor(m)].push(m);
   }
 
-  // Zona 1 — dagre solo con los nodos que participan en links.
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 110, marginx: 20, marginy: 20 });
-  g.setDefaultEdgeLabel(() => ({}));
-  for (const m of allMembers) {
-    if (linked.has(m)) {
-      g.setNode(m, { width: NODE_W, height: NODE_H });
+  // X base de cada bucket (gap horizontal generoso para que liveries
+  // de Boeing no choquen con las de Airbus).
+  const BUCKET_W = 850;
+  const offsets: Record<string, number> = {
+    airbus: 0,
+    other: BUCKET_W,
+    boeing: BUCKET_W * 2,
+    misc: 0, // se coloca debajo de todos
+  };
+
+  let maxBucketY = 0;
+  for (const bucket of ["airbus", "other", "boeing"] as const) {
+    const folders = buckets[bucket];
+    if (folders.length === 0) continue;
+
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: "LR", nodesep: 26, ranksep: 90, marginx: 12, marginy: 12 });
+    g.setDefaultEdgeLabel(() => ({}));
+    const folderSet = new Set(folders);
+    for (const f of folders) g.setNode(f, { width: NODE_W, height: NODE_H });
+    for (const l of links) {
+      if (folderSet.has(l.sourceFolder) && folderSet.has(l.targetFolder)) {
+        g.setEdge(l.sourceFolder, l.targetFolder);
+      }
     }
-  }
-  for (const l of links) {
-    if (linked.has(l.sourceFolder) && linked.has(l.targetFolder)) {
-      g.setEdge(l.sourceFolder, l.targetFolder);
-    }
-  }
-  let maxY = 0;
-  if (linked.size > 0) {
     dagre.layout(g);
-    for (const m of allMembers) {
-      if (!linked.has(m)) continue;
-      const n = g.node(m);
-      if (n) {
-        maxY = Math.max(maxY, n.y + NODE_H / 2);
-        if (unpositioned.includes(m)) {
-          out.set(m, { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 });
-        }
+    for (const f of folders) {
+      const n = g.node(f);
+      if (!n) continue;
+      const x = offsets[bucket] + n.x - NODE_W / 2;
+      const y = n.y - NODE_H / 2;
+      maxBucketY = Math.max(maxBucketY, y + NODE_H);
+      if (unpositioned.includes(f)) {
+        out.set(f, { x, y });
       }
     }
   }
 
-  // Zona 2 — grilla para los aislados, debajo de los clusters.
-  // (v4.27.0) Más columnas (sqrt * 3 ≈ relación 16:9 visual) para
-  // que las filas queden anchas y horizontales en vez de una columna
-  // vertical infinita que el usuario reportó.
-  const isolated = unpositioned.filter((m) => !linked.has(m));
-  if (isolated.length > 0) {
-    const cols = Math.max(
-      6,
-      Math.min(20, Math.ceil(Math.sqrt(isolated.length * 3))),
-    );
-    const gapX = NODE_W + 46;
-    const gapY = NODE_H + 46;
-    const startY = maxY > 0 ? maxY + 90 : 0;
-    isolated.forEach((m, i) => {
-      out.set(m, {
-        x: (i % cols) * gapX,
-        y: startY + Math.floor(i / cols) * gapY,
-      });
+  // Bucket misc: grilla ancha debajo de los 3 buckets de aviones.
+  const misc = buckets.misc;
+  if (misc.length > 0) {
+    const cols = Math.max(8, Math.min(24, Math.ceil(Math.sqrt(misc.length * 4))));
+    const gapX = NODE_W + 26;
+    const gapY = NODE_H + 26;
+    const startY = maxBucketY + 120;
+    misc.forEach((m, i) => {
+      if (unpositioned.includes(m)) {
+        out.set(m, {
+          x: (i % cols) * gapX,
+          y: startY + Math.floor(i / cols) * gapY,
+        });
+      }
     });
   }
   return out;

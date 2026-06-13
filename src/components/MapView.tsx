@@ -23,12 +23,35 @@ import { t } from "../lib/i18n";
 // patrón que el sidebar del FlightBook: la vista se desmonta al
 // cambiar de pestaña, así que el estado vive en localStorage.
 const SIDEBAR_COLLAPSED_KEY = "simfleet.map.sidebarCollapsed";
+// (v4.28.0) Persistencia del FILTRO GSX y del texto de search del
+// sidebar — el usuario reportó: "el filtrado de gsx y no gsx se
+// pierde al cambiar de pantalla". Vive en localStorage como todo lo
+// demás de esta vista.
+const GSX_FILTER_KEY = "simfleet.map.gsxFilter";
+const SEARCH_FILTER_KEY = "simfleet.map.filter";
 
 function readSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
   } catch {
     return false;
+  }
+}
+
+function readGsxFilter(): "all" | "gsx" | "no-gsx" {
+  try {
+    const v = localStorage.getItem(GSX_FILTER_KEY);
+    return v === "gsx" || v === "no-gsx" ? v : "all";
+  } catch {
+    return "all";
+  }
+}
+
+function readSearchFilter(): string {
+  try {
+    return localStorage.getItem(SEARCH_FILTER_KEY) ?? "";
+  } catch {
+    return "";
   }
 }
 
@@ -82,8 +105,30 @@ export function MapView() {
   // también al GeoJSON del mapa (antes solo filtraban la sidebar) y
   // para que la búsqueda matchee por NOMBRE del aeropuerto, no solo
   // por ICAO/folder.
-  const [filter, setFilter] = useState("");
-  const [gsxFilter, setGsxFilter] = useState<"all" | "gsx" | "no-gsx">("all");
+  // (v4.28.0) Persistidos en localStorage — sobreviven al remount al
+  // cambiar de pestaña (pedido explícito del usuario).
+  const [filter, setFilterState] = useState(readSearchFilter);
+  const setFilter = (v: string) => {
+    setFilterState(v);
+    try {
+      if (v) localStorage.setItem(SEARCH_FILTER_KEY, v);
+      else localStorage.removeItem(SEARCH_FILTER_KEY);
+    } catch {
+      // localStorage no disponible — el estado en memoria sigue ok.
+    }
+  };
+  const [gsxFilter, setGsxFilterState] = useState<"all" | "gsx" | "no-gsx">(
+    readGsxFilter,
+  );
+  const setGsxFilter = (v: "all" | "gsx" | "no-gsx") => {
+    setGsxFilterState(v);
+    try {
+      if (v === "all") localStorage.removeItem(GSX_FILTER_KEY);
+      else localStorage.setItem(GSX_FILTER_KEY, v);
+    } catch {
+      // localStorage no disponible — el estado en memoria sigue ok.
+    }
+  };
   // (v4.0.0 — P3.1) Necesitamos el set de ICAOs con GSX al nivel del
   // padre para alimentar el GeoJSON con la prop `hasGsx`. El layer del
   // mapa luego pinta rojo los puntos sin GSX (mismo patrón que el
@@ -389,7 +434,7 @@ export function MapView() {
       {!sidebarCollapsed && (
         <Sidebar
           visible={visible}
-          totalPackages={packages.length}
+          totalPackages={new Set(packages.map((p) => p.icao!.toUpperCase())).size}
           updatesByFolder={updatesByFolder}
           updatesCount={updatesByFolder.size}
           onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}

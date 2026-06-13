@@ -81,6 +81,70 @@ function looksLikeAircraft(p: CommunityPackage): boolean {
   return false;
 }
 
+/** (v4.28.0) Diagnóstico estructural del paquete a partir de
+ *  SimObjects/Airplanes + aircraft.cfg. Lo que vimos del FS real es
+ *  la verdad absoluta:
+ *
+ *   · **AIRCRAFT (avión completo)**: tiene containers propios bajo
+ *     `SimObjects/Airplanes/<X>` Y todos los `base_container` que
+ *     declara apuntan a UNO DE SUS PROPIOS containers (self-contained).
+ *   · **LIVERY**: tiene container propio CON `aircraft.cfg` que
+ *     declara `base_container` apuntando a OTRO paquete (no a sí
+ *     mismo). Pista de la especificación oficial: si hay
+ *     `base_container = "..\Asobo_A320"` el avión 3D vive en Asobo,
+ *     este pack es solo texturas.
+ *   · **MOD/COCKPIT/SOUND**: NO tiene containers propios. Modifica
+ *     archivos del avión base (panel, sonido, lights) y por eso
+ *     declara `content_type=AIRCRAFT` con `deps>0` aunque no aporte
+ *     avión — esos van a MISC/INSTRUMENT por keyword. */
+export function diagnosePackage(p: CommunityPackage): {
+  isLivery: boolean;
+  liveryReason: string | null;
+  baseContainer: string | null;
+  hasOwnAirplane: boolean;
+} {
+  const dirs = parseJsonArray(p.simobjectDirsJson).map((s) => s.toLowerCase());
+  const bases = parseJsonArray(p.baseContainersJson);
+  const ownSet = new Set(dirs);
+  const baseOutside = bases.find((b) => !ownSet.has(b.toLowerCase()));
+  const ct = (p.contentType ?? "").toUpperCase().trim();
+  // Señal #1 (la canónica del SDK): aircraft.cfg con base_container
+  // apuntando fuera → livery sí o sí.
+  if (baseOutside) {
+    return {
+      isLivery: true,
+      liveryReason: `aircraft.cfg base_container = "${baseOutside}" → otro paquete`,
+      baseContainer: baseOutside,
+      hasOwnAirplane: false,
+    };
+  }
+  // Señal #2: manifest declara LIVERY explícitamente.
+  if (["LIVERY", "PAINT", "REPAINT", "PAINTKIT", "TEXTURE"].includes(ct)) {
+    return {
+      isLivery: true,
+      liveryReason: 'manifest.json content_type = "LIVERY"',
+      baseContainer: null,
+      hasOwnAirplane: dirs.length > 0,
+    };
+  }
+  return {
+    isLivery: false,
+    liveryReason: null,
+    baseContainer: null,
+    hasOwnAirplane: dirs.length > 0,
+  };
+}
+
+function parseJsonArray(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function derivedType(p: CommunityPackage): DerivedType {
   const ct = p.contentType?.toUpperCase().trim() ?? "";
   const hay = `${p.title} ${p.folderName}`;
@@ -106,20 +170,33 @@ export function derivedType(p: CommunityPackage): DerivedType {
   if (["SOUND", "SOUNDPACK", "SOUND-PACK", "MUSIC"].includes(ct)) return "MISC";
   if (SOUND_RE.test(hay)) return "MISC";
 
-  // 6) INSTRUMENTS y LIVERY explícitos del manifest.
+  // 6) INSTRUMENTS explícitos del manifest.
   if (ct === "INSTRUMENT") return "INSTRUMENT";
-  if (["LIVERY", "PAINT", "REPAINT", "PAINTKIT", "TEXTURE"].includes(ct))
-    return "LIVERY";
 
-  // 7) Señales textuales de livery (más fiables que el manifest, que
-  //    muchas liveries de la comunidad ni declaran).
+  // 7) (v4.28.0) DIAGNÓSTICO ESTRUCTURAL — la verdad de la spec MSFS:
+  //    base_container del aircraft.cfg apuntando fuera ⇒ LIVERY.
+  const diag = diagnosePackage(p);
+  if (diag.isLivery) return "LIVERY";
+
+  // 8) AIRCRAFT con container propio (Y base_container in own OR sin
+  //    base_container) → AIRCRAFT real (PMDG, Fenix, Salty, FBW…).
+  if (diag.hasOwnAirplane && ct === "AIRCRAFT") return "AIRCRAFT";
+
+  // 9) MOD para avión existente: declara AIRCRAFT/MISC con deps>0
+  //    pero NO aporta container propio. Cockpit mods, ImproveLights,
+  //    AICopilot, Flow scripts, etc → MISC (cabe en "Others").
+  if (!diag.hasOwnAirplane && (ct === "AIRCRAFT" || ct === "MISC") && p.dependenciesCount > 0) {
+    return "MISC";
+  }
+
+  // 10) Señales textuales de livery (manifest mal declarado).
   if (looksLikeLivery(p)) return "LIVERY";
 
-  // 8) AIRCRAFT declarado — ya descartado livery por (7).
+  // 11) AIRCRAFT declarado sin container detectado (manifest correcto,
+  //     pero no pudimos parsear simobjects).
   if (ct === "AIRCRAFT") return "AIRCRAFT";
 
-  // 9) Sin content_type — corremos detector de aircraft (cubre packs
-  //    sin manifest claro). Si nada calza, queda UNKNOWN.
+  // 12) Sin content_type — fallback de aircraft por keyword del título.
   if (looksLikeAircraft(p)) return "AIRCRAFT";
   if (ct === "MISC") return "MISC";
   return "UNKNOWN";

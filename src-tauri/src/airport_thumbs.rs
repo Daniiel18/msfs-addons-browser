@@ -24,6 +24,7 @@ use tauri::Emitter;
 
 use crate::commands::community::find_thumbnail;
 use crate::db::repo;
+use crate::sources::Source;
 
 /// (v4.27.0) Extrae el modelo de avión del título para buscar en
 /// Wikipedia ("Airbus A320", "Boeing 777", "CRJ-700"). Devuelve None
@@ -62,9 +63,13 @@ fn extract_aircraft_query(title: &str) -> Option<String> {
 
 /// Punto de entrada — best-effort, pensado para correr en background
 /// después de cada scan. Devuelve cuántas imágenes nuevas se bajaron.
+/// `sources` se usa para los addons que no son aeropuerto ni avión:
+/// buscamos su título en Simplaza/SceneryAddons y tomamos el
+/// `image_url` del primer match.
 pub async fn fetch_missing(
     pool: &sqlx::SqlitePool,
     http: &reqwest::Client,
+    sources: &[std::sync::Arc<dyn Source>],
     app: &tauri::AppHandle,
 ) -> anyhow::Result<usize> {
     let pkgs = repo::list_community_packages(pool).await?;
@@ -78,17 +83,14 @@ pub async fn fetch_missing(
             .map(|c| c.trim().eq_ignore_ascii_case("SCENERY"))
             .unwrap_or(false)
     };
-    let candidates: Vec<_> = pkgs
-        .iter()
-        .filter(|p| !p.is_library_pack)
-        .filter(|p| {
-            // Aeropuerto: SCENERY con ICAO resuelto.
-            let is_airport = is_scenery(p) && p.icao.is_some() && p.airport_name.is_some();
-            // Avión: tiene query de modelo extraíble del título.
-            let is_aircraft = extract_aircraft_query(&p.title).is_some();
-            is_airport || is_aircraft
-        })
-        .collect();
+    // (v4.28.0) Todos los paquetes (no solo aeropuertos/aviones): el
+    // usuario quiere que TODOS tengan imagen. Para el resto buscamos
+    // en Simplaza/SceneryAddons por título.
+    let candidates: Vec<_> = pkgs.iter().filter(|p| !p.is_library_pack).collect();
+
+    let simplaza = sources.iter().find(|s| s.id() == "simplaza");
+    let mut catalog_lookups = 0usize;
+    const CATALOG_LOOKUP_CAP: usize = 30; // cap por scan (amable con Simplaza)
 
     let mut downloaded = 0usize;
     for pkg in candidates {
@@ -96,14 +98,25 @@ pub async fn fetch_missing(
         if !needs_thumbnail(root) {
             continue;
         }
-        let result = if is_scenery(pkg) {
+        let aircraft_q = extract_aircraft_query(&pkg.title);
+        let result = if is_scenery(pkg)
+            && pkg.icao.is_some()
+            && pkg.airport_name.is_some()
+        {
             let icao = pkg.icao.as_deref().unwrap_or_default();
             let name = pkg.airport_name.as_deref().unwrap_or_default();
             fetch_one(http, icao, name, "airport").await
-        } else {
-            // Avión — primer término el modelo, fallback al título.
-            let model = extract_aircraft_query(&pkg.title).unwrap_or_default();
+        } else if let Some(model) = aircraft_q {
             fetch_one(http, &model, &pkg.title, "aircraft").await
+        } else if let Some(src) = simplaza {
+            // Misc/utility/sound: scrape de Simplaza.
+            if catalog_lookups >= CATALOG_LOOKUP_CAP {
+                continue;
+            }
+            catalog_lookups += 1;
+            fetch_from_catalog(http, src.as_ref(), &pkg.title).await
+        } else {
+            Ok(None)
         };
         match result {
             Ok(Some(bytes)) => {
@@ -166,6 +179,67 @@ fn needs_thumbnail(root: &Path) -> bool {
             std::fs::metadata(p).map(|m| m.len() < 30 * 1024).unwrap_or(true)
         }
     }
+}
+
+/// (v4.28.0) Para utilities/misc/sound packs sin foto local ni modelo
+/// extraíble: busca el título en Simplaza y descarga la `image_url`
+/// del primer resultado. Heurística amable — `query_title()` recorta
+/// el título a algo buscable; sin embeddings ni stemming.
+async fn fetch_from_catalog(
+    http: &reqwest::Client,
+    source: &dyn Source,
+    title: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let q = query_title(title);
+    if q.is_empty() {
+        return Ok(None);
+    }
+    let results = match source.search(&q).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(target: "scan", "thumbs: simplaza search '{q}' falló: {e:?}");
+            return Ok(None);
+        }
+    };
+    let Some(image_url) = results.iter().find_map(|a| a.image_url.clone()) else {
+        return Ok(None);
+    };
+    let img = http
+        .get(&image_url)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await?;
+    if !img.status().is_success() {
+        return Ok(None);
+    }
+    let ct = img
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !ct.starts_with("image/") {
+        return Ok(None);
+    }
+    let bytes = img.bytes().await?;
+    if bytes.len() < 5 * 1024 || bytes.len() > 4 * 1024 * 1024 {
+        return Ok(None);
+    }
+    Ok(Some(bytes.to_vec()))
+}
+
+/// Recorta el título a 2-3 palabras útiles para buscar en catálogo.
+fn query_title(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect();
+    cleaned
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Busca el artículo en Wikipedia y descarga la imagen principal.
