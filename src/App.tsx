@@ -578,7 +578,10 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
+    /* (v4.29.0) Shell de altura-viewport: flex column + overflow
+       hidden. El body ya no scrollea — cada vista tiene su propio
+       scroll. La rueda sobre el mapa ya no desplaza el header. */
+    <div className="app-shell flex h-screen flex-col overflow-hidden bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
       {isTauri && <TitleBar />}
       {/* (v2.2.0) Banner de update visible siempre que haya una nueva
           versión y el usuario no la haya descartado. Se renderiza
@@ -699,14 +702,21 @@ export default function App() {
       </nav>
 
       <main
-        className={`w-full px-6 pb-5 pt-4 ${
+        className={`min-h-0 flex-1 w-full overflow-hidden px-6 pb-5 pt-4 ${
           view === "search" ? "mx-auto max-w-[1600px]" : ""
         }`}
       >
-        {view === "dashboard" && <DashboardView />}
+        {/* (v4.29.0) Dashboard y Search pueden tener contenido alto;
+            envolvemos en wrapper scrolleable INTERNO. Map, Addons y
+            FlightBook ya tienen sus propios layouts h-full. */}
+        {view === "dashboard" && (
+          <div className="h-full overflow-y-auto">
+            <DashboardView />
+          </div>
+        )}
 
         {view === "search" && (
-          <>
+          <div className="h-full overflow-y-auto">
             <SearchBar
               value={query}
               onChange={setQuery}
@@ -753,7 +763,7 @@ export default function App() {
                 </button>
               </div>
             )}
-          </>
+          </div>
         )}
         {view === "map" && <MapView />}
         {view === "addons" && <AddonsView />}

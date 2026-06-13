@@ -2232,6 +2232,17 @@ mod windows_simconnect {
                                 "restore VALIDADO: flight {} a {:.1} nm del último punto — continuamos el vuelo",
                                 rid, dist
                             );
+                            // (v4.29.0) FIX: tras recuperar un vuelo en
+                            // curso al reiniciar (p.ej. el usuario
+                            // actualizó la app a mitad de vuelo),
+                            // avisamos al frontend para que RECARGUE la
+                            // lista. Sin esto, el FlightBook seguía con
+                            // la lista vieja (sin el vuelo abierto), no
+                            // lo reconocía como "en vivo" y dibujaba una
+                            // proyección recta en vez del track real.
+                            // El usuario tenía que cambiar de pestaña a
+                            // mano para forzar el reload.
+                            let _ = app.emit("flightlog://changed", ());
                         }
                     }
 

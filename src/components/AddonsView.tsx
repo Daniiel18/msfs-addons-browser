@@ -36,10 +36,17 @@ import { AddonFallbackArt } from "./AddonArt";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 
-/** (v4.25.0) Píldoras de categoría estilo "My Content": All /
- *  Aircraft / Liveries / Utilities / Others. SIN Airports — los
- *  aeropuertos se centralizan en la pestaña Map (scenery). */
-type PillFilter = "ALL" | "AIRCRAFT" | "LIVERY" | "UTILITIES" | "OTHERS";
+/** (v4.29.0) Píldoras estilo MSFS Marketplace — 5 buckets limpios.
+ *  STRICT NO-AIRPORTS: cualquier paquete clasificado como SCENERY
+ *  (no-airport-mods) cae en SOUND_MISC, no contamina las otras
+ *  categorías. Los aeropuertos REALES viven exclusivamente en Map. */
+type PillFilter =
+  | "ALL"
+  | "AIRCRAFT"
+  | "LIVERY"
+  | "SOUND_MISC"
+  | "UTILITIES"
+  | "UNCLASSIFIED";
 
 function pillMatches(pill: PillFilter, ty: DerivedType): boolean {
   switch (pill) {
@@ -49,10 +56,14 @@ function pillMatches(pill: PillFilter, ty: DerivedType): boolean {
       return ty === "AIRCRAFT";
     case "LIVERY":
       return ty === "LIVERY";
+    case "SOUND_MISC":
+      // Sound packs, VFX, replacements, mods — todo lo que no es
+      // avión/livery/utility pero ESTÁ clasificado.
+      return ty === "MISC" || ty === "SCENERY";
     case "UTILITIES":
       return ty === "INSTRUMENT";
-    case "OTHERS":
-      return ty === "MISC" || ty === "UNKNOWN";
+    case "UNCLASSIFIED":
+      return ty === "UNKNOWN";
   }
 }
 
@@ -227,9 +238,13 @@ export function AddonsView() {
   );
 
   return (
-    <div className="space-y-3">
+    /* (v4.29.0) flex column de altura completa: header fijo arriba +
+       cuerpo scrolleable internamente (overflow-y-auto en wrapper de
+       cards/grafo). El body de la app NO scrollea — la rueda sobre
+       Addons mueve solo el grid/lienzo, no la app entera. */
+    <div className="flex h-full flex-col gap-3 overflow-hidden">
       {/* Header — título + métricas globales + batch actions + search. */}
-      <header className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
+      <header className="shrink-0 space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <Boxes className="h-4 w-4 text-brand-300" />
@@ -368,6 +383,13 @@ export function AddonsView() {
           count={counts.get("LIVERY") ?? 0}
         />
         <TypeChip
+          active={typeFilter === "SOUND_MISC"}
+          onClick={() => setTypeFilter("SOUND_MISC")}
+          icon={<Music className="h-3.5 w-3.5" />}
+          label={t("addons.chip.sound_misc")}
+          count={(counts.get("MISC") ?? 0) + (counts.get("SCENERY") ?? 0)}
+        />
+        <TypeChip
           active={typeFilter === "UTILITIES"}
           onClick={() => setTypeFilter("UTILITIES")}
           icon={<Cog className="h-3.5 w-3.5" />}
@@ -375,20 +397,19 @@ export function AddonsView() {
           count={counts.get("INSTRUMENT") ?? 0}
         />
         <TypeChip
-          active={typeFilter === "OTHERS"}
-          onClick={() => setTypeFilter("OTHERS")}
-          icon={<Music className="h-3.5 w-3.5" />}
-          label={t("addons.chip.others")}
-          count={
-            (counts.get("MISC") ?? 0) +
-            (counts.get("UNKNOWN") ?? 0) +
-            (counts.get("SCENERY") ?? 0)
-          }
+          active={typeFilter === "UNCLASSIFIED"}
+          onClick={() => setTypeFilter("UNCLASSIFIED")}
+          icon={<HelpCircle className="h-3.5 w-3.5" />}
+          label={t("addons.chip.unclassified")}
+          count={counts.get("UNKNOWN") ?? 0}
         />
       </div>
       )}
 
-      {/* Cuerpo: grafo o grid según vista activa. */}
+      {/* (v4.29.0) Cuerpo scrolleable: en modo grid las cards pueden
+          ser muchas (~300) y necesitan scroll vertical INTERNO; en
+          Link Map el lienzo llena el espacio sin scroll. */}
+      <div className={`min-h-0 flex-1 ${view === "grid" ? "overflow-y-auto pr-1" : "overflow-hidden"}`}>
       {view === "linkmap" ? (
         <LinkMapView addons={addons} />
       ) : (
@@ -440,6 +461,7 @@ export function AddonsView() {
           )}
         </>
       )}
+      </div>
 
       {detailsPkg && (
         <PackageDetailModal

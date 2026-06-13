@@ -477,6 +477,12 @@ pub mod repo {
         /// (último componente del path, JSON-encoded).
         #[sqlx(default)]
         pub base_containers_json: String,
+        /// (v4.29.0) Ruta absoluta del thumbnail resuelto durante el
+        /// scan (`<pkg>/thumbnail.jpg`, `SimObjects/Airplanes/*/…`, o
+        /// `layout.json` fallback). NULL → frontend pinta silueta
+        /// premium. `package_thumbnail` lee este path: O(1) en runtime.
+        #[sqlx(default)]
+        pub thumbnail_path: Option<String>,
         pub airport_name: Option<String>,
         pub latitude: Option<f64>,
         pub longitude: Option<f64>,
@@ -508,6 +514,7 @@ pub mod repo {
                    cp.enabled,
                    cp.simobject_dirs_json,
                    cp.base_containers_json,
+                   cp.thumbnail_path,
                    ap.name      AS airport_name,
                    ap.latitude  AS latitude,
                    ap.longitude AS longitude

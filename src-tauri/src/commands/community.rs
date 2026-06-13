@@ -356,18 +356,32 @@ pub async fn package_thumbnail(
     folder_name: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    use std::path::PathBuf;
-    let pkgs = repo::list_community_packages(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
-    let target = pkgs
-        .iter()
-        .find(|p| p.folder_name == folder_name)
-        .ok_or_else(|| format!("paquete desconocido: {}", folder_name))?;
-    let root = PathBuf::from(&target.install_path);
+    // (v4.29.0) Lookup directo a `thumbnail_path` (resuelto durante el
+    // scan). O(1) — sin recursión I/O en runtime. Si la ruta cacheada
+    // ya no existe (paquete actualizado fuera de SimFleet), caemos a
+    // un find_thumbnail puntual y bound (depth 8) como red de
+    // seguridad — no pasa cada render porque la mayoría de paquetes
+    // sí tienen el cache poblado.
+    let row = sqlx::query_as::<_, (Option<String>, String)>(
+        "SELECT thumbnail_path, install_path FROM community_packages WHERE folder_name = ?1",
+    )
+    .bind(&folder_name)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((cached, install_path)) = row else {
+        return Err(format!("paquete desconocido: {}", folder_name));
+    };
     let folder_clone = folder_name.clone();
     let result = tokio::task::spawn_blocking(move || -> Option<String> {
-        let path_str = find_thumbnail(&root, 0)?;
+        if let Some(path) = cached.as_deref() {
+            let p = std::path::Path::new(path);
+            if p.is_file() {
+                return encode_image_as_data_url(p).ok();
+            }
+        }
+        // Fallback puntual (paquete actualizado fuera del scan).
+        let path_str = find_thumbnail(std::path::Path::new(&install_path), 0)?;
         encode_image_as_data_url(std::path::Path::new(&path_str))
             .inspect_err(|e| {
                 tracing::debug!("thumbnail encode falló para {folder_clone}: {e:#}");

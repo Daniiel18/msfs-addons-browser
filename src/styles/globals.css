@@ -33,38 +33,32 @@ html, body, #root {
 }
 
 html, body {
-  /* Doble-scrollbar fix v0.1.9: en Tauri/WebView2 con ciertas
-     resoluciones se renderizaba una scrollbar de #root y otra
-     del body al mismo tiempo. Forzamos a que SOLO el body
-     scrollee verticalmente, y rechazamos cualquier overflow-x
-     accidental de tablas anchas que cree barra horizontal
-     estorbosa. */
-  overflow-x: hidden;
+  /* (v4.29.0) BODY no scrollea. La rueda del mouse sobre el mapa
+     hacía scroll del body y el header se desplazaba hacia arriba
+     dejando la app rota. Ahora cada vista (Addons, FlightBook, etc.)
+     tiene su propio scroll INTERNO cuando lo necesita. La app es
+     altura-viewport como cualquier app moderna single-page. */
+  overflow: hidden;
 }
 
 #root {
-  /* #root no debe scrollear — el scroll vertical lo gestiona el
-     body. Sin esto, contenido más alto que la viewport (FlightBook
-     con tabla larga, modal de detail, etc.) creaba dos scrollbars
-     apiladas. */
-  overflow: visible;
-  min-height: 100%;
-  height: auto;
+  /* #root tampoco scrollea — el contenedor de la app es 100vh. */
+  overflow: hidden;
+  height: 100%;
 }
 
 body {
   @apply bg-slate-950 text-slate-100 antialiased;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  /* Asegura una sola scrollbar vertical: si el contenido cabe en
-     la pantalla `auto` no la pinta, y si no cabe la pinta una
-     sola vez. */
-  overflow-y: auto;
-  /* (v4.28.0) Scrollbar GLOBAL invisible — pedido del usuario:
-     "elimina el scrollbar que esta en la pantalla addons, la app debe
-     ser responsive. lo mismo para la pantalla map". El scroll por
-     rueda/teclado sigue funcionando; solo desaparece la barra visual.
-     Firefox + Chromium/WebView2 cubiertos. */
+  /* Scrollbar GLOBAL invisible — pedido del usuario: "elimina el
+     scrollbar que esta en la pantalla addons, la app debe ser
+     responsive. lo mismo para la pantalla map". El scroll por
+     rueda/teclado sigue funcionando dentro de cada vista; solo
+     desaparece la barra visual. Firefox + Chromium/WebView2. */
   scrollbar-width: none;
+  /* Overscroll contenido: el wheel sobre la app NO arrastra el
+     navegador padre (pull-to-refresh, history navigation). */
+  overscroll-behavior: none;
 }
 body::-webkit-scrollbar,
 *::-webkit-scrollbar {

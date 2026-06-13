@@ -408,12 +408,12 @@ export function MapView() {
     // de la app + listado de aeropuertos a la IZQUIERDA + mapa a la
     // derecha (antes el listado iba a la derecha). El handle es una
     // columna fina full-height — mismo patrón que el FlightBook.
-    /* (v4.27.0) `h-[calc(100vh-9rem)]` (antes 12rem) ahora que el nav
-       es sticky y ocupa menos. `overflow-hidden` en el wrapper evita
-       el scroll vertical residual — esta vista llena el viewport pero
-       nada se desborda. */
+    /* (v4.29.0) `h-full`: el shell de la app es flex column y main
+       tiene flex-1 overflow-hidden, así que esta vista llena el
+       espacio disponible exacto del main. `overflow-hidden` evita
+       cualquier scroll residual; el wheel se queda en el mapa. */
     <div
-      className={`grid h-[calc(100vh-9rem)] min-h-[520px] gap-3 overflow-hidden ${
+      className={`grid h-full min-h-[520px] gap-3 overflow-hidden ${
         sidebarCollapsed
           ? "grid-cols-[18px_1fr]"
           : "grid-cols-[18px_360px_1fr] xl:grid-cols-[18px_400px_1fr]"

@@ -55,6 +55,15 @@ pub struct ScannedPackage {
     /// `FNX_320`). Es la referencia REAL livery → aircraft base que
     /// usa MSFS — mucho más fiable que adivinar por folder name.
     pub base_containers: Vec<String>,
+    /// (v4.29.0) Ruta absoluta del thumbnail "nativo" de MSFS,
+    /// pre-resuelto durante el scan. Cuatro estrategias en orden:
+    ///   1. `<pkg>/thumbnail.jpg|png` (raíz del paquete).
+    ///   2. `<pkg>/SimObjects/Airplanes/*/thumbnail.jpg|png`.
+    ///   3. `<pkg>/simfleet-thumbnail.jpg` (descargado por nosotros).
+    ///   4. `<pkg>/layout.json` → primer entry cuyo `path` contiene
+    ///      "thumbnail" — fallback ultra-seguro de la spec MSFS.
+    /// None ⇒ el frontend pinta la silueta premium.
+    pub thumbnail_path: Option<String>,
 }
 
 /// Estructura literal del `manifest.json` de MSFS. Sólo
@@ -132,6 +141,9 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
         // (v4.26.0) Contenedores SimObjects propios + base_container
         // referenciados — alimentan el auto-link del Link Map.
         let (simobject_dirs, base_containers) = scan_simobjects(&path);
+        // (v4.29.0) Thumbnail resuelto UNA vez (no en runtime por la
+        // UI). Persistido en DB para que `package_thumbnail` sea O(1).
+        let thumbnail_path = resolve_thumbnail(&path);
 
         match parse_manifest(&manifest_path) {
             Ok(raw) => {
@@ -142,6 +154,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                     enabled,
                     simobject_dirs,
                     base_containers,
+                    thumbnail_path.clone(),
                 ));
             }
             Err(e) => {
@@ -161,6 +174,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                     enabled,
                     simobject_dirs,
                     base_containers,
+                    thumbnail_path,
                 ));
             }
         }
@@ -225,6 +239,143 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>) {
     (dirs, bases)
 }
 
+/// (v4.29.0) Resuelve el thumbnail del paquete UNA vez por scan
+/// siguiendo la jerarquía de la spec MSFS. Cada paso es un único
+/// `metadata()` o `read()` corto, no recursión profunda — es el cambio
+/// clave para que con cientos de GB de liveries el escaneo no se
+/// vuelva I/O-bound.
+fn resolve_thumbnail(root: &Path) -> Option<String> {
+    // (1) `<pkg>/thumbnail.{jpg,png,webp,jpeg}` — la convención MSFS.
+    for ext in ["jpg", "png", "jpeg", "webp"] {
+        let p = root.join(format!("thumbnail.{ext}"));
+        if p.is_file() && is_real_image(&p) {
+            return Some(p.to_string_lossy().into_owned());
+        }
+    }
+    // (2) `<pkg>/simfleet-thumbnail.jpg` — el que descargamos nosotros
+    //     en pases anteriores (Wikipedia / Simplaza). Si está, gana
+    //     sobre el deep search.
+    let custom = root.join("simfleet-thumbnail.jpg");
+    if custom.is_file() && is_real_image(&custom) {
+        return Some(custom.to_string_lossy().into_owned());
+    }
+    // (3) `<pkg>/SimObjects/Airplanes/*/thumbnail.{jpg,png}`.
+    for kind in ["Airplanes", "Rotorcraft"] {
+        let dir = root.join("SimObjects").join(kind);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let folder = entry.path();
+            if !folder.is_dir() {
+                continue;
+            }
+            for ext in ["jpg", "png", "jpeg", "webp"] {
+                let p = folder.join(format!("thumbnail.{ext}"));
+                if p.is_file() && is_real_image(&p) {
+                    return Some(p.to_string_lossy().into_owned());
+                }
+            }
+            // texture.X subfolders (PMDG, Fenix, FBW…)
+            if let Ok(subs) = std::fs::read_dir(&folder) {
+                for sub in subs.flatten() {
+                    let sub_path = sub.path();
+                    let Some(name) = sub_path.file_name().and_then(|s| s.to_str())
+                    else {
+                        continue;
+                    };
+                    if !name.to_lowercase().starts_with("texture") {
+                        continue;
+                    }
+                    for ext in ["jpg", "png", "jpeg", "webp"] {
+                        let p = sub_path.join(format!("thumbnail.{ext}"));
+                        if p.is_file() && is_real_image(&p) {
+                            return Some(p.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // (4) `layout.json` — fallback ultra-seguro de la spec MSFS.
+    //     Cualquier entry cuyo `path` contiene "thumbnail" se usa tal
+    //     cual. Streaming-read: bytes() en lugar de Value completo
+    //     para no construir el árbol JSON entero (algunos layout.json
+    //     pesan MB).
+    if let Some(p) = thumbnail_from_layout(root) {
+        return Some(p);
+    }
+    None
+}
+
+/// Veta el arte "PLACEHOLDER" del SDK (mismo bicho que en `command::
+/// find_thumbnail`): tamaño <8 KB o nombre con "placeholder" => no.
+fn is_real_image(path: &Path) -> bool {
+    let lower = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    if lower.contains("placeholder") {
+        return false;
+    }
+    std::fs::metadata(path)
+        .map(|m| m.len() >= 8 * 1024 && m.len() < 8 * 1024 * 1024)
+        .unwrap_or(false)
+}
+
+/// Lee `layout.json` buscando la PRIMERA entry cuyo `"path"` contiene
+/// la palabra "thumbnail". No deserializamos el JSON entero porque
+/// layout.json puede pesar varios MB con miles de archivos; un parse
+/// streaming-style basta para encontrar la primera línea válida.
+fn thumbnail_from_layout(root: &Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let layout = root.join("layout.json");
+    let file = std::fs::File::open(&layout).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        let trimmed = line.trim();
+        // Solo nos interesan líneas con "path" + "thumbnail". El
+        // formato típico es `{ "path": "model.0/thumbnail.jpg", ... }`.
+        if !trimmed.contains("\"path\"") {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+        if !lower.contains("thumbnail") {
+            continue;
+        }
+        // Extraer el valor entre las DOS primeras comillas que sigan
+        // a `"path"`. Frágil pero suficiente para el formato canónico.
+        let Some(after) = trimmed.split("\"path\"").nth(1) else {
+            continue;
+        };
+        let mut chars = after.chars();
+        // saltar al primer "
+        while let Some(c) = chars.next() {
+            if c == '"' {
+                break;
+            }
+        }
+        let mut buf = String::new();
+        for c in chars {
+            if c == '"' {
+                break;
+            }
+            buf.push(c);
+        }
+        if buf.is_empty() {
+            continue;
+        }
+        // El path es relativo al paquete y usa '/' como separador.
+        let candidate = root.join(buf.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if candidate.is_file() && is_real_image(&candidate) {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 fn parse_manifest(path: &Path) -> anyhow::Result<RawManifest> {
     let raw = std::fs::read_to_string(path)?;
     // Algunos manifests de la comunidad traen comentarios o trailing
@@ -241,6 +392,7 @@ fn materialize(
     enabled: bool,
     simobject_dirs: Vec<String>,
     base_containers: Vec<String>,
+    thumbnail_path: Option<String>,
 ) -> ScannedPackage {
     let title = raw
         .title
@@ -314,6 +466,7 @@ fn materialize(
         enabled,
         simobject_dirs,
         base_containers,
+        thumbnail_path,
     }
 }
 
@@ -323,6 +476,7 @@ fn materialize_fallback(
     enabled: bool,
     simobject_dirs: Vec<String>,
     base_containers: Vec<String>,
+    thumbnail_path: Option<String>,
 ) -> ScannedPackage {
     let (size_bytes, folder_modified_at) = folder_metadata(path);
     let title = pretty_folder_name(folder_name);
@@ -345,6 +499,7 @@ fn materialize_fallback(
         enabled,
         simobject_dirs,
         base_containers,
+        thumbnail_path,
     }
 }
 
@@ -565,9 +720,9 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 folder_name, install_path, title, creator, content_type,
                 package_version, minimum_game_version, icao, size_bytes,
                 folder_modified_at, dependencies_count, scanned_at, enabled,
-                simobject_dirs_json, base_containers_json
+                simobject_dirs_json, base_containers_json, thumbnail_path
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15)
             ON CONFLICT(folder_name) DO UPDATE SET
                 install_path = excluded.install_path,
                 title = excluded.title,
@@ -582,7 +737,8 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 scanned_at = datetime('now'),
                 enabled = excluded.enabled,
                 simobject_dirs_json = excluded.simobject_dirs_json,
-                base_containers_json = excluded.base_containers_json
+                base_containers_json = excluded.base_containers_json,
+                thumbnail_path = excluded.thumbnail_path
             "#,
         )
         .bind(&pkg.folder_name)
@@ -599,6 +755,7 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         .bind(pkg.enabled)
         .bind(&simobject_dirs_json)
         .bind(&base_containers_json)
+        .bind(&pkg.thumbnail_path)
         .execute(&mut *tx)
         .await?;
     }

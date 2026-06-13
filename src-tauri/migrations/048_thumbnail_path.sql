@@ -1,0 +1,11 @@
+-- (v4.29.0) Cache de thumbnail por paquete. Antes el comando
+-- `package_thumbnail` escaneaba recursivamente el árbol del paquete
+-- cada vez que la UI pedía la imagen — con cientos de liveries
+-- recargando, era un I/O bottleneck. Ahora el scanner busca UNA vez
+-- por scan (manifest + layout.json + sondeo en raíz/SimObjects), lo
+-- persiste, y el comando de runtime es O(1).
+--
+-- · `thumbnail_path`: ruta absoluta del archivo final. NULL si no se
+--   encontró ningún thumbnail real (el frontend mostrará la silueta
+--   premium).
+ALTER TABLE community_packages ADD COLUMN thumbnail_path TEXT;
