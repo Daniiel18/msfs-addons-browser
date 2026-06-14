@@ -479,6 +479,58 @@ fn reconcile(addon_dir: &Path, cfg: &mut PerfConfig) {
     cfg.options.retain(|o| !o.files.is_empty());
 }
 
+/// Comprobación rápida (early-exit, con presupuesto de archivos) de si
+/// un addon tiene objetos opcionales desactivables. Para el badge de la
+/// UI — no construye ni escribe nada. Funciona igual con escenarios
+/// LOCALES (escanea el directorio instalado directamente).
+pub fn has_optional_objects(addon_dir: &Path) -> bool {
+    // Si ya hay manifiesto generado, basta con mirarlo (rápido).
+    if let Some(cfg) = read_config_raw(addon_dir) {
+        if cfg.options.iter().any(|o| {
+            o.files
+                .iter()
+                .any(|rel| addon_dir.join(rel).exists() || with_off(&addon_dir.join(rel)).exists())
+        }) {
+            return true;
+        }
+    }
+    let mut budget: usize = 4000; // tope de archivos a inspeccionar
+    scan_for_any(addon_dir, 0, &mut budget)
+}
+
+fn scan_for_any(dir: &Path, depth: usize, budget: &mut usize) -> bool {
+    if depth > SCAN_DEPTH || *budget == 0 || !dir.is_dir() {
+        return false;
+    }
+    let Ok(iter) = fs::read_dir(dir) else { return false };
+    for entry in iter.flatten() {
+        if *budget == 0 {
+            return false;
+        }
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            if scan_for_any(&path, depth + 1, budget) {
+                return true;
+            }
+            continue;
+        }
+        *budget -= 1;
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let active = if let Some(s) = name.strip_suffix(".bgl.off") {
+            format!("{s}.bgl")
+        } else if name.ends_with(".bgl") {
+            name
+        } else {
+            continue;
+        };
+        if categorize(&active).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // API pública
 // ---------------------------------------------------------------------------

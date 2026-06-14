@@ -31,6 +31,8 @@ import {
 import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { PerformanceModal } from "./PerformanceModal";
 import { RegionBadge } from "./RegionBadge";
+import { PerfBadge } from "./PerfBadge";
+import { usePerfStore } from "../stores/usePerfStore";
 import { t } from "../lib/i18n";
 
 /**
@@ -56,6 +58,7 @@ export function MapAirportCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [perfOpen, setPerfOpen] = useState(false);
+  const isOptimizable = usePerfStore((s) => s.optimizable.has(pkg.folderName));
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [pickingRepair, setPickingRepair] = useState(false);
@@ -210,6 +213,7 @@ export function MapAirportCard({
             </span>
           )}
           {pkg.icao && <RegionBadge icao={pkg.icao} />}
+          {isOptimizable && <PerfBadge />}
           {pkg.contentType && (
             <span className="rounded bg-slate-950/80 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-300 ring-1 ring-slate-700">
               {pkg.contentType}

@@ -687,6 +687,7 @@
   "find.next": "Siguiente",
   "find.close": "Cerrar búsqueda",
   "perf.open_button": "Optimizar FPS",
+  "perf.badge_title": "Optimizable: este escenario tiene objetos opcionales que puedes desactivar para ganar FPS.",
   "perf.title": "Optimización de FPS",
   "perf.help": "Cada interruptor controla la PRESENCIA de objetos pesados opcionales. Apágalo para quitarlos del escenario (renombra el .bgl a .bgl.off) y ganar FPS; enciéndelo para restaurarlos. Cierra MSFS o vuelve al menú principal antes de cambiarlos.",
   "perf.load_error": "No se pudo leer la configuración de rendimiento",

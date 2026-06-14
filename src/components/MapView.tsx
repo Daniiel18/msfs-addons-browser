@@ -18,6 +18,8 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { api } from "../lib/tauri";
 import { MapAirportCard } from "./MapAirportCard";
 import { RegionBadge } from "./RegionBadge";
+import { PerfBadge } from "./PerfBadge";
+import { usePerfStore } from "../stores/usePerfStore";
 import { t } from "../lib/i18n";
 
 // (v4.26.0) Colapso persistente del listado de aeropuertos — mismo
@@ -85,6 +87,10 @@ export function MapView() {
   const focused = useCommunityStore((s) => s.focused);
   const setFocused = useCommunityStore((s) => s.setFocused);
   const lastScanError = useCommunityStore((s) => s.lastScanError);
+  // (v5.0.0) Escenarios optimizables (con objetos opcionales) — para el
+  // badge de la tuerca. Se llena escaneando el installPath (cubre
+  // locales). ensure() es idempotente y cachea por folderName.
+  const ensurePerf = usePerfStore((s) => s.ensure);
   // (v4.26.0) Tema de la app — el basemap lo sigue (oscuro/claro).
   const theme = useSettingsStore((s) => s.settings.theme);
   // (v4.26.0) Colapso del listado, persistido en localStorage.
@@ -226,6 +232,18 @@ export function MapView() {
   // mount y en cada resize del contenedor — así el usuario siempre
   // ve el mapamundi completo sin importar que la ventana esté en
   // pantalla completa o reducida.
+  // (v5.0.0) Escanea qué aeropuertos son optimizables (badge tuerca).
+  useEffect(() => {
+    const airports = allPackages.filter((p) => p.icao);
+    if (airports.length === 0) return;
+    void ensurePerf(
+      airports.map((p) => ({
+        folderName: p.folderName,
+        installPath: p.installPath,
+      })),
+    );
+  }, [allPackages, ensurePerf]);
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -533,6 +551,7 @@ function Sidebar({
   noGsxCount: number;
 }) {
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  const perfOptimizable = usePerfStore((s) => s.optimizable);
   const toggleGsx = (target: "gsx" | "no-gsx") => {
     setGsxFilter(gsxFilter === target ? "all" : target);
   };
@@ -637,6 +656,9 @@ function Sidebar({
                         </span>
                       )}
                       {p.icao && <RegionBadge icao={p.icao} showLabel={false} />}
+                      {perfOptimizable.has(p.folderName) && (
+                        <PerfBadge showLabel={false} />
+                      )}
                       {p.icao && hasGsx && (
                         <span
                           className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"

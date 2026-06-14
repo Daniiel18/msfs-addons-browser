@@ -335,6 +335,12 @@ interface Api {
     icao: string | null,
     pageUrl: string,
   ) => Promise<PerfConfig | null>;
+  /** (v5.0.0) Devuelve los folderName que SÍ tienen objetos opcionales
+   *  (para el badge de optimizable). Escanea el installPath → cubre
+   *  escenarios locales. */
+  perfListOptimizable: (
+    items: { folderName: string; installPath: string }[],
+  ) => Promise<string[]>;
   /** (v4.26.0) El backend bajó imágenes nuevas de Wikipedia para
    *  aeropuertos sin thumbnail — el frontend debe invalidar su cache. */
   onThumbsUpdated: (cb: (count: number) => void) => Promise<UnlistenFn>;
@@ -642,6 +648,8 @@ const realApi: Api = {
       icao: icao ?? null,
       pageUrl,
     }),
+  perfListOptimizable: (items) =>
+    invoke<string[]>("perf_list_optimizable", { items }),
   onThumbsUpdated: (cb) =>
     listen<number>("thumbs://updated", (e) => cb(e.payload)),
   fetchChangelog: (pageUrl) =>
@@ -1368,6 +1376,9 @@ const demoApi: Api = {
   },
   async perfEnrichFromSource() {
     return null;
+  },
+  async perfListOptimizable() {
+    return [];
   },
   async onThumbsUpdated() {
     return () => {};

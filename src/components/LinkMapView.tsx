@@ -44,6 +44,8 @@ import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
 import { AddonFallbackArt } from "./AddonArt";
 import { FindSearch } from "./FindSearch";
 import { RegionBadge } from "./RegionBadge";
+import { PerfBadge } from "./PerfBadge";
+import { usePerfStore } from "../stores/usePerfStore";
 import { airportRegion, continentLabel, type Continent } from "../lib/oaciRegion";
 import { expandVendorQuery } from "../lib/vendorSynonyms";
 import { api } from "../lib/tauri";
@@ -161,6 +163,7 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
   const { pkg } = data;
   const thumb = useThumbnail(pkg.folderName, false);
   const { enabled, busy, toggle } = usePackageToggle(pkg);
+  const isOptimizable = usePerfStore((s) => s.optimizable.has(pkg.folderName));
   return (
     <div
       className={`w-[180px] overflow-hidden rounded-lg border-2 shadow-lg transition-colors ${
@@ -184,8 +187,9 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
         <span className="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-0.5 font-mono text-[9px] font-bold text-emerald-950">
           {pkg.icao}
         </span>
-        <span className="absolute right-1.5 top-1.5">
+        <span className="absolute right-1.5 top-1.5 flex flex-col items-end gap-1">
           <RegionBadge icao={pkg.icao} showLabel={false} />
+          {isOptimizable && <PerfBadge showLabel={false} />}
         </span>
       </div>
       <div className="flex items-center gap-1.5 p-2">
@@ -279,6 +283,19 @@ export function LinkMapView({
   useEffect(() => {
     void reloadGraph();
   }, [reloadGraph]);
+
+  // (v5.0.0) Escanea qué aeropuertos son optimizables (badge tuerca en
+  // sus nodos). Idempotente y cacheado por folderName.
+  const ensurePerf = usePerfStore((s) => s.ensure);
+  useEffect(() => {
+    if (airports.length === 0) return;
+    void ensurePerf(
+      airports.map((ap) => ({
+        folderName: ap.folderName,
+        installPath: ap.installPath,
+      })),
+    );
+  }, [airports, ensurePerf]);
 
   // (v4.28.0) Membresía del lienzo: TODOS los addons del inventario
   // — el usuario pidió que el Link Map muestre todo, no solo lo

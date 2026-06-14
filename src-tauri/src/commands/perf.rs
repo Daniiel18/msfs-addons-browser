@@ -4,11 +4,37 @@
 //! directamente — siempre lo tiene en `CommunityPackage.installPath` —
 //! así no hace falta volver a detectar la carpeta Community aquí.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::logger::CmdTimer;
 use crate::perf_config::{self, PerfConfig, ToggleResult};
 use crate::{cmd_log, AppState};
+
+/// Item para el escaneo masivo de "optimizables".
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerfScanItem {
+    pub folder_name: String,
+    pub install_path: String,
+}
+
+/// Devuelve los `folderName` de los addons que SÍ tienen objetos
+/// opcionales desactivables (para pintar el badge de la tuerca). Cubre
+/// escenarios locales — escanea el `installPath` directamente.
+#[tauri::command]
+pub async fn perf_list_optimizable(items: Vec<PerfScanItem>) -> Result<Vec<String>, String> {
+    cmd_log!("perf_list_optimizable", "n={}", items.len());
+    let _t = CmdTimer::start("perf_list_optimizable");
+    tokio::task::spawn_blocking(move || {
+        items
+            .into_iter()
+            .filter(|it| perf_config::has_optional_objects(Path::new(&it.install_path)))
+            .map(|it| it.folder_name)
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| format!("la tarea de escaneo falló: {e}"))
+}
 
 /// Lee (o genera por escaneo local) el manifiesto de rendimiento del
 /// addon. `None` si el escenario no tiene objetos opcionales.

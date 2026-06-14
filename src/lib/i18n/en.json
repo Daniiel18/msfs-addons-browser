@@ -687,6 +687,7 @@
   "find.next": "Next",
   "find.close": "Close search",
   "perf.open_button": "Optimize FPS",
+  "perf.badge_title": "Optimizable: this scenery has optional objects you can disable to gain FPS.",
   "perf.title": "FPS Optimization",
   "perf.help": "Each switch controls the PRESENCE of optional heavy objects. Turn it off to remove them from the scenery (renames the .bgl to .bgl.off) and gain FPS; turn it on to restore them. Close MSFS or return to the main menu before changing them.",
   "perf.load_error": "Couldn't read the performance config",

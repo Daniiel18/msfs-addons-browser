@@ -12,6 +12,7 @@ import {
 import type { Addon, CommunityPackage, PerfConfig, PerfOption } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
+import { usePerfStore } from "../stores/usePerfStore";
 import { ToggleSwitch } from "./AddonToggle";
 import { t } from "../lib/i18n";
 
@@ -42,6 +43,7 @@ export function PerformanceModal({
   onClose: () => void;
 }) {
   const pushToast = useToastStore((s) => s.push);
+  const markOptimizable = usePerfStore((s) => s.markOptimizable);
   const [config, setConfig] = useState<PerfConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [enriching, setEnriching] = useState(false);
@@ -57,7 +59,10 @@ export function PerformanceModal({
           pkg.folderName,
           pkg.icao,
         );
-        if (alive) setConfig(cfg);
+        if (alive) {
+          setConfig(cfg);
+          if (cfg && cfg.options.length > 0) markOptimizable(pkg.folderName);
+        }
       } catch (e) {
         if (alive)
           pushToast({ kind: "error", title: t("perf.load_error"), message: String(e) });
@@ -122,6 +127,7 @@ export function PerformanceModal({
         pageUrl,
       );
       setConfig(cfg);
+      if (cfg && cfg.options.length > 0) markOptimizable(pkg.folderName);
       pushToast({ kind: "success", title: t("perf.enriched"), ttlMs: 2600 });
     } catch (e) {
       pushToast({ kind: "error", title: t("perf.enrich_error"), message: String(e) });

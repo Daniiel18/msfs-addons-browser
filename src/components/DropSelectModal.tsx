@@ -170,8 +170,9 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
       setInstalling(false);
     }
 
-    // (v4.7.0 / v4.11.2) Si algo se instaló bien, mostramos "Instalado ✓"
-    // ~1s y LUEGO ofrecemos borrar el/los archivo(s). Si no, cerramos.
+    // (v4.7.0 / v4.11.2 / v5.0.1) Si algo se instaló bien, mostramos
+    // "Instalado ✓" ~2s y LUEGO ofrecemos borrar el/los archivo(s). Si
+    // no, cerramos.
     const uniqueArchives = Array.from(new Set(committed));
     if (uniqueArchives.length > 0) {
       setPendingReports(reports);
@@ -179,7 +180,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
       setTimeout(() => {
         setInstalledOk(false);
         setDeletePrompt(uniqueArchives);
-      }, 1100);
+      }, 2000);
     } else {
       onDone(reports);
     }
