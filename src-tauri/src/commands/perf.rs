@@ -1,18 +1,25 @@
 //! (v5.0.0) Comandos del motor de rendimiento (FPS) por aeropuerto.
 //!
 //! El frontend pasa `install_path` (la carpeta del addon en Community)
-//! directamente — siempre lo tiene en `CommunityPackage.installPath` —
-//! así no hace falta volver a detectar la carpeta Community aquí.
+//! directamente — siempre lo tiene en `CommunityPackage.installPath`.
+//!
+//! Clave: para bajar la nota "Optional Configuration" correcta hay que
+//! resolver la página del DEVELOPER INSTALADO (p. ej. el ENGM de
+//! Aerosoft, no el de JustSim ni Orbx). Lo hacemos cruzando el
+//! `developer` del resultado de SceneryAddons con el `creator` del
+//! paquete y los tokens del `folderName`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures_util::{stream, StreamExt};
 
 use crate::logger::CmdTimer;
 use crate::perf_config::{self, PerfConfig, ToggleResult};
+use crate::sources::{Addon, Source};
 use crate::{cmd_log, AppState};
 
-/// Item para el escaneo masivo de "optimizables".
+/// Item para los escaneos masivos.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PerfScanItem {
@@ -20,15 +27,96 @@ pub struct PerfScanItem {
     pub install_path: String,
     #[serde(default)]
     pub icao: Option<String>,
+    #[serde(default)]
+    pub creator: Option<String>,
 }
 
 /// Concurrencia del escaneo masivo contra SceneryAddons. Modesto para no
 /// martillar el servidor con ~150 aeropuertos.
 const SCAN_CONCURRENCY: usize = 4;
 
+fn norm(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// ¿El resultado de SceneryAddons corresponde al dev instalado? Cruza el
+/// `developer` del resultado con el `creator` del paquete y el `folder`.
+fn dev_matches(addon: &Addon, creator: &str, folder: &str) -> bool {
+    let dev = addon.developer.as_deref().unwrap_or("");
+    let rd = norm(dev);
+    if rd.len() < 3 {
+        return false;
+    }
+    let cr = norm(creator);
+    let fd = norm(folder);
+    if !cr.is_empty() && (rd.contains(&cr) || cr.contains(&rd)) {
+        return true;
+    }
+    // Primer token del developer ("Aerosoft") presente en folder/creator.
+    let first = norm(dev.split_whitespace().next().unwrap_or(""));
+    if first.len() >= 3 && (fd.contains(&first) || cr.contains(&first)) {
+        return true;
+    }
+    rd.len() >= 3 && fd.contains(&rd)
+}
+
+/// Resuelve la URL de la página del aeropuerto del DEV instalado. Si hay
+/// varios devs para el ICAO y ninguno coincide, devuelve `None` (no
+/// adivinamos — bajar la nota equivocada da opciones incorrectas).
+async fn resolve_page_url(
+    source: &Arc<dyn Source>,
+    icao: &str,
+    creator: &str,
+    folder: &str,
+) -> Option<String> {
+    let addons = match source.search(icao).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("perf: search {icao} falló: {e}");
+            return None;
+        }
+    };
+    let hits: Vec<&Addon> = addons
+        .iter()
+        .filter(|a| {
+            !a.page_url.is_empty()
+                && a.icao
+                    .as_deref()
+                    .map(|c| c.eq_ignore_ascii_case(icao))
+                    .unwrap_or(false)
+        })
+        .collect();
+    // 1) Coincidencia por developer.
+    if let Some(a) = hits.iter().find(|a| dev_matches(a, creator, folder)) {
+        return Some(a.page_url.clone());
+    }
+    // 2) Un único resultado para el ICAO → sin ambigüedad, úsalo.
+    if hits.len() == 1 {
+        return Some(hits[0].page_url.clone());
+    }
+    // 3) Varios devs y ninguno coincide → no adivinar.
+    None
+}
+
+async fn fetch_html(http: &reqwest::Client, url: &str) -> String {
+    match http.get(url).send().await {
+        Ok(resp) => match resp.error_for_status() {
+            Ok(ok) => ok.text().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("perf: {url} devolvió error: {e}");
+                String::new()
+            }
+        },
+        Err(e) => {
+            tracing::warn!("perf: no se pudo bajar {url}: {e}");
+            String::new()
+        }
+    }
+}
+
 /// Devuelve los `folderName` que YA tienen una `config/simfleet_perf.json`
-/// con opciones reales (de la página de SceneryAddons o tras un toggle)
-/// — para pintar el badge de la tuerca. NO hace escaneo permisivo.
+/// con opciones reales (de la página o tras un toggle) — para el badge.
+/// NO hace escaneo permisivo.
 #[tauri::command]
 pub async fn perf_list_optimizable(items: Vec<PerfScanItem>) -> Result<Vec<String>, String> {
     cmd_log!("perf_list_optimizable", "n={}", items.len());
@@ -44,11 +132,10 @@ pub async fn perf_list_optimizable(items: Vec<PerfScanItem>) -> Result<Vec<Strin
     .map_err(|e| format!("la tarea de escaneo falló: {e}"))
 }
 
-/// (Escáner masivo) Para cada aeropuerto instalado con ICAO, busca su
-/// página en SceneryAddons, baja la nota "Optional Configuration", la
-/// parsea y escribe `config/simfleet_perf.json` SÓLO si la página trae
-/// la nota. Devuelve los `folderName` que quedaron con optimización
-/// (para activar sus badges). Concurrencia limitada.
+/// (Escáner masivo) Para cada aeropuerto instalado con ICAO, resuelve la
+/// página del DEV instalado en SceneryAddons, baja la nota, la parsea y
+/// escribe la config SÓLO si la página la trae. Devuelve los `folderName`
+/// que quedaron optimizables (para sus badges). Concurrencia limitada.
 #[tauri::command]
 pub async fn perf_scan_all_from_source(
     items: Vec<PerfScanItem>,
@@ -71,34 +158,12 @@ pub async fn perf_scan_all_from_source(
         let http = http.clone();
         async move {
             let icao = it.icao.clone().unwrap_or_default();
-            // 1) Resolver la página del aeropuerto en SceneryAddons.
-            let page_url = match source.search(&icao).await {
-                Ok(addons) => addons
-                    .iter()
-                    .find(|a| {
-                        a.icao
-                            .as_deref()
-                            .map(|c| c.eq_ignore_ascii_case(&icao))
-                            .unwrap_or(false)
-                            && !a.page_url.is_empty()
-                    })
-                    .or_else(|| addons.iter().find(|a| !a.page_url.is_empty()))
-                    .map(|a| a.page_url.clone()),
-                Err(e) => {
-                    tracing::warn!("perf scan: search {icao} falló: {e}");
-                    None
-                }
-            };
-            let page_url = page_url?;
-            // 2) Bajar el HTML de la página.
-            let html = match http.get(&page_url).send().await {
-                Ok(r) => r.text().await.unwrap_or_default(),
-                Err(_) => String::new(),
-            };
+            let creator = it.creator.clone().unwrap_or_default();
+            let page_url = resolve_page_url(&source, &icao, &creator, &it.folder_name).await?;
+            let html = fetch_html(&http, &page_url).await;
             if html.is_empty() {
                 return None;
             }
-            // 3) Parsear + escribir SÓLO si hay nota real.
             let dir = PathBuf::from(&it.install_path);
             let folder = it.folder_name.clone();
             let icao_opt = it.icao.clone();
@@ -139,8 +204,8 @@ pub async fn perf_read_config(
         .map_err(|e| format!("la tarea de lectura falló: {e}"))
 }
 
-/// Aplica un toggle: renombra los `.bgl`↔`.bgl.off` de la opción de
-/// forma atómica con rollback. `enable=false` desactiva (gana FPS).
+/// Aplica un toggle: renombra los archivos de la opción de forma atómica
+/// con rollback. `enable=false` desactiva (gana FPS).
 #[tauri::command]
 pub async fn perf_toggle_option(
     install_path: String,
@@ -156,32 +221,34 @@ pub async fn perf_toggle_option(
         .map_err(|e| format!("{e:#}"))
 }
 
-/// Enriquece el manifiesto bajando la nota "Optional Configuration" de
-/// la página de SceneryAddons del aeropuerto y fusionándola con el
-/// escaneo local. Best-effort: si la red falla, cae al escaneo local.
+/// (Botón del modal) Enriquece la config bajando la nota del DEV
+/// instalado en SceneryAddons. Resuelve la página por `creator`+`folder`.
+/// Si no hay coincidencia de dev/red, cae al escaneo local.
 #[tauri::command]
 pub async fn perf_enrich_from_source(
     install_path: String,
     folder_name: String,
     icao: Option<String>,
-    page_url: String,
+    creator: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<PerfConfig>, String> {
-    cmd_log!("perf_enrich_from_source", "folder={folder_name} url={page_url}");
+    cmd_log!("perf_enrich_from_source", "folder={folder_name}");
     let _t = CmdTimer::start("perf_enrich_from_source");
 
-    let html = match state.http.get(&page_url).send().await {
-        Ok(resp) => match resp.error_for_status() {
-            Ok(ok) => ok.text().await.unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!("perf: página {page_url} devolvió error: {e}");
+    let html = match state.source("sceneryaddons") {
+        Some(source) => {
+            let icao_str = icao.clone().unwrap_or_default();
+            let creator_str = creator.clone().unwrap_or_default();
+            if icao_str.len() == 4 {
+                match resolve_page_url(&source, &icao_str, &creator_str, &folder_name).await {
+                    Some(url) => fetch_html(&state.http, &url).await,
+                    None => String::new(),
+                }
+            } else {
                 String::new()
             }
-        },
-        Err(e) => {
-            tracing::warn!("perf: no se pudo bajar {page_url}: {e}");
-            String::new()
         }
+        None => String::new(),
     };
 
     let dir = PathBuf::from(&install_path);

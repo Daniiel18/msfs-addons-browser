@@ -542,13 +542,18 @@ export interface AddonNodePosition {
  *  `perf_config::PerfOption` (Rust). */
 export interface PerfOption {
   id: string;
+  /** Etiqueta del dev (nota de la página) cuando `fromNote`; vacío para
+   *  opciones del escaneo local (el frontend localiza por `category`). */
   label: string;
   description: string;
   /** Estimado teórico de ahorro, ej. "+2–5 FPS". */
   fpsHint: string;
   category: string;
+  /** true si la opción vino de la nota "Optional Configuration" de la
+   *  página; false si del escaneo local por patrón. */
+  fromNote: boolean;
   files: string[];
-  /** true = objetos presentes (`.bgl`); false = desactivados (`.bgl.off`). */
+  /** true = objetos presentes (`.bgl`); false = desactivados. */
   enabled: boolean;
 }
 

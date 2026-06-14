@@ -328,12 +328,12 @@ interface Api {
     enable: boolean,
   ) => Promise<PerfToggleResult>;
   /** (v5.0.0) Enriquece el manifiesto con la nota "Optional Configuration"
-   *  de la página de SceneryAddons del aeropuerto. */
+   *  del DEV instalado. El backend resuelve la página por creator+folder. */
   perfEnrichFromSource: (
     installPath: string,
     folderName: string,
     icao: string | null,
-    pageUrl: string,
+    creator: string | null,
   ) => Promise<PerfConfig | null>;
   /** (v5.0.0) Devuelve los folderName que SÍ tienen objetos opcionales
    *  (para el badge de optimizable). Escanea el installPath → cubre
@@ -346,7 +346,12 @@ interface Api {
    *  escribe la config si la tiene. Devuelve los folderName que quedaron
    *  optimizables (para sus badges). */
   perfScanAllFromSource: (
-    items: { folderName: string; installPath: string; icao: string | null }[],
+    items: {
+      folderName: string;
+      installPath: string;
+      icao: string | null;
+      creator: string | null;
+    }[],
   ) => Promise<string[]>;
   /** (v4.26.0) El backend bajó imágenes nuevas de Wikipedia para
    *  aeropuertos sin thumbnail — el frontend debe invalidar su cache. */
@@ -648,12 +653,12 @@ const realApi: Api = {
       optionId,
       enable,
     }),
-  perfEnrichFromSource: (installPath, folderName, icao, pageUrl) =>
+  perfEnrichFromSource: (installPath, folderName, icao, creator) =>
     invoke<PerfConfig | null>("perf_enrich_from_source", {
       installPath,
       folderName,
       icao: icao ?? null,
-      pageUrl,
+      creator: creator ?? null,
     }),
   perfListOptimizable: (items) =>
     invoke<string[]>("perf_list_optimizable", { items }),
@@ -1377,6 +1382,7 @@ const demoApi: Api = {
         description: "",
         fpsHint: "",
         category: optionId,
+        fromNote: false,
         files: [],
         enabled: enable,
       },

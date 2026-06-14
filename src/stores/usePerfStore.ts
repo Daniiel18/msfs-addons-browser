@@ -25,7 +25,12 @@ interface PerfState {
    *  SceneryAddons para todos los aeropuertos y marca los que la tengan.
    *  Devuelve cuántos quedaron optimizables y cuántos se intentaron. */
   scanAllFromSource: (
-    items: { folderName: string; installPath: string; icao: string | null }[],
+    items: {
+      folderName: string;
+      installPath: string;
+      icao: string | null;
+      creator: string | null;
+    }[],
   ) => Promise<{ found: number; total: number }>;
   /** Marca uno como optimizable (p. ej. tras abrir el modal y hallar
    *  opciones vía SceneryAddons). */

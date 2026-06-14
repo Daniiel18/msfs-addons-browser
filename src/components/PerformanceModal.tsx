@@ -9,7 +9,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import type { Addon, CommunityPackage, PerfConfig, PerfOption } from "../lib/types";
+import type { CommunityPackage, PerfConfig, PerfOption } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
 import { usePerfStore } from "../stores/usePerfStore";
@@ -96,8 +96,8 @@ export function PerformanceModal({
       pushToast({
         kind: "success",
         title: res.option.enabled
-          ? t("perf.restored", { label: res.option.label })
-          : t("perf.disabled", { label: res.option.label }),
+          ? t("perf.restored", { label: optLabel(res.option) })
+          : t("perf.disabled", { label: optLabel(res.option) }),
         message: t("perf.renamed", { n: String(res.renamed) }),
         ttlMs: 2600,
       });
@@ -109,34 +109,47 @@ export function PerformanceModal({
     }
   };
 
-  // Baja la nota del dev desde SceneryAddons (mejores etiquetas + FPS).
+  // Baja la nota del DEV instalado desde SceneryAddons (el backend
+  // resuelve la página correcta por creator+folder).
   const enrich = async () => {
     if (!pkg.icao) return;
     setEnriching(true);
     try {
-      const matches: Addon[] = await api
-        .search(pkg.icao, "sceneryaddons")
-        .catch(() => []);
-      const pageUrl = matches.find((m) => m.pageUrl)?.pageUrl;
-      if (!pageUrl) {
-        pushToast({ kind: "info", title: t("perf.no_source") });
-        return;
-      }
       const cfg = await api.perfEnrichFromSource(
         pkg.installPath,
         pkg.folderName,
         pkg.icao,
-        pageUrl,
+        pkg.creator,
       );
       setConfig(cfg);
+      const fromNote = !!cfg && cfg.options.some((o) => o.fromNote);
       if (cfg && cfg.options.length > 0 && cfg.source !== "local-scan")
         markOptimizable(pkg.folderName);
-      pushToast({ kind: "success", title: t("perf.enriched"), ttlMs: 2600 });
+      pushToast(
+        fromNote
+          ? { kind: "success", title: t("perf.enriched"), ttlMs: 2600 }
+          : { kind: "info", title: t("perf.no_source") },
+      );
     } catch (e) {
       pushToast({ kind: "error", title: t("perf.enrich_error"), message: String(e) });
     } finally {
       setEnriching(false);
     }
+  };
+
+  // (v5.0.0) Localización: las opciones de la NOTA usan la etiqueta del
+  // dev (inglés, de la página); las del escaneo LOCAL se localizan por
+  // categoría con i18n. La descripción siempre se localiza por categoría.
+  const optLabel = (o: PerfOption) => {
+    if (o.fromNote && o.label) return o.label;
+    const k = `perf.cat.${o.category}.label`;
+    const v = t(k);
+    return v === k ? o.label || o.category : v;
+  };
+  const optDesc = (o: PerfOption) => {
+    const k = `perf.cat.${o.category}.desc`;
+    const v = t(k);
+    return v === k ? o.description : v;
   };
 
   const options = config?.options ?? [];
@@ -214,7 +227,7 @@ export function PerformanceModal({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="truncate text-[13px] font-semibold text-slate-100">
-                          {opt.label}
+                          {optLabel(opt)}
                         </p>
                         <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 ring-1 ring-amber-500/30">
                           <Zap className="h-2.5 w-2.5" />
@@ -222,7 +235,7 @@ export function PerformanceModal({
                         </span>
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                        {opt.description}
+                        {optDesc(opt)}
                       </p>
                       <p className="mt-1 text-[10px] text-slate-600">
                         {opt.files.length === 1

@@ -41,10 +41,18 @@ const SCAN_DEPTH: usize = 8;
 #[serde(rename_all = "camelCase")]
 pub struct PerfOption {
     pub id: String,
+    /// Para opciones de la NOTA: la etiqueta del dev (inglés, de la
+    /// página). Para el escaneo local: vacío (el frontend localiza por
+    /// `category`).
     pub label: String,
     pub description: String,
     pub fps_hint: String,
     pub category: String,
+    /// true si vino de la nota "Optional Configuration" de la página;
+    /// false si del escaneo local por patrón. El frontend usa esto para
+    /// decidir si muestra `label` (dev) o el texto localizado por categoría.
+    #[serde(default)]
+    pub from_note: bool,
     /// Rutas RELATIVAS al addon del/los `.bgl` ACTIVO(s) (sin `.off`).
     pub files: Vec<String>,
     /// true = objetos presentes (`.bgl`); false = desactivados.
@@ -134,35 +142,37 @@ fn categorize(text_lower: &str) -> Option<&'static str> {
     None
 }
 
+// Inglés como defecto del JSON (legible y fallback). El frontend
+// localiza la descripción y, para opciones locales, también la etiqueta.
 fn default_label(category: &str) -> &'static str {
     match category {
-        "static_cars" => "Autos estáticos",
-        "ramp_personnel" => "Personal de rampa",
-        "passengers" => "Pasajeros 3D",
-        "gse" => "Equipo de tierra (GSE)",
-        "animated" => "Agentes / vehículos animados",
-        "static_aircraft" => "Aeronaves estáticas",
-        "clutter" => "Clutter / objetos extra",
-        "road_traffic" => "Tráfico de carretera",
-        "service_traffic" => "Tráfico de vehículos de servicio",
-        "vdgs" => "Cajas VDGS",
-        _ => "Objetos opcionales",
+        "static_cars" => "Static cars",
+        "ramp_personnel" => "Ramp personnel",
+        "passengers" => "3D Passengers",
+        "gse" => "Ground equipment (GSE)",
+        "animated" => "Animated agents / vehicles",
+        "static_aircraft" => "Static aircraft",
+        "clutter" => "Clutter / extra objects",
+        "road_traffic" => "Road traffic",
+        "service_traffic" => "Service vehicle traffic",
+        "vdgs" => "VDGS boxes",
+        _ => "Optional objects",
     }
 }
 
 fn description_for(category: &str) -> &'static str {
     match category {
-        "static_cars" => "Quita los autos estáticos del aparcamiento y viales del aeropuerto.",
-        "ramp_personnel" => "Quita el personal de rampa estático (operarios 3D en plataforma).",
-        "passengers" => "Quita los pasajeros 3D de terminales y puertas de embarque.",
-        "gse" => "Quita el equipo de tierra estático (tractores, cintas, escaleras, GPU).",
-        "animated" => "Quita los agentes y vehículos ANIMADOS (los que más cuestan FPS).",
-        "static_aircraft" => "Quita las aeronaves estáticas (AI parqueadas decorativas).",
-        "clutter" => "Quita el clutter / objetos de detalle no esenciales (modelos, farolas, vallas).",
-        "road_traffic" => "Quita el tráfico de carretera alrededor del aeropuerto.",
-        "service_traffic" => "Quita los vehículos de servicio en movimiento por la plataforma.",
-        "vdgs" => "Quita las cajas VDGS de Aerosoft (úsalo si manejas VDGS con GSX).",
-        _ => "Objetos opcionales del escenario que puedes desactivar para ganar FPS.",
+        "static_cars" => "Removes static cars from parking and airport roads.",
+        "ramp_personnel" => "Removes static ramp personnel (3D ground crew).",
+        "passengers" => "Removes 3D passengers from terminals and boarding gates.",
+        "gse" => "Removes static ground service equipment (tugs, belts, stairs, GPU).",
+        "animated" => "Removes ANIMATED agents and vehicles (the heaviest on FPS).",
+        "static_aircraft" => "Removes decorative static (parked AI) aircraft.",
+        "clutter" => "Removes non-essential detail clutter (models, streetlights, fences).",
+        "road_traffic" => "Removes road traffic around the airport.",
+        "service_traffic" => "Removes moving service vehicles on the apron.",
+        "vdgs" => "Removes Aerosoft VDGS boxes (use this if you run VDGS with GSX).",
+        _ => "Optional scenery objects you can disable to gain FPS.",
     }
 }
 
@@ -200,56 +210,104 @@ fn category_rank(category: &str) -> u8 {
 static BGL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)([A-Za-z0-9_\-./\\]+?\.bgl)(\.off)?\b").unwrap());
 
-// "Remove/Disable/Delete <label>:" — etiqueta del dev.
-static REMOVE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:remove|disable|delete)\s+([^:]{2,80}?)\s*:").unwrap());
-
 struct NoteOption {
     label: String,
     /// Basenames (sólo el nombre, sin ruta) de los `.bgl` ACTIVOS.
     files: Vec<String>,
 }
 
-/// Parsea la nota buscando líneas de REMOCIÓN del tipo
-/// `• Remove Static Cars: X.bgl -> X.off`. Sólo toma líneas con un verbo
-/// de remoción (remove/disable/delete) y un `.bgl` a la izquierda del
-/// `->` — así NO captura los "swaps" (p. ej. interiores simples) ni los
-/// `.bat`, que no son simples on/off.
-fn parse_note_options(text: &str) -> Vec<NoteOption> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim().trim_start_matches(['•', '*', '-', ' ']);
-        let lower = line.to_lowercase();
-        if !lower.contains(".bgl") {
-            continue;
+/// Basenames `.bgl` ACTIVOS (sin `.off`) en un fragmento de texto.
+fn active_bgls_in(s: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    for cap in BGL_RE.captures_iter(s) {
+        if cap.get(2).is_some() {
+            continue; // `.bgl.off`, no el activo
         }
-        if !(lower.contains("remove") || lower.contains("disable") || lower.contains("delete")) {
-            continue;
+        let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let bn = basename_lower(raw);
+        if !bn.is_empty() && !v.contains(&bn) {
+            v.push(bn);
         }
-        // Lado izquierdo del primer "->" = los `.bgl` ACTIVOS a desactivar.
-        let left = line.split("->").next().unwrap_or(line);
-        let mut files: Vec<String> = Vec::new();
-        for cap in BGL_RE.captures_iter(left) {
-            if cap.get(2).is_some() {
-                continue; // es un `.bgl.off`, no el activo
-            }
-            let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-            let bn = basename_lower(raw);
-            if !bn.is_empty() && !files.contains(&bn) {
-                files.push(bn);
-            }
-        }
-        if files.is_empty() {
-            continue;
-        }
-        let label = REMOVE_RE
-            .captures(line)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| pretty_from_basename(&files[0]));
-        out.push(NoteOption { label, files });
     }
+    v
+}
+
+/// Parsea la nota "Optional Configuration". Maneja DOS formatos:
+///   · Una línea:  `• Remove Static Cars: X.bgl -> X.off`
+///   · Multilínea (Aerosoft):  `Disable Passengers completely:`  seguido
+///     de viñetas `• ENGM_Passengers_1.bgl -> ENGM_Passengers_1.off`.
+/// Sólo toma opciones de REMOCIÓN pura (remove/disable/delete). Excluye
+/// los "Switch …" (swaps de dos direcciones: desactivan uno y activan
+/// otro — automatizarlos como un toggle dejaría el aeropuerto a medias)
+/// y cualquier opción cuyas viñetas ACTIVEN un `.bgl` (`X.off -> X.bgl`).
+fn parse_note_options(text: &str) -> Vec<NoteOption> {
+    let mut out: Vec<NoteOption> = Vec::new();
+    // (label, files, is_swap)
+    let mut cur: Option<(String, Vec<String>, bool)> = None;
+
+    macro_rules! flush {
+        () => {
+            if let Some((label, files, swap)) = cur.take() {
+                if !swap && !files.is_empty() {
+                    out.push(NoteOption { label, files });
+                }
+            }
+        };
+    }
+
+    for raw in text.lines() {
+        let stripped = raw.trim().trim_start_matches(['•', '*', '-', '·', ' ']).trim();
+        if stripped.is_empty() {
+            flush!();
+            continue;
+        }
+        let lower = stripped.to_lowercase();
+        let has_verb = lower.contains("remove")
+            || lower.contains("disable")
+            || lower.contains("delete")
+            || lower.contains("switch");
+        let left = stripped.split("->").next().unwrap_or(stripped);
+        let bgl_left = active_bgls_in(left);
+        let right_active = stripped
+            .splitn(2, "->")
+            .nth(1)
+            .map(|r| !active_bgls_in(r).is_empty())
+            .unwrap_or(false);
+
+        // Cabecera de opción: verbo + ":" (multilínea o de una línea).
+        if has_verb && stripped.contains(':') {
+            flush!();
+            // Etiqueta = texto del header tal cual la página (antes del
+            // primer ":"). Mantiene el verbo del dev ("Disable Passengers
+            // completely", "Remove Static Cars") para que coincida con
+            // lo que el usuario ve en SceneryAddons.
+            let label = stripped
+                .splitn(2, ':')
+                .next()
+                .unwrap_or(stripped)
+                .trim()
+                .to_string();
+            // Archivos en la MISMA línea (formato de una línea).
+            let after = stripped.splitn(2, ':').nth(1).unwrap_or("");
+            let files = active_bgls_in(after.split("->").next().unwrap_or(after));
+            let is_swap = lower.contains("switch") || right_active;
+            cur = Some((label, files, is_swap));
+            continue;
+        }
+
+        // Viñeta de continuación bajo la cabecera actual.
+        if let Some((_, files, swap)) = cur.as_mut() {
+            for f in bgl_left {
+                if !files.contains(&f) {
+                    files.push(f);
+                }
+            }
+            if right_active {
+                *swap = true; // activa un .bgl → es un swap
+            }
+        }
+    }
+    flush!();
     out
 }
 
@@ -442,13 +500,6 @@ fn slug(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-fn pretty_from_basename(bn: &str) -> String {
-    bn.trim_end_matches(".bgl")
-        .replace(['_', '-'], " ")
-        .trim()
-        .to_string()
-}
-
 // ---------------------------------------------------------------------------
 // Construcción / reconciliación del manifiesto
 // ---------------------------------------------------------------------------
@@ -504,6 +555,7 @@ fn build_config(
                 description: description_for(&category).to_string(),
                 fps_hint: fps_hint_for(&category).to_string(),
                 category,
+                from_note: true,
                 files,
                 enabled,
             });
@@ -532,6 +584,7 @@ fn build_config(
             description: description_for(&raw.category).to_string(),
             fps_hint: fps_hint_for(&raw.category).to_string(),
             category: raw.category,
+            from_note: false,
             files,
             enabled,
         });
@@ -770,7 +823,46 @@ mod tests {
             assert!(o.files[0].ends_with(".bgl"));
             assert!(!o.files[0].contains(".off"));
         }
-        assert_eq!(opts[0].label, "Static Cars");
+        assert_eq!(opts[0].label, "Remove Static Cars");
+    }
+
+    #[test]
+    fn parses_aerosoft_engm_multiline() {
+        // Formato Aerosoft ENGM: cabecera "Disable X:" + viñetas. Los
+        // "Switch …" (swaps) deben excluirse.
+        let note = "\
+Optional Configuration: To change various options, rename:\n\
+\n\
+Switch from High to Medium Passenger Density:\n\
+• ENGM_Passengers_1.bgl -> ENGM_Passengers_1.off\n\
+• ENGM_Passengers_2.off -> ENGM_Passengers_2.bgl\n\
+\n\
+Disable Passengers completely:\n\
+• ENGM_Passengers_1.bgl -> ENGM_Passengers_1.off\n\
+• ENGM_Passengers_2.bgl -> ENGM_Passengers_2.off\n\
+\n\
+Switch from Animated to Static Wind Farms:\n\
+• ENGM_WindFarm_1.bgl -> ENGM_WindFarm_1.off\n\
+• ENGM_WindFarm_2.off -> ENGM_WindFarm_2.bgl\n\
+\n\
+Disable Ramp Traffic completely:\n\
+• ENGM_RampTraffic_1.bgl -> ENGM_RampTraffic_1.off\n\
+• ENGM_RampTraffic_2.bgl -> ENGM_RampTraffic_2.off\n\
+\n\
+Disable UTC + stand number on unactivated VDGS systems:\n\
+• ENGM_VDGSinfo.bgl -> ENGM_VDGSinfo.off\n\
+\n\
+Disable Norse Static Aircraft on Taxiway U:\n\
+• ENGM_StaticAircraft_Norse.bgl -> ENGM_StaticAircraft_Norse.off\n";
+        let opts = parse_note_options(note);
+        let labels: Vec<&str> = opts.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(opts.len(), 4, "esperaba 4 disables, hubo {labels:?}");
+        assert!(labels.contains(&"Disable Passengers completely"));
+        assert!(labels.contains(&"Disable Ramp Traffic completely"));
+        assert!(labels.iter().all(|l| !l.starts_with("Switch")), "no swaps");
+        // "Disable Passengers completely" toca 2 archivos.
+        let pax = opts.iter().find(|o| o.label.contains("Passengers")).unwrap();
+        assert_eq!(pax.files.len(), 2);
     }
 
     #[test]
@@ -792,9 +884,9 @@ Optional Configuration: To remove various objects, rename:\n\
         // 7 líneas "Remove …" (los 2 de interiores son swap, sin "Remove").
         assert_eq!(opts.len(), 7, "esperaba 7 remociones, hubo {}", opts.len());
         let labels: Vec<&str> = opts.iter().map(|o| o.label.as_str()).collect();
-        assert!(labels.iter().any(|l| l.starts_with("Extra Clutter")));
-        assert!(labels.contains(&"Terminal Passengers"));
-        assert!(labels.contains(&"Road Traffic"));
+        assert!(labels.iter().any(|l| l.contains("Extra Clutter")));
+        assert!(labels.iter().any(|l| l.contains("Terminal Passengers")));
+        assert!(labels.iter().any(|l| l.contains("Road Traffic")));
         // Todos resuelven a 1 basename activo .bgl (sin ruta, sin .off).
         for o in &opts {
             assert_eq!(o.files.len(), 1, "{}", o.label);

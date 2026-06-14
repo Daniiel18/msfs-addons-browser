@@ -311,6 +311,7 @@ export function LinkMapView({
         folderName: ap.folderName,
         installPath: ap.installPath,
         icao: ap.icao,
+        creator: ap.creator,
       })),
     );
     pushToast({
