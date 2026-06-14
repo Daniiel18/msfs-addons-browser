@@ -535,6 +535,39 @@ export interface AddonNodePosition {
   y: number;
 }
 
+/** (v5.0.0) Una opción del motor de rendimiento (FPS) de un aeropuerto:
+ *  un grupo de archivos `.bgl` opcionales (autos, pasajeros, GSE…) que
+ *  se pueden desactivar renombrándolos a `.bgl.off`. `files` es un array
+ *  porque una opción puede tocar 2-3 archivos a la vez. Espejo de
+ *  `perf_config::PerfOption` (Rust). */
+export interface PerfOption {
+  id: string;
+  label: string;
+  description: string;
+  /** Estimado teórico de ahorro, ej. "+2–5 FPS". */
+  fpsHint: string;
+  category: string;
+  files: string[];
+  /** true = objetos presentes (`.bgl`); false = desactivados (`.bgl.off`). */
+  enabled: boolean;
+}
+
+/** (v5.0.0) Manifiesto de rendimiento leído de
+ *  `config/simfleet_perf.json` dentro del addon. */
+export interface PerfConfig {
+  icao: string | null;
+  folderName: string;
+  /** "sceneryaddons" | "local-scan" | "mixed". */
+  source: string;
+  options: PerfOption[];
+}
+
+/** (v5.0.0) Resultado de un toggle de rendimiento. */
+export interface PerfToggleResult {
+  option: PerfOption;
+  renamed: number;
+}
+
 /** Resultado de un scan de la carpeta Community. */
 export interface ScanReport {
   packages: CommunityPackage[];

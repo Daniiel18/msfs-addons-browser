@@ -1,0 +1,269 @@
+import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Gauge,
+  Info,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+  X,
+  Zap,
+} from "lucide-react";
+import type { Addon, CommunityPackage, PerfConfig, PerfOption } from "../lib/types";
+import { api } from "../lib/tauri";
+import { useToastStore } from "../stores/useToastStore";
+import { ToggleSwitch } from "./AddonToggle";
+import { t } from "../lib/i18n";
+
+/**
+ * (v5.0.0) **Modal de Rendimiento (FPS)** de un aeropuerto.
+ *
+ * Lee `config/simfleet_perf.json` (que el backend generó al instalar el
+ * escenario, escaneando los `.bgl` opcionales) y pinta un toggle por
+ * cada grupo de objetos pesados desactivables — autos estáticos,
+ * pasajeros 3D, GSE, agentes animados… Cada fila muestra qué hace y un
+ * estimado de FPS ahorrado.
+ *
+ * El switch representa la PRESENCIA de los objetos:
+ *   · ON  (verde) = objetos presentes (escenario completo).
+ *   · OFF (apagado) = `.bgl` → `.bgl.off`, MSFS los ignora → ganas FPS.
+ *
+ * El toggle renombra los archivos físicamente en tiempo real (atómico,
+ * con rollback si MSFS tiene el escenario abierto).
+ *
+ * Botón "Actualizar desde SceneryAddons": baja la nota "Optional
+ * Configuration" del dev para enriquecer etiquetas + estimados de FPS.
+ */
+export function PerformanceModal({
+  pkg,
+  onClose,
+}: {
+  pkg: CommunityPackage;
+  onClose: () => void;
+}) {
+  const pushToast = useToastStore((s) => s.push);
+  const [config, setConfig] = useState<PerfConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [enriching, setEnriching] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const cfg = await api.perfReadConfig(
+          pkg.installPath,
+          pkg.folderName,
+          pkg.icao,
+        );
+        if (alive) setConfig(cfg);
+      } catch (e) {
+        if (alive)
+          pushToast({ kind: "error", title: t("perf.load_error"), message: String(e) });
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [pkg.installPath, pkg.folderName, pkg.icao, pushToast]);
+
+  // Renombra los .bgl de una opción. `enable` = dejar objetos presentes.
+  const toggle = async (opt: PerfOption) => {
+    if (busyId) return;
+    setBusyId(opt.id);
+    try {
+      const res = await api.perfToggleOption(pkg.installPath, opt.id, !opt.enabled);
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              options: prev.options.map((o) =>
+                o.id === opt.id ? res.option : o,
+              ),
+            }
+          : prev,
+      );
+      pushToast({
+        kind: "success",
+        title: res.option.enabled
+          ? t("perf.restored", { label: res.option.label })
+          : t("perf.disabled", { label: res.option.label }),
+        message: t("perf.renamed", { n: String(res.renamed) }),
+        ttlMs: 2600,
+      });
+    } catch (e) {
+      // El backend ya mapea "os error 32" a un mensaje claro (MSFS abierto).
+      pushToast({ kind: "error", title: t("perf.toggle_error"), message: String(e) });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Baja la nota del dev desde SceneryAddons (mejores etiquetas + FPS).
+  const enrich = async () => {
+    if (!pkg.icao) return;
+    setEnriching(true);
+    try {
+      const matches: Addon[] = await api
+        .search(pkg.icao, "sceneryaddons")
+        .catch(() => []);
+      const pageUrl = matches.find((m) => m.pageUrl)?.pageUrl;
+      if (!pageUrl) {
+        pushToast({ kind: "info", title: t("perf.no_source") });
+        return;
+      }
+      const cfg = await api.perfEnrichFromSource(
+        pkg.installPath,
+        pkg.folderName,
+        pkg.icao,
+        pageUrl,
+      );
+      setConfig(cfg);
+      pushToast({ kind: "success", title: t("perf.enriched"), ttlMs: 2600 });
+    } catch (e) {
+      pushToast({ kind: "error", title: t("perf.enrich_error"), message: String(e) });
+    } finally {
+      setEnriching(false);
+    }
+  };
+
+  const options = config?.options ?? [];
+  const savedCount = options.filter((o) => !o.enabled).length;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.97, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97, y: 8 }}
+        transition={{ duration: 0.18 }}
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[min(680px,calc(100vh-3rem))] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+      >
+        <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-500/40">
+              <Gauge className="h-4 w-4 text-emerald-300" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100">
+                {t("perf.title")}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {pkg.airportName ?? pkg.title}
+                {pkg.icao && <span className="font-mono"> · {pkg.icao}</span>}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        {/* Nota explicativa del comportamiento del switch. */}
+        <div className="flex items-start gap-2 border-b border-slate-800 bg-slate-900/40 px-5 py-2.5 text-[11px] text-slate-400">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
+          <p>{t("perf.help")}</p>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-slate-500">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : options.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <Sparkles className="h-7 w-7 text-slate-600" />
+              <p className="text-sm font-medium text-slate-300">
+                {t("perf.empty.title")}
+              </p>
+              <p className="max-w-xs text-[12px] text-slate-500">
+                {t("perf.empty.body")}
+              </p>
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {options.map((opt) => (
+                <li
+                  key={opt.id}
+                  className={`rounded-xl border px-3.5 py-3 transition-colors ${
+                    opt.enabled
+                      ? "border-slate-800 bg-slate-900/40"
+                      : "border-emerald-600/40 bg-emerald-950/20"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-[13px] font-semibold text-slate-100">
+                          {opt.label}
+                        </p>
+                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 ring-1 ring-amber-500/30">
+                          <Zap className="h-2.5 w-2.5" />
+                          {opt.fpsHint}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                        {opt.description}
+                      </p>
+                      <p className="mt-1 text-[10px] text-slate-600">
+                        {opt.files.length === 1
+                          ? t("perf.one_file")
+                          : t("perf.n_files", { n: String(opt.files.length) })}
+                        {!opt.enabled && (
+                          <span className="ml-1 font-semibold text-emerald-400">
+                            · {t("perf.off_now")}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-center gap-1 pt-0.5">
+                      <ToggleSwitch
+                        on={opt.enabled}
+                        busy={busyId === opt.id}
+                        onToggle={() => void toggle(opt)}
+                      />
+                      <span className="text-[9px] uppercase tracking-wide text-slate-600">
+                        {opt.enabled ? t("perf.on") : t("perf.off")}
+                      </span>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <footer className="flex items-center justify-between gap-2 border-t border-slate-800 px-5 py-2.5">
+          <span className="text-[11px] text-slate-500">
+            {savedCount > 0
+              ? t("perf.footer_saving", { n: String(savedCount) })
+              : t("perf.footer_full")}
+          </span>
+          <button
+            onClick={() => void enrich()}
+            disabled={enriching || !pkg.icao}
+            title={t("perf.enrich_hint")}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 hover:border-brand-500/40 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {enriching ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3" />
+            )}
+            {t("perf.enrich")}
+          </button>
+        </footer>
+      </motion.div>
+    </div>
+  );
+}

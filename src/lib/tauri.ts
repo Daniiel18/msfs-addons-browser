@@ -9,6 +9,8 @@ import type {
   Addon,
   AddonLink,
   AddonNodePosition,
+  PerfConfig,
+  PerfToggleResult,
   AddonOnMap,
   AirportBrief,
   RouteFix,
@@ -311,6 +313,28 @@ interface Api {
   listAddonNodePositions: () => Promise<AddonNodePosition[]>;
   /** (v4.25.0) Guarda posiciones tras un drag (upsert masivo). */
   saveAddonNodePositions: (positions: AddonNodePosition[]) => Promise<void>;
+  /** (v5.0.0) Lee/genera el manifiesto de rendimiento (FPS) del addon.
+   *  `null` si el escenario no tiene objetos opcionales detectables. */
+  perfReadConfig: (
+    installPath: string,
+    folderName: string,
+    icao: string | null,
+  ) => Promise<PerfConfig | null>;
+  /** (v5.0.0) Activa/desactiva una opción de rendimiento (renombra los
+   *  `.bgl`↔`.bgl.off` de la opción de forma atómica). */
+  perfToggleOption: (
+    installPath: string,
+    optionId: string,
+    enable: boolean,
+  ) => Promise<PerfToggleResult>;
+  /** (v5.0.0) Enriquece el manifiesto con la nota "Optional Configuration"
+   *  de la página de SceneryAddons del aeropuerto. */
+  perfEnrichFromSource: (
+    installPath: string,
+    folderName: string,
+    icao: string | null,
+    pageUrl: string,
+  ) => Promise<PerfConfig | null>;
   /** (v4.26.0) El backend bajó imágenes nuevas de Wikipedia para
    *  aeropuertos sin thumbnail — el frontend debe invalidar su cache. */
   onThumbsUpdated: (cb: (count: number) => void) => Promise<UnlistenFn>;
@@ -599,6 +623,25 @@ const realApi: Api = {
     invoke<AddonNodePosition[]>("list_addon_node_positions"),
   saveAddonNodePositions: (positions) =>
     invoke<void>("save_addon_node_positions", { positions }),
+  perfReadConfig: (installPath, folderName, icao) =>
+    invoke<PerfConfig | null>("perf_read_config", {
+      installPath,
+      folderName,
+      icao: icao ?? null,
+    }),
+  perfToggleOption: (installPath, optionId, enable) =>
+    invoke<PerfToggleResult>("perf_toggle_option", {
+      installPath,
+      optionId,
+      enable,
+    }),
+  perfEnrichFromSource: (installPath, folderName, icao, pageUrl) =>
+    invoke<PerfConfig | null>("perf_enrich_from_source", {
+      installPath,
+      folderName,
+      icao: icao ?? null,
+      pageUrl,
+    }),
   onThumbsUpdated: (cb) =>
     listen<number>("thumbs://updated", (e) => cb(e.payload)),
   fetchChangelog: (pageUrl) =>
@@ -1306,6 +1349,26 @@ const demoApi: Api = {
     return [];
   },
   async saveAddonNodePositions() {},
+  async perfReadConfig() {
+    return null;
+  },
+  async perfToggleOption(_installPath, optionId, enable) {
+    return {
+      option: {
+        id: optionId,
+        label: optionId,
+        description: "",
+        fpsHint: "",
+        category: optionId,
+        files: [],
+        enabled: enable,
+      },
+      renamed: 0,
+    };
+  },
+  async perfEnrichFromSource() {
+    return null;
+  },
   async onThumbsUpdated() {
     return () => {};
   },

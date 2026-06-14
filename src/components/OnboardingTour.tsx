@@ -77,11 +77,34 @@ function buildSteps(): TourStep[] {
       body: t("tour.map.body"),
       placement: "bottom",
     },
+    // (v5.0.0) Optimizador de FPS — vive en la card del aeropuerto del
+    // Map; se explica centrado porque la card solo aparece al seleccionar.
+    {
+      setView: "map",
+      title: t("tour.perf.title"),
+      body: t("tour.perf.body"),
+    },
     {
       setView: "addons",
       target: "[data-tour-id='nav-addons']",
       title: t("tour.addons.title"),
       body: t("tour.addons.body"),
+      placement: "bottom",
+    },
+    // (v5.0.0) Link Map + auto-organizar + aeropuertos por región.
+    {
+      setView: "addons",
+      target: "[data-tour-id='addons-view-switch']",
+      title: t("tour.linkmap.title"),
+      body: t("tour.linkmap.body"),
+      placement: "bottom",
+    },
+    // (v5.0.0) Enable/Disable All + Refresh (que regenera los perf configs).
+    {
+      setView: "addons",
+      target: "[data-tour-id='addons-batch']",
+      title: t("tour.addons_batch.title"),
+      body: t("tour.addons_batch.body"),
       placement: "bottom",
     },
     {

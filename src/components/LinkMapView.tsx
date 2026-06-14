@@ -43,6 +43,8 @@ import { useThumbnail } from "../lib/thumbnails";
 import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
 import { AddonFallbackArt } from "./AddonArt";
 import { FindSearch } from "./FindSearch";
+import { RegionBadge } from "./RegionBadge";
+import { airportRegion, continentLabel, type Continent } from "../lib/oaciRegion";
 import { expandVendorQuery } from "../lib/vendorSynonyms";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
@@ -149,19 +151,31 @@ function AddonNode({ data }: NodeProps<AddonNodeType>) {
   );
 }
 
-// (v4.33.0) Nodo de AEROPUERTO — visualmente distinto del addon
+// (v4.33.0 · v5.0.0) Nodo de AEROPUERTO — visualmente distinto del addon
 // (borde verde, pin, ICAO). Standalone, sin aristas. Se agrupa por
-// región a un lado del lienzo.
+// continente en clusters a la derecha del lienzo. Lleva micro-badge de
+// región + toggle nativo para encender/apagar el escenario sin salir.
 type AirportNodeType = Node<{ pkg: CommunityPackage }, "airport">;
 
 function AirportNode({ data }: NodeProps<AirportNodeType>) {
   const { pkg } = data;
   const thumb = useThumbnail(pkg.folderName, false);
+  const { enabled, busy, toggle } = usePackageToggle(pkg);
   return (
-    <div className="w-[180px] overflow-hidden rounded-lg border-2 border-emerald-600/60 bg-emerald-950/40 shadow-lg">
+    <div
+      className={`w-[180px] overflow-hidden rounded-lg border-2 shadow-lg transition-colors ${
+        enabled
+          ? "border-emerald-600/60 bg-emerald-950/40"
+          : "border-slate-700 bg-slate-950/70 opacity-70"
+      }`}
+    >
       <div className="relative h-[56px] w-full overflow-hidden bg-gradient-to-br from-emerald-900/40 to-slate-950">
         {thumb ? (
-          <img src={thumb} alt="" className="h-full w-full object-cover" />
+          <img
+            src={thumb}
+            alt=""
+            className={`h-full w-full object-cover ${enabled ? "" : "opacity-40 grayscale"}`}
+          />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-emerald-500/40">
             <MapPin className="h-7 w-7" />
@@ -170,18 +184,49 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
         <span className="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-0.5 font-mono text-[9px] font-bold text-emerald-950">
           {pkg.icao}
         </span>
+        <span className="absolute right-1.5 top-1.5">
+          <RegionBadge icao={pkg.icao} showLabel={false} />
+        </span>
       </div>
-      <div className="p-2">
-        <p className="line-clamp-1 text-[10px] font-semibold text-emerald-100" title={pkg.airportName ?? pkg.title}>
+      <div className="flex items-center gap-1.5 p-2">
+        <p
+          className={`line-clamp-1 min-w-0 flex-1 text-[10px] font-semibold ${
+            enabled ? "text-emerald-100" : "text-slate-500"
+          }`}
+          title={pkg.airportName ?? pkg.title}
+        >
           {pkg.airportName ?? pkg.title}
         </p>
+        <ToggleSwitch on={enabled} busy={busy} onToggle={toggle} small />
       </div>
     </div>
   );
 }
 
-const NODE_TYPES = { addon: AddonNode, airport: AirportNode };
-type FlowNode = AddonNodeType | AirportNodeType;
+// (v5.0.0) Cabecera de cluster: rótulo del continente sobre cada grupo
+// de aeropuertos. Nodo no interactivo (solo etiqueta visual).
+type RegionHeaderNodeType = Node<{ label: string; count: number }, "regionHeader">;
+
+function RegionHeaderNode({ data }: NodeProps<RegionHeaderNodeType>) {
+  return (
+    <div className="pointer-events-none flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 shadow-sm">
+      <MapPin className="h-3.5 w-3.5 text-emerald-300" />
+      <span className="text-[13px] font-bold uppercase tracking-wide text-emerald-200">
+        {data.label}
+      </span>
+      <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold tabular-nums text-emerald-200">
+        {data.count}
+      </span>
+    </div>
+  );
+}
+
+const NODE_TYPES = {
+  addon: AddonNode,
+  airport: AirportNode,
+  regionHeader: RegionHeaderNode,
+};
+type FlowNode = AddonNodeType | AirportNodeType | RegionHeaderNodeType;
 
 // ---------------------------------------------------------------------------
 // Vista principal
@@ -255,14 +300,11 @@ export function LinkMapView({
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // (v4.33.0) Posiciones de los aeropuertos: agrupados por región
-  // OACI (1ª letra del ICAO → continente/zona) en una franja a la
-  // DERECHA de los addons, claramente separada. No se persisten (son
-  // siempre auto-ordenados).
-  const airportPositions = useMemo(
-    () => layoutAirports(airports),
-    [airports],
-  );
+  // (v5.0.0) Zona de aeropuertos: clusters compactos por CONTINENTE
+  // (grilla de pocas columnas + cabecera con rótulo) apilados en una
+  // franja a la DERECHA de los addons, físicamente aislada de los
+  // flujos de aviones/liveries. No se persisten (siempre auto-ordenados).
+  const airportLayout = useMemo(() => layoutAirportZone(airports), [airports]);
 
   // Reconstruye nodos/aristas cuando cambian membresía, links o el
   // inventario (un toggle refresca `enabled` dentro de data.pkg).
@@ -296,9 +338,10 @@ export function LinkMapView({
           data: { pkg: item.p, derived: item.t },
         };
       });
-      // (v4.33.0) Nodos de aeropuerto — zona aparte a la derecha.
+      // (v5.0.0) Nodos de aeropuerto — clusters por continente a la
+      // derecha, con sus cabeceras de región.
       const airportNodes: FlowNode[] = airports.map((ap) => {
-        const p = airportPositions.get(ap.folderName) ?? { x: 0, y: 0 };
+        const p = airportLayout.positions.get(ap.folderName) ?? { x: 0, y: 0 };
         return {
           id: `airport:${ap.folderName}`,
           type: "airport" as const,
@@ -309,19 +352,33 @@ export function LinkMapView({
           data: { pkg: ap },
         };
       });
-      return [...addonNodes, ...airportNodes];
+      const headerNodes: FlowNode[] = airportLayout.headers.map((h) => ({
+        id: h.id,
+        type: "regionHeader" as const,
+        position: { x: h.x, y: h.y },
+        deletable: false,
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        data: { label: h.label, count: h.count },
+      }));
+      return [...addonNodes, ...airportNodes, ...headerNodes];
     });
     setEdges(
       visibleLinks.map((l) => ({
         id: `${l.sourceFolder}->${l.targetFolder}`,
         source: l.sourceFolder,
         target: l.targetFolder,
+        // (v5.0.0) smoothstep + trazo más fino y tenue: con cientos de
+        // links las curvas rectas se cruzaban como ruido sobre las
+        // tarjetas. Las ortogonales suaves leen mejor y van por debajo.
+        type: "smoothstep",
         animated: true,
-        style: { stroke: "#f59e0b", strokeWidth: 1.5, strokeDasharray: "7 5" },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b", width: 16, height: 16 },
+        style: { stroke: "#f59e0b", strokeWidth: 1.25, strokeOpacity: 0.55 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b", width: 14, height: 14 },
       })),
     );
-  }, [loaded, members, visibleLinks, byFolder, positions, airports, airportPositions, setNodes, setEdges]);
+  }, [loaded, members, visibleLinks, byFolder, positions, airports, airportLayout, setNodes, setEdges]);
 
   // Crear arista arrastrando verde → azul.
   const onConnect = useCallback(
@@ -432,6 +489,7 @@ export function LinkMapView({
     if (!needle) return [] as FlowNode[];
     const expanded = expandVendorQuery(needle);
     return nodes.filter((n) => {
+      if (n.type === "regionHeader") return false;
       const hay = `${n.data.pkg.title} ${n.id}`.toLowerCase();
       return expanded.some((term) => hay.includes(term));
     });
@@ -462,6 +520,7 @@ export function LinkMapView({
     if (!needle) return;
     const expanded = expandVendorQuery(needle);
     const hit = nodes.find((n) => {
+      if (n.type === "regionHeader") return false;
       const hay = `${n.data.pkg.title} ${n.id}`.toLowerCase();
       return expanded.some((term) => hay.includes(term));
     });
@@ -841,74 +900,79 @@ function ManageLinksModal({
  *  - Otros aviones (CRJ, ATR, Embraer, MD, Cessna…) → bucket central
  *  - Resto (sound packs, utilities, mods sin avión) → bucket "misc"
  *    abajo. */
-/** (v4.33.0) Región mundial a partir del prefijo OACI del ICAO (1ª
- *  letra → continente/zona). Aproxima "país/continente" sin datos
- *  extra. Etiqueta legible para agrupar los aeropuertos. */
-function oaciRegion(icao: string | null | undefined): string {
-  const c = (icao ?? "").trim().toUpperCase();
-  if (!c) return "Otros";
-  const map: Record<string, string> = {
-    K: "Norteamérica (EE.UU.)",
-    C: "Canadá",
-    M: "México y Centroamérica",
-    T: "Caribe",
-    S: "Sudamérica",
-    E: "Europa (Norte)",
-    L: "Europa (Sur)",
-    B: "Europa (Norte)",
-    U: "Rusia y CIS",
-    R: "Asia oriental",
-    Z: "China",
-    V: "Sur de Asia",
-    W: "Sudeste asiático",
-    O: "Oriente Medio",
-    F: "África (Sur/Centro)",
-    G: "África (Oeste)",
-    H: "África (Este)",
-    D: "África (Oeste)",
-    A: "Pacífico Sur",
-    N: "Pacífico Sur",
-    Y: "Australia",
-    P: "Pacífico (Norte)",
-  };
-  return map[c[0]] ?? "Otros";
-}
+// --- Zona de aeropuertos (v5.0.0) -----------------------------------------
+// Clusters compactos por CONTINENTE en vez de una columna por región (que
+// generaba columnas larguísimas con 271 addons). Cada cluster es una
+// grilla de pocas columnas con una cabecera de rótulo, apilados
+// verticalmente y desplazados a la derecha para aislarse de los aviones.
 
-const AIRPORT_GAP_X = 230;
-const AIRPORT_GAP_Y = 104;
-// X base de la franja de aeropuertos: a la derecha de los 3 buckets de
-// aviones (Airbus|Otros|Boeing ≈ 2550) + margen.
+const AP_COL_W = 200; // 180 (card) + gap
+const AP_ROW_H = 104;
+const AP_HEADER_H = 54;
+const AP_CLUSTER_GAP = 76;
+// X base de la zona de aeropuertos: a la derecha de los 3 buckets de
+// aviones (Airbus|Otros|Boeing ≈ 2550) + margen amplio de separación.
 const AIRPORT_X_BASE = 3200;
 
-/** (v4.33.0) Posiciona los aeropuertos en una franja a la derecha,
- *  una COLUMNA por región OACI (continente/zona). Devuelve folder →
- *  posición. Standalone, sin relación con los addons. */
-function layoutAirports(
-  airports: CommunityPackage[],
-): Map<string, { x: number; y: number }> {
-  const out = new Map<string, { x: number; y: number }>();
-  const byRegion = new Map<string, CommunityPackage[]>();
+// Orden de continentes (oeste→este aprox.) para apilar los clusters.
+const CONTINENT_ORDER: Continent[] = [
+  "north_america",
+  "central_america",
+  "caribbean",
+  "south_america",
+  "europe",
+  "africa",
+  "middle_east",
+  "asia",
+  "oceania",
+  "other",
+];
+
+interface AirportZoneLayout {
+  positions: Map<string, { x: number; y: number }>;
+  headers: { id: string; label: string; count: number; x: number; y: number }[];
+}
+
+/** (v5.0.0) Reparte los aeropuertos en clusters por continente: cada
+ *  cluster es una grilla de pocas columnas con su cabecera. Devuelve las
+ *  posiciones + descriptores de cabecera. Standalone, sin relación con
+ *  los addons. */
+function layoutAirportZone(airports: CommunityPackage[]): AirportZoneLayout {
+  const positions = new Map<string, { x: number; y: number }>();
+  const headers: AirportZoneLayout["headers"] = [];
+
+  const byCont = new Map<Continent, CommunityPackage[]>();
   for (const ap of airports) {
-    const r = oaciRegion(ap.icao);
-    if (!byRegion.has(r)) byRegion.set(r, []);
-    byRegion.get(r)!.push(ap);
+    const cont = airportRegion(ap.icao).continent;
+    if (!byCont.has(cont)) byCont.set(cont, []);
+    byCont.get(cont)!.push(ap);
   }
-  // Orden estable de regiones + de aeropuertos dentro (por ICAO).
-  const regions = [...byRegion.keys()].sort();
-  regions.forEach((region, col) => {
-    const list = byRegion
-      .get(region)!
-      .sort((a, b) => (a.icao ?? "").localeCompare(b.icao ?? ""));
-    list.forEach((ap, row) => {
-      out.set(ap.folderName, {
-        x: AIRPORT_X_BASE + col * AIRPORT_GAP_X,
-        // +1 fila de hueco arriba para respirar entre la cabecera
-        // visual (color verde) y los addons.
-        y: (row + 1) * AIRPORT_GAP_Y,
+
+  let y = 0;
+  for (const cont of CONTINENT_ORDER) {
+    const list = byCont.get(cont);
+    if (!list || list.length === 0) continue;
+    list.sort((a, b) => (a.icao ?? "").localeCompare(b.icao ?? ""));
+    // Pocas columnas → clusters cuadrados/compactos, no tiras largas.
+    const cols = Math.min(6, Math.max(3, Math.ceil(Math.sqrt(list.length))));
+    headers.push({
+      id: `hdr:${cont}`,
+      label: continentLabel(cont),
+      count: list.length,
+      x: AIRPORT_X_BASE,
+      y,
+    });
+    const gridTop = y + AP_HEADER_H;
+    list.forEach((ap, i) => {
+      positions.set(ap.folderName, {
+        x: AIRPORT_X_BASE + (i % cols) * AP_COL_W,
+        y: gridTop + Math.floor(i / cols) * AP_ROW_H,
       });
     });
-  });
-  return out;
+    const rows = Math.ceil(list.length / cols);
+    y = gridTop + rows * AP_ROW_H + AP_CLUSTER_GAP;
+  }
+  return { positions, headers };
 }
 
 function brandOf(item: AddonItem): "airbus" | "boeing" | "other" | "misc" {

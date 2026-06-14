@@ -728,6 +728,19 @@ impl DownloadManager {
                     j.install_path = primary.map(|p| p.install_path);
                 })
                 .await;
+
+                // (v5.0.0) Motor de rendimiento: genera en segundo plano
+                // el manifiesto `config/simfleet_perf.json` de cada
+                // paquete instalado (escaneo local de `.bgl` opcionales).
+                // Flujo invisible para el usuario; `generate_on_install`
+                // registra SIEMPRE en logs si el archivo se creó o no.
+                for pkg in &res.packages {
+                    let dir = std::path::PathBuf::from(&pkg.install_path);
+                    let folder = pkg.name.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::perf_config::generate_on_install(&dir, &folder, None, None);
+                    });
+                }
             }
             Ok(Err(e)) => {
                 self.update(id, |j| {

@@ -17,6 +17,7 @@ import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { api } from "../lib/tauri";
 import { MapAirportCard } from "./MapAirportCard";
+import { RegionBadge } from "./RegionBadge";
 import { t } from "../lib/i18n";
 
 // (v4.26.0) Colapso persistente del listado de aeropuertos — mismo
@@ -635,6 +636,7 @@ function Sidebar({
                           {p.icao}
                         </span>
                       )}
+                      {p.icao && <RegionBadge icao={p.icao} showLabel={false} />}
                       {p.icao && hasGsx && (
                         <span
                           className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"

@@ -312,40 +312,50 @@ export function AddonsView() {
             />
           </div>
 
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {/* (v4.25.0) Batch actions. Operan sobre los addons
-                visibles con el filtro actual. */}
-            <button
-              onClick={() => setConfirmBatch("enable")}
-              disabled={batchBusy || visible.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+          {/* (v5.0.0) Acciones agrupadas en clusters segmentados para que
+              respiren y envuelvan limpio en anchos chicos, en vez de 5
+              píldoras sueltas amontonadas. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {/* Batch actions — operan sobre los addons visibles. */}
+            <div
+              data-tour-id="addons-batch"
+              className="inline-flex shrink-0 divide-x divide-slate-700 overflow-hidden rounded-lg border border-slate-700"
             >
-              <Power className="h-3 w-3" />
-              {t("addons.batch.enable_all")}
-            </button>
-            <button
-              onClick={() => setConfirmBatch("disable")}
-              disabled={batchBusy || visible.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-200 disabled:opacity-50"
-            >
-              <PowerOff className="h-3 w-3" />
-              {t("addons.batch.disable_all")}
-            </button>
-            <button
-              onClick={() => void rescan()}
-              disabled={scanning}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-medium text-sky-200 hover:border-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
-            >
-              {scanning ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <RefreshCcw className="h-3 w-3" />
-              )}
-              {t("addons.batch.refresh")}
-            </button>
+              <button
+                onClick={() => setConfirmBatch("enable")}
+                disabled={batchBusy || visible.length === 0}
+                className="inline-flex items-center gap-1.5 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                <Power className="h-3 w-3" />
+                {t("addons.batch.enable_all")}
+              </button>
+              <button
+                onClick={() => setConfirmBatch("disable")}
+                disabled={batchBusy || visible.length === 0}
+                className="inline-flex items-center gap-1.5 bg-slate-900/40 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 hover:bg-rose-500/10 hover:text-rose-200 disabled:opacity-50"
+              >
+                <PowerOff className="h-3 w-3" />
+                {t("addons.batch.disable_all")}
+              </button>
+              <button
+                onClick={() => void rescan()}
+                disabled={scanning}
+                className="inline-flex items-center gap-1.5 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/20 disabled:opacity-50"
+              >
+                {scanning ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCcw className="h-3 w-3" />
+                )}
+                {t("addons.batch.refresh")}
+              </button>
+            </div>
 
             {/* (v4.25.0) Switch de vista Grid ⇄ Link Map. */}
-            <div className="flex overflow-hidden rounded-lg border border-slate-700">
+            <div
+              data-tour-id="addons-view-switch"
+              className="flex shrink-0 overflow-hidden rounded-lg border border-slate-700"
+            >
               <button
                 onClick={() => setView("grid")}
                 title={t("addons.view.grid")}
@@ -376,18 +386,20 @@ export function AddonsView() {
                 tiene el suyo en el lienzo). Contador actual/total +
                 flechas que hacen scroll a la card siguiente/anterior. */}
             {view === "grid" && (
-              <FindSearch
-                value={filter}
-                onChange={(v) => {
-                  setFilter(v);
-                  setSearchActive(1);
-                }}
-                total={visible.length}
-                active={visible.length === 0 ? 0 : searchActive}
-                onPrev={() => stepSearch(-1)}
-                onNext={() => stepSearch(1)}
-                onClose={() => setFilter("")}
-              />
+              <div className="shrink-0">
+                <FindSearch
+                  value={filter}
+                  onChange={(v) => {
+                    setFilter(v);
+                    setSearchActive(1);
+                  }}
+                  total={visible.length}
+                  active={visible.length === 0 ? 0 : searchActive}
+                  onPrev={() => stepSearch(-1)}
+                  onNext={() => stepSearch(1)}
+                  onClose={() => setFilter("")}
+                />
+              </div>
             )}
           </div>
         </div>

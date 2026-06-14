@@ -4,6 +4,7 @@ import {
   AlertCircle,
   ChevronDown,
   Folder,
+  Gauge,
   Loader2,
   MapPin,
   RefreshCcw,
@@ -28,6 +29,8 @@ import {
   formatBytes,
 } from "./PackageDetailModal";
 import { looksLikePlaceholderTitle } from "../lib/packageType";
+import { PerformanceModal } from "./PerformanceModal";
+import { RegionBadge } from "./RegionBadge";
 import { t } from "../lib/i18n";
 
 /**
@@ -52,6 +55,7 @@ export function MapAirportCard({
   onClose: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [perfOpen, setPerfOpen] = useState(false);
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [pickingRepair, setPickingRepair] = useState(false);
@@ -205,6 +209,7 @@ export function MapAirportCard({
               {pkg.icao}
             </span>
           )}
+          {pkg.icao && <RegionBadge icao={pkg.icao} />}
           {pkg.contentType && (
             <span className="rounded bg-slate-950/80 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-300 ring-1 ring-slate-700">
               {pkg.contentType}
@@ -232,6 +237,21 @@ export function MapAirportCard({
             {pkg.creator ?? "—"}
             {pkg.packageVersion && ` · v${pkg.packageVersion}`}
           </p>
+        </div>
+
+        {/* (v5.0.0) Acceso al Modal de Rendimiento (FPS) — desactiva
+            autos/pasajeros/GSE/clutter opcionales para ganar FPS. */}
+        <div className="px-4 pb-1 pt-1">
+          <button
+            onClick={() => setPerfOpen(true)}
+            className="flex w-full items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:border-emerald-400/50 hover:bg-emerald-500/20"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Gauge className="h-3.5 w-3.5" />
+              {t("perf.open_button")}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 -rotate-90 text-emerald-300/70" />
+          </button>
         </div>
 
         {/* Acordeón "Ficha técnica" — las filas del viejo modal. */}
@@ -374,6 +394,13 @@ export function MapAirportCard({
             onPick={doRepairWith}
             onCancel={() => setPickingRepair(false)}
           />
+        )}
+      </AnimatePresence>
+
+      {/* (v5.0.0) Modal de Rendimiento (FPS). */}
+      <AnimatePresence>
+        {perfOpen && (
+          <PerformanceModal pkg={pkg} onClose={() => setPerfOpen(false)} />
         )}
       </AnimatePresence>
     </motion.div>

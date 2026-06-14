@@ -27,6 +27,7 @@ pub mod msfs_logbook;
 pub mod openmeteo;
 pub mod package_ops;
 pub mod parser;
+pub mod perf_config;
 pub mod pmdg_liveries;
 pub mod scoring;
 pub mod simbrief;
@@ -172,6 +173,9 @@ pub fn run() {
             commands::community::remove_addon_link,
             commands::community::list_addon_node_positions,
             commands::community::save_addon_node_positions,
+            commands::perf::perf_read_config,
+            commands::perf::perf_toggle_option,
+            commands::perf::perf_enrich_from_source,
             commands::changelog::fetch_changelog,
             commands::simbrief::get_simbrief_pilot_id,
             commands::simbrief::set_simbrief_pilot_id,
