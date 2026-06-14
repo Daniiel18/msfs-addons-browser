@@ -946,6 +946,22 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                     .or_insert(p.folder_name.as_str());
             }
         }
+        // (v4.33.0) Nivel 4: AVIONES por FAMILIA. Un addon (sound/util/
+        // livery genérica) que menciona un modelo se conecta al/los
+        // avión(es) instalado(s) de esa familia — la "correlación" que
+        // pidió el usuario, sin internet. Ej: "BAW_CRJ" → Aerosoft CRJ;
+        // "AICopilot PMDG B777" → PMDG 777-300ER. Solo los paquetes con
+        // modelo 3D propio cuentan como destino-avión.
+        let mut aircraft_by_family: std::collections::HashMap<String, Vec<&str>> =
+            std::collections::HashMap::new();
+        for p in report.packages.iter().filter(|p| is_addon(p) && p.has_own_model) {
+            if let Some(fam) = aircraft_family(&format!("{} {}", p.title, p.folder_name)) {
+                aircraft_by_family
+                    .entry(fam)
+                    .or_default()
+                    .push(p.folder_name.as_str());
+            }
+        }
         let mut seeded = 0usize;
         for pkg in report.packages.iter().filter(|p| is_addon(p)) {
             let mut sources: Vec<&str> = Vec::new();
@@ -979,6 +995,25 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 }
                 if let Some(b) = best {
                     sources.push(b);
+                }
+            }
+            // Nivel 4 — correlación por familia de avión. Solo si los
+            // niveles 1-3 no dieron source Y el propio paquete NO es un
+            // avión (un avión no se conecta a otro avión por familia).
+            let no_source_yet = sources
+                .iter()
+                .all(|s| s.eq_ignore_ascii_case(&pkg.folder_name));
+            if no_source_yet && !pkg.has_own_model {
+                if let Some(fam) =
+                    aircraft_family(&format!("{} {}", pkg.title, pkg.folder_name))
+                {
+                    if let Some(planes) = aircraft_by_family.get(&fam) {
+                        for plane in planes {
+                            if !plane.eq_ignore_ascii_case(&pkg.folder_name) {
+                                sources.push(plane);
+                            }
+                        }
+                    }
                 }
             }
             for source in sources {
@@ -1056,6 +1091,52 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     }
 
     Ok(report.packages.len())
+}
+
+/// (v4.33.0) Familia de avión mencionada en el texto, normalizada a
+/// una clave estable (a320, b777, crj, md11…). Une variantes a una
+/// sola familia para que un addon (sound/tool/livery) se correlacione
+/// con el avión base instalado de esa familia. None si no hay modelo
+/// reconocible. El ORDEN importa: probamos las claves más
+/// específicas/largas primero para no confundir 737 con 73x, etc.
+pub fn aircraft_family(text: &str) -> Option<String> {
+    let t = text.to_lowercase();
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    // (patrón regex con word-boundary, familia canónica). Primer match
+    // gana — el orden coloca las claves más específicas primero.
+    static RES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+        [
+            (r"\b(?:a3(?:1[89]|2[01])|a32nx|a20n)\b", "a320"),
+            (r"\b(?:a330|a338|a339|a33n)\b", "a330"),
+            (r"\ba340\b", "a340"),
+            (r"\b(?:a350|a359|a35k)\b", "a350"),
+            (r"\b(?:a380|a388|a380x)\b", "a380"),
+            (r"\b(?:747|74[478]|jumbo)\b", "b747"),
+            (r"\b(?:777|77w|77l|77f|772|773|77er)\b", "b777"),
+            (r"\b(?:787|78[789]|dreamliner)\b", "b787"),
+            (r"\b(?:767|76[0-9])\b", "b767"),
+            (r"\b(?:757)\b", "b757"),
+            (r"\b(?:737|738|739|73m|73x|b38m)\b", "b737"),
+            (r"\bcrj\b", "crj"),
+            (r"\bmd[\s-]?11\b", "md11"),
+            (r"\b(?:md[\s-]?8[0-9]|md[\s-]?90)\b", "md80"),
+            (r"\batr\b", "atr"),
+            (r"\b(?:e1?[79][05]|embraer)\b", "ejet"),
+            (r"\b(?:dh[c]?[\s-]?8|q400)\b", "dash8"),
+            (r"\btbm\b", "tbm"),
+            (r"\b(?:c172|cessna)\b", "c172"),
+        ]
+        .iter()
+        .map(|(p, f)| (Regex::new(p).unwrap(), *f))
+        .collect()
+    });
+    for (re, fam) in RES.iter() {
+        if re.is_match(&t) {
+            return Some((*fam).to_string());
+        }
+    }
+    None
 }
 
 /// (v4.24.1) ¿El paquete es una LIBRERÍA / complemento y no un

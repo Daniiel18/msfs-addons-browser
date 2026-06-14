@@ -15,7 +15,6 @@ import {
   Power,
   PowerOff,
   RefreshCcw,
-  Search,
   HelpCircle,
 } from "lucide-react";
 import type { CommunityPackage, PmdgLivery } from "../lib/types";
@@ -27,6 +26,7 @@ import {
   derivedType,
   is3rdParty,
   isAddon,
+  isAirport,
   looksLikePlaceholderTitle,
   type DerivedType,
 } from "../lib/packageType";
@@ -34,6 +34,8 @@ import { useThumbnail } from "../lib/thumbnails";
 import { disambiguateTitles } from "../lib/displayTitle";
 import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
 import { AddonFallbackArt } from "./AddonArt";
+import { FindSearch } from "./FindSearch";
+import { expandVendorQuery } from "../lib/vendorSynonyms";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 
@@ -48,31 +50,6 @@ type PillFilter =
   | "SOUND_MISC"
   | "UTILITIES"
   | "UNCLASSIFIED";
-
-/** (v4.32.0) Expande una búsqueda con sinónimos de vendor en ambos
- *  sentidos (nombre comercial ↔ prefijo de folder). "fenix" también
- *  matchea "fnx", "flybywire" también "fbw", etc. Devuelve la query
- *  original + sus equivalentes. */
-const VENDOR_SYNONYMS: Record<string, string[]> = {
-  fenix: ["fnx"],
-  fnx: ["fenix"],
-  flybywire: ["fbw"],
-  fbw: ["flybywire"],
-  inibuilds: ["ini"],
-  headwind: ["hdw", "headwindsim"],
-  pmdg: ["pmdg"],
-  aerosoft: ["asobo-aerosoft", "aerosoft"],
-  leonardo: ["fly-the-maddog", "maddog"],
-};
-
-function expandVendorQuery(q: string): string[] {
-  if (!q) return [q];
-  const out = new Set([q]);
-  for (const [k, syns] of Object.entries(VENDOR_SYNONYMS)) {
-    if (q.includes(k)) syns.forEach((s) => out.add(q.replace(k, s)));
-  }
-  return [...out];
-}
 
 function pillMatches(pill: PillFilter, ty: DerivedType): boolean {
   switch (pill) {
@@ -121,6 +98,8 @@ export function AddonsView() {
 
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState<PillFilter>("ALL");
+  // (v4.33.0) Resultado activo del find-in-page del grid (1-based).
+  const [searchActive, setSearchActive] = useState(1);
   // (v4.27.0) Vista activa: el Link Map es ahora la vista por defecto
   // (pedido del usuario), persistente entre sesiones. Las píldoras y
   // el buscador SOLO se muestran cuando la vista es grid (el Link Map
@@ -163,6 +142,13 @@ export function AddonsView() {
       t: derivedType(p),
     }));
   }, [allPackages]);
+
+  // (v4.33.0) Aeropuertos instalados — el Link Map los muestra en una
+  // zona aparte agrupados por país (siguen en el Map scenery también).
+  const airports = useMemo(
+    () => allPackages.filter(isAirport),
+    [allPackages],
+  );
 
   const counts = useMemo(() => {
     const m = new Map<DerivedType, number>();
@@ -214,6 +200,25 @@ export function AddonsView() {
       return expanded.some((term) => hay.includes(term));
     });
   }, [addons, filter, typeFilter]);
+
+  // (v4.33.0) Navegación del find-in-page: avanza el resultado activo
+  // (con wrap) y hace scroll a esa card. Las cards llevan
+  // data-folder=<folderName> para localizarlas en el DOM.
+  const stepSearch = (delta: number) => {
+    const total = visible.length;
+    if (total === 0) return;
+    const next = ((searchActive - 1 + delta + total) % total) + 1;
+    setSearchActive(next);
+    const folder = visible[next - 1]?.p.folderName;
+    if (folder) {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(
+          `[data-addon-card="${CSS.escape(folder)}"]`,
+        );
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  };
 
   // (v4.25.0) Batch Enable/Disable sobre los addons VISIBLES (lo que
   // el filtro actual muestra es lo que se toca — predecible).
@@ -367,28 +372,23 @@ export function AddonsView() {
               </button>
             </div>
 
-            {/* (v4.32.0) Search SIEMPRE visible (grid y Link Map). Al
-                escribir, salta a grid para mostrar resultados — un
-                buscador global que no desaparece. Muestra contador de
-                resultados (X), como el find-in-page del navegador. */}
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
+            {/* (v4.33.0) Search find-in-page SÓLO en grid (el Link Map
+                tiene el suyo en el lienzo). Contador actual/total +
+                flechas que hacen scroll a la card siguiente/anterior. */}
+            {view === "grid" && (
+              <FindSearch
                 value={filter}
-                onChange={(e) => {
-                  setFilter(e.target.value);
-                  if (e.target.value && view !== "grid") setView("grid");
+                onChange={(v) => {
+                  setFilter(v);
+                  setSearchActive(1);
                 }}
-                placeholder={t("addons.search.placeholder")}
-                className="w-52 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-12 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 xl:w-72"
+                total={visible.length}
+                active={visible.length === 0 ? 0 : searchActive}
+                onPrev={() => stepSearch(-1)}
+                onNext={() => stepSearch(1)}
+                onClose={() => setFilter("")}
               />
-              {filter.trim() !== "" && (
-                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400">
-                  {visible.length}
-                </span>
-              )}
-            </div>
+            )}
           </div>
         </div>
       </header>
@@ -449,7 +449,7 @@ export function AddonsView() {
           Link Map el lienzo llena el espacio sin scroll. */}
       <div className={`min-h-0 flex-1 ${view === "grid" ? "overflow-y-auto pr-1" : "overflow-hidden"}`}>
       {view === "linkmap" ? (
-        <LinkMapView addons={addons} />
+        <LinkMapView addons={addons} airports={airports} />
       ) : (
         <>
           {visible.length === 0 ? (
@@ -967,8 +967,10 @@ function PackageCard({
   return (
     <li>
       {/* div clickable (no <button>) — el footer anida el toggle y el
-          botón de metadatos, y HTML no permite button dentro de button. */}
+          botón de metadatos, y HTML no permite button dentro de button.
+          data-addon-card: lo usa el find-in-page para hacer scroll. */}
       <div
+        data-addon-card={pkg.folderName}
         onClick={onClick}
         role="button"
         tabIndex={0}

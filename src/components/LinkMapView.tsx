@@ -21,7 +21,9 @@ import {
   Cog,
   GitBranch,
   HelpCircle,
+  LayoutGrid,
   Link2,
+  MapPin,
   Music,
   Palette,
   Plane,
@@ -40,6 +42,8 @@ import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { useThumbnail } from "../lib/thumbnails";
 import { ToggleSwitch, usePackageToggle } from "./AddonToggle";
 import { AddonFallbackArt } from "./AddonArt";
+import { FindSearch } from "./FindSearch";
+import { expandVendorQuery } from "../lib/vendorSynonyms";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
 import { t } from "../lib/i18n";
@@ -145,15 +149,54 @@ function AddonNode({ data }: NodeProps<AddonNodeType>) {
   );
 }
 
-const NODE_TYPES = { addon: AddonNode };
+// (v4.33.0) Nodo de AEROPUERTO — visualmente distinto del addon
+// (borde verde, pin, ICAO). Standalone, sin aristas. Se agrupa por
+// región a un lado del lienzo.
+type AirportNodeType = Node<{ pkg: CommunityPackage }, "airport">;
+
+function AirportNode({ data }: NodeProps<AirportNodeType>) {
+  const { pkg } = data;
+  const thumb = useThumbnail(pkg.folderName, false);
+  return (
+    <div className="w-[180px] overflow-hidden rounded-lg border-2 border-emerald-600/60 bg-emerald-950/40 shadow-lg">
+      <div className="relative h-[56px] w-full overflow-hidden bg-gradient-to-br from-emerald-900/40 to-slate-950">
+        {thumb ? (
+          <img src={thumb} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-emerald-500/40">
+            <MapPin className="h-7 w-7" />
+          </div>
+        )}
+        <span className="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-0.5 font-mono text-[9px] font-bold text-emerald-950">
+          {pkg.icao}
+        </span>
+      </div>
+      <div className="p-2">
+        <p className="line-clamp-1 text-[10px] font-semibold text-emerald-100" title={pkg.airportName ?? pkg.title}>
+          {pkg.airportName ?? pkg.title}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const NODE_TYPES = { addon: AddonNode, airport: AirportNode };
+type FlowNode = AddonNodeType | AirportNodeType;
 
 // ---------------------------------------------------------------------------
 // Vista principal
 // ---------------------------------------------------------------------------
 
-export function LinkMapView({ addons }: { addons: AddonItem[] }) {
+export function LinkMapView({
+  addons,
+  airports = [],
+}: {
+  addons: AddonItem[];
+  airports?: CommunityPackage[];
+}) {
   const pushToast = useToastStore((s) => s.push);
   const [links, setLinks] = useState<AddonLink[]>([]);
+  const [findActive, setFindActive] = useState(1);
   const [positions, setPositions] = useState<Map<string, AddonNodePosition>>(
     new Map(),
   );
@@ -162,7 +205,7 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
   const [addOpen, setAddOpen] = useState(false);
   const [addQuery, setAddQuery] = useState("");
   const [findQuery, setFindQuery] = useState("");
-  const flowRef = useRef<ReactFlowInstance<AddonNodeType, Edge> | null>(null);
+  const flowRef = useRef<ReactFlowInstance<FlowNode, Edge> | null>(null);
 
   const byFolder = useMemo(() => {
     const m = new Map<string, AddonItem>();
@@ -209,8 +252,17 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
     [links, byFolder],
   );
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<AddonNodeType>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  // (v4.33.0) Posiciones de los aeropuertos: agrupados por región
+  // OACI (1ª letra del ICAO → continente/zona) en una franja a la
+  // DERECHA de los addons, claramente separada. No se persisten (son
+  // siempre auto-ordenados).
+  const airportPositions = useMemo(
+    () => layoutAirports(airports),
+    [airports],
+  );
 
   // Reconstruye nodos/aristas cuando cambian membresía, links o el
   // inventario (un toggle refresca `enabled` dentro de data.pkg).
@@ -225,7 +277,7 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
         visibleLinks,
         byFolder,
       );
-      return members.map((folder) => {
+      const addonNodes: FlowNode[] = members.map((folder) => {
         const item = byFolder.get(folder)!;
         const pos =
           positions.get(folder) ??
@@ -244,6 +296,20 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
           data: { pkg: item.p, derived: item.t },
         };
       });
+      // (v4.33.0) Nodos de aeropuerto — zona aparte a la derecha.
+      const airportNodes: FlowNode[] = airports.map((ap) => {
+        const p = airportPositions.get(ap.folderName) ?? { x: 0, y: 0 };
+        return {
+          id: `airport:${ap.folderName}`,
+          type: "airport" as const,
+          position: { x: p.x, y: p.y },
+          deletable: false,
+          draggable: false,
+          connectable: false,
+          data: { pkg: ap },
+        };
+      });
+      return [...addonNodes, ...airportNodes];
     });
     setEdges(
       visibleLinks.map((l) => ({
@@ -255,7 +321,7 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
         markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b", width: 16, height: 16 },
       })),
     );
-  }, [loaded, members, visibleLinks, byFolder, positions, setNodes, setEdges]);
+  }, [loaded, members, visibleLinks, byFolder, positions, airports, airportPositions, setNodes, setEdges]);
 
   // Crear arista arrastrando verde → azul.
   const onConnect = useCallback(
@@ -296,7 +362,10 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
 
   // Persistir posición al soltar el drag.
   const onNodeDragStop = useCallback(
-    (_: unknown, node: AddonNodeType) => {
+    (_: unknown, node: FlowNode) => {
+      // Los aeropuertos no se arrastran (draggable:false) ni se
+      // persisten — solo addons.
+      if (node.type !== "addon") return;
       const pos: AddonNodePosition = {
         folderName: node.id,
         x: node.position.x,
@@ -328,23 +397,75 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
     await api.saveAddonNodePositions([pos]).catch(() => {});
   };
 
-  // "Find addon on the map": centra la cámara en el primer match.
-  const findOnMap = (q: string) => {
+  // (v4.33.0) Auto-organizar: recalcula la posición de TODOS los nodos
+  // de addon con el layout automático (clusters por marca) ignorando lo
+  // que hubiera guardado, lo persiste y encuadra la cámara. El usuario
+  // pidió no tener que arrastrar uno por uno.
+  const autoArrange = async () => {
+    const fresh = layoutWithDagre(members, members, visibleLinks, byFolder);
+    const newPositions = new Map<string, AddonNodePosition>();
+    for (const folder of members) {
+      const p = fresh.get(folder);
+      if (p) newPositions.set(folder, { folderName: folder, x: p.x, y: p.y });
+    }
+    setPositions(newPositions);
+    setNodes((cur) =>
+      cur.map((n) => {
+        const p = fresh.get(n.id);
+        return p ? { ...n, position: { x: p.x, y: p.y } } : n;
+      }),
+    );
+    await api
+      .saveAddonNodePositions([...newPositions.values()])
+      .catch(() => {});
+    setTimeout(
+      () => flowRef.current?.fitView({ padding: 0.2, duration: 600 }),
+      60,
+    );
+    pushToast({ kind: "success", title: t("linkmap.arranged"), ttlMs: 2500 });
+  };
+
+  // (v4.33.0) Find-in-page del lienzo: lista de nodos que matchean +
+  // navegación prev/next que centra la cámara en cada uno.
+  const findMatches = useMemo(() => {
+    const needle = findQuery.trim().toLowerCase();
+    if (!needle) return [] as FlowNode[];
+    const expanded = expandVendorQuery(needle);
+    return nodes.filter((n) => {
+      const hay = `${n.data.pkg.title} ${n.id}`.toLowerCase();
+      return expanded.some((term) => hay.includes(term));
+    });
+  }, [findQuery, nodes]);
+
+  const centerOnNode = useCallback((n: FlowNode) => {
+    if (!flowRef.current) return;
+    flowRef.current.setCenter(
+      n.position.x + NODE_W / 2,
+      n.position.y + NODE_H / 2,
+      { zoom: 1.1, duration: 500 },
+    );
+  }, []);
+
+  const stepFind = (delta: number) => {
+    const total = findMatches.length;
+    if (total === 0) return;
+    const next = ((findActive - 1 + delta + total) % total) + 1;
+    setFindActive(next);
+    centerOnNode(findMatches[next - 1]);
+  };
+
+  // Al cambiar la query, resetea al primer match y centra en él.
+  const onFindChange = (q: string) => {
     setFindQuery(q);
+    setFindActive(1);
     const needle = q.trim().toLowerCase();
     if (!needle) return;
-    const hit = nodes.find(
-      (n) =>
-        n.data.pkg.title.toLowerCase().includes(needle) ||
-        n.id.toLowerCase().includes(needle),
-    );
-    if (hit && flowRef.current) {
-      flowRef.current.setCenter(
-        hit.position.x + NODE_W / 2,
-        hit.position.y + NODE_H / 2,
-        { zoom: 1.1, duration: 500 },
-      );
-    }
+    const expanded = expandVendorQuery(needle);
+    const hit = nodes.find((n) => {
+      const hay = `${n.data.pkg.title} ${n.id}`.toLowerCase();
+      return expanded.some((term) => hay.includes(term));
+    });
+    if (hit) centerOnNode(hit);
   };
 
   const addCandidates = useMemo(() => {
@@ -379,19 +500,32 @@ export function LinkMapView({ addons }: { addons: AddonItem[] }) {
         </span>
       </div>
 
-      <div className="absolute left-1/2 top-3 z-10 w-64 -translate-x-1/2">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-500" />
-          <input
-            value={findQuery}
-            onChange={(e) => findOnMap(e.target.value)}
-            placeholder={t("linkmap.find_placeholder")}
-            className="w-full rounded-lg border border-slate-800 bg-slate-950/80 py-1.5 pl-8 pr-2 text-[11px] text-slate-200 placeholder:text-slate-600 backdrop-blur focus:border-amber-500/40 focus:outline-none"
-          />
-        </div>
+      {/* (v4.33.0) Find-in-page del lienzo: contador + flechas que
+          centran cada nodo coincidente. */}
+      <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
+        <FindSearch
+          value={findQuery}
+          onChange={onFindChange}
+          total={findMatches.length}
+          active={findMatches.length === 0 ? 0 : findActive}
+          onPrev={() => stepFind(-1)}
+          onNext={() => stepFind(1)}
+          onClose={() => onFindChange("")}
+          placeholder={t("linkmap.find_placeholder")}
+        />
       </div>
 
       <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+        {/* (v4.33.0) Auto-organizar: reposiciona TODOS los nodos con el
+            layout automático. El usuario no mueve uno por uno. */}
+        <button
+          onClick={() => void autoArrange()}
+          title={t("linkmap.auto_arrange")}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-100 shadow-md hover:bg-slate-600"
+        >
+          <LayoutGrid className="h-3 w-3" />
+          {t("linkmap.auto_arrange")}
+        </button>
         <button
           onClick={() => setManageOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-semibold text-amber-950 shadow-md shadow-amber-500/20 hover:bg-amber-400"
@@ -707,6 +841,76 @@ function ManageLinksModal({
  *  - Otros aviones (CRJ, ATR, Embraer, MD, Cessna…) → bucket central
  *  - Resto (sound packs, utilities, mods sin avión) → bucket "misc"
  *    abajo. */
+/** (v4.33.0) Región mundial a partir del prefijo OACI del ICAO (1ª
+ *  letra → continente/zona). Aproxima "país/continente" sin datos
+ *  extra. Etiqueta legible para agrupar los aeropuertos. */
+function oaciRegion(icao: string | null | undefined): string {
+  const c = (icao ?? "").trim().toUpperCase();
+  if (!c) return "Otros";
+  const map: Record<string, string> = {
+    K: "Norteamérica (EE.UU.)",
+    C: "Canadá",
+    M: "México y Centroamérica",
+    T: "Caribe",
+    S: "Sudamérica",
+    E: "Europa (Norte)",
+    L: "Europa (Sur)",
+    B: "Europa (Norte)",
+    U: "Rusia y CIS",
+    R: "Asia oriental",
+    Z: "China",
+    V: "Sur de Asia",
+    W: "Sudeste asiático",
+    O: "Oriente Medio",
+    F: "África (Sur/Centro)",
+    G: "África (Oeste)",
+    H: "África (Este)",
+    D: "África (Oeste)",
+    A: "Pacífico Sur",
+    N: "Pacífico Sur",
+    Y: "Australia",
+    P: "Pacífico (Norte)",
+  };
+  return map[c[0]] ?? "Otros";
+}
+
+const AIRPORT_GAP_X = 230;
+const AIRPORT_GAP_Y = 104;
+// X base de la franja de aeropuertos: a la derecha de los 3 buckets de
+// aviones (Airbus|Otros|Boeing ≈ 2550) + margen.
+const AIRPORT_X_BASE = 3200;
+
+/** (v4.33.0) Posiciona los aeropuertos en una franja a la derecha,
+ *  una COLUMNA por región OACI (continente/zona). Devuelve folder →
+ *  posición. Standalone, sin relación con los addons. */
+function layoutAirports(
+  airports: CommunityPackage[],
+): Map<string, { x: number; y: number }> {
+  const out = new Map<string, { x: number; y: number }>();
+  const byRegion = new Map<string, CommunityPackage[]>();
+  for (const ap of airports) {
+    const r = oaciRegion(ap.icao);
+    if (!byRegion.has(r)) byRegion.set(r, []);
+    byRegion.get(r)!.push(ap);
+  }
+  // Orden estable de regiones + de aeropuertos dentro (por ICAO).
+  const regions = [...byRegion.keys()].sort();
+  regions.forEach((region, col) => {
+    const list = byRegion
+      .get(region)!
+      .sort((a, b) => (a.icao ?? "").localeCompare(b.icao ?? ""));
+    list.forEach((ap, row) => {
+      out.set(ap.folderName, {
+        x: AIRPORT_X_BASE + col * AIRPORT_GAP_X,
+        // +1 fila de hueco arriba para respirar entre la cabecera
+        // visual (color verde) y los addons.
+        y: (row + 1) * AIRPORT_GAP_Y,
+      });
+    });
+  });
+  return out;
+}
+
 function brandOf(item: AddonItem): "airbus" | "boeing" | "other" | "misc" {
   const hay = `${item.p.title} ${item.p.folderName}`.toLowerCase();
   // Airbus: A3xx + A32NX/A380X.

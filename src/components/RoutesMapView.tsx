@@ -45,6 +45,64 @@ const TERMINATOR_BANDS = [
  *  un icono estándar de la industria — no inventado. */
 const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#fbbf24" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
 
+// (v4.33.0) Persistencia de la CÁMARA del routemap. FlightBook se
+// desmonta al cambiar de pestaña y MapLibre re-crea el mapa en la
+// vista por defecto (globo) — el usuario perdía el zoom/encuadre que
+// había dejado. Guardamos center/zoom/pitch/bearing en localStorage
+// y restauramos al remontar. Mismo patrón síncrono que el resto del
+// estado del FlightBook.
+const MAP_CAMERA_KEY = "simfleet.fb.mapCamera";
+
+interface MapCamera {
+  lng: number;
+  lat: number;
+  zoom: number;
+  pitch: number;
+  bearing: number;
+}
+
+function readMapCamera(): MapCamera | null {
+  try {
+    const raw = localStorage.getItem(MAP_CAMERA_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (
+      typeof c?.lng === "number" &&
+      typeof c?.lat === "number" &&
+      typeof c?.zoom === "number"
+    ) {
+      return {
+        lng: c.lng,
+        lat: c.lat,
+        zoom: c.zoom,
+        pitch: c.pitch ?? 0,
+        bearing: c.bearing ?? 0,
+      };
+    }
+  } catch {
+    // localStorage no disponible o JSON corrupto — vista por defecto.
+  }
+  return null;
+}
+
+function saveMapCamera(map: maplibregl.Map): void {
+  try {
+    const c = map.getCenter();
+    localStorage.setItem(
+      MAP_CAMERA_KEY,
+      JSON.stringify({
+        lng: c.lng,
+        lat: c.lat,
+        zoom: map.getZoom(),
+        pitch: map.getPitch(),
+        bearing: map.getBearing(),
+      }),
+    );
+  } catch {
+    // best-effort.
+  }
+}
+
 /**
  * Mapa **sólo de rutas** — vive dentro del FlightBook.
  *
@@ -81,6 +139,10 @@ export function RoutesMapView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const didAutoFitRef = useRef(false);
+  // (v4.33.0) Último vuelo encuadrado en detailMode. Evita re-encuadrar
+  // (y pisar la cámara que el usuario dejó) al remontar con la misma
+  // selección; solo encuadra cuando CAMBIA el vuelo seleccionado.
+  const lastFittedRef = useRef<number | null | undefined>(undefined);
   // (v1.1.4) Marker DOM del avión en vivo. Lo mantenemos en ref para
   // poder hacer setLngLat + rotación sin reconstruir el elemento cada
   // tick — el rerender de React no toca el mapa, sólo este efecto.
@@ -191,13 +253,28 @@ export function RoutesMapView({
       ],
     };
 
+    // (v4.33.0) Restaura la cámara que el usuario dejó (si la hay),
+    // si no la vista por defecto del globo.
+    const savedCam = readMapCamera();
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: satelliteStyle,
-      center: [0, 25],
-      zoom: 1.2,
+      center: savedCam ? [savedCam.lng, savedCam.lat] : [0, 25],
+      zoom: savedCam ? savedCam.zoom : 1.2,
+      pitch: savedCam ? savedCam.pitch : 0,
+      bearing: savedCam ? savedCam.bearing : 0,
       attributionControl: false,
     });
+    // Con cámara restaurada NO disparamos el auto-fit inicial — la
+    // vista del usuario manda. También marcamos el vuelo actual como
+    // "ya encuadrado" para que detailMode no lo re-encuadre al remontar.
+    if (savedCam) {
+      didAutoFitRef.current = true;
+      lastFittedRef.current = selectedFlightId ?? null;
+    }
+    // Persiste la cámara en cada movimiento del usuario (pan/zoom/
+    // rotate). moveend cubre drag, scroll-zoom y easeTo programático.
+    map.on("moveend", () => saveMapCamera(map));
     // (v3.5.0) NavigationControl removido — el usuario reportó que
     // los cuadritos del zoom interferían visualmente con la card de
     // detalle del FlightBook. Zoom via scroll-wheel + pan via drag
@@ -1086,6 +1163,11 @@ export function RoutesMapView({
     if (!map || !mapReady) return;
     const bounds = new maplibregl.LngLatBounds();
     if (detailMode) {
+      // (v4.33.0) Solo encuadra al CAMBIAR de vuelo; si es el mismo que
+      // ya encuadramos (o el restaurado del remount), respeta la cámara
+      // que el usuario dejó.
+      if (lastFittedRef.current === (selectedFlightId ?? null)) return;
+      lastFittedRef.current = selectedFlightId ?? null;
       // Fit a track real si lo hay, sino a la great-circle de fallback.
       // (v3.23.0) trackGeojson ahora es MultiLineString → iteramos
       // línea→punto (un nivel más de anidación).
@@ -1139,6 +1221,7 @@ export function RoutesMapView({
     trackGeojson,
     selectedGreatCircleGeojson,
     detailMode,
+    selectedFlightId,
   ]);
 
   // (v3.6.6 fix M2) Re-fit del mapa cuando cambia el filtro de aerolínea.
