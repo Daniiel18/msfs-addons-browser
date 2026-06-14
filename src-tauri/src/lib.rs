@@ -177,6 +177,7 @@ pub fn run() {
             commands::perf::perf_toggle_option,
             commands::perf::perf_enrich_from_source,
             commands::perf::perf_list_optimizable,
+            commands::perf::perf_scan_all_from_source,
             commands::changelog::fetch_changelog,
             commands::simbrief::get_simbrief_pilot_id,
             commands::simbrief::set_simbrief_pilot_id,

@@ -341,6 +341,13 @@ interface Api {
   perfListOptimizable: (
     items: { folderName: string; installPath: string }[],
   ) => Promise<string[]>;
+  /** (v5.0.0) Escáner masivo: por cada aeropuerto instalado busca su
+   *  página en SceneryAddons, baja la nota "Optional Configuration" y
+   *  escribe la config si la tiene. Devuelve los folderName que quedaron
+   *  optimizables (para sus badges). */
+  perfScanAllFromSource: (
+    items: { folderName: string; installPath: string; icao: string | null }[],
+  ) => Promise<string[]>;
   /** (v4.26.0) El backend bajó imágenes nuevas de Wikipedia para
    *  aeropuertos sin thumbnail — el frontend debe invalidar su cache. */
   onThumbsUpdated: (cb: (count: number) => void) => Promise<UnlistenFn>;
@@ -650,6 +657,8 @@ const realApi: Api = {
     }),
   perfListOptimizable: (items) =>
     invoke<string[]>("perf_list_optimizable", { items }),
+  perfScanAllFromSource: (items) =>
+    invoke<string[]>("perf_scan_all_from_source", { items }),
   onThumbsUpdated: (cb) =>
     listen<number>("thumbs://updated", (e) => cb(e.payload)),
   fetchChangelog: (pageUrl) =>
@@ -1378,6 +1387,9 @@ const demoApi: Api = {
     return null;
   },
   async perfListOptimizable() {
+    return [];
+  },
+  async perfScanAllFromSource() {
     return [];
   },
   async onThumbsUpdated() {

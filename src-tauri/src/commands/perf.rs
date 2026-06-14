@@ -6,6 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use futures_util::{stream, StreamExt};
+
 use crate::logger::CmdTimer;
 use crate::perf_config::{self, PerfConfig, ToggleResult};
 use crate::{cmd_log, AppState};
@@ -16,11 +18,17 @@ use crate::{cmd_log, AppState};
 pub struct PerfScanItem {
     pub folder_name: String,
     pub install_path: String,
+    #[serde(default)]
+    pub icao: Option<String>,
 }
 
-/// Devuelve los `folderName` de los addons que SÍ tienen objetos
-/// opcionales desactivables (para pintar el badge de la tuerca). Cubre
-/// escenarios locales — escanea el `installPath` directamente.
+/// Concurrencia del escaneo masivo contra SceneryAddons. Modesto para no
+/// martillar el servidor con ~150 aeropuertos.
+const SCAN_CONCURRENCY: usize = 4;
+
+/// Devuelve los `folderName` que YA tienen una `config/simfleet_perf.json`
+/// con opciones reales (de la página de SceneryAddons o tras un toggle)
+/// — para pintar el badge de la tuerca. NO hace escaneo permisivo.
 #[tauri::command]
 pub async fn perf_list_optimizable(items: Vec<PerfScanItem>) -> Result<Vec<String>, String> {
     cmd_log!("perf_list_optimizable", "n={}", items.len());
@@ -34,6 +42,85 @@ pub async fn perf_list_optimizable(items: Vec<PerfScanItem>) -> Result<Vec<Strin
     })
     .await
     .map_err(|e| format!("la tarea de escaneo falló: {e}"))
+}
+
+/// (Escáner masivo) Para cada aeropuerto instalado con ICAO, busca su
+/// página en SceneryAddons, baja la nota "Optional Configuration", la
+/// parsea y escribe `config/simfleet_perf.json` SÓLO si la página trae
+/// la nota. Devuelve los `folderName` que quedaron con optimización
+/// (para activar sus badges). Concurrencia limitada.
+#[tauri::command]
+pub async fn perf_scan_all_from_source(
+    items: Vec<PerfScanItem>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    cmd_log!("perf_scan_all_from_source", "n={}", items.len());
+    let _t = CmdTimer::start("perf_scan_all_from_source");
+    let source = state
+        .source("sceneryaddons")
+        .ok_or_else(|| "fuente SceneryAddons no disponible".to_string())?;
+    let http = state.http.clone();
+
+    let found: Vec<String> = stream::iter(
+        items
+            .into_iter()
+            .filter(|it| it.icao.as_deref().map(|c| c.len() == 4).unwrap_or(false)),
+    )
+    .map(|it| {
+        let source = source.clone();
+        let http = http.clone();
+        async move {
+            let icao = it.icao.clone().unwrap_or_default();
+            // 1) Resolver la página del aeropuerto en SceneryAddons.
+            let page_url = match source.search(&icao).await {
+                Ok(addons) => addons
+                    .iter()
+                    .find(|a| {
+                        a.icao
+                            .as_deref()
+                            .map(|c| c.eq_ignore_ascii_case(&icao))
+                            .unwrap_or(false)
+                            && !a.page_url.is_empty()
+                    })
+                    .or_else(|| addons.iter().find(|a| !a.page_url.is_empty()))
+                    .map(|a| a.page_url.clone()),
+                Err(e) => {
+                    tracing::warn!("perf scan: search {icao} falló: {e}");
+                    None
+                }
+            };
+            let page_url = page_url?;
+            // 2) Bajar el HTML de la página.
+            let html = match http.get(&page_url).send().await {
+                Ok(r) => r.text().await.unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            if html.is_empty() {
+                return None;
+            }
+            // 3) Parsear + escribir SÓLO si hay nota real.
+            let dir = PathBuf::from(&it.install_path);
+            let folder = it.folder_name.clone();
+            let icao_opt = it.icao.clone();
+            let out_folder = it.folder_name.clone();
+            let got = tokio::task::spawn_blocking(move || {
+                perf_config::enrich_page_note_only(&dir, &folder, icao_opt, &html).is_some()
+            })
+            .await
+            .unwrap_or(false);
+            got.then_some(out_folder)
+        }
+    })
+    .buffer_unordered(SCAN_CONCURRENCY)
+    .filter_map(|x| async move { x })
+    .collect()
+    .await;
+
+    tracing::info!(
+        "perf scan: {} aeropuerto(s) con Optional Configuration",
+        found.len()
+    );
+    Ok(found)
 }
 
 /// Lee (o genera por escaneo local) el manifiesto de rendimiento del

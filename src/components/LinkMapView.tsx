@@ -19,10 +19,12 @@ import "@xyflow/react/dist/style.css";
 import dagre from "@dagrejs/dagre";
 import {
   Cog,
+  Gauge,
   GitBranch,
   HelpCircle,
   LayoutGrid,
   Link2,
+  Loader2,
   MapPin,
   Music,
   Palette,
@@ -45,6 +47,7 @@ import { AddonFallbackArt } from "./AddonArt";
 import { FindSearch } from "./FindSearch";
 import { RegionBadge } from "./RegionBadge";
 import { PerfBadge } from "./PerfBadge";
+import { PerformanceModal } from "./PerformanceModal";
 import { usePerfStore } from "../stores/usePerfStore";
 import { airportRegion, continentLabel, type Continent } from "../lib/oaciRegion";
 import { expandVendorQuery } from "../lib/vendorSynonyms";
@@ -254,6 +257,9 @@ export function LinkMapView({
   const [addOpen, setAddOpen] = useState(false);
   const [addQuery, setAddQuery] = useState("");
   const [findQuery, setFindQuery] = useState("");
+  // (v5.0.0) Aeropuerto cuyo modal de rendimiento (FPS) está abierto —
+  // exclusivo del Link Map: se abre al hacer clic en su card.
+  const [perfPkg, setPerfPkg] = useState<CommunityPackage | null>(null);
   const flowRef = useRef<ReactFlowInstance<FlowNode, Edge> | null>(null);
 
   const byFolder = useMemo(() => {
@@ -284,9 +290,11 @@ export function LinkMapView({
     void reloadGraph();
   }, [reloadGraph]);
 
-  // (v5.0.0) Escanea qué aeropuertos son optimizables (badge tuerca en
-  // sus nodos). Idempotente y cacheado por folderName.
+  // (v5.0.0) Badge "optimizable": carga los que YA tienen config; el
+  // escáner masivo (botón) baja la nota de SceneryAddons para el resto.
   const ensurePerf = usePerfStore((s) => s.ensure);
+  const scanAllFromSource = usePerfStore((s) => s.scanAllFromSource);
+  const perfScanning = usePerfStore((s) => s.scanning);
   useEffect(() => {
     if (airports.length === 0) return;
     void ensurePerf(
@@ -296,6 +304,24 @@ export function LinkMapView({
       })),
     );
   }, [airports, ensurePerf]);
+
+  const scanFps = async () => {
+    const res = await scanAllFromSource(
+      airports.map((ap) => ({
+        folderName: ap.folderName,
+        installPath: ap.installPath,
+        icao: ap.icao,
+      })),
+    );
+    pushToast({
+      kind: "success",
+      title: t("perf.scan_done", {
+        found: String(res.found),
+        total: String(res.total),
+      }),
+      ttlMs: 4500,
+    });
+  };
 
   // (v4.28.0) Membresía del lienzo: TODOS los addons del inventario
   // — el usuario pidió que el Link Map muestre todo, no solo lo
@@ -451,6 +477,13 @@ export function LinkMapView({
     [],
   );
 
+  // (v5.0.0) Clic en una card de aeropuerto → abre su modal de
+  // rendimiento (FPS). Exclusivo del Link Map. El toggle del nodo hace
+  // stopPropagation, así que tocarlo NO abre el modal.
+  const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
+    if (node.type === "airport") setPerfPkg(node.data.pkg);
+  }, []);
+
   // "Add Item": añade un addon suelto al lienzo persistiendo una
   // posición cerca del centro actual del viewport.
   const addItem = async (folder: string) => {
@@ -592,6 +625,22 @@ export function LinkMapView({
       </div>
 
       <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+        {/* (v5.0.0) Escáner de FPS: baja la nota "Optional Configuration"
+            de SceneryAddons para todos los aeropuertos instalados y marca
+            (badge) los que sí tienen optimización. */}
+        <button
+          onClick={() => void scanFps()}
+          disabled={perfScanning || airports.length === 0}
+          title={t("perf.scan_hint")}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-1.5 text-[11px] font-semibold text-violet-50 shadow-md shadow-violet-600/20 hover:bg-violet-500 disabled:opacity-50"
+        >
+          {perfScanning ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Gauge className="h-3 w-3" />
+          )}
+          {perfScanning ? t("perf.scanning") : t("perf.scan_button")}
+        </button>
         {/* (v4.33.0) Auto-organizar: reposiciona TODOS los nodos con el
             layout automático. El usuario no mueve uno por uno. */}
         <button
@@ -673,6 +722,7 @@ export function LinkMapView({
         onConnect={onConnect}
         onEdgesDelete={onEdgesDelete}
         onNodeDragStop={onNodeDragStop}
+        onNodeClick={onNodeClick}
         onInit={(inst) => {
           flowRef.current = inst;
         }}
@@ -729,6 +779,12 @@ export function LinkMapView({
           onChanged={reloadGraph}
           onClose={() => setManageOpen(false)}
         />
+      )}
+
+      {/* (v5.0.0) Modal de Rendimiento (FPS) — exclusivo del Link Map,
+          al hacer clic en una card de aeropuerto. */}
+      {perfPkg && (
+        <PerformanceModal pkg={perfPkg} onClose={() => setPerfPkg(null)} />
       )}
     </div>
   );

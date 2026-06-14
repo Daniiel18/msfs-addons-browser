@@ -61,7 +61,9 @@ export function PerformanceModal({
         );
         if (alive) {
           setConfig(cfg);
-          if (cfg && cfg.options.length > 0) markOptimizable(pkg.folderName);
+          // Badge sólo si viene de la página (no del escaneo local).
+          if (cfg && cfg.options.length > 0 && cfg.source !== "local-scan")
+            markOptimizable(pkg.folderName);
         }
       } catch (e) {
         if (alive)
@@ -127,7 +129,8 @@ export function PerformanceModal({
         pageUrl,
       );
       setConfig(cfg);
-      if (cfg && cfg.options.length > 0) markOptimizable(pkg.folderName);
+      if (cfg && cfg.options.length > 0 && cfg.source !== "local-scan")
+        markOptimizable(pkg.folderName);
       pushToast({ kind: "success", title: t("perf.enriched"), ttlMs: 2600 });
     } catch (e) {
       pushToast({ kind: "error", title: t("perf.enrich_error"), message: String(e) });
