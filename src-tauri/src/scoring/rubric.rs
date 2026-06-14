@@ -1885,10 +1885,25 @@ fn eval_taxi_in_taxi_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 // =============================================================================
 
 fn eval_arrived_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_arrived(ctx);
+    // (v4.32.0) El requisito es "parking brake aplicado al estacionar".
+    // El piloto lo pone cuando el avión está DETENIDO en el gate, que
+    // puede ser DESPUÉS del último sample marcado fase 'arrived' (la
+    // máquina de fases oscila si reposiciona). Por eso evaluamos la
+    // VENTANA FINAL del vuelo con gs ≈ 0 (avión parqueado), no sólo la
+    // fase 'arrived'. Une los samples 'arrived' con la cola detenida.
+    let mut samples: Vec<&TrackSample> = samples_arrived(ctx);
+    // Cola detenida: últimos samples del track con gs < 3 kt.
+    for s in ctx.track.iter().rev() {
+        let gs = s.gs_kt.unwrap_or(99);
+        if gs < 3 {
+            if !samples.iter().any(|x| std::ptr::eq(*x, s)) {
+                samples.push(s);
+            }
+        } else {
+            break; // en cuanto encontramos movimiento, paramos
+        }
+    }
     if samples.is_empty() {
-        // Fallback: usar el último sample del track (si no hay phase
-        // "parking" explícita).
         if ctx.track.is_empty() {
             return skip(rule, "no_arrived_data");
         }
@@ -1902,17 +1917,15 @@ fn eval_arrived_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if !any_present(&samples, |s| s.parking_brake) {
         return skip(rule, "no_parking_brake_data");
     }
-    // (v3.29.0 #8) El requisito es "freno de parking aplicado AL LLEGAR",
-    // no "mantenido el 100% de la fase". Flujo real: el piloto pone el
-    // freno, apaga motores y luego pone calzos (chocks); tras los calzos,
-    // SOLTAR el freno es legítimo. Basta con que el freno haya estado
-    // puesto en CUALQUIER momento de la llegada para dar el pase. Antes,
-    // el % sobre toda la fase fallaba en falso al soltar tras calzos.
+    // (v3.29.0 #8) Basta con que el freno haya estado puesto en
+    // CUALQUIER momento del estacionamiento — tras poner calzos,
+    // soltarlo es legítimo.
     let any_set = samples.iter().any(|s| s.parking_brake == Some(true));
     let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
     let evidence = json!({
         "parking_brake_applied_at_arrival": any_set,
-        "parking_brake_set_pct": (pct * 100.0) as i32
+        "parking_brake_set_pct": (pct * 100.0) as i32,
+        "samples_considered": samples.len()
     });
     if any_set {
         pass(rule, evidence)

@@ -1670,6 +1670,12 @@ mod windows_simconnect {
         // abierto en DB implica que en algún momento había engines
         // running).
         let mut engines_seen_running = false;
+        // (v4.32.0) ¿El avión usa N2 (turbina)? Se enciende al ver N2
+        // ≥ 50% alguna vez. Si es true, el cierre del vuelo usa el
+        // trigger N2<5% (tardío); si nunca vimos N2 alto (GA pistón,
+        // eléctrico, turbohélice que no reporta N2) caemos al criterio
+        // de combustión para no cerrar demasiado tarde/nunca.
+        let mut n2_seen_running = false;
         // Ticks consecutivos en Landed con gs < 1 kt. Fallback para
         // cerrar gliders/eléctricos que nunca disparan ENG COMBUSTION
         // o usuarios que se olvidan de apagar motores y dejan la
@@ -2277,6 +2283,7 @@ mod windows_simconnect {
                         &mut captured_landing_fpm,
                         &mut post_touchdown_ticks_remaining,
                         &mut engines_seen_running,
+                        &mut n2_seen_running,
                         &mut idle_ticks_in_landed,
                         &mut initial_fuel_lb,
                         &mut paused_seconds_total,
@@ -2865,6 +2872,7 @@ mod windows_simconnect {
         captured_landing_fpm: &mut Option<i64>,
         post_touchdown_ticks_remaining: &mut u32,
         engines_seen_running: &mut bool,
+        n2_seen_running: &mut bool,
         idle_ticks_in_landed: &mut u32,
         initial_fuel_lb: &mut Option<f64>,
         paused_seconds_total: &mut u64,
@@ -3075,6 +3083,21 @@ mod windows_simconnect {
         ];
         let any_engine_running = engine_slots.iter().any(|v| *v >= 0.5);
         let all_engines_off = !any_engine_running;
+        // (v4.32.0) N2 (core RPM) por motor. Lo usamos como trigger de
+        // FIN de vuelo en jets: N2 baja LENTO tras cortar combustible
+        // (de ~60% a <5% en ~30s), a diferencia de ENG COMBUSTION que
+        // se apaga al instante. Eso da tiempo a que el piloto complete
+        // el shutdown + ponga el parking brake ANTES de que el vuelo
+        // cierre y deje de grabar (pedido del usuario + arregla el
+        // falso "parking brake no aplicado").
+        let n2_slots = [
+            data.eng_n2_1,
+            data.eng_n2_2,
+            data.eng_n2_3,
+            data.eng_n2_4,
+        ];
+        let any_n2_high = n2_slots.iter().any(|v| *v >= 50.0);
+        let all_n2_below_5 = n2_slots.iter().all(|v| *v < 5.0);
         // (v2.2.0) PUSHBACK STATE enum 0..3 — copia local del packed field.
         let pushback_raw = data.pushback_state;
         let in_pushback = pushback_raw >= 0.5 && pushback_raw < 2.5;
@@ -3096,6 +3119,15 @@ mod windows_simconnect {
         ) && any_engine_running
         {
             *engines_seen_running = true;
+        }
+        // (v4.32.0) Marcador one-shot del N2: una vez visto N2 alto en
+        // este vuelo, el avión es un jet y usamos el trigger N2<5%.
+        if matches!(
+            *phase,
+            FlightPhase::BlockOut | FlightPhase::Airborne | FlightPhase::Landed
+        ) && any_n2_high
+        {
+            *n2_seen_running = true;
         }
 
         // Update max altitude tracking.
@@ -3228,8 +3260,23 @@ mod windows_simconnect {
         // Fallbacks (compat):
         //   OnGround  ──gs≥30 & !on_ground──>               Airborne    (spawn-in-air / no pushback)
         //   BlockOut  ──parking_brake & engines_off──>      OnGround    (cancelar salida)
+        // (v4.32.0) Trigger de cierre del vuelo:
+        //   · JET (vimos N2 alto): cerrar cuando TODOS los N2 < 5%.
+        //     N2 baja lento tras cortar fuel, así que el piloto tiene
+        //     tiempo de completar el shutdown + parking brake antes de
+        //     que el vuelo cierre. Antes usábamos ENG COMBUSTION, que
+        //     se apaga al instante y cortaba la grabación demasiado
+        //     pronto (parking brake quedaba sin registrar).
+        //   · GA/pistón/eléctrico (nunca vimos N2 alto): seguimos con
+        //     ENG COMBUSTION — N2 puede ser 0 siempre y cerraría mal.
+        //   · Fallback de idle timeout para cualquier caso colgado.
+        let engines_shutdown = if *n2_seen_running {
+            all_n2_below_5 && *engines_seen_running
+        } else {
+            all_engines_off && *engines_seen_running
+        };
         let landed_should_finish = matches!(*phase, FlightPhase::Landed)
-            && ((all_engines_off && *engines_seen_running)
+            && (engines_shutdown
                 || *idle_ticks_in_landed >= LANDED_IDLE_TIMEOUT_TICKS);
         // Cancelar BlockOut: si el usuario suelta el freno por error
         // y luego vuelve a frenar + apagar motores sin haber despegado,

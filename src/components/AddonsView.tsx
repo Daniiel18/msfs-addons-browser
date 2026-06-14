@@ -49,6 +49,31 @@ type PillFilter =
   | "UTILITIES"
   | "UNCLASSIFIED";
 
+/** (v4.32.0) Expande una búsqueda con sinónimos de vendor en ambos
+ *  sentidos (nombre comercial ↔ prefijo de folder). "fenix" también
+ *  matchea "fnx", "flybywire" también "fbw", etc. Devuelve la query
+ *  original + sus equivalentes. */
+const VENDOR_SYNONYMS: Record<string, string[]> = {
+  fenix: ["fnx"],
+  fnx: ["fenix"],
+  flybywire: ["fbw"],
+  fbw: ["flybywire"],
+  inibuilds: ["ini"],
+  headwind: ["hdw", "headwindsim"],
+  pmdg: ["pmdg"],
+  aerosoft: ["asobo-aerosoft", "aerosoft"],
+  leonardo: ["fly-the-maddog", "maddog"],
+};
+
+function expandVendorQuery(q: string): string[] {
+  if (!q) return [q];
+  const out = new Set([q]);
+  for (const [k, syns] of Object.entries(VENDOR_SYNONYMS)) {
+    if (q.includes(k)) syns.forEach((s) => out.add(q.replace(k, s)));
+  }
+  return [...out];
+}
+
 function pillMatches(pill: PillFilter, ty: DerivedType): boolean {
   switch (pill) {
     case "ALL":
@@ -177,12 +202,16 @@ export function AddonsView() {
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
+    // (v4.32.0) Sinónimos de vendor: el usuario escribe "fenix" pero
+    // los folders/manifests usan "fnx"; "flybywire" vs "fbw"; etc. Sin
+    // esto, buscar "fenix" sólo matcheaba el avión base (title "Fenix
+    // Airbus A320") y NO sus liveries (folder "fnx-aircraft-320-…").
+    const expanded = expandVendorQuery(q);
     return addons.filter(({ p, t }) => {
       if (!pillMatches(typeFilter, t)) return false;
       if (!q) return true;
-      return [p.title, p.creator, p.folderName]
-        .filter(Boolean)
-        .some((s) => s!.toLowerCase().includes(q));
+      const hay = `${p.title} ${p.creator ?? ""} ${p.folderName}`.toLowerCase();
+      return expanded.some((term) => hay.includes(term));
     });
   }, [addons, filter, typeFilter]);
 
@@ -338,20 +367,28 @@ export function AddonsView() {
               </button>
             </div>
 
-            {/* (v4.27.0) Search del grid — el Link Map tiene el suyo
-                propio en el lienzo, no tiene sentido duplicar. */}
-            {view === "grid" && (
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-                <input
-                  type="text"
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  placeholder={t("addons.search.placeholder")}
-                  className="w-48 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 xl:w-64"
-                />
-              </div>
-            )}
+            {/* (v4.32.0) Search SIEMPRE visible (grid y Link Map). Al
+                escribir, salta a grid para mostrar resultados — un
+                buscador global que no desaparece. Muestra contador de
+                resultados (X), como el find-in-page del navegador. */}
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={filter}
+                onChange={(e) => {
+                  setFilter(e.target.value);
+                  if (e.target.value && view !== "grid") setView("grid");
+                }}
+                placeholder={t("addons.search.placeholder")}
+                className="w-52 rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-8 pr-12 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30 xl:w-72"
+              />
+              {filter.trim() !== "" && (
+                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400">
+                  {visible.length}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </header>
