@@ -1082,6 +1082,26 @@ pub mod repo {
         })
     }
 
+    /// (v5.2.0) Predicado SQL que excluye entradas del catálogo
+    /// etiquetadas EXCLUSIVAMENTE para el otro simulador. Los escenarios
+    /// y addons de MSFS 2024 NO son compatibles con 2020 y viceversa, así
+    /// que ofrecer un 2024 como "update" de un paquete 2020 (mismo
+    /// ICAO+dev) era incorrecto. La tabla `addons` es persistente y puede
+    /// contener filas del otro sim (de una sesión previa, o de posts
+    /// "MSFS 2024" cacheados), de ahí el filtro aquí y no solo en el scrape.
+    ///
+    /// Conservador a propósito: mantiene "MSFS 2020/2024" (compatible con
+    /// ambos) y las filas SIN etiqueta (`simulator` vacío/NULL — p.ej.
+    /// aviones de Simplaza). Solo descarta lo marcado únicamente para el
+    /// sim contrario. Devuelve `&'static str` sin "AND" inicial.
+    fn sim_catalog_filter() -> &'static str {
+        if crate::sim::is_2024() {
+            "NOT (COALESCE(a.simulator,'') LIKE '%2020%' AND COALESCE(a.simulator,'') NOT LIKE '%2024%')"
+        } else {
+            "NOT (COALESCE(a.simulator,'') LIKE '%2024%' AND COALESCE(a.simulator,'') NOT LIKE '%2020%')"
+        }
+    }
+
     pub async fn catalog_versions_for_community(
         pool: &SqlitePool,
     ) -> anyhow::Result<Vec<UpdateCandidate>> {
@@ -1090,7 +1110,9 @@ pub mod repo {
         // v1.0.5 → JustSim v1.1.0". Ahora exigimos que el creator
         // del manifest matchee por substring (case-insensitive) con
         // el developer del catálogo.
-        let scenery = sqlx::query_as::<_, UpdateCandidate>(
+        let sim_filter = sim_catalog_filter();
+        let scenery_sql = format!(
+            "{}\n              AND {}",
             r#"
             SELECT cp.folder_name        AS folder_name,
                    cp.title              AS title,
@@ -1116,7 +1138,9 @@ pub mod repo {
               -- vs manifest "MK-STUDIOS" ASCII), que el INSTR de SQL no
               -- cazaba. Aquí solo exigimos que ambos campos no estén vacíos.
             "#,
-        )
+            sim_filter
+        );
+        let scenery = sqlx::query_as::<_, UpdateCandidate>(&scenery_sql)
         .fetch_all(pool)
         .await?;
 
@@ -1166,7 +1190,8 @@ pub mod repo {
         // rechazamos cualquier livery/sound/preset/mod/paint/
         // texture/profile/config en a.name si el paquete instalado
         // no fue linkeado por el usuario).
-        let aircraft = sqlx::query_as::<_, UpdateCandidate>(
+        let aircraft_sql = format!(
+            "{}\n              AND {}",
             r#"
             SELECT cp.folder_name        AS folder_name,
                    cp.title              AS title,
@@ -1303,7 +1328,9 @@ pub mod repo {
                 )
               )
             "#,
-        )
+            sim_filter
+        );
+        let aircraft = sqlx::query_as::<_, UpdateCandidate>(&aircraft_sql)
         .fetch_all(pool)
         .await?;
 
