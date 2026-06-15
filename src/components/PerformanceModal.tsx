@@ -77,12 +77,14 @@ export function PerformanceModal({
     };
   }, [pkg.installPath, pkg.folderName, pkg.icao, pushToast]);
 
-  // Renombra los .bgl de una opción. `enable` = dejar objetos presentes.
+  // Aplica/revierte una opción multiestado (renombra sus .bgl según la
+  // dirección de cada archivo). `applied` = la optimización del dev está
+  // en efecto.
   const toggle = async (opt: PerfOption) => {
     if (busyId) return;
     setBusyId(opt.id);
     try {
-      const res = await api.perfToggleOption(pkg.installPath, opt.id, !opt.enabled);
+      const res = await api.perfToggleOption(pkg.installPath, opt.id, !opt.applied);
       setConfig((prev) =>
         prev
           ? {
@@ -95,9 +97,9 @@ export function PerformanceModal({
       );
       pushToast({
         kind: "success",
-        title: res.option.enabled
-          ? t("perf.restored", { label: optLabel(res.option) })
-          : t("perf.disabled", { label: optLabel(res.option) }),
+        title: res.option.applied
+          ? t("perf.applied", { label: optLabel(res.option) })
+          : t("perf.reverted", { label: optLabel(res.option) }),
         message: t("perf.renamed", { n: String(res.renamed) }),
         ttlMs: 2600,
       });
@@ -146,14 +148,20 @@ export function PerformanceModal({
     const v = t(k);
     return v === k ? o.label || o.category : v;
   };
+  // Un swap (p. ej. High→Medium) tiene ops en ambas direcciones.
+  const isSwap = (o: PerfOption) =>
+    o.ops.some((op) => op.activeWhenApplied) &&
+    o.ops.some((op) => !op.activeWhenApplied);
   const optDesc = (o: PerfOption) => {
+    if (isSwap(o)) return t("perf.swap_desc");
     const k = `perf.cat.${o.category}.desc`;
     const v = t(k);
     return v === k ? o.description : v;
   };
 
   const options = config?.options ?? [];
-  const savedCount = options.filter((o) => !o.enabled).length;
+  // Optimizaciones actualmente aplicadas (ahorrando FPS).
+  const savedCount = options.filter((o) => o.applied).length;
 
   return (
     <div
@@ -218,9 +226,9 @@ export function PerformanceModal({
                 <li
                   key={opt.id}
                   className={`rounded-xl border px-3.5 py-3 transition-colors ${
-                    opt.enabled
-                      ? "border-slate-800 bg-slate-900/40"
-                      : "border-emerald-600/40 bg-emerald-950/20"
+                    opt.applied
+                      ? "border-emerald-600/40 bg-emerald-950/20"
+                      : "border-slate-800 bg-slate-900/40"
                   }`}
                 >
                   <div className="flex items-start gap-3">
@@ -238,24 +246,24 @@ export function PerformanceModal({
                         {optDesc(opt)}
                       </p>
                       <p className="mt-1 text-[10px] text-slate-600">
-                        {opt.files.length === 1
+                        {opt.ops.length === 1
                           ? t("perf.one_file")
-                          : t("perf.n_files", { n: String(opt.files.length) })}
-                        {!opt.enabled && (
+                          : t("perf.n_files", { n: String(opt.ops.length) })}
+                        {opt.applied && (
                           <span className="ml-1 font-semibold text-emerald-400">
-                            · {t("perf.off_now")}
+                            · {t("perf.applied_now")}
                           </span>
                         )}
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-col items-center gap-1 pt-0.5">
                       <ToggleSwitch
-                        on={opt.enabled}
+                        on={opt.applied}
                         busy={busyId === opt.id}
                         onToggle={() => void toggle(opt)}
                       />
                       <span className="text-[9px] uppercase tracking-wide text-slate-600">
-                        {opt.enabled ? t("perf.on") : t("perf.off")}
+                        {opt.applied ? t("perf.on") : t("perf.off")}
                       </span>
                     </div>
                   </div>

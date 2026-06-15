@@ -1,26 +1,24 @@
 //! (v5.0.0) Motor de rendimiento / optimización de FPS por aeropuerto.
 //!
-//! Muchos sceneries premium (Aerosoft, ORBX, FlyTampa…) traen objetos
-//! pesados OPCIONALES — autos estáticos, personal de rampa, pasajeros,
-//! GSE, clutter — que el usuario puede desactivar para ganar FPS
-//! renombrando archivos `.bgl`. La forma de hacerlo viene en la nota
-//! "Optional Configuration" de la página del addon en SceneryAddons.
+//! Muchos sceneries premium (Aerosoft, ORBX…) traen objetos pesados
+//! OPCIONALES que se activan/desactivan renombrando archivos `.bgl`. La
+//! receta viene en la nota "Optional Configuration" de la página del
+//! addon en SceneryAddons.
 //!
-//! Dos convenciones de "desactivado" conviven en el mundo real:
-//!   · `X.bgl` → `X.bgl.off`  (ORBX y otros; sufijo añadido)
-//!   · `X.bgl` → `X.off`      (Aerosoft; se reemplaza la extensión)
-//! MSFS ignora cualquier archivo que NO termine exactamente en `.bgl`,
-//! así que ambas funcionan. Detectamos las dos y, al desactivar,
-//! estandarizamos en `.bgl.off`.
+//! **Multiestado (v5).** Una opción NO siempre apaga archivos: a veces es
+//! un *swap* (apaga uno y enciende otro). Por eso cada opción guarda un
+//! arreglo de OPERACIONES (`ops`), una por archivo, con la dirección que
+//! debe tomar cuando la opción está APLICADA:
+//!   · `Disable Passengers completely` → _1.bgl→off, _2.bgl→off
+//!   · `Switch from High to Medium Passenger Density` → _1.bgl→off, _2.off→bgl
 //!
-//! La nota de SceneryAddons da SÓLO el nombre del archivo
-//! (`EDDF_Placements_passengers.bgl`), pero en disco vive en una
-//! subcarpeta (`scenery/EDDF/scenery/…`). Por eso construimos un índice
-//! `basename → ruta real` y resolvemos cada archivo de la nota contra él.
+//! Dos convenciones de "desactivado": `X.bgl.off` (ORBX) y `X.off`
+//! (Aerosoft). Detectamos ambas; al desactivar estandarizamos `.bgl.off`.
 //!
-//! El JSON `config/simfleet_perf.json` soporta varios archivos por
-//! opción (`files: []`) y se escribe SÓLO cuando hay una nota real de la
-//! página (o tras un toggle) — el badge de "optimizable" refleja eso.
+//! La nota da SÓLO el nombre del archivo; el archivo real vive en
+//! subcarpetas. Construimos un índice `basename → ruta real` y resolvemos.
+//! El JSON `config/simfleet_perf.json` se escribe sólo con la nota real
+//! de la página (o tras un toggle) — el badge refleja eso.
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,31 +30,38 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_DIR: &str = "config";
 const CONFIG_FILE: &str = "simfleet_perf.json";
-
-/// Profundidad máxima al escanear `.bgl`. `scenery/<icao>/<area>/x.bgl`
-/// rara vez pasa de 5-6 niveles.
 const SCAN_DEPTH: usize = 8;
+
+/// Una operación de archivo dentro de una opción.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerfOp {
+    /// Ruta RELATIVA al addon del archivo ACTIVO (`.bgl`). No cambia.
+    pub path: String,
+    /// Cuando la opción está APLICADA, ¿este archivo debe quedar activo
+    /// (`.bgl`)? `false` = desactivado. Para un swap, unos van `true` y
+    /// otros `false`.
+    pub active_when_applied: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PerfOption {
     pub id: String,
-    /// Para opciones de la NOTA: la etiqueta del dev (inglés, de la
-    /// página). Para el escaneo local: vacío (el frontend localiza por
-    /// `category`).
+    /// Para opciones de la NOTA: la etiqueta LITERAL del dev (de la
+    /// página). Para el escaneo local: el nombre por categoría en inglés.
     pub label: String,
     pub description: String,
     pub fps_hint: String,
     pub category: String,
-    /// true si vino de la nota "Optional Configuration" de la página;
-    /// false si del escaneo local por patrón. El frontend usa esto para
-    /// decidir si muestra `label` (dev) o el texto localizado por categoría.
+    /// true si vino de la nota "Optional Configuration" de la página.
     #[serde(default)]
     pub from_note: bool,
-    /// Rutas RELATIVAS al addon del/los `.bgl` ACTIVO(s) (sin `.off`).
-    pub files: Vec<String>,
-    /// true = objetos presentes (`.bgl`); false = desactivados.
-    pub enabled: bool,
+    /// Operaciones de archivo (multiestado).
+    pub ops: Vec<PerfOp>,
+    /// Estado actual: ¿la opción está APLICADA? (todos los `ops` en su
+    /// estado aplicado).
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,17 +69,15 @@ pub struct PerfOption {
 pub struct PerfConfig {
     pub icao: Option<String>,
     pub folder_name: String,
-    /// "sceneryaddons" | "local-scan" | "mixed".
+    /// "sceneryaddons" | "local-scan".
     pub source: String,
     pub options: Vec<PerfOption>,
 }
 
 // ---------------------------------------------------------------------------
-// Categorización por nombre de archivo / etiqueta
+// Categorización
 // ---------------------------------------------------------------------------
 
-/// Mapea un texto (basename o etiqueta del dev) a una categoría de
-/// objeto OPCIONAL, o `None` si no parece clutter desactivable.
 fn categorize(text_lower: &str) -> Option<&'static str> {
     let motion = text_lower.contains("anim")
         || text_lower.contains("walk")
@@ -99,9 +102,19 @@ fn categorize(text_lower: &str) -> Option<&'static str> {
     }
     if text_lower.contains("servicetraffic")
         || (text_lower.contains("service") && text_lower.contains("traffic"))
-        || text_lower.contains("service vehicle")
     {
         return Some("service_traffic");
+    }
+    if text_lower.contains("ramptraffic")
+        || (text_lower.contains("ramp") && text_lower.contains("traffic"))
+    {
+        return Some("ramp_traffic");
+    }
+    if text_lower.contains("hangardoor") || text_lower.contains("hangar door") {
+        return Some("hangar_doors");
+    }
+    if text_lower.contains("windfarm") || text_lower.contains("wind farm") {
+        return Some("wind_farm");
     }
     if text_lower.contains("rampguy")
         || text_lower.contains("rampagent")
@@ -114,7 +127,7 @@ fn categorize(text_lower: &str) -> Option<&'static str> {
     if text_lower.contains("gse") {
         return Some("gse");
     }
-    if (text_lower.contains("_car") || text_lower.contains("car_") || text_lower.contains("cars") || text_lower.contains(" car"))
+    if (text_lower.contains("_car") || text_lower.contains("car_") || text_lower.contains("cars"))
         && !text_lower.contains("cargo")
         && !text_lower.contains("carrier")
     {
@@ -142,8 +155,6 @@ fn categorize(text_lower: &str) -> Option<&'static str> {
     None
 }
 
-// Inglés como defecto del JSON (legible y fallback). El frontend
-// localiza la descripción y, para opciones locales, también la etiqueta.
 fn default_label(category: &str) -> &'static str {
     match category {
         "static_cars" => "Static cars",
@@ -155,6 +166,9 @@ fn default_label(category: &str) -> &'static str {
         "clutter" => "Clutter / extra objects",
         "road_traffic" => "Road traffic",
         "service_traffic" => "Service vehicle traffic",
+        "ramp_traffic" => "Ramp traffic",
+        "hangar_doors" => "Hangar doors",
+        "wind_farm" => "Wind farms",
         "vdgs" => "VDGS boxes",
         _ => "Optional objects",
     }
@@ -171,14 +185,17 @@ fn description_for(category: &str) -> &'static str {
         "clutter" => "Removes non-essential detail clutter (models, streetlights, fences).",
         "road_traffic" => "Removes road traffic around the airport.",
         "service_traffic" => "Removes moving service vehicles on the apron.",
-        "vdgs" => "Removes Aerosoft VDGS boxes (use this if you run VDGS with GSX).",
+        "ramp_traffic" => "Removes ramp traffic on the apron.",
+        "hangar_doors" => "Switches animated hangar doors to static (lighter).",
+        "wind_farm" => "Switches animated wind farms to static (lighter).",
+        "vdgs" => "Disables VDGS info boxes (use with GSX).",
         _ => "Optional scenery objects you can disable to gain FPS.",
     }
 }
 
 fn fps_hint_for(category: &str) -> &'static str {
     match category {
-        "animated" | "service_traffic" => "+3–6 FPS",
+        "animated" | "service_traffic" | "ramp_traffic" => "+3–6 FPS",
         "passengers" | "road_traffic" => "+2–5 FPS",
         "static_aircraft" => "+2–4 FPS",
         "static_cars" | "clutter" | "gse" => "+1–3 FPS",
@@ -190,66 +207,108 @@ fn category_rank(category: &str) -> u8 {
     match category {
         "animated" => 0,
         "service_traffic" => 1,
-        "passengers" => 2,
-        "road_traffic" => 3,
-        "static_aircraft" => 4,
-        "gse" => 5,
-        "static_cars" => 6,
-        "clutter" => 7,
-        "ramp_personnel" => 8,
-        "vdgs" => 9,
-        _ => 15,
+        "ramp_traffic" => 2,
+        "passengers" => 3,
+        "road_traffic" => 4,
+        "static_aircraft" => 5,
+        "gse" => 6,
+        "static_cars" => 7,
+        "clutter" => 8,
+        "hangar_doors" => 9,
+        "wind_farm" => 10,
+        "ramp_personnel" => 11,
+        "vdgs" => 12,
+        _ => 20,
     }
 }
 
 // ---------------------------------------------------------------------------
-// Parser de la nota "Optional Configuration" de SceneryAddons
+// Parser de la nota "Optional Configuration"
 // ---------------------------------------------------------------------------
 
-// `path/x.bgl` con `.off` opcional capturado aparte (sin lookahead).
-static BGL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)([A-Za-z0-9_\-./\\]+?\.bgl)(\.off)?\b").unwrap());
+// Token de archivo: `path/x.bgl`, `x.bgl.off` o `x.off`.
+static FILE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)([A-Za-z0-9_\-./\\]+?\.(?:bgl\.off|bgl|off))\b").unwrap()
+});
 
+struct NoteOp {
+    /// basename del archivo ACTIVO (`x.bgl`, minúsculas, sin ruta).
+    active_basename: String,
+    active_when_applied: bool,
+}
 struct NoteOption {
     label: String,
-    /// Basenames (sólo el nombre, sin ruta) de los `.bgl` ACTIVOS.
-    files: Vec<String>,
+    ops: Vec<NoteOp>,
 }
 
-/// Basenames `.bgl` ACTIVOS (sin `.off`) en un fragmento de texto.
-fn active_bgls_in(s: &str) -> Vec<String> {
-    let mut v = Vec::new();
-    for cap in BGL_RE.captures_iter(s) {
-        if cap.get(2).is_some() {
-            continue; // `.bgl.off`, no el activo
-        }
-        let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let bn = basename_lower(raw);
-        if !bn.is_empty() && !v.contains(&bn) {
-            v.push(bn);
+fn basename_lower(s: &str) -> String {
+    s.trim().rsplit(['/', '\\']).next().unwrap_or(s).to_lowercase()
+}
+
+/// Nombre ACTIVO (con `.bgl`) en minúsculas, sea `.bgl`, `.bgl.off` o `.off`.
+fn active_basename_of(name: &str) -> String {
+    let n = basename_lower(name);
+    if let Some(s) = n.strip_suffix(".bgl.off") {
+        format!("{s}.bgl")
+    } else if let Some(s) = n.strip_suffix(".off") {
+        format!("{s}.bgl")
+    } else {
+        n
+    }
+}
+
+/// ¿El token apunta a la forma ACTIVA (`.bgl`, no `.bgl.off`)?
+fn is_active_token(name: &str) -> bool {
+    let l = name.to_lowercase();
+    l.ends_with(".bgl") && !l.ends_with(".bgl.off")
+}
+
+/// Primer token de archivo en un fragmento.
+fn first_file(s: &str) -> Option<String> {
+    FILE_RE.captures(s).and_then(|c| c.get(1)).map(|m| m.as_str().to_string())
+}
+
+/// Convierte un fragmento "A -> B" en una operación: el activo es A, y
+/// `active_when_applied` = si B es la forma activa. Si no hay "->" o no
+/// hay B, asume desactivar (applied = off).
+fn op_from_segment(seg: &str) -> Option<NoteOp> {
+    let mut parts = seg.splitn(2, "->");
+    let left = parts.next().unwrap_or("");
+    let right = parts.next().unwrap_or("");
+    let a = first_file(left)?;
+    let active_basename = active_basename_of(&a);
+    let active_when_applied = first_file(right)
+        .map(|b| is_active_token(&b))
+        .unwrap_or(false);
+    Some(NoteOp {
+        active_basename,
+        active_when_applied,
+    })
+}
+
+/// Limpia el header a la etiqueta literal del dev (quita boilerplate
+/// "Optional Configuration:" y el ":" final).
+fn clean_label(header: &str) -> String {
+    let mut s = header.trim();
+    if s.to_lowercase().starts_with("optional configuration") {
+        if let Some(pos) = s.find(':') {
+            s = s[pos + 1..].trim();
         }
     }
-    v
+    s.splitn(2, ':').next().unwrap_or(s).trim().to_string()
 }
 
-/// Parsea la nota "Optional Configuration". Maneja DOS formatos:
-///   · Una línea:  `• Remove Static Cars: X.bgl -> X.off`
-///   · Multilínea (Aerosoft):  `Disable Passengers completely:`  seguido
-///     de viñetas `• ENGM_Passengers_1.bgl -> ENGM_Passengers_1.off`.
-/// Sólo toma opciones de REMOCIÓN pura (remove/disable/delete). Excluye
-/// los "Switch …" (swaps de dos direcciones: desactivan uno y activan
-/// otro — automatizarlos como un toggle dejaría el aeropuerto a medias)
-/// y cualquier opción cuyas viñetas ACTIVEN un `.bgl` (`X.off -> X.bgl`).
+/// Parsea la nota. Maneja una línea (`• Remove X: a.bgl -> a.off`) y
+/// multilínea (cabecera `Disable X:` + viñetas). Incluye swaps.
 fn parse_note_options(text: &str) -> Vec<NoteOption> {
     let mut out: Vec<NoteOption> = Vec::new();
-    // (label, files, is_swap)
-    let mut cur: Option<(String, Vec<String>, bool)> = None;
+    let mut cur: Option<NoteOption> = None;
 
     macro_rules! flush {
         () => {
-            if let Some((label, files, swap)) = cur.take() {
-                if !swap && !files.is_empty() {
-                    out.push(NoteOption { label, files });
+            if let Some(opt) = cur.take() {
+                if !opt.ops.is_empty() {
+                    out.push(opt);
                 }
             }
         };
@@ -266,44 +325,32 @@ fn parse_note_options(text: &str) -> Vec<NoteOption> {
             || lower.contains("disable")
             || lower.contains("delete")
             || lower.contains("switch");
-        let left = stripped.split("->").next().unwrap_or(stripped);
-        let bgl_left = active_bgls_in(left);
-        let right_active = stripped
-            .splitn(2, "->")
-            .nth(1)
-            .map(|r| !active_bgls_in(r).is_empty())
-            .unwrap_or(false);
+        let has_file = lower.contains(".bgl") || lower.contains(".off");
 
-        // Cabecera de opción: verbo + ":" (multilínea o de una línea).
+        // Cabecera de opción: verbo + ":".
         if has_verb && stripped.contains(':') {
             flush!();
-            // Etiqueta = texto del header tal cual la página (antes del
-            // primer ":"). Mantiene el verbo del dev ("Disable Passengers
-            // completely", "Remove Static Cars") para que coincida con
-            // lo que el usuario ve en SceneryAddons.
-            let label = stripped
-                .splitn(2, ':')
-                .next()
-                .unwrap_or(stripped)
-                .trim()
-                .to_string();
-            // Archivos en la MISMA línea (formato de una línea).
-            let after = stripped.splitn(2, ':').nth(1).unwrap_or("");
-            let files = active_bgls_in(after.split("->").next().unwrap_or(after));
-            let is_swap = lower.contains("switch") || right_active;
-            cur = Some((label, files, is_swap));
+            let label = clean_label(stripped);
+            let mut ops = Vec::new();
+            // Caso de una línea: la op va tras el ":".
+            if let Some(after) = stripped.splitn(2, ':').nth(1) {
+                if let Some(op) = op_from_segment(after) {
+                    ops.push(op);
+                }
+            }
+            cur = Some(NoteOption { label, ops });
             continue;
         }
 
         // Viñeta de continuación bajo la cabecera actual.
-        if let Some((_, files, swap)) = cur.as_mut() {
-            for f in bgl_left {
-                if !files.contains(&f) {
-                    files.push(f);
+        if has_file {
+            if let Some(opt) = cur.as_mut() {
+                if let Some(op) = op_from_segment(stripped) {
+                    // dedup por basename
+                    if !opt.ops.iter().any(|o| o.active_basename == op.active_basename) {
+                        opt.ops.push(op);
+                    }
                 }
-            }
-            if right_active {
-                *swap = true; // activa un .bgl → es un swap
             }
         }
     }
@@ -329,19 +376,9 @@ pub fn extract_description_from_html(html: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Índice de `.bgl` en disco + escaneo local por patrón
+// Índice de `.bgl` en disco + escaneo local
 // ---------------------------------------------------------------------------
 
-fn basename_lower(s: &str) -> String {
-    s.trim()
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(s)
-        .to_lowercase()
-}
-
-/// Nombre ACTIVO (con `.bgl`) preservando el case original, sea el
-/// archivo `X.bgl`, `X.bgl.off` o `X.off`.
 fn to_active_name(name: &str) -> String {
     let lower = name.to_lowercase();
     if lower.ends_with(".bgl.off") {
@@ -360,8 +397,7 @@ fn normalize_rel(s: &str) -> String {
         .replace('\\', "/")
 }
 
-/// Construye `basename_activo(lower) → ruta relativa ACTIVA` recorriendo
-/// el addon. Cubre `.bgl`, `.bgl.off` y `.off`.
+/// `basename_activo(lower) → ruta relativa ACTIVA`.
 fn index_bgls(addon_dir: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     walk_index(addon_dir, addon_dir, 0, &mut map);
@@ -401,8 +437,6 @@ struct LocalOpt {
     files: Vec<String>,
 }
 
-/// Escaneo LOCAL por patrón de nombre — fallback cuando no hay nota.
-/// Agrupa por categoría. Rutas relativas (activas).
 fn detect_local(addon_dir: &Path) -> Vec<LocalOpt> {
     let mut by_cat: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -451,20 +485,17 @@ fn walk_local(
 }
 
 // ---------------------------------------------------------------------------
-// Rutas de archivo desactivado / activo
+// Archivos activo / desactivado
 // ---------------------------------------------------------------------------
 
-/// `X.bgl` → `X.bgl.off` (nuestra convención al desactivar).
 fn disabled_path(active: &Path) -> PathBuf {
     let mut s = active.as_os_str().to_owned();
     s.push(".off");
     PathBuf::from(s)
 }
-/// `X.bgl` → `X.off` (convención de Aerosoft).
 fn alt_disabled_path(active: &Path) -> PathBuf {
     active.with_extension("off")
 }
-
 fn current_disabled(addon_dir: &Path, rel: &str) -> Option<PathBuf> {
     let active = addon_dir.join(rel);
     let a = disabled_path(&active);
@@ -477,12 +508,11 @@ fn current_disabled(addon_dir: &Path, rel: &str) -> Option<PathBuf> {
     }
     None
 }
-
-fn is_enabled(addon_dir: &Path, rel: &str) -> bool {
+fn is_active(addon_dir: &Path, rel: &str) -> bool {
     addon_dir.join(rel).exists()
 }
 fn file_exists_any(addon_dir: &Path, rel: &str) -> bool {
-    is_enabled(addon_dir, rel) || current_disabled(addon_dir, rel).is_some()
+    is_active(addon_dir, rel) || current_disabled(addon_dir, rel).is_some()
 }
 
 fn slug(s: &str) -> String {
@@ -500,13 +530,18 @@ fn slug(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// ¿La opción está APLICADA? (todos los ops en su estado aplicado).
+fn compute_applied(addon_dir: &Path, ops: &[PerfOp]) -> bool {
+    !ops.is_empty()
+        && ops
+            .iter()
+            .all(|op| is_active(addon_dir, &op.path) == op.active_when_applied)
+}
+
 // ---------------------------------------------------------------------------
-// Construcción / reconciliación del manifiesto
+// Construcción del manifiesto
 // ---------------------------------------------------------------------------
 
-/// Construye la config a partir de (a) la nota de SceneryAddons resuelta
-/// contra el índice de archivos reales y (b) el escaneo local como
-/// relleno. `None` si no hay nada.
 fn build_config(
     addon_dir: &Path,
     folder_name: &str,
@@ -515,40 +550,39 @@ fn build_config(
 ) -> Option<PerfConfig> {
     let index = index_bgls(addon_dir);
     let mut options: Vec<PerfOption> = Vec::new();
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut note_opts = 0usize;
+    let mut note_count = 0usize;
 
-    // 1) Opciones de la NOTA (autoritativas, una por línea "Remove …").
+    // 1) Opciones de la NOTA (autoritativas, multiestado).
     if let Some(text) = note_text {
         for note in parse_note_options(text) {
-            let mut files = Vec::new();
-            for bn in &note.files {
-                if let Some(path) = index.get(bn) {
-                    if !used.contains(path) && !files.contains(path) {
-                        files.push(path.clone());
+            let mut ops: Vec<PerfOp> = Vec::new();
+            for nop in &note.ops {
+                if let Some(path) = index.get(&nop.active_basename) {
+                    if !ops.iter().any(|o| &o.path == path) {
+                        ops.push(PerfOp {
+                            path: path.clone(),
+                            active_when_applied: nop.active_when_applied,
+                        });
                     }
                 }
             }
-            if files.is_empty() {
+            if ops.is_empty() {
                 continue;
             }
-            note_opts += 1;
-            for f in &files {
-                used.insert(f.clone());
-            }
+            note_count += 1;
             let category = categorize(&note.label.to_lowercase())
-                .or_else(|| categorize(&note.files[0]))
+                .or_else(|| categorize(&note.ops[0].active_basename))
                 .unwrap_or("clutter")
                 .to_string();
-            let enabled = files.iter().any(|rel| is_enabled(addon_dir, rel));
             let id = {
                 let base = slug(&note.label);
                 if base.is_empty() {
-                    category.clone()
+                    format!("opt-{}", options.len())
                 } else {
                     base
                 }
             };
+            let applied = compute_applied(addon_dir, &ops);
             options.push(PerfOption {
                 id,
                 label: note.label.clone(),
@@ -556,49 +590,47 @@ fn build_config(
                 fps_hint: fps_hint_for(&category).to_string(),
                 category,
                 from_note: true,
-                files,
-                enabled,
+                ops,
+                applied,
             });
         }
     }
 
-    // 2) Escaneo LOCAL por patrón — sólo lo no cubierto por la nota.
-    let mut local_opts = 0usize;
-    for raw in detect_local(addon_dir) {
-        let files: Vec<String> = raw
-            .files
-            .into_iter()
-            .filter(|p| !used.contains(p))
-            .collect();
-        if files.is_empty() {
-            continue;
+    // 2) Escaneo LOCAL — SÓLO si la nota no aportó nada (sin nota, o nota
+    //    sin opciones resolubles). Cuando hay nota real, ésta manda y NO
+    //    añadimos extras locales inventados.
+    if note_count == 0 {
+        for raw in detect_local(addon_dir) {
+            let ops: Vec<PerfOp> = raw
+                .files
+                .into_iter()
+                .map(|path| PerfOp {
+                    path,
+                    active_when_applied: false, // local = "quitar"
+                })
+                .collect();
+            if ops.is_empty() {
+                continue;
+            }
+            let applied = compute_applied(addon_dir, &ops);
+            options.push(PerfOption {
+                id: raw.category.clone(),
+                label: default_label(&raw.category).to_string(),
+                description: description_for(&raw.category).to_string(),
+                fps_hint: fps_hint_for(&raw.category).to_string(),
+                category: raw.category,
+                from_note: false,
+                ops,
+                applied,
+            });
         }
-        local_opts += 1;
-        for f in &files {
-            used.insert(f.clone());
-        }
-        let enabled = files.iter().any(|rel| is_enabled(addon_dir, rel));
-        options.push(PerfOption {
-            id: raw.category.clone(),
-            label: default_label(&raw.category).to_string(),
-            description: description_for(&raw.category).to_string(),
-            fps_hint: fps_hint_for(&raw.category).to_string(),
-            category: raw.category,
-            from_note: false,
-            files,
-            enabled,
-        });
     }
 
     if options.is_empty() {
         return None;
     }
     options.sort_by_key(|o| category_rank(&o.category));
-    let source = match (note_opts > 0, local_opts > 0) {
-        (true, true) => "mixed",
-        (true, false) => "sceneryaddons",
-        _ => "local-scan",
-    };
+    let source = if note_count > 0 { "sceneryaddons" } else { "local-scan" };
     Some(PerfConfig {
         icao,
         folder_name: folder_name.to_string(),
@@ -613,13 +645,11 @@ fn config_dir(addon_dir: &Path) -> PathBuf {
 fn config_file(addon_dir: &Path) -> PathBuf {
     config_dir(addon_dir).join(CONFIG_FILE)
 }
-
 fn write_config(addon_dir: &Path, cfg: &PerfConfig) -> std::io::Result<()> {
     fs::create_dir_all(config_dir(addon_dir))?;
     let json = serde_json::to_string_pretty(cfg).unwrap_or_else(|_| "{}".into());
     fs::write(config_file(addon_dir), json)
 }
-
 fn read_config_raw(addon_dir: &Path) -> Option<PerfConfig> {
     let bytes = fs::read(config_file(addon_dir)).ok()?;
     serde_json::from_slice::<PerfConfig>(&bytes).ok()
@@ -627,30 +657,26 @@ fn read_config_raw(addon_dir: &Path) -> Option<PerfConfig> {
 
 fn reconcile(addon_dir: &Path, cfg: &mut PerfConfig) {
     for opt in &mut cfg.options {
-        opt.files.retain(|rel| file_exists_any(addon_dir, rel));
-        opt.enabled = opt.files.iter().any(|rel| is_enabled(addon_dir, rel));
+        opt.ops.retain(|op| file_exists_any(addon_dir, &op.path));
+        opt.applied = compute_applied(addon_dir, &opt.ops);
     }
-    cfg.options.retain(|o| !o.files.is_empty());
+    cfg.options.retain(|o| !o.ops.is_empty());
 }
 
 // ---------------------------------------------------------------------------
 // API pública
 // ---------------------------------------------------------------------------
 
-/// Badge "optimizable": SÓLO true si ya hay una config escrita (de la
-/// página de SceneryAddons o tras un toggle) con archivos reales. No
-/// hace escaneo permisivo — el badge refleja Optional Configuration real.
+/// Badge "optimizable": true sólo si hay config escrita (de la página o
+/// tras un toggle) con ops sobre archivos reales.
 pub fn has_optional_objects(addon_dir: &Path) -> bool {
     read_config_raw(addon_dir).is_some_and(|cfg| {
         cfg.options
             .iter()
-            .any(|o| o.files.iter().any(|rel| file_exists_any(addon_dir, rel)))
+            .any(|o| o.ops.iter().any(|op| file_exists_any(addon_dir, &op.path)))
     })
 }
 
-/// Lee la config si existe (reconciliando con disco); si no, hace un
-/// escaneo local EN MEMORIA (sin escribir, para que el modal no salga
-/// vacío). `None` si no hay objetos opcionales.
 pub fn read_or_generate(
     addon_dir: &Path,
     folder_name: &str,
@@ -666,8 +692,8 @@ pub fn read_or_generate(
     build_config(addon_dir, folder_name, icao, None)
 }
 
-/// Enriquece la config con la nota "Optional Configuration" del HTML de
-/// SceneryAddons + el escaneo local, y la ESCRIBE. Devuelve la config.
+/// Enriquece con la nota de la página + (si no hay nota) escaneo local, y
+/// ESCRIBE. Para el botón del modal.
 pub fn enrich_with_html(
     addon_dir: &Path,
     folder_name: &str,
@@ -682,11 +708,7 @@ pub fn enrich_with_html(
     Some(cfg)
 }
 
-/// (Escáner masivo) Como `enrich_with_html` pero escribe SÓLO si la
-/// página trae una nota "Optional Configuration" real (no si únicamente
-/// el escaneo local encontró algo). Así el badge automático refleja sólo
-/// los aeropuertos con Optional Configuration en SceneryAddons. Devuelve
-/// la config (con ≥1 opción de la nota) o `None`.
+/// (Escáner masivo) Escribe SÓLO si la página trae nota real.
 pub fn enrich_page_note_only(
     addon_dir: &Path,
     folder_name: &str,
@@ -696,7 +718,7 @@ pub fn enrich_page_note_only(
     let desc = extract_description_from_html(page_html);
     let cfg = build_config(addon_dir, folder_name, icao, Some(&desc))?;
     if cfg.source == "local-scan" {
-        return None; // la página no tenía nota — no marcamos optimizable
+        return None;
     }
     if let Err(e) = write_config(addon_dir, &cfg) {
         tracing::warn!("perf: no se pudo escribir {CONFIG_FILE}: {e}");
@@ -704,10 +726,6 @@ pub fn enrich_page_note_only(
     Some(cfg)
 }
 
-/// (Descarga) Genera la config tras instalar si tenemos la nota de la
-/// página. Sin nota, NO escribe (el badge es para los que tienen
-/// Optional Configuration real — los puebla el escáner masivo). Registra
-/// siempre en logs.
 pub fn generate_on_install(
     addon_dir: &Path,
     folder_name: &str,
@@ -715,7 +733,7 @@ pub fn generate_on_install(
     description: Option<&str>,
 ) {
     let Some(desc) = description else {
-        tracing::info!("perf: {folder_name} instalado sin nota — config la hará el escáner de SceneryAddons");
+        tracing::info!("perf: {folder_name} instalado sin nota — config la hará el escáner");
         return;
     };
     match build_config(addon_dir, folder_name, icao, Some(desc)) {
@@ -737,13 +755,13 @@ pub struct ToggleResult {
     pub renamed: usize,
 }
 
-/// Aplica un toggle a una opción: renombra TODOS sus archivos de forma
-/// atómica con rollback. `enable=false` desactiva (gana FPS). Soporta
-/// las dos convenciones de desactivado (`.bgl.off` y `.off`).
+/// Aplica/revierte una opción multiestado de forma atómica con rollback.
+/// `apply=true` pone cada archivo en su estado aplicado; `false` lo
+/// revierte. Soporta `.bgl.off` y `.off`.
 pub fn apply_toggle(
     addon_dir: &Path,
     option_id: &str,
-    enable: bool,
+    apply: bool,
 ) -> anyhow::Result<ToggleResult> {
     let folder = addon_dir
         .file_name()
@@ -758,19 +776,29 @@ pub fn apply_toggle(
         .position(|o| o.id == option_id)
         .ok_or_else(|| anyhow::anyhow!("Opción '{option_id}' no encontrada."))?;
 
+    // Plan: por cada op, el destino activo según apply/dirección.
     let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for rel in &cfg.options[idx].files {
-        let active = addon_dir.join(rel);
-        if enable {
+    for op in &cfg.options[idx].ops {
+        let active = addon_dir.join(&op.path);
+        let want_active = if apply {
+            op.active_when_applied
+        } else {
+            !op.active_when_applied
+        };
+        if want_active {
+            // queremos `.bgl`: si está desactivado, restaurarlo.
             if !active.exists() {
-                if let Some(dis) = current_disabled(addon_dir, rel) {
+                if let Some(dis) = current_disabled(addon_dir, &op.path) {
                     plan.push((dis, active));
                 }
             }
-        } else if active.exists() {
-            let dis = disabled_path(&active);
-            if !dis.exists() {
-                plan.push((active, dis));
+        } else {
+            // queremos desactivado: si está activo, apagarlo (a `.bgl.off`).
+            if active.exists() {
+                let dis = disabled_path(&active);
+                if !dis.exists() {
+                    plan.push((active, dis));
+                }
             }
         }
     }
@@ -796,8 +824,8 @@ pub fn apply_toggle(
         }
     }
 
-    cfg.options[idx].enabled = enable;
     let renamed = done.len();
+    cfg.options[idx].applied = apply;
     let _ = write_config(addon_dir, &cfg);
     Ok(ToggleResult {
         option: cfg.options.swap_remove(idx),
@@ -810,26 +838,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_orbx_katl_note() {
+    fn parses_orbx_katl_note_single_line() {
         let note = "\
 * Remove Static Cars: placement_full_car_flatten.bgl -> placement_full_car_flatten.bgl.off\n\
-* Remove Static Ramp Personnel: placement_full_gse_rampguy_static_flatten.bgl -> placement_full_gse_rampguy_static_flatten.bgl.off\n\
-* Remove 3D Passengers: placement_full_passengers_flatten.bgl -> placement_full_passengers_flatten.bgl.off\n\
-* Remove Animated Ramp Agents: placement_rampguy_walking_flatten.bgl -> placement_rampguy_walking_flatten.bgl.off\n";
+* Remove 3D Passengers: placement_full_passengers_flatten.bgl -> placement_full_passengers_flatten.bgl.off\n";
         let opts = parse_note_options(note);
-        assert_eq!(opts.len(), 4, "esperaba 4 opciones");
-        for o in &opts {
-            assert_eq!(o.files.len(), 1, "{}", o.label);
-            assert!(o.files[0].ends_with(".bgl"));
-            assert!(!o.files[0].contains(".off"));
-        }
+        assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].label, "Remove Static Cars");
+        assert_eq!(opts[0].ops.len(), 1);
+        // Remoción pura: al aplicar, el archivo queda desactivado.
+        assert!(!opts[0].ops[0].active_when_applied);
+        assert_eq!(opts[0].ops[0].active_basename, "placement_full_car_flatten.bgl");
     }
 
     #[test]
-    fn parses_aerosoft_engm_multiline() {
-        // Formato Aerosoft ENGM: cabecera "Disable X:" + viñetas. Los
-        // "Switch …" (swaps) deben excluirse.
+    fn parses_aerosoft_engm_multistate() {
         let note = "\
 Optional Configuration: To change various options, rename:\n\
 \n\
@@ -845,72 +868,44 @@ Switch from Animated to Static Wind Farms:\n\
 • ENGM_WindFarm_1.bgl -> ENGM_WindFarm_1.off\n\
 • ENGM_WindFarm_2.off -> ENGM_WindFarm_2.bgl\n\
 \n\
-Disable Ramp Traffic completely:\n\
-• ENGM_RampTraffic_1.bgl -> ENGM_RampTraffic_1.off\n\
-• ENGM_RampTraffic_2.bgl -> ENGM_RampTraffic_2.off\n\
-\n\
-Disable UTC + stand number on unactivated VDGS systems:\n\
-• ENGM_VDGSinfo.bgl -> ENGM_VDGSinfo.off\n\
-\n\
 Disable Norse Static Aircraft on Taxiway U:\n\
 • ENGM_StaticAircraft_Norse.bgl -> ENGM_StaticAircraft_Norse.off\n";
         let opts = parse_note_options(note);
         let labels: Vec<&str> = opts.iter().map(|o| o.label.as_str()).collect();
-        assert_eq!(opts.len(), 4, "esperaba 4 disables, hubo {labels:?}");
+        // 4 opciones, INCLUIDOS los swaps (texto literal).
+        assert_eq!(opts.len(), 4, "{labels:?}");
+        assert!(labels.contains(&"Switch from High to Medium Passenger Density"));
         assert!(labels.contains(&"Disable Passengers completely"));
-        assert!(labels.contains(&"Disable Ramp Traffic completely"));
-        assert!(labels.iter().all(|l| !l.starts_with("Switch")), "no swaps");
-        // "Disable Passengers completely" toca 2 archivos.
-        let pax = opts.iter().find(|o| o.label.contains("Passengers")).unwrap();
-        assert_eq!(pax.files.len(), 2);
-    }
+        assert!(labels.contains(&"Switch from Animated to Static Wind Farms"));
 
-    #[test]
-    fn parses_aerosoft_eddf_note_dot_off() {
-        // Aerosoft usa `X.bgl -> X.off` y nombres sin ruta.
-        let note = "\
-Optional Configuration: To switch to simple interiors and improve performance, rename:\n\
-EDDF_Placements_interiors_complex.bgl -> EDDF_Placements_interiors_complex.off\n\
-EDDF_Placements_interiors_simple.off -> EDDF_Placements_interiors_simple.bgl\n\
-Optional Configuration: To remove various objects, rename:\n\
-* Remove Extra Clutter (models, streetlights, fences): EDDF_Placements_extra.bgl -> EDDF_Placements_extra.off\n\
-* Remove Train Station Interior: EDDF_Placements_interiors_trainstation.bgl -> EDDF_Placements_interiors_trainstation.off\n\
-* Remove Terminal Passengers: EDDF_Placements_passengers.bgl -> EDDF_Placements_passengers.off\n\
-* Remove Road Traffic: EDDF_Placements_roadtraffic.bgl -> EDDF_Placements_roadtraffic.off\n\
-* Remove Service Vehicle Traffic: EDDF_Placements_servicetraffic.bgl -> EDDF_Placements_servicetraffic.off\n\
-* Remove Static Aircraft: EDDF_Placements_staticAC.bgl -> EDDF_Placements_staticAC.off\n\
-* Remove Aerosoft VDGS Boxes (for use with GSX): EDDF_Placements_VDGS.bgl -> EDDF_Placements_VDGS.off\n";
-        let opts = parse_note_options(note);
-        // 7 líneas "Remove …" (los 2 de interiores son swap, sin "Remove").
-        assert_eq!(opts.len(), 7, "esperaba 7 remociones, hubo {}", opts.len());
-        let labels: Vec<&str> = opts.iter().map(|o| o.label.as_str()).collect();
-        assert!(labels.iter().any(|l| l.contains("Extra Clutter")));
-        assert!(labels.iter().any(|l| l.contains("Terminal Passengers")));
-        assert!(labels.iter().any(|l| l.contains("Road Traffic")));
-        // Todos resuelven a 1 basename activo .bgl (sin ruta, sin .off).
-        for o in &opts {
-            assert_eq!(o.files.len(), 1, "{}", o.label);
-            assert!(o.files[0].ends_with(".bgl") && !o.files[0].contains(".off"));
-        }
+        // Swap de pasajeros: _1 apagado al aplicar, _2 encendido al aplicar.
+        let sw = opts.iter().find(|o| o.label.starts_with("Switch from High")).unwrap();
+        assert_eq!(sw.ops.len(), 2);
+        let op1 = sw.ops.iter().find(|o| o.active_basename.contains("_1")).unwrap();
+        let op2 = sw.ops.iter().find(|o| o.active_basename.contains("_2")).unwrap();
+        assert!(!op1.active_when_applied, "_1 debe apagarse al aplicar");
+        assert!(op2.active_when_applied, "_2 debe encenderse al aplicar");
+
+        // Disable completely: ambos apagados al aplicar.
+        let dis = opts.iter().find(|o| o.label == "Disable Passengers completely").unwrap();
+        assert_eq!(dis.ops.len(), 2);
+        assert!(dis.ops.iter().all(|o| !o.active_when_applied));
     }
 
     #[test]
     fn categorizes_known_patterns() {
-        assert_eq!(categorize("placement_full_car_flatten.bgl"), Some("static_cars"));
-        assert_eq!(categorize("eddf_placements_passengers.bgl"), Some("passengers"));
-        assert_eq!(categorize("ymml_airside_gse.bgl"), Some("gse"));
-        assert_eq!(categorize("placement_rampguy_walking_flatten.bgl"), Some("animated"));
-        assert_eq!(categorize("eddf_placements_roadtraffic.bgl"), Some("road_traffic"));
-        assert_eq!(categorize("eddf_placements_staticac.bgl"), Some("static_aircraft"));
-        assert_eq!(categorize("eddf_placements_vdgs.bgl"), Some("vdgs"));
+        assert_eq!(categorize("engm_passengers_1.bgl"), Some("passengers"));
+        assert_eq!(categorize("engm_ramptraffic_1.bgl"), Some("ramp_traffic"));
+        assert_eq!(categorize("engm_windfarm_1.bgl"), Some("wind_farm"));
+        assert_eq!(categorize("engm_hangardoors_1.bgl"), Some("hangar_doors"));
+        assert_eq!(categorize("engm_staticaircraft_norse.bgl"), Some("static_aircraft"));
         assert_eq!(categorize("ymml_terminal.bgl"), None);
-        assert_eq!(categorize("cargo_building.bgl"), None);
     }
 
     #[test]
     fn to_active_name_handles_both_conventions() {
         assert_eq!(to_active_name("X.bgl"), "X.bgl");
         assert_eq!(to_active_name("X.bgl.off"), "X.bgl");
-        assert_eq!(to_active_name("EDDF_Placements_extra.off"), "EDDF_Placements_extra.bgl");
+        assert_eq!(to_active_name("ENGM_Passengers_2.off"), "ENGM_Passengers_2.bgl");
     }
 }

@@ -540,21 +540,31 @@ export interface AddonNodePosition {
  *  se pueden desactivar renombrándolos a `.bgl.off`. `files` es un array
  *  porque una opción puede tocar 2-3 archivos a la vez. Espejo de
  *  `perf_config::PerfOption` (Rust). */
+/** (v5.0.0) Una operación de archivo dentro de una opción multiestado. */
+export interface PerfOp {
+  /** Ruta relativa al addon del `.bgl` activo. */
+  path: string;
+  /** Al APLICAR la opción, ¿este archivo queda activo (`.bgl`)? Para un
+   *  swap, unos van true y otros false. */
+  activeWhenApplied: boolean;
+}
+
 export interface PerfOption {
   id: string;
-  /** Etiqueta del dev (nota de la página) cuando `fromNote`; vacío para
-   *  opciones del escaneo local (el frontend localiza por `category`). */
+  /** Etiqueta LITERAL del dev (nota de la página) cuando `fromNote`; por
+   *  categoría (inglés) para el escaneo local — el frontend la localiza. */
   label: string;
   description: string;
   /** Estimado teórico de ahorro, ej. "+2–5 FPS". */
   fpsHint: string;
   category: string;
-  /** true si la opción vino de la nota "Optional Configuration" de la
-   *  página; false si del escaneo local por patrón. */
+  /** true si la opción vino de la nota "Optional Configuration". */
   fromNote: boolean;
-  files: string[];
-  /** true = objetos presentes (`.bgl`); false = desactivados. */
-  enabled: boolean;
+  /** Operaciones de archivo (multiestado: BGL ⇄ OFF por archivo). */
+  ops: PerfOp[];
+  /** Estado actual: ¿la opción está APLICADA? (todos los ops en su estado
+   *  aplicado). */
+  applied: boolean;
 }
 
 /** (v5.0.0) Manifiesto de rendimiento leído de

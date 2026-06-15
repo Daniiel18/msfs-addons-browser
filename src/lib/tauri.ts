@@ -1383,8 +1383,8 @@ const demoApi: Api = {
         fpsHint: "",
         category: optionId,
         fromNote: false,
-        files: [],
-        enabled: enable,
+        ops: [],
+        applied: enable,
       },
       renamed: 0,
     };

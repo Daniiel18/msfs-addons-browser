@@ -238,7 +238,20 @@ function deriveInstallState(
       (p) => p.icao && p.icao.toUpperCase() === target,
     );
     if (sameIcao.length === 1) {
-      exactMatch = sameIcao[0];
+      const only = sameIcao[0];
+      // (v5.0.0) BLINDAJE por creador: el Camino D existía para el caso
+      // de catálogo SIN developer parseable. Pero si el catálogo SÍ
+      // declara un developer y NO coincide con el del paquete instalado,
+      // es OTRO producto del mismo aeropuerto — no lo marcamos. Bug
+      // reportado: con Aerosoft ENGM instalado, las fichas de Orbx y
+      // JustSim (mismo ICAO) aparecían como "Installed/Update".
+      const devConflict =
+        !!addon.developer &&
+        !!only.creator &&
+        !sameCreator(only.creator, addon.developer);
+      if (!devConflict) {
+        exactMatch = only;
+      }
     }
   }
 
@@ -265,11 +278,6 @@ export function ResultCard({ addon }: Props) {
   const startDownload = useDownloadsStore((s) => s.start);
   const communityPackages = useCommunityStore((s) => s.packages);
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
-  // (v1.1.4) ¿Tiene perfil GSX local para este ICAO? Comparación
-  // case-insensitive. Sólo aplica a sceneries con ICAO definido.
-  const hasGsxProfile = !!(
-    addon.icao && gsxInstalledIcaos.has(addon.icao.toUpperCase())
-  );
   // Changelog modal — sólo lo exponemos en Simplaza (lo pidió el
   // usuario tras quitarlo del modal de detalle de paquete instalado).
   // SceneryAddons rara vez incluye changelog útil en sus posts y el
@@ -285,6 +293,14 @@ export function ResultCard({ addon }: Props) {
     () => deriveInstallState(addon, communityPackages),
     [addon, communityPackages],
   );
+
+  // (v5.0.0) El badge GSX sólo se enciende si ESTA ficha es el producto
+  // instalado (mismo dev, vía installState) Y hay perfil GSX local para
+  // el ICAO. Así no aparece en las fichas de otros devs del mismo ICAO
+  // (p. ej. Orbx/JustSim ENGM cuando sólo tienes el de Aerosoft).
+  const hasGsxProfile =
+    !!(addon.icao && gsxInstalledIcaos.has(addon.icao.toUpperCase())) &&
+    installState.kind !== "not-installed";
 
   // Resaltamos el card entero si hay update — útil cuando la
   // página tiene muchos resultados de versiones distintas y el
