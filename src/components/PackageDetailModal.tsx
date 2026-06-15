@@ -21,11 +21,7 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
-import {
-  derivedType,
-  diagnosePackage,
-  looksLikePlaceholderTitle,
-} from "../lib/packageType";
+import { derivedType, looksLikePlaceholderTitle } from "../lib/packageType";
 import { useThumbnail } from "../lib/thumbnails";
 import { AddonFallbackArt } from "./AddonArt";
 import { t } from "../lib/i18n";
@@ -324,13 +320,6 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               />
               <GsxProfileRow icao={pkg.icao} />
             </dl>
-
-            {/* (v4.28.0) Diagnóstico del clasificador — el usuario pidió
-                ver POR QUÉ se etiquetó así y, si es livery, a qué avión
-                base apunta. Útil cuando un addon sale mal categorizado:
-                muestra la pista exacta (manifest, base_container, etc.)
-                para reportar el caso. */}
-            <PackageDiagnostic pkg={pkg} />
 
             {error && (
               <div className="mt-4 flex items-start gap-2 rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200 ring-1 ring-rose-500/30">
@@ -649,66 +638,6 @@ export function GsxProfileRow({ icao }: { icao: string | null }) {
         )}
       </dd>
     </>
-  );
-}
-
-/** (v4.28.0) Bloque de diagnóstico: tipo detectado + razón de ser
- *  livery (si aplica) + contenedor base. Refleja exactamente lo que
- *  decide `derivedType` y `diagnosePackage`. */
-function PackageDiagnostic({ pkg }: { pkg: CommunityPackage }) {
-  const kind = derivedType(pkg);
-  const diag = diagnosePackage(pkg);
-  const kindLabel: Record<string, string> = {
-    AIRCRAFT: t("pkg.diag.kind.aircraft"),
-    LIVERY: t("pkg.diag.kind.livery"),
-    INSTRUMENT: t("pkg.diag.kind.utility"),
-    MISC: t("pkg.diag.kind.misc"),
-    SCENERY: t("pkg.diag.kind.scenery"),
-    UNKNOWN: t("pkg.diag.kind.unknown"),
-  };
-  return (
-    <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-xs">
-      <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-        {t("pkg.diag.title")}
-      </div>
-      <div className="space-y-1.5">
-        <Row label={t("pkg.diag.detected_kind")} value={kindLabel[kind] ?? kind} />
-        <Row
-          label={t("pkg.diag.is_livery")}
-          value={
-            diag.isLivery
-              ? `${t("common.yes")} — ${diag.liveryReason}`
-              : t("common.no")
-          }
-        />
-        {diag.baseContainer && (
-          <Row
-            label={t("pkg.diag.base_container")}
-            value={diag.baseContainer}
-            mono
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Row({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="grid grid-cols-[140px_1fr] gap-x-3">
-      <div className="text-slate-500">{label}</div>
-      <div className={`text-slate-200 ${mono ? "font-mono text-[11px]" : ""}`}>
-        {value}
-      </div>
-    </div>
   );
 }
 
