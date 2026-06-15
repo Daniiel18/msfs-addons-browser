@@ -418,3 +418,23 @@ html.light input::placeholder {
       0 0 16px 6px rgba(245, 158, 11, 0.4);
   }
 }
+
+/* (v5.0.0) Scrollbar SIEMPRE visible en la lista del modal de
+   rendimiento — el usuario no veía indicación de que se podía scrollear. */
+.perf-scroll {
+  scrollbar-gutter: stable;
+}
+.perf-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.perf-scroll::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 8px;
+}
+.perf-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.5);
+  border-radius: 8px;
+}
+.perf-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.7);
+}

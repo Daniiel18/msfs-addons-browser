@@ -28,12 +28,29 @@ import { buildTerminatorPolygon } from "../lib/terminator";
  *  que el planeta "parecía" 2-3 horas más temprano (bug reportado).
  *  Ahora la división arranca visible JUSTO en la puesta de sol real
  *  (sincronizada con UTC vía SunCalc) y profundiza a ≈0.57. */
+// (v5.0.0 N5) Degradado SUAVE estilo FlightRadar24: muchas bandas
+// finas (cada 1.5° de altitud solar) con opacidad baja cada una, en
+// lugar de 4 bandas marcadas. Al apilarse dan una transición continua
+// día→noche sin los escalones/bordes duros que se veían antes. El paso
+// del polígono también se afina (1°) para que el borde no quede
+// facetado. Oscuridad acumulada ≈0.55 en noche cerrada.
 const TERMINATOR_BANDS = [
-  { source: "rt-term-0", altitudeDeg: 0, opacity: 0.22 },
-  { source: "rt-term-civil", altitudeDeg: -6, opacity: 0.2 },
-  { source: "rt-term-nautical", altitudeDeg: -12, opacity: 0.18 },
-  { source: "rt-term-astro", altitudeDeg: -18, opacity: 0.16 },
+  { source: "rt-term-00", altitudeDeg: 0, opacity: 0.05 },
+  { source: "rt-term-01", altitudeDeg: -1.5, opacity: 0.05 },
+  { source: "rt-term-03", altitudeDeg: -3, opacity: 0.05 },
+  { source: "rt-term-045", altitudeDeg: -4.5, opacity: 0.05 },
+  { source: "rt-term-06", altitudeDeg: -6, opacity: 0.05 },
+  { source: "rt-term-075", altitudeDeg: -7.5, opacity: 0.05 },
+  { source: "rt-term-09", altitudeDeg: -9, opacity: 0.05 },
+  { source: "rt-term-105", altitudeDeg: -10.5, opacity: 0.05 },
+  { source: "rt-term-12", altitudeDeg: -12, opacity: 0.05 },
+  { source: "rt-term-15", altitudeDeg: -15, opacity: 0.05 },
+  { source: "rt-term-18", altitudeDeg: -18, opacity: 0.05 },
 ] as const;
+
+/** Paso (en grados) del contorno del polígono del terminator: más fino
+ *  = borde más suave (sin facetas). */
+const TERMINATOR_STEP = 1;
 
 /** (v2.0.0) Icono del avión — silueta TOP-VIEW (vista cenital) tal
  *  como se ve un avión desde arriba en mapas de aviación. La punta
@@ -490,7 +507,7 @@ export function RoutesMapView({
       for (const band of TERMINATOR_BANDS) {
         map.addSource(band.source, {
           type: "geojson",
-          data: buildTerminatorPolygon(now0, 2, band.altitudeDeg),
+          data: buildTerminatorPolygon(now0, TERMINATOR_STEP, band.altitudeDeg),
         });
         map.addLayer({
           id: `${band.source}-fill`,
@@ -548,7 +565,8 @@ export function RoutesMapView({
         const now = new Date();
         for (const band of TERMINATOR_BANDS) {
           const src = map.getSource(band.source) as GeoJSONSource | undefined;
-          if (src) src.setData(buildTerminatorPolygon(now, 2, band.altitudeDeg));
+          if (src)
+            src.setData(buildTerminatorPolygon(now, TERMINATOR_STEP, band.altitudeDeg));
         }
       } catch (e) {
         console.warn("[RoutesMapView] terminator refresh falló:", e);

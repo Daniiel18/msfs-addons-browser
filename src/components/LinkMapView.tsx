@@ -541,15 +541,39 @@ export function LinkMapView({
 
   // (v4.33.0) Find-in-page del lienzo: lista de nodos que matchean +
   // navegación prev/next que centra la cámara en cada uno.
+  // (v5.0.0 N3) Ranking por relevancia: ICAO EXACTO primero, luego
+  // nombre/título exacto, prefijos, y por último coincidencias parciales
+  // (folder). Antes era un `includes` plano sin orden → "eham" podía
+  // devolver SIKK (cuyo folder contenía "eham") antes que el EHAM real.
   const findMatches = useMemo(() => {
     const needle = findQuery.trim().toLowerCase();
     if (!needle) return [] as FlowNode[];
     const expanded = expandVendorQuery(needle);
-    return nodes.filter((n) => {
-      if (n.type === "regionHeader") return false;
-      const hay = `${n.data.pkg.title} ${n.id}`.toLowerCase();
-      return expanded.some((term) => hay.includes(term));
-    });
+    const score = (n: FlowNode): number => {
+      if (n.type === "regionHeader") return Infinity;
+      const pkg = n.data.pkg;
+      const icao = (pkg.icao ?? "").toLowerCase();
+      const title = pkg.title.toLowerCase();
+      const name = (pkg.airportName ?? "").toLowerCase();
+      const folder = n.id.toLowerCase();
+      let best = Infinity;
+      for (const term of expanded) {
+        if (icao && icao === term) best = Math.min(best, 0);
+        else if (icao && icao.startsWith(term)) best = Math.min(best, 1);
+        if (name === term || title === term) best = Math.min(best, 1);
+        if (name.startsWith(term) || title.startsWith(term))
+          best = Math.min(best, 2);
+        if (name.includes(term) || title.includes(term))
+          best = Math.min(best, 3);
+        if (folder.includes(term)) best = Math.min(best, 4);
+      }
+      return best;
+    };
+    return nodes
+      .map((n) => ({ n, s: score(n) }))
+      .filter((x) => Number.isFinite(x.s))
+      .sort((a, b) => a.s - b.s)
+      .map((x) => x.n);
   }, [findQuery, nodes]);
 
   // (v5.0.0) Resalta el nodo localizado con un pulso/glow ámbar para
@@ -597,19 +621,38 @@ export function LinkMapView({
     centerOnNode(findMatches[next - 1]);
   };
 
-  // Al cambiar la query, resetea al primer match y centra en él.
+  // Al cambiar la query, resetea al primer match y centra en el MEJOR
+  // resultado (mismo ranking que findMatches — ICAO exacto primero).
   const onFindChange = (q: string) => {
     setFindQuery(q);
     setFindActive(1);
     const needle = q.trim().toLowerCase();
     if (!needle) return;
     const expanded = expandVendorQuery(needle);
-    const hit = nodes.find((n) => {
-      if (n.type === "regionHeader") return false;
-      const hay = `${n.data.pkg.title} ${n.id}`.toLowerCase();
-      return expanded.some((term) => hay.includes(term));
-    });
-    if (hit) centerOnNode(hit);
+    let best: FlowNode | null = null;
+    let bestScore = Infinity;
+    for (const n of nodes) {
+      if (n.type === "regionHeader") continue;
+      const pkg = n.data.pkg;
+      const icao = (pkg.icao ?? "").toLowerCase();
+      const title = pkg.title.toLowerCase();
+      const name = (pkg.airportName ?? "").toLowerCase();
+      const folder = n.id.toLowerCase();
+      let s = Infinity;
+      for (const term of expanded) {
+        if (icao && icao === term) s = Math.min(s, 0);
+        else if (icao && icao.startsWith(term)) s = Math.min(s, 1);
+        if (name === term || title === term) s = Math.min(s, 1);
+        if (name.startsWith(term) || title.startsWith(term)) s = Math.min(s, 2);
+        if (name.includes(term) || title.includes(term)) s = Math.min(s, 3);
+        if (folder.includes(term)) s = Math.min(s, 4);
+      }
+      if (s < bestScore) {
+        bestScore = s;
+        best = n;
+      }
+    }
+    if (best) centerOnNode(best);
   };
 
   const addCandidates = useMemo(() => {

@@ -43,40 +43,39 @@ pub async fn fetch_missing(
             .map(|c| c.trim().eq_ignore_ascii_case("SCENERY"))
             .unwrap_or(false)
     };
-    // Sólo aeropuertos resolubles sin thumbnail nativo.
-    let candidates: Vec<_> = pkgs
-        .iter()
-        .filter(|p| {
-            !p.is_library_pack
-                && is_scenery(p)
-                && p.icao.is_some()
-                && p.airport_name.is_some()
-        })
-        .collect();
+    // (v5.0.0 N6) TODOS los addons sin thumbnail nativo (no library):
+    //   · Aeropuertos → foto de Wikipedia (por ICAO/nombre).
+    //   · Resto (aviones, liveries, mods) → imagen de su ficha en
+    //     flightsim.to (su `og:image`). Cubre freeware + liveries. El
+    //     payware (Fenix/PMDG) no está en flightsim.to → cae a la silueta.
+    let candidates: Vec<_> = pkgs.iter().filter(|p| !p.is_library_pack).collect();
 
+    // Tope de descargas web por scan para no martillar a flightsim.to;
+    // el resto se resuelve en scans siguientes (marcador `.none` evita
+    // reintentos infinitos).
+    let mut web_budget = 40usize;
     let mut downloaded = 0usize;
     for pkg in candidates {
         let root = Path::new(&pkg.install_path);
         if !needs_thumbnail(root) {
             continue;
         }
-        // (v4.31.0) SOLO descargamos de internet para AEROPUERTOS. Una
-        // foto de Wikipedia de un aeropuerto (por ICAO) es correcta y
-        // representativa. Para aviones/liveries NO descargamos: su
-        // imagen exacta es el thumbnail NATIVO del addon (ContentInfo/
-        // Thumbnail.jpg), que el scanner ahora sí encuentra. Una foto
-        // de internet de "Fenix A319 & A321" salía incorrecta (el
-        // usuario lo reportó) y una livery específica no tiene foto
-        // fiable en la web. Simplaza eliminado por completo.
-        let result = if is_scenery(pkg)
-            && pkg.icao.is_some()
-            && pkg.airport_name.is_some()
-        {
+        let is_airport =
+            is_scenery(pkg) && pkg.icao.is_some() && pkg.airport_name.is_some();
+        let (result, source) = if is_airport {
             let icao = pkg.icao.as_deref().unwrap_or_default();
             let name = pkg.airport_name.as_deref().unwrap_or_default();
-            fetch_one(http, icao, name, "airport").await
+            (fetch_one(http, icao, name, "airport").await, "Wikipedia")
         } else {
-            Ok(None) // aircraft/livery/misc → nativo o silueta premium
+            if web_budget == 0 {
+                continue; // se procesa en el próximo scan
+            }
+            web_budget -= 1;
+            let creator = pkg.creator.as_deref().unwrap_or_default();
+            (
+                fetch_from_flightsimto(http, &pkg.title, creator).await,
+                "flightsim.to",
+            )
         };
         match result {
             Ok(Some(bytes)) => {
@@ -86,8 +85,9 @@ pub async fn fetch_missing(
                 } else {
                     tracing::info!(
                         target: "scan",
-                        "thumbs: {} ← Wikipedia ({} KB)",
+                        "thumbs: {} ← {} ({} KB)",
                         pkg.folder_name,
+                        source,
                         bytes.len() / 1024
                     );
                     downloaded += 1;
@@ -238,4 +238,149 @@ async fn fetch_one(
         return Ok(Some(bytes.to_vec()));
     }
     Ok(None)
+}
+
+/// (v5.0.0 N6) Imagen de marketing desde flightsim.to: busca el addon,
+/// abre la primera ficha (`/file/...`) y toma su `og:image` (la imagen
+/// hero del addon). Cubre liveries, aviones freeware y mods. Best-effort:
+/// si no hay ficha o imagen, devuelve `None` (se usa la silueta tipada).
+/// El payware (Fenix/PMDG) no está en flightsim.to → cae a la silueta.
+async fn fetch_from_flightsimto(
+    http: &reqwest::Client,
+    title: &str,
+    creator: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    const UA: &str = "Mozilla/5.0 (SimFleet)";
+    let query = clean_addon_query(title, creator);
+    if query.len() < 3 {
+        return Ok(None);
+    }
+    let search_url = format!(
+        "https://flightsim.to/search/{}",
+        urlencoding::encode(&query)
+    );
+    let resp = http
+        .get(&search_url)
+        .header("user-agent", UA)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?;
+    if resp.status().is_server_error() {
+        // 5xx: transitorio → Err para reintentar (no marcar `.none`).
+        anyhow::bail!("flightsim.to search {} → {}", query, resp.status());
+    }
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let search_html = resp.text().await?;
+    // Extracción SYNC (scraper no es Send): sacamos el path como String
+    // antes de cruzar cualquier await.
+    let Some(detail_path) = first_file_link(&search_html) else {
+        return Ok(None);
+    };
+    let detail_url = if detail_path.starts_with("http") {
+        detail_path
+    } else {
+        format!("https://flightsim.to{detail_path}")
+    };
+    let dresp = http
+        .get(&detail_url)
+        .header("user-agent", UA)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?;
+    if !dresp.status().is_success() {
+        return Ok(None);
+    }
+    let detail_html = dresp.text().await?;
+    let Some(img_url) = og_image(&detail_html) else {
+        return Ok(None);
+    };
+    let img = http
+        .get(&img_url)
+        .header("user-agent", UA)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await?;
+    if !img.status().is_success() {
+        return Ok(None);
+    }
+    let ct = img
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !ct.starts_with("image/") {
+        return Ok(None);
+    }
+    let bytes = img.bytes().await?;
+    if bytes.len() < 5 * 1024 || bytes.len() > 6 * 1024 * 1024 {
+        return Ok(None);
+    }
+    Ok(Some(bytes.to_vec()))
+}
+
+/// Limpia el título para buscar en flightsim.to: quita "(branch …)",
+/// la versión, tokens de sim y "&"; recorta a 5 palabras útiles.
+fn clean_addon_query(title: &str, creator: &str) -> String {
+    let mut t = title.to_string();
+    if let Some(i) = t.find('(') {
+        t.truncate(i);
+    }
+    let cleaned = t
+        .split_whitespace()
+        .filter(|w| {
+            let wl = w.to_lowercase();
+            let is_version = wl.starts_with('v')
+                && wl.chars().nth(1).map(|c| c.is_ascii_digit()).unwrap_or(false);
+            !is_version && !wl.contains("fs2020") && !wl.contains("msfs") && *w != "&"
+        })
+        .take(5)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleaned = cleaned.trim();
+    if cleaned.len() >= 3 {
+        cleaned.to_string()
+    } else if creator.trim().len() >= 3 {
+        creator.trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Primer enlace a una ficha de flightsim.to (`/file/...`).
+fn first_file_link(html: &str) -> Option<String> {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(html);
+    let sel = Selector::parse("a[href*='/file/']").ok()?;
+    doc.select(&sel)
+        .filter_map(|a| a.value().attr("href"))
+        .map(|h| h.to_string())
+        .next()
+}
+
+/// `og:image` (o twitter:image) de una ficha.
+fn og_image(html: &str) -> Option<String> {
+    use scraper::{Html, Selector};
+    let doc = Html::parse_document(html);
+    for prop in [
+        "meta[property='og:image']",
+        "meta[name='og:image']",
+        "meta[property='twitter:image']",
+        "meta[name='twitter:image']",
+    ] {
+        if let Ok(sel) = Selector::parse(prop) {
+            if let Some(c) = doc
+                .select(&sel)
+                .next()
+                .and_then(|el| el.value().attr("content"))
+            {
+                if c.starts_with("http") {
+                    return Some(c.to_string());
+                }
+            }
+        }
+    }
+    None
 }

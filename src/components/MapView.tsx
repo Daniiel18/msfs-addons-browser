@@ -153,11 +153,27 @@ export function MapView() {
     const q = filter.trim().toLowerCase();
     let pool = packages;
     if (q) {
-      pool = pool.filter((p) =>
-        [p.title, p.creator, p.icao, p.folderName, p.airportName]
-          .filter(Boolean)
-          .some((s) => s!.toLowerCase().includes(q)),
-      );
+      // (v5.0.0 N3) Filtra + RANKEA por relevancia: ICAO/nombre exacto
+      // primero, luego prefijos, y por último coincidencias parciales
+      // (folder/creator). Antes "eham" podía listar SIKK arriba sólo por
+      // un includes en el folder.
+      const score = (p: CommunityPackage): number => {
+        const icao = (p.icao ?? "").toLowerCase();
+        const name = (p.airportName ?? "").toLowerCase();
+        const title = (p.title ?? "").toLowerCase();
+        const folder = (p.folderName ?? "").toLowerCase();
+        const creator = (p.creator ?? "").toLowerCase();
+        if (icao === q) return 0;
+        if (icao.startsWith(q)) return 1;
+        if (name === q || title === q) return 1;
+        if (name.startsWith(q) || title.startsWith(q)) return 2;
+        if (name.includes(q) || title.includes(q)) return 3;
+        if (folder.includes(q) || creator.includes(q)) return 4;
+        return 9;
+      };
+      pool = pool
+        .filter((p) => score(p) < 9)
+        .sort((a, b) => score(a) - score(b));
     }
     if (gsxFilter !== "all") {
       pool = pool.filter((p) => {

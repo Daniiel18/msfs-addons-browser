@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  CheckCheck,
   Gauge,
   Info,
   Loader2,
   MapPin,
   RefreshCw,
+  RotateCcw,
   Sparkles,
   X,
   Zap,
@@ -52,6 +54,7 @@ export function PerformanceModal({
   const [loading, setLoading] = useState(true);
   const [enriching, setEnriching] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -112,6 +115,46 @@ export function PerformanceModal({
       pushToast({ kind: "error", title: t("perf.toggle_error"), message: String(e) });
     } finally {
       setBusyId(null);
+    }
+  };
+
+  // (v5.0.0) Aplica (apply=true) o revierte (false) TODAS las opciones
+  // que no estén ya en ese estado. Secuencial, con rollback por opción.
+  const setAll = async (apply: boolean) => {
+    if (bulkBusy || busyId) return;
+    const targets = (config?.options ?? []).filter((o) => o.applied !== apply);
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    let renamed = 0;
+    try {
+      for (const o of targets) {
+        try {
+          const res = await api.perfToggleOption(pkg.installPath, o.id, apply);
+          renamed += res.renamed;
+          setConfig((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  options: prev.options.map((x) =>
+                    x.id === o.id ? res.option : x,
+                  ),
+                }
+              : prev,
+          );
+        } catch (e) {
+          // p. ej. MSFS con el escenario abierto → paramos en seco.
+          pushToast({ kind: "error", title: t("perf.toggle_error"), message: String(e) });
+          break;
+        }
+      }
+      pushToast({
+        kind: "success",
+        title: apply ? t("perf.applied_all") : t("perf.reverted_all"),
+        message: t("perf.renamed", { n: String(renamed) }),
+        ttlMs: 2600,
+      });
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -228,7 +271,41 @@ export function PerformanceModal({
           <p>{t("perf.help")}</p>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+        {/* (v5.0.0) Acciones masivas + contador de aplicadas. */}
+        {!loading && options.length > 0 && (
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-5 py-2">
+            <span className="text-[11px] font-medium text-slate-300">
+              {t("perf.applied_count", {
+                n: String(savedCount),
+                total: String(options.length),
+              })}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => void setAll(true)}
+                disabled={bulkBusy || !!busyId || savedCount === options.length}
+                className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
+              >
+                {bulkBusy ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <CheckCheck className="h-3 w-3" />
+                )}
+                {t("perf.mark_all")}
+              </button>
+              <button
+                onClick={() => void setAll(false)}
+                disabled={bulkBusy || !!busyId || savedCount === 0}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800/60 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+              >
+                <RotateCcw className="h-3 w-3" />
+                {t("perf.unmark_all")}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="perf-scroll min-h-0 flex-1 overflow-y-scroll px-5 py-3">
           {loading ? (
             <div className="flex items-center justify-center py-12 text-slate-500">
               <Loader2 className="h-5 w-5 animate-spin" />

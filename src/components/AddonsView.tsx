@@ -125,6 +125,10 @@ export function AddonsView() {
     null,
   );
   const [batchBusy, setBatchBusy] = useState(false);
+  // (v5.0.0 N4) ¿El batch incluye también los aeropuertos? En el Link Map
+  // se muestran aviones Y aeropuertos, así que Enable/Disable All debe
+  // poder alcanzarlos (en el grid los aeropuertos no se listan).
+  const [batchInclAirports, setBatchInclAirports] = useState(false);
 
   // Excluimos escenarios — son del MapView. Lo que queda son
   // AIRCRAFT, LIVERY (derivado), INSTRUMENT, MISC, UNKNOWN.
@@ -226,6 +230,11 @@ export function AddonsView() {
     setBatchBusy(true);
     try {
       const folders = visible.map(({ p }) => p.folderName);
+      if (batchInclAirports) {
+        for (const a of airports) {
+          if (!folders.includes(a.folderName)) folders.push(a.folderName);
+        }
+      }
       const report = await setManyEnabled(folders, enabled);
       pushToast({
         kind: report.failed.length > 0 ? "error" : "success",
@@ -311,18 +320,22 @@ export function AddonsView() {
               label={t("addons.metrics.storage")}
             />
           </div>
+        </div>
 
-          {/* (v5.0.0) Acciones agrupadas en clusters segmentados para que
-              respiren y envuelvan limpio en anchos chicos, en vez de 5
-              píldoras sueltas amontonadas. */}
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {/* (v5.0.0) SEGUNDA fila: acciones a la izquierda + búsqueda
+            expandida a la derecha. Dos filas para que respiren (antes
+            todo iba apretado en una sola línea). */}
+        <div className="flex flex-wrap items-center gap-2">
             {/* Batch actions — operan sobre los addons visibles. */}
             <div
               data-tour-id="addons-batch"
               className="inline-flex shrink-0 divide-x divide-slate-700 overflow-hidden rounded-lg border border-slate-700"
             >
               <button
-                onClick={() => setConfirmBatch("enable")}
+                onClick={() => {
+                  setBatchInclAirports(view === "linkmap");
+                  setConfirmBatch("enable");
+                }}
                 disabled={batchBusy || visible.length === 0}
                 className="inline-flex items-center gap-1.5 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
               >
@@ -330,7 +343,10 @@ export function AddonsView() {
                 {t("addons.batch.enable_all")}
               </button>
               <button
-                onClick={() => setConfirmBatch("disable")}
+                onClick={() => {
+                  setBatchInclAirports(view === "linkmap");
+                  setConfirmBatch("disable");
+                }}
                 disabled={batchBusy || visible.length === 0}
                 className="inline-flex items-center gap-1.5 bg-slate-900/40 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 hover:bg-rose-500/10 hover:text-rose-200 disabled:opacity-50"
               >
@@ -386,7 +402,7 @@ export function AddonsView() {
                 tiene el suyo en el lienzo). Contador actual/total +
                 flechas que hacen scroll a la card siguiente/anterior. */}
             {view === "grid" && (
-              <div className="shrink-0">
+              <div className="ml-auto shrink-0">
                 <FindSearch
                   value={filter}
                   onChange={(v) => {
@@ -401,7 +417,6 @@ export function AddonsView() {
                 />
               </div>
             )}
-          </div>
         </div>
       </header>
 
@@ -534,14 +549,31 @@ export function AddonsView() {
           >
             <h3 className="text-sm font-semibold text-slate-100">
               {confirmBatch === "enable"
-                ? t("addons.batch.confirm_enable.title", { n: visible.length })
-                : t("addons.batch.confirm_disable.title", { n: visible.length })}
+                ? t("addons.batch.confirm_enable.title", {
+                    n: visible.length + (batchInclAirports ? airports.length : 0),
+                  })
+                : t("addons.batch.confirm_disable.title", {
+                    n: visible.length + (batchInclAirports ? airports.length : 0),
+                  })}
             </h3>
             <p className="mt-2 text-xs text-slate-400">
               {confirmBatch === "enable"
                 ? t("addons.batch.confirm_enable.body")
                 : t("addons.batch.confirm_disable.body")}
             </p>
+            {/* (v5.0.0 N4) Opción para incluir también los aeropuertos. */}
+            {airports.length > 0 && (
+              <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={batchInclAirports}
+                  onChange={(e) => setBatchInclAirports(e.target.checked)}
+                  disabled={batchBusy}
+                  className="h-3.5 w-3.5 accent-emerald-500"
+                />
+                {t("addons.batch.include_airports", { n: airports.length })}
+              </label>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={() => setConfirmBatch(null)}
