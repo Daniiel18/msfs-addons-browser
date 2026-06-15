@@ -84,6 +84,9 @@ interface SettingsState {
   setAutostart: (enabled: boolean) => Promise<void>;
   setMinimizeToTray: (enabled: boolean) => Promise<void>;
   setOnboardingCompleted: (done: boolean) => Promise<void>;
+  /** (v5.1.0) Fija la versión de MSFS activa. NO reinicia: el caller
+   *  decide pedir confirmación + recargar para reaplicar todo. */
+  setSimVersion: (v: "msfs2020" | "msfs2024") => Promise<void>;
   clearCaches: () => Promise<number>;
   resetSettings: () => Promise<number>;
 }
@@ -108,6 +111,7 @@ const DEFAULTS: AppSettings = {
   communityPath: null,
   logsPath: null,
   appDataPath: null,
+  simVersion: "",
 };
 
 const KEY_MAP: Record<string, string> = {
@@ -288,6 +292,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await api.setAppSetting(KEY_MAP.onboardingCompleted, done ? "1" : "0");
     } catch (e) {
       set({ settings: prev, lastError: String(e) });
+    }
+  },
+
+  async setSimVersion(v) {
+    // Write-first (como el idioma) para que un reinicio inmediato lea el
+    // valor correcto de la DB. El caller recarga la app para reaplicar.
+    try {
+      await api.setAppSetting("pref_sim_version", v);
+      const prev = get().settings;
+      set({ settings: { ...prev, simVersion: v } });
+    } catch (e) {
+      set({ lastError: String(e) });
+      throw e;
     }
   },
 

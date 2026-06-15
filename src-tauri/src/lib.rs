@@ -30,6 +30,7 @@ pub mod parser;
 pub mod perf_config;
 pub mod pmdg_liveries;
 pub mod scoring;
+pub mod sim;
 pub mod simbrief;
 pub mod simconnect_ffi;
 pub mod simconnect_watcher;
@@ -575,6 +576,24 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
             {
                 let on = matches!(value.as_str(), "1" | "true" | "yes");
                 flag.store(on, Ordering::Relaxed);
+            }
+        });
+    }
+
+    // (v5.1.0) Inicializa la versión de MSFS activa desde el setting —
+    // afecta el filtro del catálogo y la detección de Community. Si no
+    // está seteado queda en 2020 (default) y el frontend muestra el modal
+    // de elección al primer arranque.
+    {
+        let pool = db.clone();
+        tokio::spawn(async move {
+            if let Ok(Some((value,))) = sqlx::query_as::<_, (String,)>(
+                "SELECT value FROM settings WHERE key = 'pref_sim_version'",
+            )
+            .fetch_optional(&pool)
+            .await
+            {
+                crate::sim::set_from_str(&value);
             }
         });
     }

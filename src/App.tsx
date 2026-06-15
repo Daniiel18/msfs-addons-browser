@@ -42,6 +42,7 @@ import { SplashScreen, type SplashTask } from "./components/SplashScreen";
 import type { UpdateInfo } from "./lib/types";
 import { FlyingNowBadge } from "./components/FlyingNowBadge";
 import { OnboardingTour } from "./components/OnboardingTour";
+import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
 
 /**
@@ -71,6 +72,8 @@ export default function App() {
   const flightStatus = useFlightLogStore((s) => s.status);
   const simRunning = !!flightStatus?.simRunning;
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
+  const settingsLoaded = useSettingsStore((s) => s.loaded);
+  const simVersion = useSettingsStore((s) => s.settings.simVersion);
   const theme = useSettingsStore((s) => s.settings.theme);
   const language = useSettingsStore((s) => s.settings.language);
 
@@ -799,6 +802,8 @@ export default function App() {
       <SimBriefConfirmModal />
       <IncompleteFlightModal />
       <ReplayBanner />
+      {/* (v5.1.0) Elección de versión de MSFS al primer arranque. */}
+      {settingsLoaded && simVersion === "" && <SimVersionModal />}
     </div>
   );
 }

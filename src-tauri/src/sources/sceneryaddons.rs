@@ -281,12 +281,22 @@ fn parse_search_page(html: &str) -> Vec<SearchEntry> {
             }
 
             let title_lower = title.to_lowercase();
-            // MSFS 2020 filter — matches the behaviour in the original SearchService.cs
-            if !title_lower.contains("msfs 2020") {
+            // (v5.1.0) Filtro según la versión de MSFS elegida por el
+            // usuario. SceneryAddons rotula los posts como "MSFS 2020",
+            // "MSFS 2024" o "MSFS 2020/2024"; mostramos los del sim activo
+            // (los "2020/2024" matchean en ambos).
+            let keep = if crate::sim::is_2024() {
+                title_lower.contains("2024")
+            } else {
+                title_lower.contains("2020")
+            };
+            if !keep {
                 return None;
             }
-            let simulator = if title_lower.contains("2024") {
+            let simulator = if title_lower.contains("2024") && title_lower.contains("2020") {
                 "MSFS 2020/2024".to_string()
+            } else if title_lower.contains("2024") {
+                "MSFS 2024".to_string()
             } else {
                 "MSFS 2020".to_string()
             };

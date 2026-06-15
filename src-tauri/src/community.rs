@@ -67,8 +67,22 @@ pub struct CommunityInfo {
 /// en la mayoría de paquetes — el universo ahí es muy distinto).
 ///
 /// Returns `Ok(None)` si no encontramos ninguna instalación.
+///
+/// (v5.1.0) La preferencia ya NO es fija a 2020: elige la variante de la
+/// versión de MSFS que el usuario seleccionó (`crate::sim`). Prioriza una
+/// carpeta de esa versión que EXISTA; si no, cualquiera de esa versión; y
+/// como último recurso, la primera disponible.
 pub fn detect_community_folder() -> anyhow::Result<Option<CommunityInfo>> {
-    Ok(detect_all_community_folders()?.into_iter().next())
+    let all = detect_all_community_folders()?;
+    let token = if crate::sim::is_2024() { "2024" } else { "2020" };
+    let chosen = all
+        .iter()
+        .find(|c| c.variant.contains(token) && c.exists)
+        .or_else(|| all.iter().find(|c| c.variant.contains(token)))
+        .or_else(|| all.iter().find(|c| c.exists))
+        .or_else(|| all.first())
+        .cloned();
+    Ok(chosen)
 }
 
 /// Devuelve **todas** las carpetas Community detectadas — una por

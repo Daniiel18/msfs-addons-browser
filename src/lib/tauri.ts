@@ -1469,6 +1469,7 @@ const demoApi: Api = {
       communityPath: "C:/Demo/Community",
       logsPath: null,
       appDataPath: null,
+      simVersion: "msfs2020", // demo: skip el modal de elección
     };
   },
   async setAppSetting() {

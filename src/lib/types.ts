@@ -269,6 +269,9 @@ export interface AppSettings {
   communityPath: string | null;
   logsPath: string | null;
   appDataPath: string | null;
+  /** (v5.1.0) Versión de MSFS activa: "msfs2020" | "msfs2024". Vacío =
+   *  no elegida → el frontend muestra el modal de elección al arrancar. */
+  simVersion: string;
 }
 
 /** Vuelo registrado por el watcher de SimConnect. A diferencia de

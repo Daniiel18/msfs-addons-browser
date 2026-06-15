@@ -64,6 +64,11 @@ pub struct AppSettings {
     pub logs_path: Option<String>,
     /// Path al directorio de datos de la app (`<app_data>/`).
     pub app_data_path: Option<String>,
+    /// (v5.1.0) Versión de MSFS activa: "msfs2020" | "msfs2024". Vacío =
+    /// no elegida todavía → el frontend muestra el modal de elección al
+    /// arrancar. Controla el filtro del catálogo de SceneryAddons y la
+    /// preferencia de carpeta Community.
+    pub sim_version: String,
 }
 
 impl Default for AppSettings {
@@ -88,6 +93,7 @@ impl Default for AppSettings {
             community_path: None,
             logs_path: None,
             app_data_path: None,
+            sim_version: String::new(),
         }
     }
 }
@@ -157,6 +163,7 @@ pub async fn get_app_settings(
         community_path,
         logs_path,
         app_data_path,
+        sim_version: kv.get("pref_sim_version").cloned().unwrap_or_default(),
     })
 }
 
@@ -180,6 +187,11 @@ pub async fn set_app_setting(
     if key == "pref_minimize_to_tray" {
         let on = matches!(value.as_str(), "1" | "true" | "yes");
         state.minimize_to_tray.store(on, Ordering::Relaxed);
+    }
+    // (v5.1.0) Versión de MSFS: actualiza el flag atómico al instante
+    // (aunque la UI pide reinicio para reaplicar Community/scan).
+    if key == "pref_sim_version" {
+        crate::sim::set_from_str(&value);
     }
     Ok(())
 }
@@ -261,6 +273,8 @@ fn is_valid_key(key: &str) -> bool {
             | "pref_unit_distance"
             | "pref_unit_pressure"
             | "pref_temp_unit"
+            // (v5.1.0) Versión de MSFS activa: "msfs2020" | "msfs2024".
+            | "pref_sim_version"
     )
 }
 

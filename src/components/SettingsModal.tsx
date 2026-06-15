@@ -78,7 +78,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [appVersion, setAppVersion] = useState<string | null>(null);
   // (v3.1.0) Modal de aviso de reinicio tras cambio de idioma.
   const [showRestartHint, setShowRestartHint] = useState(false);
+  const [simReload, setSimReload] = useState(false);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
+  const setSimVersion = useSettingsStore((s) => s.setSimVersion);
 
   useEffect(() => {
     if (open) setPilotDraft(pilotId ?? "");
@@ -277,6 +279,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   current={settings.language}
                   onChange={(l) => void setLanguage(l)}
                   onRequestRestart={() => setShowRestartHint(true)}
+                />
+                <SimVersionRow
+                  current={settings.simVersion}
+                  onChange={(v) => {
+                    void setSimVersion(v);
+                    setSimReload(true);
+                  }}
                 />
                 {/* (v4.14.1 #1) Unidades POR CATEGORÍA — TODOS los selectores
                     (botones segmentados) anidados dentro de la MISMA casilla
@@ -634,6 +643,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       {showRestartHint && (
         <RestartHintModal onClose={() => setShowRestartHint(false)} />
       )}
+      {simReload && (
+        <SimReloadModal
+          onConfirm={() => window.location.reload()}
+          onLater={() => setSimReload(false)}
+        />
+      )}
     </AnimatePresence>
   );
 }
@@ -827,6 +842,85 @@ export function RestartHintModal({ onClose }: { onClose: () => void }) {
             className="rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-600"
           >
             {t("restart.button")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** (v5.1.0) Fila del selector de versión de MSFS (2020 / 2024). Al
+ *  cambiar, el caller pide reinicio para reaplicar Community + filtro
+ *  del catálogo. */
+function SimVersionRow({
+  current,
+  onChange,
+}: {
+  current: string;
+  onChange: (v: "msfs2020" | "msfs2024") => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-slate-200">{t("simver.settings.title")}</div>
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          {t("simver.settings.description")}
+        </p>
+      </div>
+      <div className="flex shrink-0 rounded-md border border-slate-700 bg-slate-950/50 p-0.5">
+        {(["msfs2020", "msfs2024"] as const).map((v) => (
+          <button
+            key={v}
+            onClick={() => v !== current && onChange(v)}
+            className={`rounded px-2.5 py-1 text-[11px] ${
+              current === v
+                ? "bg-slate-700/80 text-slate-100"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {v === "msfs2020" ? "2020" : "2024"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** (v5.1.0) Confirmación de reinicio tras cambiar la versión de MSFS. */
+function SimReloadModal({
+  onConfirm,
+  onLater,
+}: {
+  onConfirm: () => void;
+  onLater: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm"
+      onClick={onLater}
+    >
+      <div
+        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-slate-100">
+          {t("simver.reload.title")}
+        </h3>
+        <p className="mt-2 text-xs leading-relaxed text-slate-400">
+          {t("simver.reload.body")}
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onLater}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+          >
+            {t("simver.reload.later")}
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-400"
+          >
+            {t("simver.reload.now")}
           </button>
         </div>
       </div>
