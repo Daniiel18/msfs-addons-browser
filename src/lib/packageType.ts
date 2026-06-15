@@ -252,12 +252,25 @@ function looksLikeLibraryPack(p: CommunityPackage): boolean {
  * SCENERY + aeropuerto real (ICAO en airports + coordenadas) + no es
  * library. Lo que pinta el mapa y la sidebar.
  */
+/** (v5.0.0) Paquete de MUESTRA / plantilla del SDK de MSFS, no un addon
+ *  real. El SDK crea proyectos con el autor placeholder "My Company" y un
+ *  aeropuerto de ejemplo (p. ej. ICAO ficticio "SIKK" / "Calciolândia").
+ *  El usuario suele tener uno olvidado en Community tras usar DevMode.
+ *  No debe contar como aeropuerto en el Map ni en el Link Map. */
+export function isSdkSamplePackage(p: CommunityPackage): boolean {
+  const creator = (p.creator ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return creator === "mycompany";
+}
+
 export function isAirport(p: CommunityPackage): boolean {
   return (
     isScenery(p) &&
     !!p.icao &&
     p.latitude !== null &&
     p.longitude !== null &&
+    !isSdkSamplePackage(p) &&
     !(p.isLibraryPack ?? looksLikeLibraryPack(p))
   );
 }

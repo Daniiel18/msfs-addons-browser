@@ -35,17 +35,17 @@ import { buildTerminatorPolygon } from "../lib/terminator";
 // del polígono también se afina (1°) para que el borde no quede
 // facetado. Oscuridad acumulada ≈0.55 en noche cerrada.
 const TERMINATOR_BANDS = [
-  { source: "rt-term-00", altitudeDeg: 0, opacity: 0.05 },
-  { source: "rt-term-01", altitudeDeg: -1.5, opacity: 0.05 },
-  { source: "rt-term-03", altitudeDeg: -3, opacity: 0.05 },
-  { source: "rt-term-045", altitudeDeg: -4.5, opacity: 0.05 },
-  { source: "rt-term-06", altitudeDeg: -6, opacity: 0.05 },
-  { source: "rt-term-075", altitudeDeg: -7.5, opacity: 0.05 },
-  { source: "rt-term-09", altitudeDeg: -9, opacity: 0.05 },
-  { source: "rt-term-105", altitudeDeg: -10.5, opacity: 0.05 },
-  { source: "rt-term-12", altitudeDeg: -12, opacity: 0.05 },
-  { source: "rt-term-15", altitudeDeg: -15, opacity: 0.05 },
-  { source: "rt-term-18", altitudeDeg: -18, opacity: 0.05 },
+  { source: "rt-term-00", altitudeDeg: 0, opacity: 0.07 },
+  { source: "rt-term-01", altitudeDeg: -1.5, opacity: 0.07 },
+  { source: "rt-term-03", altitudeDeg: -3, opacity: 0.08 },
+  { source: "rt-term-045", altitudeDeg: -4.5, opacity: 0.09 },
+  { source: "rt-term-06", altitudeDeg: -6, opacity: 0.1 },
+  { source: "rt-term-075", altitudeDeg: -7.5, opacity: 0.11 },
+  { source: "rt-term-09", altitudeDeg: -9, opacity: 0.12 },
+  { source: "rt-term-105", altitudeDeg: -10.5, opacity: 0.13 },
+  { source: "rt-term-12", altitudeDeg: -12, opacity: 0.14 },
+  { source: "rt-term-15", altitudeDeg: -15, opacity: 0.15 },
+  { source: "rt-term-18", altitudeDeg: -18, opacity: 0.17 },
 ] as const;
 
 /** Paso (en grados) del contorno del polígono del terminator: más fino

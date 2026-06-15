@@ -21,7 +21,13 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
-import { derivedType, diagnosePackage } from "../lib/packageType";
+import {
+  derivedType,
+  diagnosePackage,
+  looksLikePlaceholderTitle,
+} from "../lib/packageType";
+import { useThumbnail } from "../lib/thumbnails";
+import { AddonFallbackArt } from "./AddonArt";
 import { t } from "../lib/i18n";
 
 interface Props {
@@ -55,6 +61,11 @@ interface Props {
  * cards de búsqueda de Simplaza (`ResultCard.tsx`).
  */
 export function PackageDetailModal({ pkg, update, onClose }: Props) {
+  // (v5.0.0) Imagen del addon arriba del modal, igual que la card de
+  // aeropuertos. Si no hay thumbnail (ni el web fallback la trajo), se
+  // muestra la silueta tipada (avión/livery/…).
+  const thumb = useThumbnail(pkg.folderName, looksLikePlaceholderTitle(pkg.title));
+  const derived = useMemo(() => derivedType(pkg), [pkg]);
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [pickingRepair, setPickingRepair] = useState(false);
@@ -234,9 +245,27 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative w-[min(640px,calc(100vw-2rem))] max-h-[calc(100vh-3rem)] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="relative flex max-h-[calc(100vh-3rem)] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
         >
-          <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
+          {/* (v5.0.0) Vista previa del addon arriba — igual que la card
+              de aeropuertos. Thumbnail local / web, o silueta tipada. */}
+          <div className="relative h-36 w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
+            {thumb ? (
+              <img
+                src={thumb}
+                alt=""
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
+              />
+            ) : (
+              <AddonFallbackArt derived={derived} title={pkg.title} />
+            )}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent" />
+          </div>
+
+          <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 {pkg.icao && (
@@ -274,7 +303,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
             </button>
           </header>
 
-          <div className="overflow-y-auto px-5 py-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
               <Detail label={t("pkg.folder")} value={pkg.folderName} mono />
               <Detail label={t("pkg.version")} value={pkg.packageVersion ?? "—"} />
@@ -343,7 +372,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
 
           </div>
 
-          <footer className="flex flex-wrap items-center gap-2 border-t border-slate-800 px-5 py-3">
+          <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-800 px-5 py-3">
             <button
               onClick={openFolder}
               disabled={busy !== "none"}
