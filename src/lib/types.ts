@@ -897,6 +897,9 @@ export interface DropInspection {
   items: DropItem[];
   /** True si el archivo era un .ini/.py suelto. Skip modal. */
   isSingle: boolean;
+  /** (v5.2.0) True si lo dropeado era una CARPETA — no se ofrece borrar
+   *  el original. */
+  isFolder?: boolean;
 }
 
 /** (v2.1.0) Resultado de instalar los items seleccionados. */

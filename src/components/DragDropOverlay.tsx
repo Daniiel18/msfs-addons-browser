@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, CheckCircle2, FileDown, Loader2, Upload } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  FileDown,
+  KeyRound,
+  Loader2,
+  Upload,
+} from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import type { DropCommitReport, DropInspection } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
@@ -43,6 +50,11 @@ export function DragDropOverlay() {
     reports: DropCommitReport[];
   } | null>(null);
   const [fastDeleting, setFastDeleting] = useState(false);
+  // (v5.2.0) Path de un archivo cifrado esperando contraseña. `wrong` =
+  // el último intento falló por clave incorrecta.
+  const [pwPrompt, setPwPrompt] = useState<{ path: string; wrong: boolean } | null>(
+    null,
+  );
 
   const refreshInstalled = useDownloadsStore((s) => s.refreshInstalled);
   const rescanCommunity = useCommunityStore((s) => s.rescan);
@@ -70,37 +82,61 @@ export function DragDropOverlay() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const processDropBatch = async (paths: string[]) => {
-    // Inspeccionamos TODOS los archivos en paralelo. Para cada uno,
-    // creamos un result inicial "inspecting". Acumulamos las
-    // inspecciones válidas (con items > 0) para el modal.
-    const pendingResults: DropFlowResult[] = paths.map((p) => ({
-      path: p,
-      state: "inspecting" as const,
-    }));
-    setResults((prev) => [...prev, ...pendingResults]);
+  const processDropBatch = async (paths: string[], password?: string) => {
+    // (v5.2.0) Upsert por path: en el reintento con contraseña, el path
+    // ya existe en la lista — lo volvemos a "inspecting" en vez de
+    // duplicarlo. Soporta archivos Y carpetas (el backend resuelve).
+    setResults((prev) => {
+      const next = [...prev];
+      for (const p of paths) {
+        const i = next.findIndex((r) => r.path === p);
+        const entry: DropFlowResult = { path: p, state: "inspecting" };
+        if (i === -1) next.push(entry);
+        else next[i] = entry;
+      }
+      return next;
+    });
 
     const inspections = await Promise.all(
       paths.map(async (path) => {
         try {
-          const insp = await api.dropInspect(path);
-          return { path, inspection: insp as DropInspection, error: null };
+          const insp = (await api.dropInspect(path, password)) as DropInspection;
+          return { path, inspection: insp, error: null as string | null };
         } catch (e) {
           return { path, inspection: null, error: String(e) };
         }
       }),
     );
 
-    // Actualizar results según éxito de inspección.
+    // (v5.2.0) ¿Algún path necesita contraseña? Pedimos una para el
+    // primero y reintentamos sólo ese path con la clave.
+    const pwPending = inspections.find(
+      (i) =>
+        !!i.error &&
+        (i.error.includes("NEEDS_PASSWORD") ||
+          i.error.includes("WRONG_PASSWORD")),
+    );
+    if (pwPending) {
+      setPwPrompt({
+        path: pwPending.path,
+        wrong: pwPending.error!.includes("WRONG_PASSWORD"),
+      });
+    }
+
     setResults((prev) =>
       prev.map((r) => {
         const m = inspections.find((i) => i.path === r.path);
         if (!m || r.state !== "inspecting") return r;
         if (m.error) {
+          if (
+            m.error.includes("NEEDS_PASSWORD") ||
+            m.error.includes("WRONG_PASSWORD")
+          ) {
+            return { path: r.path, state: "awaiting_password" };
+          }
           return { path: r.path, state: "error", error: m.error };
         }
         if (m.inspection && m.inspection.items.length === 0) {
-          // No instalable.
           void api.dropCancel(m.inspection.sessionId).catch(() => {});
           return {
             path: r.path,
@@ -108,7 +144,6 @@ export function DragDropOverlay() {
             error: t("drop.no_installable"),
           };
         }
-        // Inspeccionado, esperando decisión del modal.
         return {
           path: r.path,
           state: "awaiting_modal",
@@ -122,14 +157,10 @@ export function DragDropOverlay() {
       .filter((i): i is DropInspection => !!i && i.items.length > 0);
 
     if (validInspections.length === 0) {
-      return; // Todos fallaron o estaban vacíos.
+      return;
     }
 
-    // Si todos los archivos tienen exactamente 1 item, saltamos el
-    // modal e instalamos directo todo en lote.
-    const allSingle =
-      validInspections.length > 0 &&
-      validInspections.every((i) => i.items.length === 1);
+    const allSingle = validInspections.every((i) => i.items.length === 1);
     if (allSingle) {
       const reports: DropCommitReport[] = [];
       const committed: string[] = [];
@@ -141,10 +172,12 @@ export function DragDropOverlay() {
             null,
           );
           reports.push(r);
-          // (v4.23.0) Igual que el modal: si se instaló algo desde este
-          // archivo, ofrecemos borrarlo — TODO lo que entre por drag &
-          // drop pregunta, no solo GSX/escenarios.
-          if (r.installedGsx.length > 0 || r.installedPackages.length > 0) {
+          // (v5.2.0) NO ofrecemos borrar el original si era una CARPETA
+          // (el usuario no espera que se borre su carpeta de origen).
+          if (
+            !insp.isFolder &&
+            (r.installedGsx.length > 0 || r.installedPackages.length > 0)
+          ) {
             committed.push(insp.archivePath);
           }
         } catch (e) {
@@ -168,7 +201,6 @@ export function DragDropOverlay() {
       return;
     }
 
-    // Hay al menos 1 archivo con varios items — abrir modal paginado.
     setActiveInspections(validInspections);
   };
 
@@ -270,10 +302,99 @@ export function DragDropOverlay() {
         </div>
       )}
 
+      {/* (v5.2.0) Prompt de contraseña para archivos cifrados. */}
+      {pwPrompt && (
+        <PasswordModal
+          fileName={pwPrompt.path.split(/[\\/]/).pop() ?? pwPrompt.path}
+          wrong={pwPrompt.wrong}
+          onSubmit={(pw) => {
+            const path = pwPrompt.path;
+            setPwPrompt(null);
+            void processDropBatch([path], pw);
+          }}
+          onCancel={() => {
+            const path = pwPrompt.path;
+            setPwPrompt(null);
+            setResults((prev) =>
+              prev.map((r) =>
+                r.path === path ? { path, state: "cancelled" } : r,
+              ),
+            );
+          }}
+        />
+      )}
+
       {results.length > 0 && (
         <DropResultsToast results={results} onClear={() => setResults([])} />
       )}
     </>
+  );
+}
+
+/** (v5.2.0) Modal para introducir la contraseña de un archivo cifrado
+ *  (.rar/.7z/.zip). Reintenta la inspección con la clave. */
+function PasswordModal({
+  fileName,
+  wrong,
+  onSubmit,
+  onCancel,
+}: {
+  fileName: string;
+  wrong: boolean;
+  onSubmit: (pw: string) => void;
+  onCancel: () => void;
+}) {
+  const [pw, setPw] = useState("");
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2">
+          <KeyRound className="h-4 w-4 text-amber-300" />
+          <h3 className="text-sm font-semibold text-slate-100">
+            {t("drop.pw.title")}
+          </h3>
+        </div>
+        <p className="mt-1.5 truncate font-mono text-[11px] text-slate-400" title={fileName}>
+          {fileName}
+        </p>
+        <input
+          autoFocus
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && pw.trim()) onSubmit(pw);
+            else if (e.key === "Escape") onCancel();
+          }}
+          placeholder={t("drop.pw.placeholder")}
+          className="mt-3 w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-brand-500/50 focus:outline-none"
+        />
+        {wrong && (
+          <p className="mt-1.5 text-[11px] text-rose-300">{t("drop.pw.wrong")}</p>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            onClick={() => pw.trim() && onSubmit(pw)}
+            disabled={!pw.trim()}
+            className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-400 disabled:opacity-50"
+          >
+            {t("drop.pw.unlock")}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -283,6 +404,7 @@ interface DragDropPayload {
 
 type DropFlowResult =
   | { path: string; state: "inspecting" }
+  | { path: string; state: "awaiting_password" }
   | { path: string; state: "awaiting_modal"; items: number }
   | { path: string; state: "installed"; report: DropCommitReport }
   | { path: string; state: "cancelled" }
@@ -296,7 +418,10 @@ function DropResultsToast({
   onClear: () => void;
 }) {
   const allDone = results.every(
-    (r) => r.state !== "inspecting" && r.state !== "awaiting_modal",
+    (r) =>
+      r.state !== "inspecting" &&
+      r.state !== "awaiting_modal" &&
+      r.state !== "awaiting_password",
   );
   return (
     <div className="fixed bottom-4 right-4 z-40 w-[min(440px,calc(100vw-2rem))] rounded-xl border border-slate-800 bg-slate-950/95 shadow-2xl ring-1 ring-slate-800 backdrop-blur">
@@ -342,6 +467,9 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
           {result.state === "cancelled" && (
             <AlertCircle className="h-3.5 w-3.5 text-slate-500" />
           )}
+          {result.state === "awaiting_password" && (
+            <KeyRound className="h-3.5 w-3.5 text-amber-300" />
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-slate-200">{fileName}</div>
@@ -349,6 +477,9 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
             <p className="text-[11px] text-slate-500">
               {t("drop.extracting")}
             </p>
+          )}
+          {result.state === "awaiting_password" && (
+            <p className="text-[11px] text-amber-300">{t("drop.pw.pending")}</p>
           )}
           {result.state === "awaiting_modal" && (
             <p className="text-[11px] text-amber-300">

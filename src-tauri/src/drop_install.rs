@@ -81,6 +81,10 @@ pub struct DropInspection {
     /// True si el archivo era un .ini/.py suelto. El frontend puede
     /// skip el modal e instalar directo.
     pub is_single: bool,
+    /// (v5.2.0) True si lo dropeado era una CARPETA (no un archivo). El
+    /// frontend NO ofrece "borrar el original" en este caso.
+    #[serde(default)]
+    pub is_folder: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,21 +99,59 @@ pub struct DropCommitReport {
 /// instalables dentro. Crea una sesión que mantiene el tempdir.
 pub fn inspect(
     archive_path: &Path,
+    password: Option<&str>,
     sessions: &DropSessions,
 ) -> anyhow::Result<DropInspection> {
-    tracing::info!(target: "drop", "inspect: archive={}", archive_path.display());
-    if !archive_path.is_file() {
-        anyhow::bail!("No existe el archivo {}", archive_path.display());
+    tracing::info!(target: "drop", "inspect: path={}", archive_path.display());
+    if !archive_path.exists() {
+        anyhow::bail!("No existe la ruta {}", archive_path.display());
     }
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let archive_str = archive_path.to_string_lossy().into_owned();
+
+    // (v5.2.0) CARPETA arrastrada: la escaneamos directamente (sin
+    // extraer) y enrutamos sus paquetes a Community y/o perfiles a GSX.
+    // Igual para MSFS 2020 y 2024.
+    if archive_path.is_dir() {
+        let items = scan_extracted(archive_path)?;
+        if items.is_empty() {
+            anyhow::bail!(
+                "La carpeta no contiene paquetes MSFS (manifest+layout) ni perfiles GSX."
+            );
+        }
+        let is_single = items.len() == 1;
+        let session = DropSession {
+            _tempdir: None,
+            archive_path: archive_str.clone(),
+            items: items.clone(),
+            created_at: std::time::Instant::now(),
+        };
+        sessions
+            .0
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?
+            .insert(session_id.clone(), session);
+        tracing::info!(
+            target: "drop",
+            "sesión {} creada desde CARPETA con {} items",
+            session_id, items.len()
+        );
+        return Ok(DropInspection {
+            session_id,
+            archive_path: archive_str,
+            items,
+            is_single,
+            is_folder: true,
+        });
+    }
+
     let ext = archive_path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     tracing::info!(target: "drop", "extension detectada: .{}", ext);
-
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let archive_str = archive_path.to_string_lossy().into_owned();
 
     // .ini / .py sueltos → un solo item, sin extracción.
     if ext == "ini" || ext == "py" {
@@ -138,6 +180,7 @@ pub fn inspect(
             archive_path: archive_str,
             items: vec![item],
             is_single: true,
+            is_folder: false,
         });
     }
 
@@ -158,11 +201,27 @@ pub fn inspect(
         ext, temp_path.display()
     );
 
-    match ext.as_str() {
-        "zip" => extract_zip(archive_path, &temp_path)?,
-        "rar" => extract_rar(archive_path, &temp_path)?,
-        "7z" => extract_7z(archive_path, &temp_path)?,
+    let extract_result = match ext.as_str() {
+        "zip" => extract_zip(archive_path, &temp_path, password),
+        "rar" => extract_rar(archive_path, &temp_path, password),
+        "7z" => extract_7z(archive_path, &temp_path, password),
         _ => unreachable!(),
+    };
+    if let Err(e) = extract_result {
+        // (v5.2.0) Si el fallo es por contraseña, devolvemos un sentinela
+        // que el frontend reconoce para pedirla (o avisar que es errónea).
+        let msg = e.to_string().to_lowercase();
+        let pw_related = msg.contains("password")
+            || msg.contains("encrypted")
+            || msg.contains("decrypt")
+            || msg.contains("wrong");
+        if pw_related {
+            if password.is_some() {
+                anyhow::bail!("WRONG_PASSWORD");
+            }
+            anyhow::bail!("NEEDS_PASSWORD");
+        }
+        return Err(e);
     }
     tracing::info!(target: "drop", "extracción completada");
 
@@ -196,6 +255,7 @@ pub fn inspect(
         archive_path: archive_str,
         items,
         is_single: false,
+        is_folder: false,
     })
 }
 
@@ -326,18 +386,45 @@ pub fn cleanup_stale(sessions: &DropSessions) {
 // Extracción
 // =============================================================================
 
-fn extract_zip(src: &Path, dest: &Path) -> anyhow::Result<()> {
+fn extract_zip(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
     let file = std::fs::File::open(src)?;
     let mut archive = zip::ZipArchive::new(file)?;
-    archive.extract(dest)?;
+    match password {
+        None => archive
+            .extract(dest)
+            .map_err(|e| anyhow::anyhow!("zip extract: {e}"))?,
+        Some(pw) => {
+            // Extracción manual con descifrado por entrada (ZipCrypto/AES).
+            for i in 0..archive.len() {
+                let mut entry = archive
+                    .by_index_decrypt(i, pw.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("zip decrypt: {e}"))?;
+                let Some(rel) = entry.enclosed_name() else { continue };
+                let out = dest.join(rel);
+                if entry.is_dir() {
+                    std::fs::create_dir_all(&out)?;
+                } else {
+                    if let Some(parent) = out.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let mut sink = std::fs::File::create(&out)?;
+                    std::io::copy(&mut entry, &mut sink)?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
-fn extract_rar(src: &Path, dest: &Path) -> anyhow::Result<()> {
-    let archive = unrar::Archive::new(src)
-        .open_for_processing()
-        .map_err(|e| anyhow::anyhow!("rar open: {e}"))?;
-    let mut iter = archive;
+fn extract_rar(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    let mut iter = match password {
+        Some(pw) => unrar::Archive::with_password(src, pw)
+            .open_for_processing()
+            .map_err(|e| anyhow::anyhow!("rar open: {e}"))?,
+        None => unrar::Archive::new(src)
+            .open_for_processing()
+            .map_err(|e| anyhow::anyhow!("rar open: {e}"))?,
+    };
     loop {
         let header = match iter.read_header() {
             Ok(Some(h)) => h,
@@ -351,9 +438,17 @@ fn extract_rar(src: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn extract_7z(src: &Path, dest: &Path) -> anyhow::Result<()> {
-    sevenz_rust2::decompress_file(src, dest)
-        .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?;
+fn extract_7z(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    match password {
+        Some(pw) => sevenz_rust2::decompress_file_with_password(
+            src,
+            dest,
+            sevenz_rust2::Password::from(pw),
+        )
+        .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?,
+        None => sevenz_rust2::decompress_file(src, dest)
+            .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?,
+    }
     Ok(())
 }
 

@@ -13,17 +13,15 @@ use crate::{cmd_log, AppState};
 #[tauri::command]
 pub async fn drop_inspect(
     archive_path: String,
+    password: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<DropInspection, String> {
     let _t = CmdTimer::start("drop_inspect");
-    cmd_log!("drop_inspect", "archive={}", archive_path);
+    cmd_log!("drop_inspect", "archive={} pw={}", archive_path, password.is_some());
     let path = PathBuf::from(archive_path);
-    // `inspect` puede tardar varios segundos para un .rar grande —
-    // lo movemos a spawn_blocking para no bloquear el runtime async.
     let sessions: &drop_install::DropSessions = &state.drop_sessions;
-    // Workaround para mover el &DropSessions a spawn_blocking sin
-    // mover `state`: hacemos la operación inline (es sync).
-    drop_install::inspect(&path, sessions).map_err(|e| e.to_string())
+    // `inspect` es sync (extrae a tempdir); lo corremos inline.
+    drop_install::inspect(&path, password.as_deref(), sessions).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

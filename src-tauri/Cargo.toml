@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "5.1.0"
+version = "5.2.0"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -49,7 +49,7 @@ url = "2"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "2", default-features = false, features = ["deflate", "aes-crypto"] }
 # (v4.0.1) gzip para comprimir el snapshot de cloud sync antes de
 # subirlo a Drive. La DB de tracks puede pesar cientos de MB; el JSON
 # comprime ~15-20x y evita el timeout de subida que el usuario reportÃ³.
@@ -64,7 +64,7 @@ walkdir = "2"
 #   Â· 7z  â€” ocasional pero comÃºn en paquetes grandes. `sevenz-rust2` es
 #     un fork puro-Rust, activo y sin dependencias nativas.
 unrar = "0.5"
-sevenz-rust2 = "0.13"
+sevenz-rust2 = { version = "0.13", features = ["aes256"] }
 tempfile = "3"
 
 # Embedded BitTorrent client. Using default TLS (via reqwest/default-tls)

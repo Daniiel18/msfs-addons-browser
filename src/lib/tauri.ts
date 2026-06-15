@@ -206,7 +206,10 @@ interface Api {
   /** Inspecciona un archivo dropeado y devuelve la lista de items
    *  detectados (perfiles GSX, paquetes Community, etc). Crea una
    *  sesión que mantiene el tempdir hasta el commit/cancel. */
-  dropInspect: (archivePath: string) => Promise<DropInspection>;
+  dropInspect: (
+    archivePath: string,
+    password?: string | null,
+  ) => Promise<DropInspection>;
   /** Instala los items seleccionados (por `sourcePath`) de la sesión. */
   dropCommit: (
     sessionId: string,
@@ -576,8 +579,11 @@ const realApi: Api = {
   folderSyncLoad: (folderPath) =>
     invoke<FolderSyncLoadReport>("folder_sync_load", { folderPath }),
   folderSyncClear: () => invoke<void>("folder_sync_clear"),
-  dropInspect: (archivePath) =>
-    invoke<DropInspection>("drop_inspect", { archivePath }),
+  dropInspect: (archivePath, password) =>
+    invoke<DropInspection>("drop_inspect", {
+      archivePath,
+      password: password ?? null,
+    }),
   dropCommit: (sessionId, selectedPaths, communityPath) =>
     invoke<DropCommitReport>("drop_commit", {
       sessionId,
