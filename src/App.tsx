@@ -269,12 +269,21 @@ export default function App() {
     return sorted[0]?.originIcao === currentAirportIcao;
   })();
 
+  // (v5.0.0 M3) Avión POSICIONADO en el gate de salida (en tierra + gate
+  // detectado por SimConnect). Es la señal para dejar de pollar: ya
+  // capturamos los OFP activos durante la planificación.
+  const atDepartureGate =
+    flightStatus?.onGround === true && !!flightStatus?.currentGate;
+
   useEffect(() => {
     if (!ready) return;
     if (!simRunning) return;
     if (!simBriefPilotId) return;
-    if (planSyncedWithAirport) {
-      // Plan ya sincronizado con el aeropuerto actual — no spameamos.
+    // (v5.0.0 M3) Pasivo cada 30s mientras se planifica — así, con cuenta
+    // compartida, capturamos cada OFP activo que aparezca en `fetchlast`.
+    // Paramos cuando el plan ya cuadra con el aeropuerto actual O el avión
+    // está posicionado en el gate de salida.
+    if (planSyncedWithAirport || atDepartureGate) {
       return;
     }
     let cancelled = false;
@@ -286,7 +295,7 @@ export default function App() {
     };
     // Trigger inicial.
     tick();
-    const interval = setInterval(tick, 2 * 60_000);
+    const interval = setInterval(tick, 30_000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -297,6 +306,7 @@ export default function App() {
     simBriefPilotId,
     refreshSimBrief,
     planSyncedWithAirport,
+    atDepartureGate,
   ]);
 
   useEffect(() => {

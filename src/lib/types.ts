@@ -544,6 +544,9 @@ export interface AddonNodePosition {
 export interface PerfOp {
   /** Ruta relativa al addon del `.bgl` activo. */
   path: string;
+  /** Ruta de la forma DESACTIVADA, literal de la nota (`.disabled`,
+   *  `.off`, `.bak`, `.HD`…). No se asume la extensión. */
+  disabledPath: string;
   /** Al APLICAR la opción, ¿este archivo queda activo (`.bgl`)? Para un
    *  swap, unos van true y otros false. */
   activeWhenApplied: boolean;

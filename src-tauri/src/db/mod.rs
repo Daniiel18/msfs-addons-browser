@@ -305,6 +305,21 @@ pub mod repo {
         Ok(())
     }
 
+    /// (v5.0.0) Devuelve `(page_url, icao)` del addon de catálogo por su
+    /// id — para que la descarga pueda bajar la nota "Optional
+    /// Configuration" de su página al instalar.
+    pub async fn get_addon_page(
+        pool: &SqlitePool,
+        addon_id: &str,
+    ) -> anyhow::Result<Option<(String, Option<String>)>> {
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT page_url, icao FROM addons WHERE id = ?1")
+                .bind(addon_id)
+                .fetch_optional(pool)
+                .await?;
+        Ok(row.filter(|(url, _)| !url.is_empty()))
+    }
+
     /// Contexto necesario para registrar una instalación en DB. Los
     /// campos opcionales se usan cuando tenemos un addon-origen
     /// (descarga por torrent desde una fuente conocida); para una

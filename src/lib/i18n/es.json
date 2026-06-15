@@ -247,7 +247,7 @@
   "toast.download.installed": "Instalación completada",
   "toast.download.failed": "Falló la descarga / instalación",
   "toast.download.start_error": "No se pudo iniciar la descarga",
-  "sbconfirm.title": "Confirmar plan de vuelo",
+  "sbconfirm.title": "¿Cuál es tu CallSign para este reporte?",
   "sbconfirm.question": "¿Es este tu vuelo completado?",
   "sbconfirm.yes": "Sí",
   "sbconfirm.no": "No, siguiente",

@@ -38,12 +38,12 @@ export interface AirportRegion {
 // No pretende ser exhaustivo: lo que no esté aquí cae al continente.
 const COUNTRY_2: Record<string, { code: string; label: string; continent: Continent }> = {
   // Norteamérica
-  KA: { code: "US", label: "EE.UU.", continent: "north_america" },
+  KA: { code: "USA", label: "EE.UU.", continent: "north_america" },
   // (las K* son todas EE.UU.; se resuelven por inicial abajo)
   CY: { code: "CA", label: "Canadá", continent: "north_america" },
   CZ: { code: "CA", label: "Canadá", continent: "north_america" },
-  PA: { code: "US", label: "EE.UU. (Alaska)", continent: "north_america" },
-  PH: { code: "US", label: "EE.UU. (Hawái)", continent: "north_america" },
+  PA: { code: "USA", label: "EE.UU. (Alaska)", continent: "north_america" },
+  PH: { code: "USA", label: "EE.UU. (Hawái)", continent: "north_america" },
   PG: { code: "GU", label: "Guam", continent: "oceania" },
   // México y Centroamérica
   MM: { code: "MX", label: "México", continent: "central_america" },
@@ -219,31 +219,31 @@ const COUNTRY_2: Record<string, { code: string; label: string; continent: Contin
   AY: { code: "PG", label: "Papúa N. Guinea", continent: "oceania" },
 };
 
-// Fallback por inicial OACI (continente/zona) cuando el país de 2
-// letras no está en la tabla.
-const REGION_1: Record<string, { label: string; continent: Continent }> = {
-  K: { label: "EE.UU.", continent: "north_america" },
-  C: { label: "Canadá", continent: "north_america" },
-  P: { label: "EE.UU. (Pacífico)", continent: "north_america" },
-  M: { label: "México y Centroamérica", continent: "central_america" },
-  T: { label: "Caribe", continent: "caribbean" },
-  S: { label: "Sudamérica", continent: "south_america" },
-  E: { label: "Europa (Norte)", continent: "europe" },
-  L: { label: "Europa (Sur)", continent: "europe" },
-  B: { label: "Europa (Norte)", continent: "europe" },
-  U: { label: "Rusia y CIS", continent: "europe" },
-  R: { label: "Asia oriental", continent: "asia" },
-  Z: { label: "China", continent: "asia" },
-  V: { label: "Sur de Asia", continent: "asia" },
-  W: { label: "Sudeste asiático", continent: "asia" },
-  O: { label: "Oriente Medio", continent: "middle_east" },
-  F: { label: "África (Sur/Centro)", continent: "africa" },
-  G: { label: "África (Oeste)", continent: "africa" },
-  H: { label: "África (Este)", continent: "africa" },
-  D: { label: "África (Oeste)", continent: "africa" },
-  A: { label: "Pacífico Occidental", continent: "oceania" },
-  N: { label: "Pacífico Sur", continent: "oceania" },
-  Y: { label: "Australia", continent: "oceania" },
+// Fallback por inicial OACI cuando el país de 2 letras no está en la
+// tabla. Incluye un `code` corto y legible (p. ej. K* y P* → "USA").
+const REGION_1: Record<string, { code: string; label: string; continent: Continent }> = {
+  K: { code: "USA", label: "EE.UU.", continent: "north_america" },
+  C: { code: "CAN", label: "Canadá", continent: "north_america" },
+  P: { code: "USA", label: "EE.UU. (Pacífico)", continent: "north_america" },
+  M: { code: "C.AM", label: "México y Centroamérica", continent: "central_america" },
+  T: { code: "CARIB", label: "Caribe", continent: "caribbean" },
+  S: { code: "S.AM", label: "Sudamérica", continent: "south_america" },
+  E: { code: "EUR", label: "Europa (Norte)", continent: "europe" },
+  L: { code: "EUR", label: "Europa (Sur)", continent: "europe" },
+  B: { code: "EUR", label: "Europa (Norte)", continent: "europe" },
+  U: { code: "RU", label: "Rusia y CIS", continent: "europe" },
+  R: { code: "ASIA", label: "Asia oriental", continent: "asia" },
+  Z: { code: "CN", label: "China", continent: "asia" },
+  V: { code: "ASIA", label: "Sur de Asia", continent: "asia" },
+  W: { code: "ASIA", label: "Sudeste asiático", continent: "asia" },
+  O: { code: "M.E", label: "Oriente Medio", continent: "middle_east" },
+  F: { code: "AFR", label: "África (Sur/Centro)", continent: "africa" },
+  G: { code: "AFR", label: "África (Oeste)", continent: "africa" },
+  H: { code: "AFR", label: "África (Este)", continent: "africa" },
+  D: { code: "AFR", label: "África (Oeste)", continent: "africa" },
+  A: { code: "OC", label: "Pacífico Occidental", continent: "oceania" },
+  N: { code: "OC", label: "Pacífico Sur", continent: "oceania" },
+  Y: { code: "AUS", label: "Australia", continent: "oceania" },
 };
 
 const CONTINENT_LABEL: Record<Continent, string> = {
@@ -259,18 +259,19 @@ const CONTINENT_LABEL: Record<Continent, string> = {
   other: "Otros",
 };
 
-/** Clases Tailwind (texto + fondo + ring) por continente para los badges. */
+/** Clases Tailwind (texto + fondo + ring) por continente para los badges.
+ *  (v5.0.0) Más contraste: texto -100, fondo /30, ring /60. */
 const CONTINENT_BADGE: Record<Continent, string> = {
-  north_america: "bg-sky-500/20 text-sky-200 ring-sky-400/40",
-  central_america: "bg-orange-500/20 text-orange-200 ring-orange-400/40",
-  caribbean: "bg-teal-500/20 text-teal-200 ring-teal-400/40",
-  south_america: "bg-amber-500/20 text-amber-200 ring-amber-400/40",
-  europe: "bg-indigo-500/20 text-indigo-200 ring-indigo-400/40",
-  africa: "bg-lime-500/20 text-lime-200 ring-lime-400/40",
-  middle_east: "bg-rose-500/20 text-rose-200 ring-rose-400/40",
-  asia: "bg-fuchsia-500/20 text-fuchsia-200 ring-fuchsia-400/40",
-  oceania: "bg-emerald-500/20 text-emerald-200 ring-emerald-400/40",
-  other: "bg-slate-600/30 text-slate-300 ring-slate-500/40",
+  north_america: "bg-sky-500/30 text-sky-100 ring-sky-400/60",
+  central_america: "bg-orange-500/30 text-orange-100 ring-orange-400/60",
+  caribbean: "bg-teal-500/30 text-teal-100 ring-teal-400/60",
+  south_america: "bg-amber-500/30 text-amber-100 ring-amber-400/60",
+  europe: "bg-indigo-500/30 text-indigo-100 ring-indigo-400/60",
+  africa: "bg-lime-500/30 text-lime-100 ring-lime-400/60",
+  middle_east: "bg-rose-500/30 text-rose-100 ring-rose-400/60",
+  asia: "bg-fuchsia-500/30 text-fuchsia-100 ring-fuchsia-400/60",
+  oceania: "bg-emerald-500/30 text-emerald-100 ring-emerald-400/60",
+  other: "bg-slate-600/40 text-slate-100 ring-slate-500/60",
 };
 
 /** Resuelve el país/zona de un ICAO. Nunca lanza; "Otros" si no hay ICAO. */
@@ -286,7 +287,7 @@ export function airportRegion(icao: string | null | undefined): AirportRegion {
   }
   const hit1 = REGION_1[c[0]];
   if (hit1) {
-    return { code: c[0], label: hit1.label, continent: hit1.continent };
+    return { code: hit1.code, label: hit1.label, continent: hit1.continent };
   }
   return { code: c[0], label: "Otros", continent: "other" };
 }

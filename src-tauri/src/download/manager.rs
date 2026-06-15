@@ -729,16 +729,72 @@ impl DownloadManager {
                 })
                 .await;
 
-                // (v5.0.0) Motor de rendimiento: genera en segundo plano
-                // el manifiesto `config/simfleet_perf.json` de cada
-                // paquete instalado (escaneo local de `.bgl` opcionales).
-                // Flujo invisible para el usuario; `generate_on_install`
-                // registra SIEMPRE en logs si el archivo se creó o no.
-                for pkg in &res.packages {
-                    let dir = std::path::PathBuf::from(&pkg.install_path);
-                    let folder = pkg.name.clone();
-                    tokio::task::spawn_blocking(move || {
-                        crate::perf_config::generate_on_install(&dir, &folder, None, None);
+                // (v5.0.0) Motor de rendimiento: al DESCARGAR un aeropuerto
+                // bajamos la nota "Optional Configuration" de su página en
+                // SceneryAddons y escribimos `config/simfleet_perf.json`
+                // (sólo si la nota existe). NUNCA renombra archivos: el
+                // addon queda en su estado por defecto del creador. Flujo
+                // invisible; registra SIEMPRE en logs el resultado.
+                if let Some(snapshot) = self.snapshot(id).await {
+                    let db = self.inner.db.clone();
+                    let addon_id = snapshot.addon_id.clone();
+                    let packages: Vec<(String, String)> = res
+                        .packages
+                        .iter()
+                        .map(|p| (p.install_path.clone(), p.name.clone()))
+                        .collect();
+                    tokio::task::spawn(async move {
+                        // Resolver la página + ICAO del addon de catálogo.
+                        let page = repo::get_addon_page(&db, &addon_id)
+                            .await
+                            .ok()
+                            .flatten();
+                        let Some((page_url, icao)) = page else {
+                            for (_, folder) in &packages {
+                                tracing::info!(
+                                    "perf: {folder} descargado sin página de catálogo — sin nota"
+                                );
+                            }
+                            return;
+                        };
+                        // Bajar el HTML de la página (best-effort).
+                        let http = reqwest::Client::builder()
+                            .user_agent("SimFleet")
+                            .build()
+                            .unwrap_or_default();
+                        let html = match http.get(&page_url).send().await {
+                            Ok(r) => r.text().await.unwrap_or_default(),
+                            Err(e) => {
+                                tracing::warn!("perf: no se pudo bajar {page_url}: {e}");
+                                String::new()
+                            }
+                        };
+                        for (install_path, folder) in packages {
+                            let dir = std::path::PathBuf::from(&install_path);
+                            let icao2 = icao.clone();
+                            let html2 = html.clone();
+                            let folder2 = folder.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if html2.is_empty() {
+                                    crate::perf_config::generate_on_install(
+                                        &dir, &folder2, icao2, None,
+                                    );
+                                } else {
+                                    match crate::perf_config::enrich_page_note_only(
+                                        &dir, &folder2, icao2, &html2,
+                                    ) {
+                                        Some(cfg) => tracing::info!(
+                                            "perf: nota OK al descargar {folder2} → {} opción(es)",
+                                            cfg.options.len()
+                                        ),
+                                        None => tracing::info!(
+                                            "perf: {folder2} sin 'Optional Configuration' en su página"
+                                        ),
+                                    }
+                                }
+                            })
+                            .await;
+                        }
                     });
                 }
             }

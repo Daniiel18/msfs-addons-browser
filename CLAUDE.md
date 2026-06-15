@@ -32,6 +32,19 @@ Common entry points:
 - Downloads: `src-tauri/src/download/manager.rs`
 - FlightBook: `src-tauri/src/flight_log.rs`
 - SimConnect: `src-tauri/src/simconnect_watcher.rs`
+  - Restore: orfana SÓLO por tiempo (>6h), nunca por distancia — un
+    reinicio en crucero deja al avión lejos del último punto y eso es
+    esperado; el vuelo se reanuda y el hueco queda sin track.
+  - SimBrief multi-OFP: al apagar motores deduplica candidatos por
+    CallSign (edit = mismo callsign, ofp_id nuevo → el más reciente);
+    1 callsign → auto-link, >1 → modal `simbrief://confirm`.
+- Perf/FPS optimizer (v5): `src-tauri/src/perf_config.rs` (parser nota
+  "Optional Configuration", multiestado `ops[{path,disabledPath,
+  activeWhenApplied}]`, extensiones literales .off/.disabled/.bak/.HD…),
+  `commands/perf.rs` (match por developer), `PerformanceModal.tsx`,
+  `PerfBadge.tsx` (wrench), `usePerfStore.ts`. Nota bajada al DESCARGAR
+  (download/manager) y vía botón "Escanear FPS" del Link Map. Nunca
+  auto-activa: el addon queda en su estado por defecto.
 - Scoring/Flight Evaluation: `src-tauri/src/scoring/{mod,rubric}.rs`
 - Cloud sync: `src-tauri/src/cloud_sync.rs`
 - i18n: `src/lib/i18n.ts` + `src/lib/i18n/{es,en}.json` (no hardcoded UI strings)

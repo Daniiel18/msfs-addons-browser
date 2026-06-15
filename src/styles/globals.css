@@ -393,3 +393,28 @@ html.light input::placeholder {
 
 /* Disable text selection on non-content chrome */
 .no-select { user-select: none; }
+
+/* (v5.0.0) Pulso de enfoque para el nodo localizado por búsqueda en el
+   Link Map. Sólo glow + borde (NO transform: React Flow usa transform
+   para posicionar el nodo y un scale lo descolocaría). */
+.rf-focus-pulse {
+  z-index: 50;
+  border-radius: 12px;
+  animation: rfFocusGlow 1.6s ease-out;
+}
+@keyframes rfFocusGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+  25% {
+    box-shadow:
+      0 0 0 4px rgba(245, 158, 11, 0.85),
+      0 0 22px 8px rgba(245, 158, 11, 0.55);
+  }
+  60% {
+    box-shadow:
+      0 0 0 3px rgba(245, 158, 11, 0.6),
+      0 0 16px 6px rgba(245, 158, 11, 0.4);
+  }
+}

@@ -169,11 +169,12 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
   const isOptimizable = usePerfStore((s) => s.optimizable.has(pkg.folderName));
   return (
     <div
+      title={isOptimizable ? t("perf.open_button") : undefined}
       className={`w-[180px] overflow-hidden rounded-lg border-2 shadow-lg transition-colors ${
         enabled
           ? "border-emerald-600/60 bg-emerald-950/40"
           : "border-slate-700 bg-slate-950/70 opacity-70"
-      }`}
+      } ${isOptimizable ? "cursor-pointer ring-1 ring-amber-400/40" : ""}`}
     >
       <div className="relative h-[56px] w-full overflow-hidden bg-gradient-to-br from-emerald-900/40 to-slate-950">
         {thumb ? (
@@ -480,9 +481,14 @@ export function LinkMapView({
 
   // (v5.0.0) Clic en una card de aeropuerto → abre su modal de
   // rendimiento (FPS). Exclusivo del Link Map. El toggle del nodo hace
-  // stopPropagation, así que tocarlo NO abre el modal.
+  // stopPropagation, así que tocarlo NO abre el modal. Sólo se abre si el
+  // aeropuerto es OPTIMIZABLE (tiene config); si no, queda bloqueado.
   const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
-    if (node.type === "airport") setPerfPkg(node.data.pkg);
+    if (node.type !== "airport") return;
+    if (!usePerfStore.getState().optimizable.has(node.data.pkg.folderName)) {
+      return;
+    }
+    setPerfPkg(node.data.pkg);
   }, []);
 
   // "Add Item": añade un addon suelto al lienzo persistiendo una
@@ -546,14 +552,42 @@ export function LinkMapView({
     });
   }, [findQuery, nodes]);
 
-  const centerOnNode = useCallback((n: FlowNode) => {
-    if (!flowRef.current) return;
-    flowRef.current.setCenter(
-      n.position.x + NODE_W / 2,
-      n.position.y + NODE_H / 2,
-      { zoom: 1.1, duration: 500 },
-    );
-  }, []);
+  // (v5.0.0) Resalta el nodo localizado con un pulso/glow ámbar para
+  // ubicarlo de inmediato entre cientos de nodos. Sólo box-shadow (no
+  // transform: React Flow usa transform para posicionar).
+  const flashNode = useCallback(
+    (id: string) => {
+      setNodes((cur) =>
+        cur.map((n) => (n.className ? { ...n, className: undefined } : n)),
+      );
+      requestAnimationFrame(() => {
+        setNodes((cur) =>
+          cur.map((n) => (n.id === id ? { ...n, className: "rf-focus-pulse" } : n)),
+        );
+      });
+      window.setTimeout(() => {
+        setNodes((cur) =>
+          cur.map((n) =>
+            n.className === "rf-focus-pulse" ? { ...n, className: undefined } : n,
+          ),
+        );
+      }, 1700);
+    },
+    [setNodes],
+  );
+
+  const centerOnNode = useCallback(
+    (n: FlowNode) => {
+      if (!flowRef.current) return;
+      flowRef.current.setCenter(
+        n.position.x + NODE_W / 2,
+        n.position.y + NODE_H / 2,
+        { zoom: 1.1, duration: 500 },
+      );
+      flashNode(n.id);
+    },
+    [flashNode],
+  );
 
   const stepFind = (delta: number) => {
     const total = findMatches.length;

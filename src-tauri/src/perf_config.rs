@@ -38,6 +38,11 @@ const SCAN_DEPTH: usize = 8;
 pub struct PerfOp {
     /// Ruta RELATIVA al addon del archivo ACTIVO (`.bgl`). No cambia.
     pub path: String,
+    /// Ruta RELATIVA de la forma DESACTIVADA, leída LITERALMENTE de la
+    /// nota — no asumimos `.off`. El dev puede usar `.disabled`, `.bak`,
+    /// `.HD`, `.SD`, etc. Ej. `…/RJAA_Static.BGL.disabled`.
+    #[serde(default)]
+    pub disabled_path: String,
     /// Cuando la opción está APLICADA, ¿este archivo debe quedar activo
     /// (`.bgl`)? `false` = desactivado. Para un swap, unos van `true` y
     /// otros `false`.
@@ -226,14 +231,28 @@ fn category_rank(category: &str) -> u8 {
 // Parser de la nota "Optional Configuration"
 // ---------------------------------------------------------------------------
 
-// Token de archivo: `path/x.bgl`, `x.bgl.off` o `x.off`.
+// Token de archivo. Captura `x.bgl` con una posible extensión
+// secundaria (`x.bgl.off`, `x.bgl.disabled`, `x.bgl.bak`…) O un archivo
+// con extensión de desactivado de reemplazo (`x.off`, `x.disabled`…).
+// NO asumimos `.off`: los devs usan .disabled/.bak/.HD/.SD/etc.
 static FILE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)([A-Za-z0-9_\-./\\]+?\.(?:bgl\.off|bgl|off))\b").unwrap()
+    Regex::new(
+        r"(?i)([A-Za-z0-9_\-./\\]+?\.bgl(?:\.[A-Za-z0-9]{1,10})?|[A-Za-z0-9_\-./\\]+?\.(?:off|disabled|disable|bak|hd|sd|inactive))\b",
+    )
+    .unwrap()
 });
+
+/// Extensiones de "desactivado" de reemplazo (sustituyen a `.bgl`).
+const DISABLED_EXTS: &[&str] = &[
+    "off", "disabled", "disable", "bak", "hd", "sd", "inactive",
+];
 
 struct NoteOp {
     /// basename del archivo ACTIVO (`x.bgl`, minúsculas, sin ruta).
     active_basename: String,
+    /// Nombre LITERAL de la forma desactivada (con su case original):
+    /// `X.BGL.disabled`, `X.off`, `X.bak`… tal cual la nota.
+    disabled_filename: String,
     active_when_applied: bool,
 }
 struct NoteOption {
@@ -243,6 +262,9 @@ struct NoteOption {
 
 fn basename_lower(s: &str) -> String {
     s.trim().rsplit(['/', '\\']).next().unwrap_or(s).to_lowercase()
+}
+fn basename_keepcase(s: &str) -> String {
+    s.trim().rsplit(['/', '\\']).next().unwrap_or(s).to_string()
 }
 
 /// Nombre ACTIVO (con `.bgl`) en minúsculas, sea `.bgl`, `.bgl.off` o `.off`.
@@ -268,21 +290,39 @@ fn first_file(s: &str) -> Option<String> {
     FILE_RE.captures(s).and_then(|c| c.get(1)).map(|m| m.as_str().to_string())
 }
 
-/// Convierte un fragmento "A -> B" en una operación: el activo es A, y
-/// `active_when_applied` = si B es la forma activa. Si no hay "->" o no
-/// hay B, asume desactivar (applied = off).
+/// Convierte un fragmento "A -> B" en una operación. Identifica cuál de
+/// los dos tokens es el ACTIVO (`.bgl` exacto) y cuál el DESACTIVADO
+/// (literal: `.disabled`, `.off`, `.bak`, `.HD`…). `active_when_applied`
+/// = el token activo está a la DERECHA (es el destino del swap).
 fn op_from_segment(seg: &str) -> Option<NoteOp> {
     let mut parts = seg.splitn(2, "->");
-    let left = parts.next().unwrap_or("");
-    let right = parts.next().unwrap_or("");
-    let a = first_file(left)?;
-    let active_basename = active_basename_of(&a);
-    let active_when_applied = first_file(right)
-        .map(|b| is_active_token(&b))
-        .unwrap_or(false);
+    let left = first_file(parts.next().unwrap_or(""));
+    let right = first_file(parts.next().unwrap_or(""));
+    let (active_tok, disabled_tok, active_on_right) = match (left, right) {
+        (Some(l), Some(r)) => {
+            if is_active_token(&l) {
+                (l, r, false) // A.bgl -> A.disabled  (aplicar = desactivar)
+            } else if is_active_token(&r) {
+                (r, l, true) // A.off -> A.bgl       (aplicar = activar)
+            } else {
+                (l.clone(), r, false)
+            }
+        }
+        (Some(l), None) => {
+            // Token suelto sin "->": si es `.bgl`, desactivar a `.off`.
+            if is_active_token(&l) {
+                let dis = format!("{l}.off");
+                (l, dis, false)
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
     Some(NoteOp {
-        active_basename,
-        active_when_applied,
+        active_basename: active_basename_of(&active_tok),
+        disabled_filename: basename_keepcase(&disabled_tok),
+        active_when_applied: active_on_right,
     })
 }
 
@@ -381,13 +421,30 @@ pub fn extract_description_from_html(html: &str) -> String {
 
 fn to_active_name(name: &str) -> String {
     let lower = name.to_lowercase();
-    if lower.ends_with(".bgl.off") {
-        format!("{}.bgl", &name[..name.len() - 8])
-    } else if lower.ends_with(".off") {
-        format!("{}.bgl", &name[..name.len() - 4])
-    } else {
-        name.to_string()
+    // Append-style: `X.bgl.<dis>` → `X.bgl` (preserva case; filenames ASCII).
+    if let Some(pos) = lower.find(".bgl.") {
+        return name[..pos + 4].to_string();
     }
+    if lower.ends_with(".bgl") {
+        return name.to_string();
+    }
+    // Replace-style: `X.<dis>` → `X.bgl` si <dis> es una ext de desactivado.
+    if let Some(dot) = lower.rfind('.') {
+        if DISABLED_EXTS.contains(&&lower[dot + 1..]) {
+            return format!("{}.bgl", &name[..dot]);
+        }
+    }
+    name.to_string()
+}
+
+/// ¿El archivo es un `.bgl` (activo) o una forma desactivada de uno?
+fn is_bgl_related(name_lower: &str) -> bool {
+    name_lower.contains(".bgl")
+        || name_lower
+            .rsplit('.')
+            .next()
+            .map(|ext| DISABLED_EXTS.contains(&ext))
+            .unwrap_or(false)
 }
 
 fn normalize_rel(s: &str) -> String {
@@ -395,6 +452,14 @@ fn normalize_rel(s: &str) -> String {
         .trim_start_matches("./")
         .trim_start_matches(".\\")
         .replace('\\', "/")
+}
+
+/// Ruta relativa de un archivo HERMANO (misma carpeta) del activo.
+fn sibling_rel(active_rel: &str, filename: &str) -> String {
+    match active_rel.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/{filename}"),
+        None => filename.to_string(),
+    }
 }
 
 /// `basename_activo(lower) → ruta relativa ACTIVA`.
@@ -418,7 +483,7 @@ fn walk_index(root: &Path, dir: &Path, depth: usize, map: &mut HashMap<String, S
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let lower = name.to_lowercase();
-        if !(lower.ends_with(".bgl") || lower.ends_with(".bgl.off") || lower.ends_with(".off")) {
+        if !is_bgl_related(&lower) {
             continue;
         }
         let active_name = to_active_name(&name);
@@ -466,7 +531,7 @@ fn walk_local(
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let lower = name.to_lowercase();
-        if !(lower.ends_with(".bgl") || lower.ends_with(".bgl.off") || lower.ends_with(".off")) {
+        if !is_bgl_related(&lower) {
             continue;
         }
         let active_name = to_active_name(&name);
@@ -511,8 +576,16 @@ fn current_disabled(addon_dir: &Path, rel: &str) -> Option<PathBuf> {
 fn is_active(addon_dir: &Path, rel: &str) -> bool {
     addon_dir.join(rel).exists()
 }
-fn file_exists_any(addon_dir: &Path, rel: &str) -> bool {
-    is_active(addon_dir, rel) || current_disabled(addon_dir, rel).is_some()
+/// ¿Existe el archivo de la op en disco, sea activo o en su forma
+/// desactivada (la explícita de la nota o las convenciones conocidas)?
+fn op_exists(addon_dir: &Path, op: &PerfOp) -> bool {
+    if is_active(addon_dir, &op.path) {
+        return true;
+    }
+    if !op.disabled_path.is_empty() && addon_dir.join(&op.disabled_path).exists() {
+        return true;
+    }
+    current_disabled(addon_dir, &op.path).is_some()
 }
 
 fn slug(s: &str) -> String {
@@ -561,6 +634,7 @@ fn build_config(
                     if !ops.iter().any(|o| &o.path == path) {
                         ops.push(PerfOp {
                             path: path.clone(),
+                            disabled_path: sibling_rel(path, &nop.disabled_filename),
                             active_when_applied: nop.active_when_applied,
                         });
                     }
@@ -605,6 +679,7 @@ fn build_config(
                 .files
                 .into_iter()
                 .map(|path| PerfOp {
+                    disabled_path: format!("{path}.off"), // local: convención .bgl.off
                     path,
                     active_when_applied: false, // local = "quitar"
                 })
@@ -657,7 +732,7 @@ fn read_config_raw(addon_dir: &Path) -> Option<PerfConfig> {
 
 fn reconcile(addon_dir: &Path, cfg: &mut PerfConfig) {
     for opt in &mut cfg.options {
-        opt.ops.retain(|op| file_exists_any(addon_dir, &op.path));
+        opt.ops.retain(|op| op_exists(addon_dir, op));
         opt.applied = compute_applied(addon_dir, &opt.ops);
     }
     cfg.options.retain(|o| !o.ops.is_empty());
@@ -673,7 +748,7 @@ pub fn has_optional_objects(addon_dir: &Path) -> bool {
     read_config_raw(addon_dir).is_some_and(|cfg| {
         cfg.options
             .iter()
-            .any(|o| o.ops.iter().any(|op| file_exists_any(addon_dir, &op.path)))
+            .any(|o| o.ops.iter().any(|op| op_exists(addon_dir, op)))
     })
 }
 
@@ -776,29 +851,39 @@ pub fn apply_toggle(
         .position(|o| o.id == option_id)
         .ok_or_else(|| anyhow::anyhow!("Opción '{option_id}' no encontrada."))?;
 
-    // Plan: por cada op, el destino activo según apply/dirección.
+    // Plan: por cada op, el destino activo según apply/dirección. Usa la
+    // ruta DESACTIVADA explícita de la nota (`.disabled`, `.off`, `.bak`…),
+    // no una asumida.
     let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
     for op in &cfg.options[idx].ops {
         let active = addon_dir.join(&op.path);
+        let explicit_dis = if op.disabled_path.is_empty() {
+            disabled_path(&active)
+        } else {
+            addon_dir.join(&op.disabled_path)
+        };
         let want_active = if apply {
             op.active_when_applied
         } else {
             !op.active_when_applied
         };
         if want_active {
-            // queremos `.bgl`: si está desactivado, restaurarlo.
+            // queremos `.bgl`: si está desactivado, restaurarlo desde su
+            // forma desactivada (explícita o, como respaldo, las conocidas).
             if !active.exists() {
-                if let Some(dis) = current_disabled(addon_dir, &op.path) {
-                    plan.push((dis, active));
+                let from = if explicit_dis.exists() {
+                    Some(explicit_dis)
+                } else {
+                    current_disabled(addon_dir, &op.path)
+                };
+                if let Some(from) = from {
+                    plan.push((from, active));
                 }
             }
         } else {
-            // queremos desactivado: si está activo, apagarlo (a `.bgl.off`).
-            if active.exists() {
-                let dis = disabled_path(&active);
-                if !dis.exists() {
-                    plan.push((active, dis));
-                }
+            // queremos desactivado: renombrar al destino LITERAL de la nota.
+            if active.exists() && !explicit_dis.exists() {
+                plan.push((active, explicit_dis));
             }
         }
     }
@@ -890,6 +975,37 @@ Disable Norse Static Aircraft on Taxiway U:\n\
         let dis = opts.iter().find(|o| o.label == "Disable Passengers completely").unwrap();
         assert_eq!(dis.ops.len(), 2);
         assert!(dis.ops.iter().all(|o| !o.active_when_applied));
+    }
+
+    #[test]
+    fn parses_explicit_disabled_extensions() {
+        // RJAA usa `.disabled`; el destino NO se asume `.off`.
+        let note = "\
+• Remove Static Aircraft: RJAA_Static.BGL -> RJAA_Static.BGL.disabled\n\
+• Remove 3D People: RJAA_People.BGL -> RJAA_People.BGL.disabled\n";
+        let opts = parse_note_options(note);
+        assert_eq!(opts.len(), 2);
+        let o = &opts[0];
+        assert_eq!(o.label, "Remove Static Aircraft");
+        assert_eq!(o.ops.len(), 1);
+        assert_eq!(o.ops[0].active_basename, "rjaa_static.bgl");
+        assert_eq!(o.ops[0].disabled_filename, "RJAA_Static.BGL.disabled");
+        assert!(!o.ops[0].active_when_applied);
+
+        // JFK iniBuilds: swap con `.disabled` en ambas direcciones.
+        let jfk = "\
+Optional Configuration: To remove Terminals – Detailed interiors, rename:\n\
+• kjfk-modellib-termPC.bgl -> kjfk-modellib-termPC.disabled\n\
+• kjfk-modellib-termXB.disabled -> kjfk-modellib-termXB.bgl\n";
+        let jopts = parse_note_options(jfk);
+        assert_eq!(jopts.len(), 1);
+        let j = &jopts[0];
+        assert_eq!(j.ops.len(), 2);
+        let pc = j.ops.iter().find(|o| o.active_basename.contains("termpc")).unwrap();
+        assert_eq!(pc.disabled_filename, "kjfk-modellib-termPC.disabled");
+        assert!(!pc.active_when_applied); // PC se desactiva al aplicar
+        let xb = j.ops.iter().find(|o| o.active_basename.contains("termxb")).unwrap();
+        assert!(xb.active_when_applied); // XB se activa al aplicar
     }
 
     #[test]

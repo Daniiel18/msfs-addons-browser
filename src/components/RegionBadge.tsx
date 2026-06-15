@@ -20,13 +20,13 @@ export function RegionBadge({
   return (
     <span
       title={r.label}
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ring-1 ${regionBadgeClass(
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide shadow-sm ring-1 ${regionBadgeClass(
         r.continent,
       )} ${className}`}
     >
       <span className="font-mono">{r.code}</span>
       {showLabel && (
-        <span className="max-w-[9rem] truncate font-semibold normal-case tracking-normal">
+        <span className="max-w-[10rem] truncate font-semibold normal-case tracking-normal">
           {r.label}
         </span>
       )}

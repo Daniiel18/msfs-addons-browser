@@ -2211,11 +2211,20 @@ mod windows_simconnect {
                                     > 6 * 60 * 60
                             })
                             .unwrap_or(false);
-                        if dist > 20.0 || stale_by_time {
+                        // (v5.0.0 M1) Sólo orfanamos por TIEMPO real (>6h):
+                        // un reinicio a mitad de vuelo en crucero deja al
+                        // avión a decenas/cientos de NM del último punto —
+                        // eso es ESPERADO (la app estuvo apagada), NO un
+                        // vuelo distinto. Antes `dist > 20` cerraba el vuelo
+                        // y abría uno nuevo (CYYZ -> ?), perdiendo la
+                        // continuidad. Ahora RESUMIMOS el mismo vuelo y el
+                        // hueco queda sin track (el render lo segmenta, no
+                        // lo interpola). `dist` se mantiene sólo para el log.
+                        if stale_by_time {
                             tracing::warn!(
                                 target: "simconnect",
-                                "restore HUÉRFANO: flight {} a {:.1} nm del último punto (stale_time={}) — cerrando como 'partial'",
-                                rid, dist, stale_by_time
+                                "restore HUÉRFANO: flight {} a {:.1} nm del último punto, >6h sin datos — cerrando como 'partial'",
+                                rid, dist
                             );
                             if let Ok(mut g) = current_flight_id.lock() {
                                 *g = None;
@@ -4576,14 +4585,49 @@ mod windows_simconnect {
             }
             if let Ok(all) = crate::simbrief::list_flights(pool).await {
                 for f in all {
-                    if ordered.len() >= 10 {
-                        break;
-                    }
                     if !ordered.iter().any(|o| o.ofp_id == f.ofp_id) {
                         ordered.push(f);
                     }
                 }
             }
+
+            // (v5.0.0 M3) DEDUP POR CALLSIGN: un OFP editado conserva el
+            // callsign pero recibe un ofp_id nuevo. Nos quedamos con el
+            // MÁS RECIENTE por callsign — así el modal muestra cada
+            // CallSign una sola vez (no 10 OFPs colgados / ediciones).
+            let recency = |f: &crate::simbrief::SimBriefFlight| -> String {
+                f.generated_at
+                    .clone()
+                    .unwrap_or_else(|| f.fetched_at.clone())
+            };
+            {
+                use std::collections::HashMap;
+                let mut by_cs: HashMap<String, crate::simbrief::SimBriefFlight> =
+                    HashMap::new();
+                let mut no_cs: Vec<crate::simbrief::SimBriefFlight> = Vec::new();
+                for f in ordered.drain(..) {
+                    let cs = f
+                        .callsign
+                        .clone()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_uppercase();
+                    if cs.is_empty() {
+                        no_cs.push(f);
+                        continue;
+                    }
+                    match by_cs.get(&cs) {
+                        Some(prev) if recency(prev) >= recency(&f) => {}
+                        _ => {
+                            by_cs.insert(cs, f);
+                        }
+                    }
+                }
+                ordered = by_cs.into_values().collect();
+                ordered.sort_by(|a, b| recency(b).cmp(&recency(a)));
+                ordered.extend(no_cs);
+            }
+
             if ordered.is_empty() {
                 tracing::info!(
                     target: "simbrief",
@@ -4592,6 +4636,57 @@ mod windows_simconnect {
                 );
                 return;
             }
+
+            // (v5.0.0 M3) Un solo CallSign → asignación automática, SIN
+            // modal. Más de uno → modal "¿Cuál es tu CallSign?".
+            if ordered.len() == 1 {
+                let ofp = &ordered[0];
+                let derived_airline =
+                    crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
+                let res = sqlx::query(
+                    r#"
+                    UPDATE flight_log
+                    SET simbrief_ofp_id  = ?1,
+                        flight_number    = COALESCE(flight_number, ?2),
+                        callsign         = COALESCE(callsign, ?3),
+                        airline_icao     = COALESCE(airline_icao, ?4),
+                        passengers       = COALESCE(passengers, ?5),
+                        cargo_kg         = COALESCE(cargo_kg, ?6),
+                        fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
+                        route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
+                    WHERE id = ?8
+                    "#,
+                )
+                .bind(&ofp.ofp_id)
+                .bind(ofp.flight_number.as_deref())
+                .bind(ofp.callsign.as_deref())
+                .bind(derived_airline.as_deref())
+                .bind(ofp.pax_count)
+                .bind(ofp.cargo_kg)
+                .bind(ofp.fuel_burn_kg)
+                .bind(flight_id)
+                .bind(
+                    serde_json::to_string(&ofp.route_fixes)
+                        .unwrap_or_else(|_| "[]".to_string()),
+                )
+                .execute(pool)
+                .await;
+                match res {
+                    Ok(_) => tracing::info!(
+                        target: "simbrief",
+                        "confirm: 1 solo CallSign ({:?}) → AUTO-LINK ofp_id={} → flight {}",
+                        ofp.callsign, ofp.ofp_id, flight_id
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "simbrief",
+                        "confirm: auto-link falló ofp_id={} flight {}: {e:#}",
+                        ofp.ofp_id, flight_id
+                    ),
+                }
+                let _ = app.emit("flightlog://changed", ());
+                return;
+            }
+
             #[derive(serde::Serialize, Clone)]
             #[serde(rename_all = "camelCase")]
             struct ConfirmPayload {
@@ -4600,7 +4695,7 @@ mod windows_simconnect {
             }
             tracing::info!(
                 target: "simbrief",
-                "confirm: emitiendo {} OFP candidatos para flight {} (modal de confirmación)",
+                "confirm: emitiendo {} CallSign(s) distintos para flight {} (modal)",
                 ordered.len(),
                 flight_id
             );

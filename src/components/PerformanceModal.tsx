@@ -4,6 +4,7 @@ import {
   Gauge,
   Info,
   Loader2,
+  MapPin,
   RefreshCw,
   Sparkles,
   X,
@@ -13,6 +14,8 @@ import type { CommunityPackage, PerfConfig, PerfOption } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
 import { usePerfStore } from "../stores/usePerfStore";
+import { useThumbnail } from "../lib/thumbnails";
+import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { ToggleSwitch } from "./AddonToggle";
 import { t } from "../lib/i18n";
 
@@ -44,6 +47,7 @@ export function PerformanceModal({
 }) {
   const pushToast = useToastStore((s) => s.push);
   const markOptimizable = usePerfStore((s) => s.markOptimizable);
+  const thumb = useThumbnail(pkg.folderName, looksLikePlaceholderTitle(pkg.title));
   const [config, setConfig] = useState<PerfConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [enriching, setEnriching] = useState(false);
@@ -176,6 +180,25 @@ export function PerformanceModal({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[min(680px,calc(100vh-3rem))] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
       >
+        {/* (v5.0.0) Vista previa del escenario arriba del contenedor. */}
+        <div className="relative h-28 w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
+          {thumb ? (
+            <img
+              src={thumb}
+              alt=""
+              className="h-full w-full object-cover"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-slate-700">
+              <MapPin className="h-10 w-10" />
+            </div>
+          )}
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
+        </div>
+
         <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-500/40">
