@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
@@ -46,8 +46,6 @@ export function DragDropOverlay() {
   // el modal solo salía con GSX/escenarios multi-item (bug reportado).
   const [fastDelete, setFastDelete] = useState<{
     archives: string[];
-    inspections: DropInspection[];
-    reports: DropCommitReport[];
   } | null>(null);
   const [fastDeleting, setFastDeleting] = useState(false);
   // (v5.2.0) Path de un archivo cifrado esperando contraseña. `wrong` =
@@ -55,6 +53,12 @@ export function DragDropOverlay() {
   const [pwPrompt, setPwPrompt] = useState<{ path: string; wrong: boolean } | null>(
     null,
   );
+  // (v5.2.1) Acumulador de archivos origen ya instalados, pendientes de
+  // ofrecer su borrado. Se vuelca (flushDeletePrompt) solo cuando NO
+  // quedan contraseñas pendientes — así el prompt de borrado no aparece
+  // a medias ni se solapa con el de contraseña en un drop masivo con
+  // varios cifrados.
+  const deleteAccumRef = useRef<string[]>([]);
 
   const refreshInstalled = useDownloadsStore((s) => s.refreshInstalled);
   const rescanCommunity = useCommunityStore((s) => s.rescan);
@@ -108,20 +112,16 @@ export function DragDropOverlay() {
       }),
     );
 
-    // (v5.2.0) ¿Algún path necesita contraseña? Pedimos una para el
-    // primero y reintentamos sólo ese path con la clave.
-    const pwPending = inspections.find(
+    // (v5.2.1) Archivos que (todavía) requieren contraseña. En un drop
+    // masivo puede haber varios — los recogemos TODOS para reintentarlos
+    // juntos con la misma clave (los de un mismo paquete suelen
+    // compartirla) en vez de dejar los demás colgados.
+    const pwPendingList = inspections.filter(
       (i) =>
         !!i.error &&
         (i.error.includes("NEEDS_PASSWORD") ||
           i.error.includes("WRONG_PASSWORD")),
     );
-    if (pwPending) {
-      setPwPrompt({
-        path: pwPending.path,
-        wrong: pwPending.error!.includes("WRONG_PASSWORD"),
-      });
-    }
 
     setResults((prev) =>
       prev.map((r) => {
@@ -156,12 +156,14 @@ export function DragDropOverlay() {
       .map((i) => i.inspection)
       .filter((i): i is DropInspection => !!i && i.items.length > 0);
 
-    if (validInspections.length === 0) {
-      return;
-    }
+    const allSingle =
+      validInspections.length > 0 &&
+      validInspections.every((i) => i.items.length === 1);
 
-    const allSingle = validInspections.every((i) => i.items.length === 1);
-    if (allSingle) {
+    if (validInspections.length > 0 && allSingle) {
+      // FAST-PATH: todo de 1 item (liveries, aviones sueltos…). Commit
+      // directo, marca instalado YA y acumula los archivos para ofrecer
+      // su borrado al final (cuando no quede ninguna clave pendiente).
       const reports: DropCommitReport[] = [];
       const committed: string[] = [];
       for (const insp of validInspections) {
@@ -188,20 +190,34 @@ export function DragDropOverlay() {
           });
         }
       }
-      const uniqueArchives = Array.from(new Set(committed));
-      if (uniqueArchives.length > 0) {
-        setFastDelete({
-          archives: uniqueArchives,
-          inspections: validInspections,
-          reports,
-        });
-        return;
-      }
-      onDoneBatch(validInspections, reports);
-      return;
+      await onDoneBatch(validInspections, reports);
+      deleteAccumRef.current.push(...committed);
+    } else if (validInspections.length > 0) {
+      // Multi-item → modal de selección paginado.
+      setActiveInspections(validInspections);
     }
 
-    setActiveInspections(validInspections);
+    // (v5.2.1) Resolución de contraseñas: si aún quedan archivos
+    // cifrados, pedimos UNA clave (se reintentarán todos juntos). Si no
+    // queda ninguna, recién ahí volcamos el prompt de borrado de los
+    // archivos origen — así no aparece a medias ni se solapa con el de
+    // contraseña.
+    if (pwPendingList.length > 0) {
+      setPwPrompt({
+        path: pwPendingList[0].path,
+        wrong: pwPendingList[0].error!.includes("WRONG_PASSWORD"),
+      });
+    } else {
+      flushDeletePrompt();
+    }
+  };
+
+  /** (v5.2.1) Vuelca los archivos acumulados al prompt de borrado, si
+   *  hay alguno. Se llama cuando ya no quedan contraseñas pendientes. */
+  const flushDeletePrompt = () => {
+    const archives = Array.from(new Set(deleteAccumRef.current));
+    deleteAccumRef.current = [];
+    if (archives.length > 0) setFastDelete({ archives });
   };
 
   const refreshUis = async () => {
@@ -293,9 +309,9 @@ export function DragDropOverlay() {
                   }
                   setFastDeleting(false);
                 }
-                const fd = fastDelete;
+                // (v5.2.1) Los paquetes ya se marcaron "instalado" vía
+                // onDoneBatch al hacer commit; aquí solo cerramos.
                 setFastDelete(null);
-                void onDoneBatch(fd.inspections, fd.reports);
               }}
             />
           </div>
@@ -308,18 +324,30 @@ export function DragDropOverlay() {
           fileName={pwPrompt.path.split(/[\\/]/).pop() ?? pwPrompt.path}
           wrong={pwPrompt.wrong}
           onSubmit={(pw) => {
-            const path = pwPrompt.path;
+            const fallback = pwPrompt.path;
             setPwPrompt(null);
-            void processDropBatch([path], pw);
+            // (v5.2.1) Reintentar TODOS los archivos que esperan
+            // contraseña con esta clave — los de un mismo paquete suelen
+            // compartirla. Los que sigan fallando volverán a pedir clave.
+            const awaiting = results
+              .filter((r) => r.state === "awaiting_password")
+              .map((r) => r.path);
+            void processDropBatch(awaiting.length > 0 ? awaiting : [fallback], pw);
           }}
           onCancel={() => {
-            const path = pwPrompt.path;
             setPwPrompt(null);
+            // (v5.2.1) Cancelar = abortar la entrada de claves: marca
+            // como cancelados TODOS los que esperaban contraseña (no solo
+            // este) para que la app no quede "procesando" indefinidamente,
+            // y ofrece borrar los que sí se instalaron.
             setResults((prev) =>
               prev.map((r) =>
-                r.path === path ? { path, state: "cancelled" } : r,
+                r.state === "awaiting_password"
+                  ? { path: r.path, state: "cancelled" }
+                  : r,
               ),
             );
+            flushDeletePrompt();
           }}
         />
       )}
