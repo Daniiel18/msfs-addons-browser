@@ -2168,6 +2168,11 @@ mod windows_simconnect {
                         // SimBrief (sin esperar al temporizador) para capturar
                         // su OFP en la cola antes del pushback.
                         if fmc_callsign.is_some() && latest_fmc_callsign != fmc_callsign {
+                            tracing::info!(
+                                target: "simbrief",
+                                "FMC CallSign detectado/cambiado a {:?} (airline={:?} fltnum={:?}) → fetch SimBrief inmediato",
+                                fmc_callsign, airline, raw_flight_number
+                            );
                             let _ = app.emit("simbrief://fetch-now", ());
                         }
                         if fmc_callsign.is_some() {
@@ -3455,6 +3460,11 @@ mod windows_simconnect {
                         // inmediato de SimBrief para capturar cualquier
                         // cambio de última hora del OFP antes de congelar el
                         // plan del vuelo.
+                        tracing::info!(
+                            target: "simbrief",
+                            "OUT/pushback — último fetch de rescate a SimBrief (simbrief://fetch-now), fmc_callsign={:?}",
+                            fmc_callsign
+                        );
                         let _ = app_c.emit("simbrief://fetch-now", ());
                         let pool_b = pool_c.clone();
                         let app_b = app_c.clone();
@@ -4559,11 +4569,21 @@ mod windows_simconnect {
             .map(crate::simbrief::normalize_callsign)
             .filter(|s| s.len() >= 3)
         {
-            if let Ok(all) = crate::simbrief::list_flights(pool).await {
-                if let Some(ofp) = all
+            let matched = match crate::simbrief::list_flights(pool).await {
+                Ok(all) => all
                     .into_iter()
-                    .find(|f| crate::simbrief::ofp_matches_fmc(f, &fmc_norm))
-                {
+                    .find(|f| crate::simbrief::ofp_matches_fmc(f, &fmc_norm)),
+                Err(_) => None,
+            };
+            match matched {
+                None => {
+                    tracing::info!(
+                        target: "simbrief",
+                        "FMC={:?}: ningún OFP en la cola coincide todavía — sigo con scorer/modal (flight {})",
+                        fmc_norm, flight_id
+                    );
+                }
+                Some(ofp) => {
                     let derived_airline =
                         crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
                     let res = sqlx::query(
