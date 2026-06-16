@@ -477,10 +477,6 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     if let Err(e) = simbrief::cleanup_stale_ofps(&db).await {
         tracing::warn!("simbrief: cleanup_stale_ofps falló: {e:#}");
     }
-    // (v5.2.3) Purga la cola local /OFP en disco — cada sesión empieza
-    // limpia, sin OFPs colgados de la sesión anterior (cuenta compartida).
-    // Sólo borra archivos temporales; NO toca tracks ni simbrief_flights.
-    simbrief::purge_ofp_queue();
     // Cliente GSX comparte el `reqwest::Client` con las fuentes — mismo
     // pool de conexiones, mismo timeout, misma resolución DNS.
     let gsx = GsxClient::new(http.clone());

@@ -573,13 +573,6 @@ mod windows_simconnect {
         atc_type: [u8; 256],
         atc_airline: [u8; 256],
         atc_id: [u8; 256],
-        /// (v5.2.3) `ATC FLIGHT NUMBER` — el número de vuelo que el piloto
-        /// pone en la FMC/EFB. Junto con `atc_airline` (ICAO) forma el
-        /// CallSign que cruzamos contra los OFP de la cola para elegir el
-        /// plan correcto en cuenta compartida. Settable en MSFS 2020 y 2024
-        /// (no existe una simvar literal "ATC CALLSIGN"). DEBE ir AL FINAL
-        /// del struct y de `meta_names` para no mover los offsets previos.
-        atc_flight_number: [u8; 256],
     }
 
     impl Default for AircraftMeta {
@@ -589,7 +582,6 @@ mod windows_simconnect {
                 atc_type: [0; 256],
                 atc_airline: [0; 256],
                 atc_id: [0; 256],
-                atc_flight_number: [0; 256],
             }
         }
     }
@@ -1194,9 +1186,6 @@ mod windows_simconnect {
             "ATC TYPE",
             "ATC AIRLINE",
             "ATC ID",
-            // (v5.2.3) Número de vuelo de la FMC — AL FINAL para no mover
-            // los offsets de los strings previos en el struct AircraftMeta.
-            "ATC FLIGHT NUMBER",
         ];
         let mut meta_defs_ok = true;
         for name in meta_names {
@@ -1706,12 +1695,6 @@ mod windows_simconnect {
         // `update_aircraft_meta` cuando cambia mid-flight (el usuario
         // entró al Hangar y cambió livery).
         let mut aircraft_meta_cache: Option<AircraftMeta> = None;
-        // (v5.2.3) CallSign normalizado que el piloto puso en la FMC
-        // (`ATC AIRLINE` ICAO + `ATC FLIGHT NUMBER`). Lo cruzamos contra los
-        // OFP de la cola para elegir el plan correcto en cuenta SimBrief
-        // compartida — ignorando el del amigo. Se actualiza en el dispatch
-        // del meta y se pasa a `populate_simbrief_async` en el OUT y al cierre.
-        let mut latest_fmc_callsign: Option<String> = None;
 
         // (v4.23.0) Datos para el SMART RESTORE CHECK: al recibir la
         // PRIMERA muestra de SimConnect comparamos la posición real del
@@ -2132,19 +2115,6 @@ mod windows_simconnect {
                         // (v4.23.0) Comparamos contra los valores RAW del
                         // cache (no los sanitizados) para que el throttle del
                         // log siga funcionando.
-                        // (v5.2.3) CallSign de la FMC = airline ICAO +
-                        // flight number, normalizado. Lo usamos para elegir
-                        // el OFP correcto en cuenta compartida.
-                        let raw_flight_number = read_cstr(&meta.atc_flight_number);
-                        let fmc_callsign = {
-                            let combined = format!(
-                                "{}{}",
-                                airline.as_deref().unwrap_or(""),
-                                raw_flight_number.as_deref().unwrap_or(""),
-                            );
-                            let n = crate::simbrief::normalize_callsign(&combined);
-                            if n.len() >= 3 { Some(n) } else { None }
-                        };
                         let changed = match &aircraft_meta_cache {
                             None => true,
                             Some(prev) => {
@@ -2152,31 +2122,14 @@ mod windows_simconnect {
                                     || read_cstr(&prev.atc_type) != atc_type
                                     || read_cstr(&prev.atc_airline) != raw_airline
                                     || read_cstr(&prev.atc_id) != raw_reg
-                                    || read_cstr(&prev.atc_flight_number) != raw_flight_number
                             }
                         };
                         if changed {
                             tracing::info!(
                                 target: "simconnect",
-                                "AircraftMeta cambio — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?} fmc_callsign={:?}",
-                                title, atc_type, model, airline, registration, fmc_callsign
+                                "AircraftMeta cambio — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?}",
+                                title, atc_type, model, airline, registration
                             );
-                        }
-                        // (v5.2.3) DISPARADOR REACTIVO POR FMC: si el
-                        // CallSign/Flight Number cambió, el piloto acaba de
-                        // configurar su vuelo → forzamos un fetch inmediato de
-                        // SimBrief (sin esperar al temporizador) para capturar
-                        // su OFP en la cola antes del pushback.
-                        if fmc_callsign.is_some() && latest_fmc_callsign != fmc_callsign {
-                            tracing::info!(
-                                target: "simbrief",
-                                "FMC CallSign detectado/cambiado a {:?} (airline={:?} fltnum={:?}) → fetch SimBrief inmediato",
-                                fmc_callsign, airline, raw_flight_number
-                            );
-                            let _ = app.emit("simbrief://fetch-now", ());
-                        }
-                        if fmc_callsign.is_some() {
-                            latest_fmc_callsign = fmc_callsign.clone();
                         }
                         aircraft_meta_cache = Some(meta);
 
@@ -2348,7 +2301,6 @@ mod windows_simconnect {
                         &mut replay_stable_ticks_normal,
                         &mut prev_absolute_time_s,
                         &mut predeparture_buffer,
-                        latest_fmc_callsign.as_deref(),
                     );
                     // (v4.1.1 FIX) La detección de gate usa el INI de GSX
                     // en disco (`gsx_parking::find_nearest_parking`), que
@@ -2941,10 +2893,6 @@ mod windows_simconnect {
             String,
             crate::flight_log::TrackPointInsert,
         )>,
-        // (v5.2.3) CallSign de la FMC (airline ICAO + flight number,
-        // normalizado) leído del dispatch de meta. Se usa en el OUT y al
-        // cierre para activar el OFP correcto en cuenta SimBrief compartida.
-        fmc_callsign: Option<&str>,
     ) {
         // (v4.0.0 P7.7) Replay/Slew detection FIRST — antes de
         // procesar cualquier otra lógica del state machine.
@@ -3455,28 +3403,15 @@ mod windows_simconnect {
                         // scoring multi-factor: reg + aircraft + fuel +
                         // freshness. Pasamos el fuel_lb capturado AL OUT
                         // (justo arriba) para usarlo como discriminador.
-                        // (v5.2.3) "ÚLTIMO SUSPIRO": en el instante del
-                        // pushback (freno suelto) forzamos un fetch
-                        // inmediato de SimBrief para capturar cualquier
-                        // cambio de última hora del OFP antes de congelar el
-                        // plan del vuelo.
-                        tracing::info!(
-                            target: "simbrief",
-                            "OUT/pushback — último fetch de rescate a SimBrief (simbrief://fetch-now), fmc_callsign={:?}",
-                            fmc_callsign
-                        );
-                        let _ = app_c.emit("simbrief://fetch-now", ());
                         let pool_b = pool_c.clone();
                         let app_b = app_c.clone();
                         let fuel_lb_at_out = fuel_lb;
-                        let fmc_cs_out = fmc_callsign.map(|s| s.to_string());
                         tokio::spawn(async move {
                             // Delay 2s para que update_aircraft_meta tenga
                             // tiempo de poblar aircraft_atc_type y
-                            // aircraft_registration en el DB, y para que el
-                            // fetch del "último suspiro" deje su OFP en la
-                            // cola. El dispatch de meta llega típicamente
-                            // 1-3s después del OUT (FLAG_DEFAULT = 1s polling).
+                            // aircraft_registration en el DB. El dispatch de
+                            // meta llega típicamente 1-3s después del OUT
+                            // (FLAG_DEFAULT = 1s polling).
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                             populate_simbrief_async(
                                 &pool_b,
@@ -3486,7 +3421,6 @@ mod windows_simconnect {
                                 lon_c,
                                 Some(fuel_lb_at_out),
                                 false, // OUT: pre-populate clásico (badge en vivo)
-                                fmc_cs_out, // (v5.2.3) CallSign de la FMC
                             ).await;
                         });
                     } else {
@@ -3761,7 +3695,6 @@ mod windows_simconnect {
                         let app_c = app.clone();
                         let metrics_c = metrics.clone();
                         let reason_c = reason.to_string();
-                        let fmc_cs_in = fmc_callsign.map(|s| s.to_string());
                         tokio::spawn(async move {
                             match crate::flight_log::finish_flight(
                                 &pool_c, id, lat_c, lon_c, metrics_c.clone(),
@@ -3797,7 +3730,7 @@ mod windows_simconnect {
                                     // de motores NO se auto-linkea — se emite
                                     // simbrief://confirm con los candidatos y
                                     // el usuario decide en el modal.
-                                    populate_simbrief_async(&pool_c, &app_c, id, lat_c, lon_c, None, true, fmc_cs_in).await;
+                                    populate_simbrief_async(&pool_c, &app_c, id, lat_c, lon_c, None, true).await;
                                     let _ = app_c.emit("flightlog://changed", ());
 
                                     // (v3.6.0 Phase H — H13) Cierra el
@@ -4527,11 +4460,6 @@ mod windows_simconnect {
         // SimBrief compartida). `false` en el OUT: comportamiento clásico
         // (pre-populate del badge en vivo).
         confirm_mode: bool,
-        // (v5.2.3) CallSign normalizado leído de la FMC del sim (ATC
-        // AIRLINE + ATC FLIGHT NUMBER). Si coincide con un OFP de la cola,
-        // se activa ESE directamente — descartando el del amigo y evitando
-        // el modal. `None` si la FMC no traía un identificador usable.
-        fmc_callsign: Option<String>,
     ) {
         // (v4.0.0 P7.5b) Leemos meta del vuelo incluyendo
         // aircraft_registration que update_aircraft_meta poblaró por
@@ -4553,92 +4481,6 @@ mod windows_simconnect {
             Some((a, b, c, d)) => (a, b, c, d),
             None => (None, None, None, None),
         };
-
-        // (v5.2.3) INYECCIÓN POR FMC — cuenta SimBrief compartida.
-        //
-        // Si conocemos el CallSign/Flight Number que el piloto puso en la
-        // FMC del sim, buscamos en la cola local (simbrief_flights) el OFP
-        // cuyo callsign coincide y lo activamos DIRECTAMENTE — ignorando por
-        // completo los planes del amigo. Esto resuelve el bug de "me pone su
-        // callsign / el suyo se pierde" sin depender del scorer por
-        // matrícula (que en cuenta compartida es idéntica para ambos) ni del
-        // modal de confirmación. Corre en AMBOS modos (OUT y cierre); si no
-        // hay match cae al flujo normal de abajo.
-        if let Some(fmc_norm) = fmc_callsign
-            .as_deref()
-            .map(crate::simbrief::normalize_callsign)
-            .filter(|s| s.len() >= 3)
-        {
-            let all = crate::simbrief::list_flights(pool).await.unwrap_or_default();
-            let matched = all
-                .iter()
-                .find(|f| crate::simbrief::ofp_matches_fmc(f, &fmc_norm))
-                .cloned();
-            match matched {
-                None => {
-                    // (v5.2.5) Listamos los callsigns de la cola para que el
-                    // log muestre POR QUÉ no hubo match (ej. FMC=1234 vs cola
-                    // [IBE3222]) — diagnóstico inmediato del desajuste.
-                    let avail: Vec<String> = all
-                        .iter()
-                        .filter_map(|f| {
-                            f.callsign.clone().or_else(|| f.flight_number.clone())
-                        })
-                        .collect();
-                    tracing::info!(
-                        target: "simbrief",
-                        "FMC={:?}: ningún OFP en la cola coincide — sigo con scorer/modal (flight {}). OFPs en cola: {:?}",
-                        fmc_norm, flight_id, avail
-                    );
-                }
-                Some(ofp) => {
-                    let derived_airline =
-                        crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
-                    let res = sqlx::query(
-                        r#"
-                        UPDATE flight_log
-                        SET simbrief_ofp_id  = ?1,
-                            flight_number    = COALESCE(flight_number, ?2),
-                            callsign         = COALESCE(callsign, ?3),
-                            airline_icao     = COALESCE(airline_icao, ?4),
-                            passengers       = COALESCE(passengers, ?5),
-                            cargo_kg         = COALESCE(cargo_kg, ?6),
-                            fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
-                            route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
-                        WHERE id = ?8
-                        "#,
-                    )
-                    .bind(&ofp.ofp_id)
-                    .bind(ofp.flight_number.as_deref())
-                    .bind(ofp.callsign.as_deref())
-                    .bind(derived_airline.as_deref())
-                    .bind(ofp.pax_count)
-                    .bind(ofp.cargo_kg)
-                    .bind(ofp.fuel_burn_kg)
-                    .bind(flight_id)
-                    .bind(
-                        serde_json::to_string(&ofp.route_fixes)
-                            .unwrap_or_else(|_| "[]".to_string()),
-                    )
-                    .execute(pool)
-                    .await;
-                    match res {
-                        Ok(_) => tracing::info!(
-                            target: "simbrief",
-                            "FMC match: CallSign FMC={:?} → ofp_id={} (callsign={:?}) AUTO-LINK flight {}",
-                            fmc_norm, ofp.ofp_id, ofp.callsign, flight_id
-                        ),
-                        Err(e) => tracing::warn!(
-                            target: "simbrief",
-                            "FMC match: link falló ofp_id={} flight {}: {e:#}",
-                            ofp.ofp_id, flight_id
-                        ),
-                    }
-                    let _ = app.emit("flightlog://changed", ());
-                    return;
-                }
-            }
-        }
 
         // (v4.0.0 P7.5b) Si ya hay OFP linked, hacemos re-scoring
         // (no solo aircraft type) — si el score no llega a viable,

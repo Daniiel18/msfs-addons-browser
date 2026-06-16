@@ -9,7 +9,6 @@ import {
   Settings,
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "./lib/tauri";
 import { setActiveLocale, t } from "./lib/i18n";
 import { useAppStore } from "./stores/useAppStore";
@@ -285,26 +284,6 @@ export default function App() {
   // capturamos los OFP activos durante la planificación.
   const atDepartureGate =
     flightStatus?.onGround === true && !!flightStatus?.currentGate;
-
-  // (v5.2.3) Disparador reactivo: el watcher emite `simbrief://fetch-now`
-  // cuando el piloto cambia el CallSign/Flight Number en la FMC y en el
-  // pushback ("último suspiro"). Bajamos el OFP al instante, sin esperar al
-  // temporizador de 30s — así su plan entra en la cola /OFP antes de
-  // congelarse. Si no hay pilotId, refresh no-opea sin romper nada.
-  useEffect(() => {
-    if (!isTauri) return;
-    let cancelled = false;
-    const un = listen("simbrief://fetch-now", () => {
-      if (cancelled) return;
-      void refreshSimBrief().catch((e) =>
-        console.warn("simbrief fetch-now:", e),
-      );
-    });
-    return () => {
-      cancelled = true;
-      void un.then((f) => f());
-    };
-  }, [refreshSimBrief]);
 
   useEffect(() => {
     if (!ready) return;
