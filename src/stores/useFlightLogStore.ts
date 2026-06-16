@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { AirlineTag, FlightLogEntry, FlightStatus } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { cleanAtcType } from "../lib/aircraft";
 
 /**
  * (v4.0.0 — P1 fix flicker) Merger inteligente para `FlightStatus`
@@ -218,7 +219,15 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
   async reload() {
     set({ loading: true, lastError: null });
     try {
-      const entries = await api.listFlightLog();
+      const raw = await api.listFlightLog();
+      // (v5.2.9) Saneamos el ATC TYPE basura ("ATCCOM.ATC_NAME …") para que
+      // la UI muestre el título del avión en su lugar — afecta a TODAS las
+      // vistas que leen entries (tarjeta, lista, detalle) y a los vuelos ya
+      // guardados, sin tener que volver a volar.
+      const entries = raw.map((e) => ({
+        ...e,
+        aircraftAtcType: cleanAtcType(e.aircraftAtcType),
+      }));
       set({ entries, loading: false });
     } catch (e) {
       set({ lastError: String(e), loading: false });

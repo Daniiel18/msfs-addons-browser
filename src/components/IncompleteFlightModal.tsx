@@ -7,6 +7,7 @@ import type { FlightLogEntry, FlightTrackPoint } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { segmentTrackCoords, smoothCatmullRom } from "../lib/smooth";
+import { cleanAtcType } from "../lib/aircraft";
 
 /**
  * (v4.23.0) Modal de VUELO INCOMPLETO — aparece al abrir la app cuando
@@ -248,7 +249,10 @@ function IncompleteFlightCard({
                 {t("fb.incomplete.aircraft")}
               </div>
               <div className="truncate font-mono text-[11px] text-slate-200">
-                {entry.aircraftAtcType ?? entry.aircraftModel ?? "—"}
+                {cleanAtcType(entry.aircraftAtcType) ??
+                  entry.aircraftModel ??
+                  entry.aircraftTitle ??
+                  "—"}
               </div>
             </div>
           </div>
