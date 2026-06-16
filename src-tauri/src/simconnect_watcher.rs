@@ -4810,6 +4810,26 @@ mod windows_simconnect {
                 return;
             }
 
+            // (v5.2.8) Si quedan varios OFP "míos", reduce a los que casan con
+            // el ORIGEN del vuelo actual (el plan del vuelo en curso). Si solo
+            // uno coincide, se auto-linkea sin modal — cubre el caso de tener
+            // un OFP viejo propio (otra ruta) además del actual en la cola.
+            if ordered.len() > 1 {
+                let origin_hits: Vec<crate::simbrief::SimBriefFlight> = ordered
+                    .iter()
+                    .filter(|f| f.origin_icao.eq_ignore_ascii_case(&icao))
+                    .cloned()
+                    .collect();
+                if origin_hits.len() == 1 {
+                    tracing::info!(
+                        target: "simbrief",
+                        "confirm: {} OFP propios → 1 casa con el origen {} → auto-link (flight {})",
+                        ordered.len(), icao, flight_id
+                    );
+                    ordered = origin_hits;
+                }
+            }
+
             // (v5.0.0 M3) Un solo CallSign → asignación automática, SIN
             // modal. Más de uno → modal "¿Cuál es tu CallSign?".
             if ordered.len() == 1 {
