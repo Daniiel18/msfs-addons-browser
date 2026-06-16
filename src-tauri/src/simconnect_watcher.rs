@@ -4569,18 +4569,26 @@ mod windows_simconnect {
             .map(crate::simbrief::normalize_callsign)
             .filter(|s| s.len() >= 3)
         {
-            let matched = match crate::simbrief::list_flights(pool).await {
-                Ok(all) => all
-                    .into_iter()
-                    .find(|f| crate::simbrief::ofp_matches_fmc(f, &fmc_norm)),
-                Err(_) => None,
-            };
+            let all = crate::simbrief::list_flights(pool).await.unwrap_or_default();
+            let matched = all
+                .iter()
+                .find(|f| crate::simbrief::ofp_matches_fmc(f, &fmc_norm))
+                .cloned();
             match matched {
                 None => {
+                    // (v5.2.5) Listamos los callsigns de la cola para que el
+                    // log muestre POR QUÉ no hubo match (ej. FMC=1234 vs cola
+                    // [IBE3222]) — diagnóstico inmediato del desajuste.
+                    let avail: Vec<String> = all
+                        .iter()
+                        .filter_map(|f| {
+                            f.callsign.clone().or_else(|| f.flight_number.clone())
+                        })
+                        .collect();
                     tracing::info!(
                         target: "simbrief",
-                        "FMC={:?}: ningún OFP en la cola coincide todavía — sigo con scorer/modal (flight {})",
-                        fmc_norm, flight_id
+                        "FMC={:?}: ningún OFP en la cola coincide — sigo con scorer/modal (flight {}). OFPs en cola: {:?}",
+                        fmc_norm, flight_id, avail
                     );
                 }
                 Some(ofp) => {
