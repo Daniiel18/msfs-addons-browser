@@ -6,11 +6,17 @@ import { t } from "../lib/i18n";
 
 /**
  * (v5.1.0) Modal de elección de versión de MSFS al primer arranque.
- * Bloqueante: el usuario elige 2020 o 2024 y la app recarga para
- * aplicar (filtro del catálogo de SceneryAddons + carpeta Community de
- * esa versión). Sólo aparece cuando `settings.simVersion` está vacío.
+ * Bloqueante: el usuario elige 2020 o 2024 y la app aplica el filtro del
+ * catálogo de SceneryAddons + la carpeta Community de esa versión. Sólo
+ * aparece cuando `settings.simVersion` está vacío.
+ *
+ * (v5.2.3) `onChosen` opcional: cuando se renderiza DURANTE el splash
+ * (antes del scan de Community), el bootstrap pasa este callback para
+ * continuar el arranque sin recargar — la versión ya queda fijada en el
+ * backend (atómico) ANTES de escanear. Sin `onChosen` (uso legacy fuera
+ * del splash) recarga la app para reaplicar todo.
  */
-export function SimVersionModal() {
+export function SimVersionModal({ onChosen }: { onChosen?: () => void } = {}) {
   const setSimVersion = useSettingsStore((s) => s.setSimVersion);
   const [busy, setBusy] = useState<"msfs2020" | "msfs2024" | null>(null);
 
@@ -19,8 +25,14 @@ export function SimVersionModal() {
     setBusy(v);
     try {
       await setSimVersion(v);
-      // Recarga para reaplicar Community + filtro del catálogo.
-      window.location.reload();
+      if (onChosen) {
+        // Splash: el atómico del backend ya está fijado; seguimos el
+        // bootstrap (scan + catálogo) con la versión correcta.
+        onChosen();
+      } else {
+        // Recarga para reaplicar Community + filtro del catálogo.
+        window.location.reload();
+      }
     } catch {
       setBusy(null);
     }

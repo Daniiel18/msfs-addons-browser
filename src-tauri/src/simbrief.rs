@@ -14,6 +14,8 @@
 //! son estables — un parser completo es overkill y aumenta el
 //! tamaño del binario sin beneficio.
 
+use std::path::PathBuf;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -139,6 +141,87 @@ pub struct SimBriefNotam {
 
 const API_BASE: &str = "https://www.simbrief.com/api/xml.fetcher.php";
 
+// ---------------------------------------------------------------------------
+// (v5.2.3) Cola local de OFPs + match por CallSign de la FMC
+// ---------------------------------------------------------------------------
+//
+// Con una cuenta SimBrief COMPARTIDA (el usuario y un amigo planifican con
+// la misma cuenta), el fetcher de SimBrief sólo devuelve el ÚLTIMO OFP
+// generado y NO hay endpoint de historial. Para no perder ni mezclar los
+// planes de los dos pilotos:
+//
+//   1. Cada OFP que el poller baja se ESCRIBE a una cola temporal en disco
+//      (`/OFP`) con nombre `ofp_<ID>_<CALLSIGN>.xml` → los planes de cada
+//      piloto nunca se pisan en disco aunque compartan ID-edición.
+//   2. El watcher lee de SimConnect el CallSign / Flight Number que el
+//      piloto puso en la FMC (`ATC AIRLINE` + `ATC FLIGHT NUMBER`) y activa
+//      el OFP cuyo callsign COINCIDE — ignorando por completo el del amigo.
+//   3. La cola se PURGA al arrancar la app: cada sesión empieza limpia.
+
+/// Carpeta temporal de la cola local de OFPs. Efímera por diseño.
+pub fn ofp_queue_dir() -> PathBuf {
+    std::env::temp_dir().join("SimFleet").join("OFP")
+}
+
+/// Borra por completo el contenido de la cola `/OFP`. Best-effort; se llama
+/// al iniciar la app para no arrastrar planes colgados de sesiones previas.
+/// NO toca la DB de tracks ni `simbrief_flights` — sólo archivos temporales.
+pub fn purge_ofp_queue() {
+    let dir = ofp_queue_dir();
+    match std::fs::remove_dir_all(&dir) {
+        Ok(_) => tracing::info!(target: "simbrief", "cola /OFP purgada: {}", dir.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::debug!(target: "simbrief", "purge /OFP falló: {e:#}"),
+    }
+}
+
+/// Persiste el OFP crudo en la cola `/OFP`. Nombre = ID + CallSign saneado
+/// para no colisionar entre pilotos. Best-effort — un fallo de disco no
+/// debe romper el refresh de SimBrief.
+fn write_ofp_to_queue(ofp_id: &str, callsign: Option<&str>, raw_xml: &str) {
+    let dir = ofp_queue_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::debug!(target: "simbrief", "create /OFP dir falló: {e:#}");
+        return;
+    }
+    let cs = callsign
+        .map(normalize_callsign)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "NA".to_string());
+    let id = normalize_callsign(ofp_id);
+    let path = dir.join(format!("ofp_{}_{}.xml", id, cs));
+    if let Err(e) = std::fs::write(&path, raw_xml) {
+        tracing::debug!(target: "simbrief", "write {} falló: {e:#}", path.display());
+    }
+}
+
+/// Normaliza un identificador de vuelo (callsign / flight number) para
+/// comparar el de la FMC del sim contra el del OFP: uppercase + sólo
+/// alfanuméricos. "BEL 341" / "bel341" / "BEL-341" → "BEL341".
+pub fn normalize_callsign(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// ¿El OFP corresponde al identificador que el piloto puso en la FMC?
+/// Compara contra el `callsign` Y el `flight_number` del OFP con tolerancia
+/// de substring (la FMC a veces trae sólo el número "341" y el OFP
+/// "BEL341", o al revés). Exige longitud mínima de 3 en ambos lados para
+/// evitar falsos positivos triviales.
+pub fn ofp_matches_fmc(ofp: &SimBriefFlight, fmc_norm: &str) -> bool {
+    if fmc_norm.len() < 3 {
+        return false;
+    }
+    [ofp.callsign.as_deref(), ofp.flight_number.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(normalize_callsign)
+        .filter(|c| c.len() >= 3)
+        .any(|c| c == fmc_norm || c.contains(fmc_norm) || fmc_norm.contains(&c))
+}
+
 /// Descarga el último OFP del piloto y lo persiste. Devuelve si
 /// fue una entrada nueva o si ya estaba en la tabla (mismo OFP id).
 pub async fn refresh_latest(
@@ -164,6 +247,12 @@ pub async fn refresh_latest(
             pilot_id
         )
     })?;
+
+    // (v5.2.3) Encolamos el OFP crudo en `/OFP` (ofp_<ID>_<CALLSIGN>.xml).
+    // Disco-namespaced por CallSign para que los planes de dos pilotos en
+    // una cuenta compartida no se pisen. El match real lo hace el watcher
+    // por CallSign de la FMC; esto es la cola de espera persistente.
+    write_ofp_to_queue(&flight.ofp_id, flight.callsign.as_deref(), &xml);
 
     // ¿Existe ya el ofp_id?
     let existing: Option<(String,)> = sqlx::query_as(

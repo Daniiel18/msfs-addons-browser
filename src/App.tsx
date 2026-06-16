@@ -9,6 +9,7 @@ import {
   Settings,
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "./lib/tauri";
 import { setActiveLocale, t } from "./lib/i18n";
 import { useAppStore } from "./stores/useAppStore";
@@ -193,6 +194,13 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
+  // (v5.2.3) Gate de versión de MSFS DURANTE el splash. Si es el primer
+  // arranque (simVersion vacío), el bootstrap muestra el chooser ANTES de
+  // escanear Community y espera por esta promesa para continuar con la
+  // versión ya aplicada en el backend.
+  const [simVersionChoice, setSimVersionChoice] = useState<{
+    resolve: () => void;
+  } | null>(null);
   // (v1.1.4) Modal de importación de inventario. Se abre vía custom
   // event despachado desde la UI de Settings (`ImportInventoryRow`).
   const [importInventoryPath, setImportInventoryPath] = useState<string | null>(
@@ -277,6 +285,26 @@ export default function App() {
   // capturamos los OFP activos durante la planificación.
   const atDepartureGate =
     flightStatus?.onGround === true && !!flightStatus?.currentGate;
+
+  // (v5.2.3) Disparador reactivo: el watcher emite `simbrief://fetch-now`
+  // cuando el piloto cambia el CallSign/Flight Number en la FMC y en el
+  // pushback ("último suspiro"). Bajamos el OFP al instante, sin esperar al
+  // temporizador de 30s — así su plan entra en la cola /OFP antes de
+  // congelarse. Si no hay pilotId, refresh no-opea sin romper nada.
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    const un = listen("simbrief://fetch-now", () => {
+      if (cancelled) return;
+      void refreshSimBrief().catch((e) =>
+        console.warn("simbrief fetch-now:", e),
+      );
+    });
+    return () => {
+      cancelled = true;
+      void un.then((f) => f());
+    };
+  }, [refreshSimBrief]);
 
   useEffect(() => {
     if (!ready) return;
@@ -391,9 +419,15 @@ export default function App() {
       })();
       const sourcesTask = wrap(1, () => sourcesPromise);
 
-      const phase1 = Promise.all([
+      // (v5.2.3) Settings PRIMERO + gate de versión de MSFS. El scan de
+      // Community y el filtro del catálogo dependen de la versión elegida,
+      // así que en el PRIMER arranque hay que pedirla AQUÍ (en el splash)
+      // antes de escanear — no después de abrir la app, que era el bug
+      // reportado. El resto de bootstraps de phase1 NO dependen de la
+      // versión, así que siguen corriendo en paralelo mientras esperamos.
+      const settingsTask = wrap(2, () => bootstrapSettings());
+      const otherPhase1 = Promise.all([
         sourcesTask,
-        wrap(2, () => bootstrapSettings()),
         wrap(3, () => bootstrapSimBrief()),
         wrap(4, () => bootstrapFlightLog()),
         wrap(5, () => bootstrapDownloads()),
@@ -402,6 +436,21 @@ export default function App() {
         // marca de tarea propia, fail silently si no hay carpeta.
         useGsxLocalStore.getState().refresh(),
       ]);
+
+      // Esperamos SOLO a settings para conocer la versión, y si falta
+      // (primer arranque) bloqueamos hasta que el usuario la elija. El
+      // backend fija su atómico al persistir (`set_app_setting` →
+      // `sim::set_from_str`), así que el scan que sigue usa la correcta.
+      await settingsTask;
+      if (isTauri && !cancelled) {
+        const ver = useSettingsStore.getState().settings.simVersion;
+        if (!ver) {
+          await new Promise<void>((resolve) => {
+            setSimVersionChoice({ resolve });
+          });
+        }
+      }
+      if (cancelled) return;
 
       // FASE 2 — scan del FS. Independiente de la red. Limitamos
       // a 8 segundos máx para no bloquear el splash si la carpeta
@@ -419,7 +468,7 @@ export default function App() {
         ]),
       );
 
-      await Promise.allSettled([phase1, phase2]);
+      await Promise.allSettled([otherPhase1, phase2]);
 
       // FASE 3 — refresh de updates contra catálogos + pre-load
       // de catálogos. Antes corrían en background tras dismiss;
@@ -578,15 +627,28 @@ export default function App() {
 
   if (!ready) {
     return (
-      <SplashScreen
-        tasks={splashTasks}
-        appVersion={appVersion}
-        appUpdate={appUpdate}
-        installing={updateInstalling}
-        updateProgress={updateProgress}
-        onInstallUpdate={handleInstallUpdate}
-        onSkipUpdate={handleSkipUpdate}
-      />
+      <>
+        <SplashScreen
+          tasks={splashTasks}
+          appVersion={appVersion}
+          appUpdate={appUpdate}
+          installing={updateInstalling}
+          updateProgress={updateProgress}
+          onInstallUpdate={handleInstallUpdate}
+          onSkipUpdate={handleSkipUpdate}
+        />
+        {/* (v5.2.3) Elección de versión de MSFS en el splash, ANTES del
+            scan de Community. Al elegir, fija el atómico del backend y
+            resuelve el gate para que el bootstrap continúe. */}
+        {simVersionChoice && (
+          <SimVersionModal
+            onChosen={() => {
+              simVersionChoice.resolve();
+              setSimVersionChoice(null);
+            }}
+          />
+        )}
+      </>
     );
   }
 
