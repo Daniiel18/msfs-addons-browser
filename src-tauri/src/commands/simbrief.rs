@@ -71,28 +71,6 @@ pub async fn set_simbrief_pilot_id(
         .map_err(|e| e.to_string())
 }
 
-/// (v5.2.7) Números de vuelo del AMIGO en cuenta SimBrief compartida.
-/// El usuario los configura (CSV, ej. "357"); los OFP con esos números se
-/// ignoran al elegir el plan — todos los demás son del usuario.
-#[tauri::command]
-pub async fn get_simbrief_friend_flights(
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    simbrief::get_friend_flights_raw(&state.db)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn set_simbrief_friend_flights(
-    value: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    simbrief::set_friend_flights(&state.db, value.trim())
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// Descarga el último OFP de SimBrief y lo persiste si es nuevo.
 /// Si no hay `simbrief_pilot_id` configurado en settings, devuelve
 /// error para que la UI pida al usuario que lo configure.

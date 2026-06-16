@@ -652,46 +652,6 @@ pub fn flight_digits(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
-/// Lista (en dígitos) de los números de vuelo del amigo, desde el setting
-/// `simbrief_friend_flights` (CSV/espacios). Vacía si no se configuró.
-pub async fn get_friend_flight_numbers(pool: &SqlitePool) -> Vec<String> {
-    let raw: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = 'simbrief_friend_flights'")
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-    raw.map(|(v,)| v)
-        .unwrap_or_default()
-        .split([',', ';', ' ', '\n', '\t'])
-        .map(flight_digits)
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-/// Valor crudo del setting (para mostrarlo en Ajustes).
-pub async fn get_friend_flights_raw(pool: &SqlitePool) -> anyhow::Result<Option<String>> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = 'simbrief_friend_flights'")
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.map(|(v,)| v).filter(|s| !s.trim().is_empty()))
-}
-
-pub async fn set_friend_flights(pool: &SqlitePool, value: &str) -> anyhow::Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO settings (key, value, updated_at)
-        VALUES ('simbrief_friend_flights', ?1, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-        "#,
-    )
-    .bind(value)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// Dígitos del identificador de vuelo del OFP (callsign o, si falta,
 /// flight_number). "RPA357" → "357".
 pub fn ofp_digits(ofp: &SimBriefFlight) -> String {
@@ -713,8 +673,7 @@ pub fn ofp_digits(ofp: &SimBriefFlight) -> String {
 //     357 → se EXCLUYE el 357 (lo demás es mío).
 //   · Correo distinto o ausente → es Hector → su vuelo es el 357 → se
 //     CONSERVA SOLO el 357 (lo demás es del otro).
-// El setting manual `simbrief_friend_flights`, si está, tiene prioridad como
-// override (modo "excluir estos números").
+// Si Hector cambiara de número algún día, basta editar FRIEND_FLIGHT_NUMBER.
 
 /// Correos del dueño (Jose). Hardcodeado por diseño — app privada de 2
 /// usuarios, no software público (igual que la whitelist del cloud).
@@ -745,13 +704,8 @@ async fn get_cloud_email(pool: &SqlitePool) -> Option<String> {
     row.map(|(v,)| v).filter(|s| !s.trim().is_empty())
 }
 
-/// Determina el filtro de propiedad. Override manual primero; si no, por
-/// el correo del Drive conectado.
+/// Determina el filtro de propiedad por el correo del Drive conectado.
 pub async fn ownership_filter(pool: &SqlitePool) -> OwnershipFilter {
-    let manual = get_friend_flight_numbers(pool).await;
-    if !manual.is_empty() {
-        return OwnershipFilter::Exclude(manual);
-    }
     let email = get_cloud_email(pool).await;
     let is_owner = email
         .as_deref()
