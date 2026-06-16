@@ -486,7 +486,7 @@ pub async fn score_simbrief_candidates(
     // Al ENGINE SHUTDOWN, populate re-valida, no encuentra su OFP,
     // desliga (clear flight_number/callsign), emite Ambiguous, toast
     // re-aparece, click no hace nada (link rechazado por ended_at).
-    let rows = sqlx::query_as::<_, SimBriefFlight>(
+    let mut rows = sqlx::query_as::<_, SimBriefFlight>(
         r#"
         SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
                origin_icao, origin_name, origin_lat, origin_lon,
@@ -516,6 +516,11 @@ pub async fn score_simbrief_candidates(
     .bind(current_flight_id)
     .fetch_all(pool)
     .await?;
+
+    // (v5.2.7) Cuenta compartida: descarta los OFP cuyo número de vuelo
+    // sea del amigo (configurado por el usuario). Todos los demás son suyos.
+    let friend_digits = get_friend_flight_numbers(pool).await;
+    rows.retain(|r| !ofp_is_friends(r, &friend_digits));
 
     if rows.is_empty() {
         return Ok(MatchResult::NoMatch);
@@ -719,6 +724,77 @@ pub async fn set_pilot_id(pool: &SqlitePool, pilot_id: &str) -> anyhow::Result<(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// (v5.2.7) Propiedad por Flight Number en cuenta SimBrief compartida
+// ---------------------------------------------------------------------------
+//
+// El discriminador definitivo elegido por el usuario: él configura los
+// NÚMEROS DE VUELO de su amigo (ej. "357"); cualquier OFP cuyo número
+// coincida (sin importar la aerolínea) es del amigo y se IGNORA. Todos los
+// demás números son del usuario. No depende de SimConnect ni del avión.
+
+/// Extrae solo los dígitos de un identificador de vuelo:
+/// "RPA357" → "357", "AAL787" → "787", "357" → "357".
+pub fn flight_digits(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// Lista (en dígitos) de los números de vuelo del amigo, desde el setting
+/// `simbrief_friend_flights` (CSV/espacios). Vacía si no se configuró.
+pub async fn get_friend_flight_numbers(pool: &SqlitePool) -> Vec<String> {
+    let raw: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'simbrief_friend_flights'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    raw.map(|(v,)| v)
+        .unwrap_or_default()
+        .split([',', ';', ' ', '\n', '\t'])
+        .map(flight_digits)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Valor crudo del setting (para mostrarlo en Ajustes).
+pub async fn get_friend_flights_raw(pool: &SqlitePool) -> anyhow::Result<Option<String>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'simbrief_friend_flights'")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v).filter(|s| !s.trim().is_empty()))
+}
+
+pub async fn set_friend_flights(pool: &SqlitePool, value: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ('simbrief_friend_flights', ?1, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// ¿El OFP pertenece a un número de vuelo del amigo? Compara los dígitos
+/// del callsign (o, si falta, del flight_number) contra la lista del amigo.
+pub fn ofp_is_friends(ofp: &SimBriefFlight, friend_digits: &[String]) -> bool {
+    if friend_digits.is_empty() {
+        return false;
+    }
+    let d = ofp
+        .callsign
+        .as_deref()
+        .map(flight_digits)
+        .filter(|s| !s.is_empty())
+        .or_else(|| ofp.flight_number.as_deref().map(flight_digits))
+        .unwrap_or_default();
+    !d.is_empty() && friend_digits.iter().any(|f| f == &d)
 }
 
 // ---- Parser XML ------------------------------------------------------------

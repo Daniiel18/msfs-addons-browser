@@ -182,6 +182,8 @@ pub fn run() {
             commands::changelog::fetch_changelog,
             commands::simbrief::get_simbrief_pilot_id,
             commands::simbrief::set_simbrief_pilot_id,
+            commands::simbrief::get_simbrief_friend_flights,
+            commands::simbrief::set_simbrief_friend_flights,
             commands::simbrief::refresh_simbrief,
             commands::simbrief::simbrief_briefing,
             commands::simbrief::list_simbrief_flights,

@@ -12,12 +12,15 @@ import { api } from "../lib/tauri";
  */
 interface SimBriefState {
   pilotId: string | null;
+  /** (v5.2.7) Números de vuelo del amigo (cuenta compartida), CSV. */
+  friendFlights: string | null;
   flights: SimBriefFlight[];
   refreshing: boolean;
   lastError: string | null;
 
   bootstrap: () => Promise<void>;
   setPilotId: (id: string) => Promise<void>;
+  setFriendFlights: (value: string) => Promise<void>;
   refresh: () => Promise<void>;
   reload: () => Promise<void>;
   remove: (ofpId: string) => Promise<void>;
@@ -25,17 +28,19 @@ interface SimBriefState {
 
 export const useSimBriefStore = create<SimBriefState>((set, get) => ({
   pilotId: null,
+  friendFlights: null,
   flights: [],
   refreshing: false,
   lastError: null,
 
   async bootstrap() {
     try {
-      const [pilotId, flights] = await Promise.all([
+      const [pilotId, friendFlights, flights] = await Promise.all([
         api.getSimbriefPilotId(),
+        api.getSimbriefFriendFlights(),
         api.listSimbriefFlights(),
       ]);
-      set({ pilotId, flights });
+      set({ pilotId, friendFlights, flights });
       if (pilotId) {
         // Background — no bloquea bootstrap si la API está caída.
         get().refresh().catch((e) => console.warn("simbrief refresh bg:", e));
@@ -51,6 +56,16 @@ export const useSimBriefStore = create<SimBriefState>((set, get) => ({
       await api.setSimbriefPilotId(id);
       set({ pilotId: id });
       await get().refresh();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  async setFriendFlights(value) {
+    set({ lastError: null });
+    try {
+      await api.setSimbriefFriendFlights(value);
+      set({ friendFlights: value.trim() || null });
     } catch (e) {
       set({ lastError: String(e) });
     }

@@ -366,6 +366,9 @@ interface Api {
   // SimBrief
   getSimbriefPilotId: () => Promise<string | null>;
   setSimbriefPilotId: (pilotId: string) => Promise<void>;
+  /** (v5.2.7) Números de vuelo del amigo (cuenta compartida) — CSV. */
+  getSimbriefFriendFlights: () => Promise<string | null>;
+  setSimbriefFriendFlights: (value: string) => Promise<void>;
   refreshSimbrief: () => Promise<SimBriefRefreshResult>;
   /** (v3.32.0 #4/#6) Briefing on-demand del OFP más reciente: METAR/TAF
    *  reales + NOTAMs. La UI lo muestra si matchea origen+destino del vuelo. */
@@ -678,6 +681,10 @@ const realApi: Api = {
   getSimbriefPilotId: () => invoke<string | null>("get_simbrief_pilot_id"),
   setSimbriefPilotId: (pilotId) =>
     invoke<void>("set_simbrief_pilot_id", { pilotId }),
+  getSimbriefFriendFlights: () =>
+    invoke<string | null>("get_simbrief_friend_flights"),
+  setSimbriefFriendFlights: (value) =>
+    invoke<void>("set_simbrief_friend_flights", { value }),
   refreshSimbrief: () => invoke<SimBriefRefreshResult>("refresh_simbrief"),
   simbriefBriefing: () => invoke<SimBriefBriefing>("simbrief_briefing"),
   listSimbriefFlights: () => invoke<SimBriefFlight[]>("list_simbrief_flights"),
@@ -1411,6 +1418,10 @@ const demoApi: Api = {
     return null;
   },
   async setSimbriefPilotId() {},
+  async getSimbriefFriendFlights() {
+    return null;
+  },
+  async setSimbriefFriendFlights() {},
   async refreshSimbrief() {
     return { added: 0, alreadyKnown: true, flight: null };
   },

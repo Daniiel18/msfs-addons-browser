@@ -183,6 +183,8 @@
 
   "settings.simbrief.pilot_id_title": "SimBrief Pilot ID",
   "settings.simbrief.pilot_id_hint": "In SimBrief: Account → Pilot ID. Without this, flights cannot be downloaded.",
+  "settings.simbrief.friend_flights_title": "Someone else's flight numbers (shared account)",
+  "settings.simbrief.friend_flights_hint": "If you share a SimBrief account, enter the flight numbers that are NOT yours (e.g. 357, 1123), comma-separated. Those OFPs are ignored when picking your plan; everything else is treated as yours. Only the number is compared, regardless of airline.",
   "settings.simbrief.refresh_tooltip": "Refresh the latest OFP",
   "settings.simbrief.simconnect_hint": "SimConnect (real flights): the watcher starts with the app and connects automatically when MSFS is running. Every recorded flight shows up in FlightBook.",
 

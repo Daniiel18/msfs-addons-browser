@@ -64,10 +64,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
   const pilotId = useSimBriefStore((s) => s.pilotId);
   const setPilotId = useSimBriefStore((s) => s.setPilotId);
+  const friendFlights = useSimBriefStore((s) => s.friendFlights);
+  const setFriendFlights = useSimBriefStore((s) => s.setFriendFlights);
   const refreshSimBrief = useSimBriefStore((s) => s.refresh);
 
   const [pilotDraft, setPilotDraft] = useState("");
   const [savingPilot, setSavingPilot] = useState(false);
+  const [friendDraft, setFriendDraft] = useState("");
+  const [savingFriend, setSavingFriend] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [backing, setBacking] = useState(false);
@@ -85,6 +89,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (open) setPilotDraft(pilotId ?? "");
   }, [open, pilotId]);
+
+  useEffect(() => {
+    if (open) setFriendDraft(friendFlights ?? "");
+  }, [open, friendFlights]);
 
   useEffect(() => {
     if (!open) return;
@@ -130,6 +138,17 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       await setPilotId(trimmed);
     } finally {
       setSavingPilot(false);
+    }
+  };
+
+  const onSaveFriend = async () => {
+    const trimmed = friendDraft.trim();
+    if (trimmed === (friendFlights ?? "")) return;
+    setSavingFriend(true);
+    try {
+      await setFriendFlights(trimmed);
+    } finally {
+      setSavingFriend(false);
     }
   };
 
@@ -447,6 +466,33 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 disabled:opacity-40"
                     >
                       {t("common.refresh")}
+                    </button>
+                  </div>
+                </div>
+                {/* (v5.2.7) Cuenta SimBrief COMPARTIDA: números de vuelo del
+                    amigo. Cualquier OFP con esos números se trata como del
+                    amigo y se ignora; todos los demás son tuyos. */}
+                <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+                  <div className="text-xs text-slate-200">
+                    {t("settings.simbrief.friend_flights_title")}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    {t("settings.simbrief.friend_flights_hint")}
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={friendDraft}
+                      onChange={(e) => setFriendDraft(e.target.value)}
+                      placeholder="357, 1123"
+                      className="flex-1 rounded-md border border-slate-800 bg-slate-950/80 px-2 py-1.5 text-xs text-slate-100 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+                    />
+                    <button
+                      onClick={onSaveFriend}
+                      disabled={savingFriend || friendDraft.trim() === (friendFlights ?? "")}
+                      className="rounded-md bg-brand-500/80 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-brand-500 disabled:opacity-40"
+                    >
+                      {savingFriend ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("common.save")}
                     </button>
                   </div>
                 </div>
