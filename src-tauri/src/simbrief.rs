@@ -517,10 +517,10 @@ pub async fn score_simbrief_candidates(
     .fetch_all(pool)
     .await?;
 
-    // (v5.2.7) Cuenta compartida: descarta los OFP cuyo número de vuelo
-    // sea del amigo (configurado por el usuario). Todos los demás son suyos.
-    let friend_digits = get_friend_flight_numbers(pool).await;
-    rows.retain(|r| !ofp_is_friends(r, &friend_digits));
+    // (v5.3.0) Cuenta compartida: conserva solo los OFP que son MÍOS según
+    // la identidad del Google Drive conectado (o el override manual).
+    let owner = ownership_filter(pool).await;
+    rows.retain(|r| ofp_is_mine(r, &owner));
 
     if rows.is_empty() {
         return Ok(MatchResult::NoMatch);
@@ -781,20 +781,91 @@ pub async fn set_friend_flights(pool: &SqlitePool, value: &str) -> anyhow::Resul
     Ok(())
 }
 
-/// ¿El OFP pertenece a un número de vuelo del amigo? Compara los dígitos
-/// del callsign (o, si falta, del flight_number) contra la lista del amigo.
-pub fn ofp_is_friends(ofp: &SimBriefFlight, friend_digits: &[String]) -> bool {
-    if friend_digits.is_empty() {
-        return false;
-    }
-    let d = ofp
-        .callsign
+/// Dígitos del identificador de vuelo del OFP (callsign o, si falta,
+/// flight_number). "RPA357" → "357".
+pub fn ofp_digits(ofp: &SimBriefFlight) -> String {
+    ofp.callsign
         .as_deref()
         .map(flight_digits)
         .filter(|s| !s.is_empty())
         .or_else(|| ofp.flight_number.as_deref().map(flight_digits))
-        .unwrap_or_default();
-    !d.is_empty() && friend_digits.iter().any(|f| f == &d)
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// (v5.3.0) Propiedad AUTOMÁTICA por identidad del Google Drive conectado
+// ---------------------------------------------------------------------------
+//
+// El usuario NO quiere configurar nada: la app sabe quién es por el correo
+// de la cuenta de Google Drive sincronizada (`settings.google_user_email`).
+//   · Correo ∈ OWNER_EMAILS  → soy YO (Jose) → el amigo Hector usa el vuelo
+//     357 → se EXCLUYE el 357 (lo demás es mío).
+//   · Correo distinto o ausente → es Hector → su vuelo es el 357 → se
+//     CONSERVA SOLO el 357 (lo demás es del otro).
+// El setting manual `simbrief_friend_flights`, si está, tiene prioridad como
+// override (modo "excluir estos números").
+
+/// Correos del dueño (Jose). Hardcodeado por diseño — app privada de 2
+/// usuarios, no software público (igual que la whitelist del cloud).
+const OWNER_EMAILS: &[&str] = &[
+    "jose.daniel0318@gmail.com",
+    "jose.daniel031899@gmail.com",
+];
+/// Número de vuelo que SIEMPRE usa el amigo (Hector).
+const FRIEND_FLIGHT_NUMBER: &str = "357";
+
+/// Filtro de propiedad de OFPs en cuenta SimBrief compartida.
+#[derive(Debug, Clone)]
+pub enum OwnershipFilter {
+    /// Excluir los OFP cuyos dígitos estén en la lista (lo demás es mío).
+    Exclude(Vec<String>),
+    /// Conservar SÓLO los OFP cuyos dígitos estén en la lista.
+    KeepOnly(Vec<String>),
+}
+
+/// Correo de la cuenta de Google Drive conectada (si hay).
+async fn get_cloud_email(pool: &SqlitePool) -> Option<String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'google_user_email'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    row.map(|(v,)| v).filter(|s| !s.trim().is_empty())
+}
+
+/// Determina el filtro de propiedad. Override manual primero; si no, por
+/// el correo del Drive conectado.
+pub async fn ownership_filter(pool: &SqlitePool) -> OwnershipFilter {
+    let manual = get_friend_flight_numbers(pool).await;
+    if !manual.is_empty() {
+        return OwnershipFilter::Exclude(manual);
+    }
+    let email = get_cloud_email(pool).await;
+    let is_owner = email
+        .as_deref()
+        .map(|e| {
+            let l = e.trim().to_lowercase();
+            OWNER_EMAILS.iter().any(|o| *o == l)
+        })
+        .unwrap_or(false);
+    if is_owner {
+        // Soy Jose → el amigo (Hector) usa 357 → excluirlo.
+        OwnershipFilter::Exclude(vec![FRIEND_FLIGHT_NUMBER.to_string()])
+    } else {
+        // Correo distinto o ausente → soy Hector → conservar solo 357.
+        OwnershipFilter::KeepOnly(vec![FRIEND_FLIGHT_NUMBER.to_string()])
+    }
+}
+
+/// ¿El OFP es MÍO según el filtro de propiedad?
+pub fn ofp_is_mine(ofp: &SimBriefFlight, filter: &OwnershipFilter) -> bool {
+    let d = ofp_digits(ofp);
+    match filter {
+        // Sin dígitos no podemos descartar con certeza → lo dejamos pasar.
+        OwnershipFilter::Exclude(nums) => d.is_empty() || !nums.iter().any(|n| n == &d),
+        OwnershipFilter::KeepOnly(nums) => nums.iter().any(|n| n == &d),
+    }
 }
 
 // ---- Parser XML ------------------------------------------------------------

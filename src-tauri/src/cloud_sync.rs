@@ -121,6 +121,7 @@ const HARDCODED_CLIENT_SECRET: Option<&str> =
 const WHITELIST_EMAILS: &[&str] = &[
     "hectorvelez1012@gmail.com",
     "jose.daniel0318@gmail.com",
+    "jose.daniel031899@gmail.com",
 ];
 
 const KEY_CLIENT_ID: &str = "google_client_id";

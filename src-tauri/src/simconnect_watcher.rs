@@ -4786,20 +4786,19 @@ mod windows_simconnect {
                 ordered.extend(no_cs);
             }
 
-            // (v5.2.7) PROPIEDAD POR FLIGHT NUMBER (cuenta compartida):
-            // descarta los OFP cuyo número de vuelo sea del amigo
-            // (configurado por el usuario). Lo que queda es del usuario, así
-            // que si resulta un único CallSign se AUTO-LINKEA sin modal.
-            let friend_digits = crate::simbrief::get_friend_flight_numbers(pool).await;
-            if !friend_digits.is_empty() {
-                let before = ordered.len();
-                ordered.retain(|f| !crate::simbrief::ofp_is_friends(f, &friend_digits));
-                tracing::info!(
-                    target: "simbrief",
-                    "confirm: filtro de números del amigo {:?} — {} → {} OFP candidatos (flight {})",
-                    friend_digits, before, ordered.len(), flight_id
-                );
-            }
+            // (v5.3.0) PROPIEDAD AUTOMÁTICA (cuenta compartida): la app sabe
+            // quién soy por el correo del Google Drive conectado. Conserva
+            // solo los OFP MÍOS (Jose → excluye el 357 de Hector; Hector →
+            // solo 357). Lo que queda es mío; si es un único CallSign se
+            // AUTO-LINKEA sin modal.
+            let owner = crate::simbrief::ownership_filter(pool).await;
+            let before_owner = ordered.len();
+            ordered.retain(|f| crate::simbrief::ofp_is_mine(f, &owner));
+            tracing::info!(
+                target: "simbrief",
+                "confirm: filtro de propiedad {:?} — {} → {} OFP míos (flight {})",
+                owner, before_owner, ordered.len(), flight_id
+            );
 
             if ordered.is_empty() {
                 tracing::info!(
