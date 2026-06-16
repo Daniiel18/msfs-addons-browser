@@ -4651,92 +4651,65 @@ mod windows_simconnect {
                 return;
             }
 
-            // (v5.2.8) Si quedan varios OFP "míos", reduce a los que casan con
-            // el ORIGEN del vuelo actual (el plan del vuelo en curso). Si solo
-            // uno coincide, se auto-linkea sin modal — cubre el caso de tener
-            // un OFP viejo propio (otra ruta) además del actual en la cola.
-            if ordered.len() > 1 {
-                let origin_hits: Vec<crate::simbrief::SimBriefFlight> = ordered
-                    .iter()
-                    .filter(|f| f.origin_icao.eq_ignore_ascii_case(&icao))
-                    .cloned()
-                    .collect();
-                if origin_hits.len() == 1 {
-                    tracing::info!(
-                        target: "simbrief",
-                        "confirm: {} OFP propios → 1 casa con el origen {} → auto-link (flight {})",
-                        ordered.len(), icao, flight_id
-                    );
-                    ordered = origin_hits;
-                }
+            // (v5.3.3) De los OFP MÍOS (ya descartados los del amigo por el
+            // filtro de propiedad), prefiere los que casan con el ORIGEN del
+            // vuelo actual; de esos auto-linkea el MÁS RECIENTE — que es el
+            // plan de ESTE vuelo (el que el piloto acaba de generar). SIN
+            // modal: con la identidad por correo ya sabemos que todos los
+            // restantes son suyos, así que el más nuevo es el correcto.
+            let origin_hits: Vec<crate::simbrief::SimBriefFlight> = ordered
+                .iter()
+                .filter(|f| f.origin_icao.eq_ignore_ascii_case(&icao))
+                .cloned()
+                .collect();
+            if !origin_hits.is_empty() {
+                ordered = origin_hits;
             }
-
-            // (v5.0.0 M3) Un solo CallSign → asignación automática, SIN
-            // modal. Más de uno → modal "¿Cuál es tu CallSign?".
-            if ordered.len() == 1 {
-                let ofp = &ordered[0];
-                let derived_airline =
-                    crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
-                let res = sqlx::query(
-                    r#"
-                    UPDATE flight_log
-                    SET simbrief_ofp_id  = ?1,
-                        flight_number    = COALESCE(flight_number, ?2),
-                        callsign         = COALESCE(callsign, ?3),
-                        airline_icao     = COALESCE(airline_icao, ?4),
-                        passengers       = COALESCE(passengers, ?5),
-                        cargo_kg         = COALESCE(cargo_kg, ?6),
-                        fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
-                        route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
-                    WHERE id = ?8
-                    "#,
-                )
-                .bind(&ofp.ofp_id)
-                .bind(ofp.flight_number.as_deref())
-                .bind(ofp.callsign.as_deref())
-                .bind(derived_airline.as_deref())
-                .bind(ofp.pax_count)
-                .bind(ofp.cargo_kg)
-                .bind(ofp.fuel_burn_kg)
-                .bind(flight_id)
-                .bind(
-                    serde_json::to_string(&ofp.route_fixes)
-                        .unwrap_or_else(|_| "[]".to_string()),
-                )
-                .execute(pool)
-                .await;
-                match res {
-                    Ok(_) => tracing::info!(
-                        target: "simbrief",
-                        "confirm: 1 solo CallSign ({:?}) → AUTO-LINK ofp_id={} → flight {}",
-                        ofp.callsign, ofp.ofp_id, flight_id
-                    ),
-                    Err(e) => tracing::warn!(
-                        target: "simbrief",
-                        "confirm: auto-link falló ofp_id={} flight {}: {e:#}",
-                        ofp.ofp_id, flight_id
-                    ),
-                }
-                let _ = app.emit("flightlog://changed", ());
-                return;
+            // `ordered` viene ordenado por recencia desc → [0] es el más nuevo.
+            let ofp = &ordered[0];
+            let derived_airline =
+                crate::flight_log::derive_airline_icao(ofp.callsign.as_deref());
+            let res = sqlx::query(
+                r#"
+                UPDATE flight_log
+                SET simbrief_ofp_id  = ?1,
+                    flight_number    = COALESCE(flight_number, ?2),
+                    callsign         = COALESCE(callsign, ?3),
+                    airline_icao     = COALESCE(airline_icao, ?4),
+                    passengers       = COALESCE(passengers, ?5),
+                    cargo_kg         = COALESCE(cargo_kg, ?6),
+                    fuel_used_kg     = COALESCE(fuel_used_kg, ?7),
+                    route_fixes      = COALESCE(NULLIF(route_fixes, '[]'), ?9)
+                WHERE id = ?8
+                "#,
+            )
+            .bind(&ofp.ofp_id)
+            .bind(ofp.flight_number.as_deref())
+            .bind(ofp.callsign.as_deref())
+            .bind(derived_airline.as_deref())
+            .bind(ofp.pax_count)
+            .bind(ofp.cargo_kg)
+            .bind(ofp.fuel_burn_kg)
+            .bind(flight_id)
+            .bind(
+                serde_json::to_string(&ofp.route_fixes)
+                    .unwrap_or_else(|_| "[]".to_string()),
+            )
+            .execute(pool)
+            .await;
+            match res {
+                Ok(_) => tracing::info!(
+                    target: "simbrief",
+                    "confirm: AUTO-LINK más reciente de los míos ({:?}) ofp_id={} → flight {} ({} candidatos)",
+                    ofp.callsign, ofp.ofp_id, flight_id, ordered.len()
+                ),
+                Err(e) => tracing::warn!(
+                    target: "simbrief",
+                    "confirm: auto-link falló ofp_id={} flight {}: {e:#}",
+                    ofp.ofp_id, flight_id
+                ),
             }
-
-            #[derive(serde::Serialize, Clone)]
-            #[serde(rename_all = "camelCase")]
-            struct ConfirmPayload {
-                flight_id: i64,
-                candidates: Vec<crate::simbrief::SimBriefFlight>,
-            }
-            tracing::info!(
-                target: "simbrief",
-                "confirm: emitiendo {} CallSign(s) distintos para flight {} (modal)",
-                ordered.len(),
-                flight_id
-            );
-            let _ = app.emit(
-                "simbrief://confirm",
-                ConfirmPayload { flight_id, candidates: ordered },
-            );
+            let _ = app.emit("flightlog://changed", ());
             return;
         }
 

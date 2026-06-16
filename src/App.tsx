@@ -253,49 +253,21 @@ export default function App() {
     setUpdateDecision(null);
   };
 
-  // (v2.2.0 → v3.0.0) Auto-refresh SimBrief cuando MSFS está corriendo.
-  // El watcher reporta `simRunning` cuando detecta el proceso o
-  // SimConnect handshake. Mientras esté true + haya pilotId, pollamos
-  // SimBrief cada 2 minutos.
+  // (v2.2.0 → v5.3.3) Auto-refresh de SimBrief mientras MSFS corre. El
+  // watcher reporta `simRunning` cuando detecta el proceso o el handshake de
+  // SimConnect. Mientras esté true + haya pilotId, pollamos cada 30s.
   //
-  // **Condición de parada (v3.0.0)** — para no spamear la API si el
-  // usuario ya planificó el vuelo, dejamos de pollar cuando el origen
-  // del OFP más reciente coincide EXACTAMENTE con el aeropuerto donde
-  // está el avión ahora (`currentAirportIcao` desde el nearest del
-  // watcher, o `originIcao` si ya hay flight_log abierto). Asumimos
-  // "plan sincronizado" y descansamos hasta que cambie el airport.
-  const currentAirportIcao =
-    flightStatus?.currentAirportIcao ?? flightStatus?.originIcao ?? null;
-  const simBriefFlights = useSimBriefStore((s) => s.flights);
-  const planSyncedWithAirport = (() => {
-    if (!currentAirportIcao) return false;
-    if (!simBriefFlights.length) return false;
-    // Más reciente primero.
-    const sorted = [...simBriefFlights].sort((a, b) => {
-      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
-      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
-      return bTs - aTs;
-    });
-    return sorted[0]?.originIcao === currentAirportIcao;
-  })();
-
-  // (v5.0.0 M3) Avión POSICIONADO en el gate de salida (en tierra + gate
-  // detectado por SimConnect). Es la señal para dejar de pollar: ya
-  // capturamos los OFP activos durante la planificación.
-  const atDepartureGate =
-    flightStatus?.onGround === true && !!flightStatus?.currentGate;
-
+  // (v5.3.3) QUITADAS las condiciones de parada `planSyncedWithAirport` y
+  // `atDepartureGate`: detenían el polling ANTES de que el usuario generara
+  // su OFP (al posicionarse en el gate), y con varios OFP del mismo origen
+  // en caché `planSyncedWithAirport` daba falsos positivos. Resultado: el
+  // OFP recién generado NO se capturaba y había que refrescar a mano (bug
+  // reportado). Ahora se pollea de forma constante mientras el sim corre,
+  // así el OFP nuevo entra en ≤30s — esté el avión en el gate o ya volando.
   useEffect(() => {
     if (!ready) return;
     if (!simRunning) return;
     if (!simBriefPilotId) return;
-    // (v5.0.0 M3) Pasivo cada 30s mientras se planifica — así, con cuenta
-    // compartida, capturamos cada OFP activo que aparezca en `fetchlast`.
-    // Paramos cuando el plan ya cuadra con el aeropuerto actual O el avión
-    // está posicionado en el gate de salida.
-    if (planSyncedWithAirport || atDepartureGate) {
-      return;
-    }
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
@@ -310,14 +282,7 @@ export default function App() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [
-    ready,
-    simRunning,
-    simBriefPilotId,
-    refreshSimBrief,
-    planSyncedWithAirport,
-    atDepartureGate,
-  ]);
+  }, [ready, simRunning, simBriefPilotId, refreshSimBrief]);
 
   useEffect(() => {
     let cancelled = false;
