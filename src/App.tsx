@@ -381,14 +381,32 @@ export default function App() {
         useGsxLocalStore.getState().refresh(),
       ]);
 
-      // Esperamos SOLO a settings para conocer la versión, y si falta
-      // (primer arranque) bloqueamos hasta que el usuario la elija. El
-      // backend fija su atómico al persistir (`set_app_setting` →
-      // `sim::set_from_str`), así que el scan que sigue usa la correcta.
+      // (v5.3.4) Gate de versión de MSFS según lo INSTALADO:
+      //   · 2020 Y 2024 instalados → preguntar en el splash CADA arranque
+      //     (el usuario elige con qué versión trabajar esta sesión).
+      //   · Solo una instalada → auto-seleccionarla, sin preguntar.
+      //   · Ninguna detectada + sin preferencia previa → preguntar (1er run).
+      // El backend fija su atómico al persistir (`set_app_setting` →
+      // `sim::set_from_str`), así el scan que sigue usa la versión correcta.
       await settingsTask;
       if (isTauri && !cancelled) {
+        const sims = await api
+          .getInstalledSims()
+          .catch(() => ({ has2020: false, has2024: false }));
         const ver = useSettingsStore.getState().settings.simVersion;
-        if (!ver) {
+        if (sims.has2020 && sims.has2024) {
+          await new Promise<void>((resolve) => {
+            setSimVersionChoice({ resolve });
+          });
+        } else if (sims.has2020 && !sims.has2024) {
+          if (ver !== "msfs2020") {
+            await useSettingsStore.getState().setSimVersion("msfs2020");
+          }
+        } else if (sims.has2024 && !sims.has2020) {
+          if (ver !== "msfs2024") {
+            await useSettingsStore.getState().setSimVersion("msfs2024");
+          }
+        } else if (!ver) {
           await new Promise<void>((resolve) => {
             setSimVersionChoice({ resolve });
           });

@@ -26,6 +26,7 @@ import { EditFlightModal } from "./EditFlightModal";
 import { WeatherModal } from "./WeatherModal";
 import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
+import { icaoToName } from "../lib/airlineCodes";
 import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-react";
 
 // (v4.24.2) Persistencia del colapso del sidebar de vuelos. El
@@ -1015,7 +1016,11 @@ function SelectedFlightPanel({
             <AircraftThumb
               type={entry.aircraftAtcType}
               title={entry.aircraftTitle}
-              airline={entry.aircraftAirline}
+              airline={
+                entry.aircraftAirline ??
+                icaoToName(entry.airlineIcao) ??
+                entry.airlineIcao
+              }
               registration={entry.aircraftRegistration}
             />
             <div className="space-y-1.5">
@@ -1029,7 +1034,12 @@ function SelectedFlightPanel({
               />
               <BlockRow
                 label={t("fb.aircraft.airline")}
-                value={entry.aircraftAirline ?? "—"}
+                value={
+                  entry.aircraftAirline ??
+                  icaoToName(entry.airlineIcao) ??
+                  entry.airlineIcao ??
+                  "—"
+                }
               />
               <BlockRow
                 label={t("fb.aircraft.registration")}

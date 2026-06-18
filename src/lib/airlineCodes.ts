@@ -437,3 +437,77 @@ export function resolveIata(
 ): string | null {
   return icaoToIata(icao) ?? nameToIata(name);
 }
+
+/**
+ * (v5.3.4) Nombre de aerolínea a partir del ICAO. La fila "Airline" del
+ * FlightBook quedaba vacía cuando el sim no reportaba `ATC AIRLINE` pero sí
+ * teníamos el ICAO (del OFP/callsign — el que pinta el logo). Mapeamos los
+ * carriers más comunes; si no está, el caller cae al propio código ICAO
+ * (mejor que "—"). No pretende ser exhaustivo — cubre lo que la gente vuela.
+ */
+const ICAO_TO_NAME: Record<string, string> = {
+  AAL: "American Airlines",
+  DAL: "Delta Air Lines",
+  UAL: "United Airlines",
+  SWA: "Southwest Airlines",
+  JBU: "JetBlue",
+  ASA: "Alaska Airlines",
+  NKS: "Spirit Airlines",
+  FFT: "Frontier Airlines",
+  HAL: "Hawaiian Airlines",
+  RPA: "Republic Airways",
+  SKW: "SkyWest",
+  ACA: "Air Canada",
+  WJA: "WestJet",
+  BAW: "British Airways",
+  VIR: "Virgin Atlantic",
+  DLH: "Lufthansa",
+  AFR: "Air France",
+  KLM: "KLM",
+  IBE: "Iberia",
+  RYR: "Ryanair",
+  EZY: "easyJet",
+  VLG: "Vueling",
+  EWG: "Eurowings",
+  SWR: "SWISS",
+  AUA: "Austrian Airlines",
+  TAP: "TAP Air Portugal",
+  SAS: "SAS",
+  FIN: "Finnair",
+  THY: "Turkish Airlines",
+  UAE: "Emirates",
+  QTR: "Qatar Airways",
+  ETD: "Etihad Airways",
+  SVA: "Saudia",
+  ELY: "El Al",
+  QFA: "Qantas",
+  ANZ: "Air New Zealand",
+  SIA: "Singapore Airlines",
+  CPA: "Cathay Pacific",
+  ANA: "All Nippon Airways",
+  JAL: "Japan Airlines",
+  KAL: "Korean Air",
+  AAR: "Asiana Airlines",
+  CCA: "Air China",
+  CES: "China Eastern",
+  CSN: "China Southern",
+  AIC: "Air India",
+  AVA: "Avianca",
+  LAN: "LATAM",
+  LPE: "LATAM Perú",
+  TAM: "LATAM Brasil",
+  AMX: "Aeroméxico",
+  CMP: "Copa Airlines",
+  VOI: "Volaris",
+  VIV: "Viva Aerobus",
+  ARG: "Aerolíneas Argentinas",
+  GLO: "GOL",
+  AZU: "Azul",
+  AZA: "ITA Airways",
+};
+
+/** Nombre legible de la aerolínea por ICAO; `null` si no está mapeada. */
+export function icaoToName(icao?: string | null): string | null {
+  if (!icao) return null;
+  return ICAO_TO_NAME[icao.toUpperCase().trim()] ?? null;
+}

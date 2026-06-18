@@ -673,6 +673,12 @@ mod windows_simconnect {
     /// ya es suficiente densidad) y parado en gate también (el buffer
     /// pre-departure conserva su ventana de ~40 min).
     const GROUND_MOVING_PERSIST_TICKS: u32 = 2 * TICKS_PER_SECOND;
+    /// (v5.3.4) Gracia mínima tras el corte de combustible antes de cerrar
+    /// el vuelo: ~25s. Da tiempo al spool-down del motor y a que el piloto
+    /// ponga el parking brake DESPUÉS de cortar fuel. En aviones que NO
+    /// reportan `TURB ENG N2` (p.ej. PMDG) el cierre saltaba en el instante
+    /// exacto del fuel cutoff (`ENG COMBUSTION`→0); con esta gracia espera.
+    const ENGINES_OFF_GRACE_TICKS: u32 = 25 * TICKS_PER_SECOND;
     /// Cada cuántos ticks emitimos `flight://current` al frontend.
     /// Sin throttle, 4Hz inunda la UI; con 4 ticks emitimos cada ~1s
     /// que es lo mismo que antes desde el punto de vista del usuario.
@@ -1681,6 +1687,14 @@ mod windows_simconnect {
         // o usuarios que se olvidan de apagar motores y dejan la
         // app abierta.
         let mut idle_ticks_in_landed: u32 = 0;
+        // (v5.3.4) Ticks consecutivos en Landed con TODOS los motores
+        // apagados (combustión). Gracia para no cerrar el vuelo en el
+        // instante del fuel cutoff (ver ENGINES_OFF_GRACE_TICKS).
+        let mut engines_off_ticks: u32 = 0;
+        // (v5.3.4) `true` justo después de cerrar un vuelo (IN). Mientras
+        // dure (hasta que arranquen motores de nuevo), el badge/card muestran
+        // "deboarding" en vez de "preflight" — el vuelo YA terminó.
+        let mut flight_just_ended = false;
 
         // (v4.0.0 P7.4b) Máxima temperatura de frenos (°C) vista en este
         // vuelo vía el puente LVar de MobiFlight. Se persiste con
@@ -2294,6 +2308,8 @@ mod windows_simconnect {
                         &mut engines_seen_running,
                         &mut n2_seen_running,
                         &mut idle_ticks_in_landed,
+                        &mut engines_off_ticks,
+                        &mut flight_just_ended,
                         &mut initial_fuel_lb,
                         &mut paused_seconds_total,
                         &mut passed_taxi_threshold,
@@ -2883,6 +2899,8 @@ mod windows_simconnect {
         engines_seen_running: &mut bool,
         n2_seen_running: &mut bool,
         idle_ticks_in_landed: &mut u32,
+        engines_off_ticks: &mut u32,
+        flight_just_ended: &mut bool,
         initial_fuel_lb: &mut Option<f64>,
         paused_seconds_total: &mut u64,
         passed_taxi_threshold: &mut bool,
@@ -3186,6 +3204,19 @@ mod windows_simconnect {
             *idle_ticks_in_landed = 0;
         }
 
+        // (v5.3.4) Cuenta ticks con motores apagados en Landed — empieza en
+        // el corte de combustible. Da la gracia para el spool-down antes de
+        // cerrar (ver `engines_shutdown`).
+        if matches!(*phase, FlightPhase::Landed) && all_engines_off {
+            *engines_off_ticks = engines_off_ticks.saturating_add(1);
+        } else {
+            *engines_off_ticks = 0;
+        }
+        // (v5.3.4) Si los motores vuelven a arrancar, ya no es "post-arribo".
+        if any_engine_running {
+            *flight_just_ended = false;
+        }
+
         // (v4.0.0 P7.5) Post-touchdown observation window. La
         // transición Airborne→Landed setea `post_touchdown_ticks_remaining`
         // a 12 (3s @ 4Hz). Mientras esté > 0 y sigamos en Landed,
@@ -3279,11 +3310,17 @@ mod windows_simconnect {
         //   · GA/pistón/eléctrico (nunca vimos N2 alto): seguimos con
         //     ENG COMBUSTION — N2 puede ser 0 siempre y cerraría mal.
         //   · Fallback de idle timeout para cualquier caso colgado.
-        let engines_shutdown = if *n2_seen_running {
-            all_n2_below_5 && *engines_seen_running
-        } else {
-            all_engines_off && *engines_seen_running
-        };
+        // (v5.3.4) Cierre = motores realmente apagados + gracia mínima desde
+        // el corte de combustible. "Realmente apagados" = combustión off Y,
+        // si el avión reporta N2, N2 < 5%. La gracia (`engines_off_ticks`)
+        // evita cerrar en el instante exacto del fuel cutoff aunque el addon
+        // (PMDG) no exponga N2 o lo ponga a 0 de golpe — da tiempo al
+        // spool-down y al parking brake.
+        let engines_fully_off =
+            all_engines_off && (!*n2_seen_running || all_n2_below_5);
+        let engines_shutdown = *engines_seen_running
+            && engines_fully_off
+            && *engines_off_ticks >= ENGINES_OFF_GRACE_TICKS;
         let landed_should_finish = matches!(*phase, FlightPhase::Landed)
             && (engines_shutdown
                 || *idle_ticks_in_landed >= LANDED_IDLE_TIMEOUT_TICKS);
@@ -3637,6 +3674,10 @@ mod windows_simconnect {
                     *idle_ticks_in_landed = 0;
                 }
                 (FlightPhase::Landed, FlightPhase::OnGround) => {
+                    // (v5.3.4) El vuelo acaba de cerrar → el badge/card deben
+                    // mostrar "deboarding", NO "preflight" (que parecería un
+                    // vuelo nuevo). Se limpia cuando arranquen motores otra vez.
+                    *flight_just_ended = true;
                     // OOOI on-block — cierre real del vuelo. La lat/lon
                     // de aquí es la posición actual = gate / parking
                     // donde el usuario apagó los motores (o donde lleva
@@ -4205,6 +4246,7 @@ mod windows_simconnect {
             any_engine_running,
             *passed_taxi_threshold,
             in_pushback,
+            *flight_just_ended,
         );
 
         // (v1.1.4) Update shared state SIEMPRE (los lectores leen
@@ -4917,6 +4959,7 @@ mod windows_simconnect {
         any_engine_running: bool,
         passed_taxi_threshold: bool,
         in_pushback: bool,
+        flight_just_ended: bool,
     ) -> String {
         // (v4.24.0) ROLLOUT del aterrizaje: si venimos del aire (enum aún
         // Airborne) y ya estamos EN TIERRA, eso es un aterrizaje — jamás
@@ -4976,7 +5019,13 @@ mod windows_simconnect {
             FlightPhase::Disconnected => "preflight".to_string(),
             FlightPhase::OnGround => {
                 if !any_engine_running {
-                    "preflight".to_string()
+                    // (v5.3.4) Si el vuelo ACABA de terminar, es "deboarding"
+                    // (arribo), no "preflight" — que parecería un vuelo nuevo.
+                    if flight_just_ended {
+                        "deboarding".to_string()
+                    } else {
+                        "preflight".to_string()
+                    }
                 } else if parking_brake_set {
                     "engine_running".to_string()
                 } else {

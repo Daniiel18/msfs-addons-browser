@@ -157,6 +157,7 @@ pub fn run() {
             commands::airports::refresh_airports_dataset,
             commands::airports::lookup_airports,
             commands::community::scan_community,
+            commands::community::get_installed_sims,
             commands::community::list_community_packages,
             commands::community::list_available_updates,
             commands::community::refresh_updates_for_installed,

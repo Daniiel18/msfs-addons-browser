@@ -134,6 +134,21 @@ pub fn detect_all_community_folders() -> anyhow::Result<Vec<CommunityInfo>> {
     Ok(out)
 }
 
+/// (v5.3.4) ¿Qué versiones de MSFS están instaladas? Devuelve
+/// `(tiene_2020, tiene_2024)` según qué variantes tienen `UserCfg.opt`.
+/// El splash lo usa para preguntar la versión SOLO cuando hay ambas.
+pub fn detect_installed_sims() -> (bool, bool) {
+    let mut has_2020 = false;
+    let mut has_2024 = false;
+    for (_, variant) in find_all_user_cfgs() {
+        match variant {
+            MsfsVariant::MsStore2020 | MsfsVariant::Steam2020 => has_2020 = true,
+            MsfsVariant::MsStore2024 | MsfsVariant::Steam2024 => has_2024 = true,
+        }
+    }
+    (has_2020, has_2024)
+}
+
 /// Lista todas las rutas a `UserCfg.opt` de cada variante MSFS
 /// presente en el sistema, en orden de preferencia.
 fn find_all_user_cfgs() -> Vec<(PathBuf, MsfsVariant)> {

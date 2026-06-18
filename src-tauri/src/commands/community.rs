@@ -9,6 +9,21 @@ use crate::pmdg_liveries::{self, PmdgLivery};
 use crate::updates::{self, AvailableUpdate, RefreshSummary};
 use crate::{cmd_log, AppState};
 
+/// (v5.3.4) Versiones de MSFS instaladas en el sistema. El splash lo usa
+/// para preguntar la versión SOLO cuando hay 2020 Y 2024 instalados.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSims {
+    pub has2020: bool,
+    pub has2024: bool,
+}
+
+#[tauri::command]
+pub async fn get_installed_sims() -> Result<InstalledSims, String> {
+    let (has2020, has2024) = community::detect_installed_sims();
+    Ok(InstalledSims { has2020, has2024 })
+}
+
 /// Escanea Community y persiste los paquetes encontrados. Acepta
 /// un path opcional — si no viene, se intenta detección automática.
 #[tauri::command]

@@ -260,6 +260,8 @@ interface Api {
   // Community
   /** Escanea el folder Community + sincroniza con DB. */
   scanCommunity: () => Promise<ScanReport>;
+  /** (v5.3.4) Versiones de MSFS instaladas — el splash pregunta si hay ambas. */
+  getInstalledSims: () => Promise<{ has2020: boolean; has2024: boolean }>;
   /** Lista todos los paquetes en Community (ya escaneados). */
   listCommunityPackages: () => Promise<CommunityPackage[]>;
   /** Devuelve las updates conocidas (compara cache vs instalado). */
@@ -617,6 +619,8 @@ const realApi: Api = {
   getOpenweatherKey: () => invoke<string | null>("get_openweather_key"),
 
   scanCommunity: () => invoke<ScanReport>("scan_community", { communityPath: null }),
+  getInstalledSims: () =>
+    invoke<{ has2020: boolean; has2024: boolean }>("get_installed_sims"),
   listCommunityPackages: () =>
     invoke<CommunityPackage[]>("list_community_packages"),
   listAvailableUpdates: () => invoke<AvailableUpdate[]>("list_available_updates"),
@@ -1313,6 +1317,9 @@ const demoApi: Api = {
       skippedInvalidManifest: 0,
       communityPath: "D:/MSFS/Community (demo)",
     };
+  },
+  async getInstalledSims() {
+    return { has2020: false, has2024: false };
   },
   async listCommunityPackages() {
     await sleep(120);
