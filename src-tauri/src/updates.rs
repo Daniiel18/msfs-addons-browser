@@ -92,6 +92,20 @@ fn norm_alnum(s: &str) -> String {
         .collect()
 }
 
+/// (v5.4.1) Colapsa sub-marcas de desarrollador a un token canónico. Algunas
+/// casas publican la escenografía bajo otra marca: el manifest trae
+/// "iniScene" pero el catálogo (SceneryAddons) lista "iniBuilds" — son la
+/// misma casa. Sin esto, el match creator↔developer fallaba y el addon no se
+/// reconocía como instalado ni se comparaba la versión (falso update / no
+/// marcado como instalado, reportado en KLAX de iniScene/iniBuilds).
+pub fn canon_dev(s: &str) -> String {
+    let n = norm_alnum(s);
+    match n.as_str() {
+        "iniscene" => "inibuilds".to_string(),
+        _ => n,
+    }
+}
+
 pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<AvailableUpdate>> {
     use std::collections::HashMap;
 
@@ -116,8 +130,8 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
         // Dashboard/Map. Aquí ambos colapsan a "mkstudios" → match.
         // Sigue evitando falsos positivos cross-developer (mismo ICAO, dev
         // distinto), que era el motivo original del filtro.
-        let cn = norm_alnum(&c.creator);
-        let dn = norm_alnum(&c.developer);
+        let cn = canon_dev(&c.creator);
+        let dn = canon_dev(&c.developer);
         if cn.is_empty() || dn.is_empty() || !(cn.contains(&dn) || dn.contains(&cn)) {
             tracing::debug!(
                 "compute_available: skip {} — creator '{}' ≠ developer '{}'",

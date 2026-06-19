@@ -55,12 +55,22 @@ function normalizeTitle(s: string): string {
     .trim();
 }
 
+/** (v5.4.1) Colapsa sub-marcas de desarrollador a un token canónico
+ *  (solo alfanuméricos). Algunas casas publican la escenografía bajo otra
+ *  marca: el manifest trae "iniScene" pero el catálogo lista "iniBuilds" —
+ *  misma casa. Sin esto KLAX (iniScene) no se marcaba instalado. */
+function canonDev(s: string | null | undefined): string {
+  const n = (s ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (n === "iniscene") return "inibuilds";
+  return n;
+}
+
 /** True si dos cadenas (creator del manifest y developer del
  *  catálogo) corresponden plausiblemente al mismo dueño.
  *  Substring case-insensitive — tolera "Aerosoft" vs "Aerosoft GmbH". */
 function sameCreator(a: string | null | undefined, b: string | null | undefined): boolean {
-  const aa = (a ?? "").trim().toLowerCase();
-  const bb = (b ?? "").trim().toLowerCase();
+  const aa = canonDev(a);
+  const bb = canonDev(b);
   if (!aa || !bb) return false;
   return aa.includes(bb) || bb.includes(aa);
 }
