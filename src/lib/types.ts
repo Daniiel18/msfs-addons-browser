@@ -176,6 +176,42 @@ export interface HangarAnalytics {
   bestLandings: HangarLanding[];
 }
 
+/** (v6 #2b) Config de grabación de Best Landings (heredada de LandingToast). */
+export interface RecordingConfig {
+  enabled: boolean;
+  osdPosition: number;
+  outputPath: string;
+  clipSeconds: number;
+  monitorIndex: number;
+  sourceType: number;
+  maxClips: number;
+  ffmpegPath: string | null;
+}
+
+/** (v6 #2b) Estado de ffmpeg. */
+export interface FfmpegStatus {
+  present: boolean;
+  path: string | null;
+  /** "configured" | "bundled" | "appdata" | "path" | "missing" */
+  source: string;
+}
+
+/** (v6 #2b) Un clip de aterrizaje grabado. */
+export interface LandingClip {
+  id: string;
+  path: string;
+  recordedAt: string;
+  fpm: number | null;
+  grade: string | null;
+  airportIcao: string | null;
+  airportName: string | null;
+  model: string | null;
+  registration: string | null;
+  favorite: boolean;
+  durationS: number;
+  isTest: boolean;
+}
+
 /** (v6 #2a) Perfil del piloto + nivel/XP. */
 export interface PilotProfile {
   /** "daniel" | "hector" */

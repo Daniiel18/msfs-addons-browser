@@ -38,6 +38,7 @@ import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { RecordingSettings } from "./RecordingSettings";
 
 /**
  * Modal de configuración.
@@ -300,6 +301,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     setSimReload(true);
                   }}
                 />
+                {/* (v6 #2b) Best Landings — config de grabación. */}
+                <RecordingSettings />
                 {/* (v4.14.1 #1) Unidades POR CATEGORÍA — TODOS los selectores
                     (botones segmentados) anidados dentro de la MISMA casilla
                     "Units", para elegir cada opción directo sin desplegar nada.

@@ -275,6 +275,16 @@ fn is_valid_key(key: &str) -> bool {
             | "pref_temp_unit"
             // (v5.1.0) Versión de MSFS activa: "msfs2020" | "msfs2024".
             | "pref_sim_version"
+            // (v6 #2b) Best Landings — config de grabación (heredada de
+            // LandingToast, sin AutoLaunch que lo controlamos nosotros).
+            | "rec_enabled"
+            | "rec_osd_position"
+            | "rec_output_path"
+            | "rec_clip_seconds"
+            | "rec_monitor_index"
+            | "rec_source_type"
+            | "rec_max_clips"
+            | "rec_ffmpeg_path"
     )
 }
 

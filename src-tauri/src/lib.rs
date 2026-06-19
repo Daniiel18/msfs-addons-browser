@@ -19,6 +19,7 @@ pub mod gsx;
 pub mod gsx_menu;
 pub mod gsx_parking;
 pub mod install;
+pub mod landing_recorder;
 pub mod logger;
 // Puente LVar opcional vía el módulo WASM de MobiFlight (brake temps).
 // El archivo tiene `#![cfg(target_os = "windows")]`, así que en otros
@@ -208,6 +209,13 @@ pub fn run() {
             commands::flight_log::list_flight_log,
             commands::flight_log::hangar_analytics,
             commands::flight_log::pilot_profile,
+            commands::recording::recording_config,
+            commands::recording::recording_ffmpeg_status,
+            commands::recording::recording_download_ffmpeg,
+            commands::recording::recording_test_clip,
+            commands::recording::list_landing_clips,
+            commands::recording::set_landing_favorite,
+            commands::recording::delete_landing_clip,
             commands::flight_log::list_incomplete_flights,
             commands::flight_log::keep_partial_flight,
             commands::flight_log::delete_flight_log_entry,

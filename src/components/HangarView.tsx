@@ -23,12 +23,16 @@ import {
   Film,
   ChevronRight,
   AlertTriangle,
+  Play,
+  Star,
+  Trash2,
 } from "lucide-react";
 import type {
   HangarAnalytics,
   HangarAircraft,
   HangarLanding,
   PilotProfile,
+  LandingClip,
 } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
@@ -55,19 +59,32 @@ const GRADE_COLOR: Record<string, string> = {
 export function HangarView() {
   const [data, setData] = useState<HangarAnalytics | null>(null);
   const [profile, setProfile] = useState<PilotProfile | null>(null);
+  const [clips, setClips] = useState<LandingClip[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
+  const reloadClips = () => {
+    api
+      .listLandingClips()
+      .then(setClips)
+      .catch(() => {});
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([api.hangarAnalytics(), api.pilotProfile().catch(() => null)])
-      .then(([d, p]) => {
+    Promise.all([
+      api.hangarAnalytics(),
+      api.pilotProfile().catch(() => null),
+      api.listLandingClips().catch(() => [] as LandingClip[]),
+    ])
+      .then(([d, p, c]) => {
         if (cancelled) return;
         setData(d);
         setProfile(p);
+        setClips(c);
         if (d.aircraft.length) setSelectedKey(d.aircraft[0].key);
       })
       .catch((e) => {
@@ -188,7 +205,14 @@ export function HangarView() {
         </section>
 
         {/* Detalle */}
-        {selected && <AircraftDetail ac={selected} best={data.bestLandings} />}
+        {selected && (
+          <AircraftDetail
+            ac={selected}
+            synthetic={data.bestLandings}
+            recorded={clips}
+            onReloadClips={reloadClips}
+          />
+        )}
       </div>
     </div>
   );
@@ -279,10 +303,14 @@ const TABS = [
 
 function AircraftDetail({
   ac,
-  best,
+  synthetic,
+  recorded,
+  onReloadClips,
 }: {
   ac: HangarAircraft;
-  best: HangarLanding[];
+  synthetic: HangarLanding[];
+  recorded: LandingClip[];
+  onReloadClips: () => void;
 }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("overview");
   const push = useToastStore((s) => s.push);
@@ -360,7 +388,11 @@ function AircraftDetail({
               <GearHealthCard ac={ac} />
               <FpmTrendCard ac={ac} />
             </div>
-            <BestLandings best={best} />
+            <BestLandings
+              recorded={recorded}
+              synthetic={synthetic}
+              onReload={onReloadClips}
+            />
           </>
         ) : (
           <div className="flex h-40 items-center justify-center text-sm text-slate-500">
@@ -535,9 +567,18 @@ function Legend({ color, label, n }: { color: string; label: string; n: number }
   );
 }
 
-function BestLandings({ best }: { best: HangarLanding[] }) {
+function BestLandings({
+  recorded,
+  synthetic,
+  onReload,
+}: {
+  recorded: LandingClip[];
+  synthetic: HangarLanding[];
+  onReload: () => void;
+}) {
   const push = useToastStore((s) => s.push);
-  if (!best.length) return null;
+  const hasClips = recorded.length > 0;
+
   return (
     <div className="mt-5">
       <div className="mb-2 flex items-center justify-between">
@@ -546,20 +587,137 @@ function BestLandings({ best }: { best: HangarLanding[] }) {
           {t("hangar.best_landings.title")}
           <Info className="h-3 w-3 text-slate-600" />
         </h3>
-        <button
-          onClick={() =>
-            push({ kind: "info", title: t("hangar.best_landings.soon"), ttlMs: 3000 })
-          }
-          className="inline-flex items-center gap-1 text-xs text-brand-300 hover:text-brand-200"
-        >
-          {t("hangar.best_landings.view_all")}
-          <ChevronRight className="h-3.5 w-3.5" />
-        </button>
+        {hasClips && (
+          <button
+            onClick={() =>
+              push({
+                kind: "info",
+                title: t("hangar.best_landings.soon"),
+                ttlMs: 3000,
+              })
+            }
+            className="inline-flex items-center gap-1 text-xs text-brand-300 hover:text-brand-200"
+          >
+            {t("hangar.best_landings.view_all")}
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
-      <div className="flex gap-3 overflow-x-auto pb-2">
-        {best.map((l, i) => (
-          <LandingCard key={i} l={l} />
-        ))}
+
+      {hasClips ? (
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {recorded.map((c) => (
+            <ClipCard key={c.id} clip={c} onReload={onReload} />
+          ))}
+        </div>
+      ) : synthetic.length > 0 ? (
+        <>
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            {synthetic.map((l, i) => (
+              <LandingCard key={i} l={l} />
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] text-slate-600">
+            {t("hangar.best_landings.enable_hint")}
+          </p>
+        </>
+      ) : (
+        <div className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-slate-700 bg-slate-900/30 py-8 text-slate-500">
+          <Film className="h-6 w-6" />
+          <p className="text-sm">{t("hangar.best_landings.empty")}</p>
+          <p className="text-[11px]">{t("hangar.best_landings.enable_hint")}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tarjeta de un clip REAL grabado (play / favorito / borrar). */
+function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void }) {
+  const push = useToastStore((s) => s.push);
+  const grade = clip.grade ?? "";
+  const color = GRADE_COLOR[grade] ?? "#38bdf8";
+
+  const play = () => {
+    api
+      .openLocalPath(clip.path)
+      .catch((e) =>
+        push({ kind: "error", title: t("hangar.clip.play_error"), message: String(e) }),
+      );
+  };
+  const toggleFav = async () => {
+    try {
+      await api.setLandingFavorite(clip.id, !clip.favorite);
+      onReload();
+    } catch (e) {
+      push({ kind: "error", title: String(e) });
+    }
+  };
+  const remove = async () => {
+    try {
+      await api.deleteLandingClip(clip.id);
+      onReload();
+    } catch (e) {
+      push({ kind: "error", title: String(e) });
+    }
+  };
+
+  return (
+    <div className="group w-52 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
+      <button
+        onClick={play}
+        className="relative flex h-24 w-full items-center justify-center bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950"
+      >
+        <span className="font-mono text-2xl font-bold text-slate-300/70">
+          {clip.airportIcao ?? "✈"}
+        </span>
+        <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 transition-colors group-hover:bg-slate-950/40">
+          <Play className="h-7 w-7 text-white opacity-0 transition-opacity group-hover:opacity-90" />
+        </span>
+        {clip.fpm != null && (
+          <span
+            className="absolute right-2 top-2 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-slate-950"
+            style={{ backgroundColor: color }}
+          >
+            {clip.fpm} fpm
+          </span>
+        )}
+        {clip.isTest && (
+          <span className="absolute left-2 top-2 rounded bg-slate-950/70 px-1.5 py-0.5 text-[9px] text-slate-400">
+            {t("hangar.clip.test")}
+          </span>
+        )}
+      </button>
+      <div className="flex items-center justify-between gap-1 p-2.5">
+        <div className="min-w-0">
+          <div className="truncate text-xs font-medium text-slate-200">
+            {clip.airportName ?? clip.airportIcao ?? t("hangar.clip.test")}
+          </div>
+          <div className="truncate text-[10px] text-slate-500">
+            {fmtDate(clip.recordedAt)}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            onClick={toggleFav}
+            title={t("hangar.clip.favorite")}
+            className={`rounded p-1 hover:bg-slate-800 ${
+              clip.favorite ? "text-amber-400" : "text-slate-500"
+            }`}
+          >
+            <Star
+              className="h-3.5 w-3.5"
+              fill={clip.favorite ? "currentColor" : "none"}
+            />
+          </button>
+          <button
+            onClick={remove}
+            title={t("hangar.clip.delete")}
+            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-rose-400"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );

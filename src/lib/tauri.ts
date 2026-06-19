@@ -59,6 +59,9 @@ import type {
   CrossLinkResult,
   HangarAnalytics,
   PilotProfile,
+  RecordingConfig,
+  FfmpegStatus,
+  LandingClip,
   PmdgLivery,
   RefreshSummary,
   ScanReport,
@@ -493,6 +496,20 @@ interface Api {
   hangarAnalytics: () => Promise<HangarAnalytics>;
   /** (v6 #2a) Perfil del piloto + nivel/XP. */
   pilotProfile: () => Promise<PilotProfile>;
+  /** (v6 #2b) Config de grabación de Best Landings. */
+  recordingConfig: () => Promise<RecordingConfig>;
+  /** (v6 #2b) Estado de ffmpeg (presente/ausente). */
+  recordingFfmpegStatus: () => Promise<FfmpegStatus>;
+  /** (v6 #2b) Descarga ffmpeg a la carpeta de datos. */
+  recordingDownloadFfmpeg: () => Promise<FfmpegStatus>;
+  /** (v6 #2b) Graba un clip de prueba de `durationS` segundos. */
+  recordingTestClip: (durationS: number) => Promise<LandingClip>;
+  /** (v6 #2b) Lista los clips de aterrizaje guardados. */
+  listLandingClips: () => Promise<LandingClip[]>;
+  /** (v6 #2b) Marca/desmarca un clip como favorito. */
+  setLandingFavorite: (id: string, favorite: boolean) => Promise<void>;
+  /** (v6 #2b) Borra un clip (archivo + manifiesto). */
+  deleteLandingClip: (id: string) => Promise<void>;
   /** Eventos emitidos por el watcher al auto-puntuar un vuelo. */
   onScoreDone: (cb: (report: ScoreReport) => void) => Promise<UnlistenFn>;
   onScoreUploadSuccess: (cb: (report: unknown) => void) => Promise<UnlistenFn>;
@@ -757,6 +774,17 @@ const realApi: Api = {
     invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
   hangarAnalytics: () => invoke<HangarAnalytics>("hangar_analytics"),
   pilotProfile: () => invoke<PilotProfile>("pilot_profile"),
+  recordingConfig: () => invoke<RecordingConfig>("recording_config"),
+  recordingFfmpegStatus: () =>
+    invoke<FfmpegStatus>("recording_ffmpeg_status"),
+  recordingDownloadFfmpeg: () =>
+    invoke<FfmpegStatus>("recording_download_ffmpeg"),
+  recordingTestClip: (durationS) =>
+    invoke<LandingClip>("recording_test_clip", { durationS }),
+  listLandingClips: () => invoke<LandingClip[]>("list_landing_clips"),
+  setLandingFavorite: (id, favorite) =>
+    invoke<void>("set_landing_favorite", { id, favorite }),
+  deleteLandingClip: (id) => invoke<void>("delete_landing_clip", { id }),
   onScoreDone: (cb) =>
     listen<ScoreReport>("score:done", (event) => cb(event.payload)),
   onScoreUploadSuccess: (cb) =>
@@ -1761,6 +1789,32 @@ const demoApi: Api = {
       totalPoints: 1607,
     };
   },
+  async recordingConfig() {
+    return {
+      enabled: false,
+      osdPosition: 0,
+      outputPath: "C:/Users/demo/Videos/SimFleet Landings",
+      clipSeconds: 45,
+      monitorIndex: 0,
+      sourceType: 0,
+      maxClips: 20,
+      ffmpegPath: null,
+    };
+  },
+  async recordingFfmpegStatus() {
+    return { present: false, path: null, source: "missing" };
+  },
+  async recordingDownloadFfmpeg() {
+    return { present: true, path: "appdata/ffmpeg/ffmpeg.exe", source: "appdata" };
+  },
+  async recordingTestClip() {
+    throw new Error("La grabación solo funciona en la app de escritorio.");
+  },
+  async listLandingClips() {
+    return [];
+  },
+  async setLandingFavorite() {},
+  async deleteLandingClip() {},
   async onScoreDone() {
     return async () => {};
   },
