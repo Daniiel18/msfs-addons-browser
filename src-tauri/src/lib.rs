@@ -551,6 +551,14 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     };
     app.manage(watcher_state);
 
+    // (v6 #2b) Controlador de "Best Landings": arma el replay buffer en
+    // aproximación y guarda el clip al touchdown. Reacciona al FlightStatus
+    // compartido (no toca el watcher). Opt-in (solo si la grabación está
+    // activada en Ajustes). En MODO SEGURO no corre (no hay watcher real).
+    if !safe_mode {
+        landing_recorder::spawn_controller(db.clone(), app.clone(), app_data_dir.clone());
+    }
+
     // (v3.1.0) Auto-sync con la nube — silencioso, una vez al día.
     // Sólo dispara si:
     //   · Hay refresh_token guardado (usuario ya autorizó OAuth).

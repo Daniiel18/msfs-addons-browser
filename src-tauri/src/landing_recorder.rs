@@ -313,3 +313,306 @@ pub fn delete_clip(output_dir: &Path, id: &str) -> anyhow::Result<()> {
     }
     save_clips(output_dir, &clips)
 }
+
+#[allow(clippy::too_many_arguments)]
+fn update_clip_meta(
+    out_dir: &Path,
+    id: &str,
+    fpm: Option<i64>,
+    grade: Option<String>,
+    icao: Option<String>,
+    name: Option<String>,
+    model: Option<String>,
+    reg: Option<String>,
+) -> anyhow::Result<()> {
+    let mut clips = load_clips(out_dir);
+    if let Some(c) = clips.iter_mut().find(|c| c.id == id) {
+        if c.fpm.is_none() {
+            c.fpm = fpm;
+        }
+        if c.grade.is_none() {
+            c.grade = grade;
+        }
+        if c.airport_icao.is_none() {
+            c.airport_icao = icao;
+        }
+        if c.airport_name.is_none() {
+            c.airport_name = name;
+        }
+        if c.model.is_none() {
+            c.model = model;
+        }
+        if c.registration.is_none() {
+            c.registration = reg;
+        }
+    }
+    save_clips(out_dir, &clips)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// (v6 #2b) Auto-disparo: replay buffer armado en aproximación → al detectar el
+// touchdown se guarda el clip. NO toca el watcher: una tarea async sondea el
+// `FlightStatus` compartido (fase/on_ground/altitud) y manda comandos a un
+// hilo dedicado que es dueño del `Recorder` (windows-record es !Send / COM).
+// Opt-in: solo corre si la grabación está activada en Ajustes.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[cfg(windows)]
+enum RecCmd {
+    Arm {
+        output_path: String,
+        clip_seconds: i64,
+    },
+    Save {
+        path: String,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    Stop,
+}
+
+/// Hilo dedicado dueño del `Recorder` (replay buffer). Recibe comandos por un
+/// canal sync. Aislar el `Recorder` aquí evita líos de `Send`/COM con tokio.
+#[cfg(windows)]
+fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
+    use windows_record::{AudioSource, Recorder};
+    let mut rec: Option<Recorder> = None;
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            RecCmd::Arm {
+                output_path,
+                clip_seconds,
+            } => {
+                if rec.is_some() {
+                    continue;
+                }
+                let base = Path::new(&output_path).join("simfleet_buffer.mp4");
+                let config = Recorder::builder()
+                    .fps(30, 1)
+                    .capture_audio(true)
+                    .capture_microphone(false)
+                    .audio_source(AudioSource::Desktop)
+                    .output_path(base)
+                    .enable_replay_buffer(true)
+                    .replay_buffer_seconds(clip_seconds.clamp(15, 120) as u32)
+                    .build();
+                match Recorder::new(config) {
+                    Ok(r) => {
+                        let r = r.with_process_name(MSFS_WINDOW);
+                        match r.start_recording() {
+                            Ok(_) => {
+                                tracing::info!(target: "rec", "replay buffer armado (MSFS)");
+                                rec = Some(r);
+                            }
+                            Err(e) => {
+                                tracing::warn!(target: "rec", "no se pudo armar replay buffer: {e:?}")
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!(target: "rec", "Recorder::new falló: {e:?}"),
+                }
+            }
+            RecCmd::Save { path, reply } => {
+                let res = match &rec {
+                    Some(r) => r.save_replay(path.as_str()).map_err(|e| format!("{e:?}")),
+                    None => Err("recorder no armado".to_string()),
+                };
+                let _ = reply.send(res);
+            }
+            RecCmd::Stop => {
+                if let Some(r) = rec.take() {
+                    let _ = r.stop_recording();
+                    tracing::info!(target: "rec", "replay buffer detenido");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn spawn_controller(pool: SqlitePool, app: tauri::AppHandle, data_dir: PathBuf) {
+    let (tx, rx) = std::sync::mpsc::channel::<RecCmd>();
+    let _ = std::thread::Builder::new()
+        .name("landing-recorder".into())
+        .spawn(move || recorder_thread(rx));
+    tokio::spawn(controller_loop(pool, app, data_dir, tx));
+}
+
+#[cfg(windows)]
+async fn controller_loop(
+    pool: SqlitePool,
+    app: tauri::AppHandle,
+    data_dir: PathBuf,
+    tx: std::sync::mpsc::Sender<RecCmd>,
+) {
+    use std::time::Duration;
+    use tauri::Manager;
+
+    let mut armed = false;
+    let mut prev_on_ground = true;
+    let mut saved = false;
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let cfg = load_config(&pool, &data_dir).await;
+        if !cfg.enabled {
+            if armed {
+                let _ = tx.send(RecCmd::Stop);
+                armed = false;
+                saved = false;
+            }
+            continue;
+        }
+
+        let status = match app.try_state::<crate::simconnect_watcher::SharedState>() {
+            Some(s) => s.lock().await.status.clone(),
+            None => continue,
+        };
+        if !status.sim_running {
+            if armed {
+                let _ = tx.send(RecCmd::Stop);
+                armed = false;
+                saved = false;
+            }
+            prev_on_ground = true;
+            continue;
+        }
+
+        let phase = status.phase_label.clone().unwrap_or_default();
+        let on_ground = status.on_ground.unwrap_or(true);
+        let approaching = matches!(phase.as_str(), "descent" | "approach")
+            || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 12_000));
+
+        // Armar el replay buffer al entrar en aproximación.
+        if approaching && !on_ground && !armed {
+            let _ = tx.send(RecCmd::Arm {
+                output_path: cfg.output_path.clone(),
+                clip_seconds: cfg.clip_seconds,
+            });
+            armed = true;
+            saved = false;
+        }
+
+        // Touchdown: transición airborne → on_ground estando armado.
+        if armed && on_ground && !prev_on_ground && !saved {
+            saved = true;
+            schedule_save(
+                &pool,
+                &tx,
+                &cfg.output_path,
+                cfg.clip_seconds,
+                cfg.max_clips,
+                status.destination_icao.clone(),
+                status.destination_name.clone(),
+                status.aircraft_icao.clone(),
+            );
+        }
+
+        // Desarmar tras llegar a tierra (taxi/parking).
+        if armed && on_ground && matches!(phase.as_str(), "taxi_in" | "parking" | "deboarding") {
+            let _ = tx.send(RecCmd::Stop);
+            armed = false;
+            saved = false;
+        }
+        prev_on_ground = on_ground;
+    }
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn schedule_save(
+    pool: &SqlitePool,
+    tx: &std::sync::mpsc::Sender<RecCmd>,
+    output_path: &str,
+    clip_seconds: i64,
+    max_clips: i64,
+    dest_icao: Option<String>,
+    dest_name: Option<String>,
+    aircraft_icao: Option<String>,
+) {
+    use std::time::Duration;
+    let pool = pool.clone();
+    let tx = tx.clone();
+    let out_dir = PathBuf::from(output_path);
+    tokio::spawn(async move {
+        // ~5s para que el rollout entre en el buffer antes de guardar.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = out_dir
+            .join(format!("simfleet_landing_{millis}.mp4"))
+            .to_string_lossy()
+            .into_owned();
+        let (rtx, rrx) = tokio::sync::oneshot::channel();
+        if tx.send(RecCmd::Save { path: path.clone(), reply: rtx }).is_err() {
+            return;
+        }
+        match rrx.await {
+            Ok(Ok(())) => {
+                let recorded_at = sqlx::query_as::<_, (String,)>("SELECT datetime('now')")
+                    .fetch_one(&pool)
+                    .await
+                    .map(|(s,)| s)
+                    .unwrap_or_default();
+                let clip = LandingClip {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    path,
+                    recorded_at,
+                    fpm: None,
+                    grade: None,
+                    airport_icao: dest_icao,
+                    airport_name: dest_name,
+                    model: aircraft_icao,
+                    registration: None,
+                    favorite: false,
+                    duration_s: clip_seconds,
+                    is_test: false,
+                };
+                let id = clip.id.clone();
+                if let Err(e) = add_clip(&out_dir, clip, max_clips) {
+                    tracing::warn!(target: "rec", "add_clip falló: {e:#}");
+                }
+                tracing::info!(target: "rec", "Best Landing guardado ({id})");
+                // Enriquecer con metadata del flight_log ya finalizado (~20s).
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                enrich_clip_from_flightlog(&pool, &out_dir, &id).await;
+            }
+            Ok(Err(e)) => tracing::warn!(target: "rec", "save_replay falló: {e}"),
+            Err(_) => tracing::warn!(target: "rec", "recorder no respondió al guardar"),
+        }
+    });
+}
+
+#[cfg(windows)]
+async fn enrich_clip_from_flightlog(pool: &SqlitePool, out_dir: &Path, id: &str) {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT landing_fpm, destination_icao, destination_name, \
+                aircraft_model, aircraft_atc_type, aircraft_registration \
+         FROM flight_log WHERE status = 'completed' ORDER BY started_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let Some((fpm, dico, dname, model, atc, reg)) = row else {
+        return;
+    };
+    let grade = fpm.map(|f| crate::flight_log::landing_grade(f).to_string());
+    let model = model.or(atc);
+    let _ = update_clip_meta(out_dir, id, fpm, grade, dico, dname, model, reg);
+}
+
+#[cfg(not(windows))]
+pub fn spawn_controller(_pool: SqlitePool, _app: tauri::AppHandle, _data_dir: PathBuf) {}
