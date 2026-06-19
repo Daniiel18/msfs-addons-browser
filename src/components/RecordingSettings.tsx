@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Loader2,
   Video,
-  Mic,
 } from "lucide-react";
 import type { RecordingConfig, EngineStatus } from "../lib/types";
 import { api } from "../lib/tauri";
@@ -143,17 +142,6 @@ export function RecordingSettings() {
               </button>
             </div>
           </Field>
-
-          {/* Micrófono */}
-          <RecToggle
-            label={t("rec.microphone")}
-            icon={<Mic className="h-3.5 w-3.5 text-slate-500" />}
-            checked={cfg.captureMicrophone}
-            onChange={(next) => {
-              patch({ captureMicrophone: next });
-              void setKey("rec_microphone", next ? "1" : "0");
-            }}
-          />
 
           {/* Carpeta */}
           <Field label={t("rec.folder")}>

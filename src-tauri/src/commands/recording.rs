@@ -51,14 +51,16 @@ pub async fn recording_test_clip(
     let file = output_dir.join(format!("simfleet_test_{millis}.mp4"));
 
     let dur = duration_s.clamp(3, 30);
-    let mic = cfg.capture_microphone;
+    // (v6 #2b fix) SIN micrófono: windows-record 0.1.0 crashea el proceso al
+    // mezclar audio del sistema + un micrófono virtual (p.ej. SteelSeries
+    // Sonar). Solo necesitamos el audio del sistema (sonido del sim).
     let file_c = file.clone();
     tokio::task::spawn_blocking(move || {
         landing_recorder::record_window_clip(
             landing_recorder::SELF_WINDOW,
             &file_c,
             dur,
-            mic,
+            false,
         )
     })
     .await
