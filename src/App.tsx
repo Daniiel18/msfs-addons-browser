@@ -191,10 +191,23 @@ export default function App() {
     resolve: () => void;
   } | null>(null);
 
-  // (v6) Modo seguro: 2ª instancia de pruebas sin SimConnect/cloud. Banner.
+  // (v6) Modo seguro: 2ª instancia de pruebas sin SimConnect/cloud.
+  // Indicadores: banner rojo + badge en el header + TÍTULO DE VENTANA (para
+  // distinguirla en la taskbar/Alt-Tab de la instancia principal).
   const [safeMode, setSafeMode] = useState(false);
   useEffect(() => {
-    if (isTauri) api.isSafeMode().then(setSafeMode).catch(() => {});
+    if (!isTauri) return;
+    api
+      .isSafeMode()
+      .then((sm) => {
+        setSafeMode(sm);
+        if (sm) {
+          getCurrentWindow()
+            .setTitle("SimFleet — MODO SEGURO (pruebas)")
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -672,8 +685,13 @@ export default function App() {
               <Plane className="h-5 w-5 text-brand-300" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-wide text-slate-100">
+              <h1 className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-slate-100">
                 SimFleet
+                {safeMode && (
+                  <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-300 ring-1 ring-rose-500/40">
+                    Safe
+                  </span>
+                )}
               </h1>
               <p className="text-[11px] text-slate-500">
                 {t("header.tagline")}
