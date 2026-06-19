@@ -65,6 +65,9 @@ fn enumerate_monitors(app: &tauri::AppHandle) -> Vec<MonitorInfo> {
 }
 
 /// Título de la ventana de MSFS según la versión activa (Source = MSFS).
+/// Reservado para el auto-trigger futuro (gdigrab por título es poco fiable
+/// con la ventana DX del sim, así que de momento grabamos el monitor).
+#[allow(dead_code)]
 fn msfs_window_title() -> String {
     if crate::sim::is_2024() {
         "Microsoft Flight Simulator 2024".to_string()
@@ -187,17 +190,17 @@ pub async fn recording_test_clip(
         .unwrap_or(0);
     let file = output_dir.join(format!("simfleet_test_{millis}.mp4"));
 
-    // Source = MSFS → captura su ventana; si no, la región del monitor elegido.
-    let (region, window_title) = if cfg.source_type == 1 {
-        (None, Some(msfs_window_title()))
-    } else {
-        let mons = enumerate_monitors(&app);
-        let region = mons
-            .get(cfg.monitor_index as usize)
-            .or_else(|| mons.first())
-            .map(|m| (m.x, m.y, m.width, m.height));
-        (region, None)
-    };
+    // La PRUEBA siempre graba la REGIÓN del monitor elegido (no la ventana de
+    // MSFS): gdigrab no captura de forma fiable la ventana DX del sim, y la
+    // prueba se corre normalmente sin el sim abierto. Capturar el monitor es lo
+    // robusto (MSFS debe estar en modo ventana/borderless, no fullscreen
+    // exclusivo, para que se vea).
+    let mons = enumerate_monitors(&app);
+    let region = mons
+        .get(cfg.monitor_index as usize)
+        .or_else(|| mons.first())
+        .map(|m| (m.x, m.y, m.width, m.height));
+    let window_title: Option<String> = None;
     let dur = duration_s.clamp(3, 30);
     let ffmpeg_c = ffmpeg.clone();
     let file_c = file.clone();

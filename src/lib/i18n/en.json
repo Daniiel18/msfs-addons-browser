@@ -1126,7 +1126,7 @@
   "rec.testing": "Recording 8s test…",
   "rec.test_ok": "Test clip saved — see it in Hangar → Best Landings",
   "rec.test_err": "Test recording failed",
-  "rec.note": "Auto-trigger on landing and the live OSD arrive in a future version (they need a real flight to validate). LandingToast's \"auto-start with the sim\" is handled by SimFleet.",
+  "rec.note": "The test records the selected MONITOR — MSFS must run in windowed/borderless mode (not exclusive fullscreen) to be captured. Auto-trigger on landing and the live OSD arrive in a future version. LandingToast's \"auto-start with the sim\" is handled by SimFleet.",
   "rec.target": "Monitor to record (Target)",
   "rec.source": "Source",
   "rec.source.screen": "Screen",

@@ -1126,7 +1126,7 @@
   "rec.testing": "Grabando prueba de 8s…",
   "rec.test_ok": "Clip de prueba guardado — míralo en Hangar → Best Landings",
   "rec.test_err": "Falló la grabación de prueba",
-  "rec.note": "El disparo automático al aterrizar y el OSD en vivo llegan en una próxima versión (requieren un vuelo real para validarse). El \"auto-iniciar con el sim\" de LandingToast lo gestiona SimFleet.",
+  "rec.note": "La prueba graba el MONITOR seleccionado — MSFS debe estar en modo ventana/borderless (no pantalla completa exclusiva) para que se vea. El disparo automático al aterrizar y el OSD en vivo llegan en una próxima versión. El \"auto-iniciar con el sim\" de LandingToast lo gestiona SimFleet.",
   "rec.target": "Monitor a grabar (Target)",
   "rec.source": "Fuente",
   "rec.source.screen": "Pantalla",
