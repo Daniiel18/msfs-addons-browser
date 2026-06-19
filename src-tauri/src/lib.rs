@@ -4,6 +4,7 @@ pub mod cloud_sync;
 pub mod commands;
 pub mod community;
 pub mod community_scanner;
+pub mod cross_link;
 pub mod damage;
 pub mod db;
 pub mod drop_install;
@@ -170,6 +171,7 @@ pub fn run() {
             commands::community::scan_community,
             commands::community::get_installed_sims,
             commands::community::is_safe_mode,
+            commands::community::cross_link_create,
             commands::community::list_community_packages,
             commands::community::list_available_updates,
             commands::community::refresh_updates_for_installed,

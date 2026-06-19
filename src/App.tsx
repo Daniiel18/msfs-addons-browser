@@ -49,6 +49,8 @@ import {
   hasUnseenWhatsNew,
   markWhatsNewSeen,
 } from "./components/WhatsNewModal";
+import { CrossLinkModal } from "./components/CrossLinkModal";
+import type { CrossLinkOffer } from "./lib/types";
 
 /**
  * Bootstrap centralizado: una sola tarea async awaita Promise.all
@@ -127,6 +129,11 @@ export default function App() {
           if (!cancelled) clearThumbnailCache();
         });
         unsubs.push(u3);
+        // (v6 #1) Oferta de cross-link 2020/2024 tras instalar doble-compat.
+        const u4 = await api.onCrossLinkOffer((offer) => {
+          if (!cancelled) setCrossLinkOffer(offer);
+        });
+        unsubs.push(u4);
       } catch (e) {
         console.warn("score event subscribe failed:", e);
       }
@@ -221,6 +228,11 @@ export default function App() {
   // si hay un set de novedades sin ver (controlado por WHATSNEW_ID +
   // localStorage). No coexiste con el tour de bienvenida.
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  // (v6 — #1) Oferta de cross-link 2020/2024 tras instalar un escenario
+  // doble-compat. El backend la emite por `cross-link://offer`.
+  const [crossLinkOffer, setCrossLinkOffer] = useState<CrossLinkOffer | null>(
+    null,
+  );
   // (v5.2.3) Gate de versión de MSFS DURANTE el splash. Si es el primer
   // arranque (simVersion vacío), el bootstrap muestra el chooser ANTES de
   // escanear Community y espera por esta promesa para continuar con la
@@ -877,6 +889,13 @@ export default function App() {
       {/* (v6 — #4) Novedades "What's New" anti-skip. */}
       {whatsNewOpen && (
         <WhatsNewModal onClose={() => setWhatsNewOpen(false)} />
+      )}
+      {/* (v6 — #1) Oferta de cross-link 2020/2024 tras instalar doble-compat. */}
+      {crossLinkOffer && (
+        <CrossLinkModal
+          offer={crossLinkOffer}
+          onClose={() => setCrossLinkOffer(null)}
+        />
       )}
     </div>
   );

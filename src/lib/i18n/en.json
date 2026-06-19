@@ -1032,5 +1032,15 @@
   "whatsnew.drop.title": "Improved drag & drop",
   "whatsnew.drop.body": "Drop .zip/.rar/.7z (even password-protected) or whole folders: SimFleet sorts GSX, Community and others, and installs them in the right folder. When done it can delete the original archive.",
   "whatsnew.flightbook.title": "More accurate logbook",
-  "whatsnew.flightbook.body": "Flight close now waits for real engine shutdown (N2 < 5%) and shows the aircraft's real manufacturer and airline. Your block times and records stay cleaner."
+  "whatsnew.flightbook.body": "Flight close now waits for real engine shutdown (N2 < 5%) and shows the aircraft's real manufacturer and airline. Your block times and records stay cleaner.",
+  "crosslink.title": "Link to the other version too?",
+  "crosslink.body": "This scenery is compatible with MSFS 2020/2024. I can link it to your {label} without using extra disk space.",
+  "crosslink.note": "Creates a junction (folder link) pointing to the original package. If you delete it from the original version, the link stops working.",
+  "crosslink.later": "Not now",
+  "crosslink.link": "Link",
+  "crosslink.linking": "Linking…",
+  "crosslink.toast.done": "{n} package(s) linked to {label}",
+  "crosslink.toast.skipped": "{n} already existed and were kept.",
+  "crosslink.toast.failed": "Couldn't link {n} package(s)",
+  "crosslink.toast.error": "Error creating links"
 }

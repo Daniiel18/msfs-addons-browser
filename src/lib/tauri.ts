@@ -54,6 +54,9 @@ import type {
   GsxProfile,
   InstallResult,
   InstalledAddon,
+  CrossLinkOffer,
+  CrossLinkPkg,
+  CrossLinkResult,
   PmdgLivery,
   RefreshSummary,
   ScanReport,
@@ -264,6 +267,14 @@ interface Api {
   getInstalledSims: () => Promise<{ has2020: boolean; has2024: boolean }>;
   /** (v6) `true` si corre en MODO SEGURO (2ª instancia sin SimConnect/cloud). */
   isSafeMode: () => Promise<boolean>;
+  /** (v6 #1) Crea junctions NTFS de `packages` en la Community de la otra
+   *  versión de MSFS (cross-link 2020 ↔ 2024). */
+  crossLinkCreate: (
+    otherCommunity: string,
+    packages: CrossLinkPkg[],
+  ) => Promise<CrossLinkResult>;
+  /** (v6 #1) Oferta de cross-link emitida tras instalar un escenario doble-compat. */
+  onCrossLinkOffer: (cb: (offer: CrossLinkOffer) => void) => Promise<UnlistenFn>;
   /** Lista todos los paquetes en Community (ya escaneados). */
   listCommunityPackages: () => Promise<CommunityPackage[]>;
   /** Devuelve las updates conocidas (compara cache vs instalado). */
@@ -624,6 +635,10 @@ const realApi: Api = {
   getInstalledSims: () =>
     invoke<{ has2020: boolean; has2024: boolean }>("get_installed_sims"),
   isSafeMode: () => invoke<boolean>("is_safe_mode"),
+  crossLinkCreate: (otherCommunity, packages) =>
+    invoke<CrossLinkResult>("cross_link_create", { otherCommunity, packages }),
+  onCrossLinkOffer: (cb) =>
+    listen<CrossLinkOffer>("cross-link://offer", (e) => cb(e.payload)),
   listCommunityPackages: () =>
     invoke<CommunityPackage[]>("list_community_packages"),
   listAvailableUpdates: () => invoke<AvailableUpdate[]>("list_available_updates"),
@@ -1326,6 +1341,13 @@ const demoApi: Api = {
   },
   async isSafeMode() {
     return false;
+  },
+  async crossLinkCreate(_otherCommunity: string, packages: CrossLinkPkg[]) {
+    await sleep(200);
+    return { linked: packages.map((p) => p.name), skipped: [], failed: [] };
+  },
+  async onCrossLinkOffer() {
+    return () => {};
   },
   async listCommunityPackages() {
     await sleep(120);

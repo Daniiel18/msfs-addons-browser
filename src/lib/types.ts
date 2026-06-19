@@ -96,6 +96,31 @@ export interface InstallerPayload {
   otherInstallers: string[];
 }
 
+/** (v6 #1) Cross-link 2020/2024 — un paquete a enlazar en la otra Community. */
+export interface CrossLinkPkg {
+  name: string;
+  sourcePath: string;
+}
+
+/** (v6 #1) Oferta de cross-link emitida por el backend tras instalar un
+ *  escenario "MSFS 2020/2024" cuando ambas versiones están instaladas. */
+export interface CrossLinkOffer {
+  /** "msfs2020" | "msfs2024" — la OTRA versión (destino del enlace). */
+  otherVersion: string;
+  /** Etiqueta legible ("MSFS 2020" / "MSFS 2024"). */
+  otherLabel: string;
+  /** Carpeta Community destino. */
+  otherCommunity: string;
+  packages: CrossLinkPkg[];
+}
+
+/** (v6 #1) Resultado de crear los junctions. */
+export interface CrossLinkResult {
+  linked: string[];
+  skipped: string[];
+  failed: string[];
+}
+
 /** Vuelo persistido del historial SimBrief. La app va acumulando
  *  uno por refresh contra la API pública (que solo expone el
  *  último OFP). El mapa pinta una LineString por cada uno. */

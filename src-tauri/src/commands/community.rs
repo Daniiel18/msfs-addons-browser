@@ -32,6 +32,26 @@ pub fn is_safe_mode() -> bool {
     std::env::var("SIMFLEET_SAFE_MODE").is_ok()
 }
 
+/// (v6 #1) Crea junctions NTFS de los paquetes recién instalados en la
+/// Community de la OTRA versión de MSFS (cross-link 2020 ↔ 2024). Lo invoca
+/// el modal post-instalación cuando el usuario acepta enlazar.
+#[tauri::command]
+pub fn cross_link_create(
+    other_community: String,
+    packages: Vec<crate::cross_link::CrossLinkPkg>,
+) -> Result<crate::cross_link::CrossLinkResult, String> {
+    cmd_log!(
+        "cross_link_create",
+        "dest={} n={}",
+        other_community,
+        packages.len()
+    );
+    Ok(crate::cross_link::create_junctions(
+        &other_community,
+        &packages,
+    ))
+}
+
 /// Escanea Community y persiste los paquetes encontrados. Acepta
 /// un path opcional — si no viene, se intenta detección automática.
 #[tauri::command]

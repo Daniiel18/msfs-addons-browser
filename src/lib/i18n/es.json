@@ -1032,5 +1032,15 @@
   "whatsnew.drop.title": "Arrastrar y soltar mejorado",
   "whatsnew.drop.body": "Suelta .zip/.rar/.7z (incluso con contraseña) o carpetas completas: SimFleet clasifica GSX, Community y otros, e instala en la carpeta correcta. Al terminar puede borrar el comprimido original.",
   "whatsnew.flightbook.title": "Bitácora más precisa",
-  "whatsnew.flightbook.body": "El cierre de vuelo ahora espera al apagado real de motores (N2 < 5%) y muestra fabricante y aerolínea reales del avión. Tus tiempos de bloque y registros quedan más limpios."
+  "whatsnew.flightbook.body": "El cierre de vuelo ahora espera al apagado real de motores (N2 < 5%) y muestra fabricante y aerolínea reales del avión. Tus tiempos de bloque y registros quedan más limpios.",
+  "crosslink.title": "¿Enlazar también a la otra versión?",
+  "crosslink.body": "Este escenario es compatible con MSFS 2020/2024. Puedo enlazarlo a tu {label} sin ocupar espacio extra en disco.",
+  "crosslink.note": "Se crea un junction (enlace de carpeta) que apunta al paquete original. Si lo borras desde la versión original, el enlace deja de funcionar.",
+  "crosslink.later": "Ahora no",
+  "crosslink.link": "Enlazar",
+  "crosslink.linking": "Enlazando…",
+  "crosslink.toast.done": "{n} paquete(s) enlazado(s) a {label}",
+  "crosslink.toast.skipped": "{n} ya existía(n) y se conservaron.",
+  "crosslink.toast.failed": "No se pudieron enlazar {n} paquete(s)",
+  "crosslink.toast.error": "Error al crear los enlaces"
 }

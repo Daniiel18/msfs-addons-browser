@@ -729,6 +729,18 @@ impl DownloadManager {
                 })
                 .await;
 
+                // (v6 #1) Cross-link 2020/2024: si el addon es doble-compat
+                // ("MSFS 2020/2024") y el usuario tiene AMBAS versiones, emite
+                // una oferta para enlazar el paquete a la otra Community vía
+                // junction NTFS. El frontend muestra un modal post-instalación.
+                if let Some(snapshot) = self.snapshot(id).await {
+                    if let Some(offer) =
+                        crate::cross_link::build_offer(&snapshot.addon_title, &res.packages)
+                    {
+                        let _ = self.inner.app.emit("cross-link://offer", &offer);
+                    }
+                }
+
                 // (v5.0.0) Motor de rendimiento: al DESCARGAR un aeropuerto
                 // bajamos la nota "Optional Configuration" de su página en
                 // SceneryAddons y escribimos `config/simfleet_perf.json`
