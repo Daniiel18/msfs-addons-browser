@@ -34,15 +34,21 @@ const FFMPEG_ZIP_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-
 #[serde(rename_all = "camelCase")]
 pub struct RecordingConfig {
     pub enabled: bool,
-    /// Esquina del OSD: 0 TL · 1 TR · 2 BL · 3 BR.
+    /// Posición del OSD: 0 = Arriba · 1 = Abajo (igual que LandingToast).
     pub osd_position: i64,
     pub output_path: String,
     pub clip_seconds: i64,
+    /// Si true, graba todo el aterrizaje sin recortar a `clip_seconds`.
+    pub unlimited: bool,
+    /// Índice del monitor a grabar (Target). 0 = primario.
     pub monitor_index: i64,
-    /// 0 = monitor/escritorio · 1 = ventana (futuro).
+    /// 0 = pantalla (monitor) · 1 = ventana de MSFS.
     pub source_type: i64,
     pub max_clips: i64,
     pub ffmpeg_path: Option<String>,
+    /// Dispositivo de audio dshow: None/"" = auto-detectar loopback;
+    /// "off" = sin audio; cualquier otro = nombre del dispositivo.
+    pub audio_device: Option<String>,
 }
 
 async fn kv(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -79,19 +85,40 @@ fn default_output_path(fallback_data: &Path) -> String {
         .into_owned()
 }
 
-/// Lee `VideoOutputPath` del config.json de LandingToast si está instalado.
-fn landingtoast_video_path() -> Option<String> {
+/// Lee el `config.json` de LandingToast si está instalado.
+fn landingtoast_config() -> Option<serde_json::Value> {
     let appdata = std::env::var("APPDATA").ok()?;
     let cfg = PathBuf::from(appdata).join("LandingToast").join("config.json");
     let text = std::fs::read_to_string(cfg).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    json.get("VideoOutputPath")
+    serde_json::from_str(&text).ok()
+}
+
+fn landingtoast_video_path() -> Option<String> {
+    landingtoast_config()?
+        .get("VideoOutputPath")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .filter(|s| !s.trim().is_empty())
 }
 
+/// Default tomado de LandingToast (clave `key`) o `fallback` si no existe.
+fn lt_i64(lt: &Option<serde_json::Value>, key: &str, fallback: i64) -> i64 {
+    lt.as_ref()
+        .and_then(|j| j.get(key))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(fallback)
+}
+
+fn lt_bool(lt: &Option<serde_json::Value>, key: &str, fallback: bool) -> bool {
+    lt.as_ref()
+        .and_then(|j| j.get(key))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(fallback)
+}
+
 pub async fn load_config(pool: &SqlitePool, fallback_data: &Path) -> RecordingConfig {
+    // En la 1ª vez (sin settings propios) heredamos de LandingToast.
+    let lt = landingtoast_config();
     let enabled = kv(pool, "rec_enabled")
         .await
         .map(|s| matches!(s.as_str(), "1" | "true" | "yes"))
@@ -99,15 +126,35 @@ pub async fn load_config(pool: &SqlitePool, fallback_data: &Path) -> RecordingCo
     let output_path = kv(pool, "rec_output_path")
         .await
         .unwrap_or_else(|| default_output_path(fallback_data));
+    let audio_device = kv(pool, "rec_audio_device").await;
+
+    let unlimited = match kv(pool, "rec_unlimited").await {
+        Some(s) => matches!(s.as_str(), "1" | "true" | "yes"),
+        None => lt_bool(&lt, "UnlimitedDuration", true),
+    };
     RecordingConfig {
         enabled,
-        osd_position: kv_i64(pool, "rec_osd_position", 0).await,
+        osd_position: match kv(pool, "rec_osd_position").await {
+            Some(s) => s.parse().unwrap_or(0),
+            None => lt_i64(&lt, "Position", 0),
+        },
         output_path,
-        clip_seconds: kv_i64(pool, "rec_clip_seconds", 45).await,
-        monitor_index: kv_i64(pool, "rec_monitor_index", 0).await,
-        source_type: kv_i64(pool, "rec_source_type", 0).await,
+        clip_seconds: match kv(pool, "rec_clip_seconds").await {
+            Some(s) => s.parse().unwrap_or(45),
+            None => lt_i64(&lt, "ToastDuration", 45),
+        },
+        unlimited,
+        monitor_index: match kv(pool, "rec_monitor_index").await {
+            Some(s) => s.parse().unwrap_or(0),
+            None => lt_i64(&lt, "MonitorIndex", 0),
+        },
+        source_type: match kv(pool, "rec_source_type").await {
+            Some(s) => s.parse().unwrap_or(0),
+            None => lt_i64(&lt, "SourceType", 0),
+        },
         max_clips: kv_i64(pool, "rec_max_clips", 20).await,
         ffmpeg_path: kv(pool, "rec_ffmpeg_path").await,
+        audio_device,
     }
 }
 
@@ -228,33 +275,67 @@ fn run_quiet(exe: &Path, args: &[&str]) -> anyhow::Result<bool> {
     Ok(status.map(|s| s.success()).unwrap_or(false))
 }
 
-/// Graba `duration_s` segundos del escritorio a `out` con ffmpeg (gdigrab).
-/// Bloqueante (~duration_s) — llamar desde `spawn_blocking`.
+/// Opciones de captura.
+pub struct RecordOptions {
+    pub duration_s: i64,
+    /// Región a capturar `(x, y, w, h)` en píxeles = UN monitor. None = todo
+    /// el escritorio. Se ignora si hay `window_title`.
+    pub region: Option<(i32, i32, u32, u32)>,
+    /// Título de ventana a capturar (Source = MSFS). Prioritario sobre region.
+    pub window_title: Option<String>,
+    /// Dispositivo de audio dshow ya resuelto (None = sin audio).
+    pub audio_device: Option<String>,
+}
+
+/// Graba un clip con ffmpeg (gdigrab + dshow opcional). Bloqueante
+/// (~duration_s) — llamar desde `spawn_blocking`.
 #[cfg(windows)]
-pub fn record_desktop_clip(ffmpeg: &Path, out: &Path, duration_s: i64) -> anyhow::Result<()> {
+pub fn record_clip(ffmpeg: &Path, out: &Path, opts: &RecordOptions) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let dur = duration_s.clamp(2, 120).to_string();
-    let out_s = out.to_string_lossy().into_owned();
+
+    let mut args: Vec<String> = vec!["-y".into(), "-f".into(), "gdigrab".into(),
+        "-framerate".into(), "30".into()];
+    // Región de monitor (solo si NO capturamos una ventana concreta).
+    if opts.window_title.is_none() {
+        if let Some((x, y, w, h)) = opts.region {
+            args.push("-offset_x".into());
+            args.push(x.to_string());
+            args.push("-offset_y".into());
+            args.push(y.to_string());
+            args.push("-video_size".into());
+            args.push(format!("{w}x{h}"));
+        }
+    }
+    args.push("-i".into());
+    match &opts.window_title {
+        Some(title) => args.push(format!("title={title}")),
+        None => args.push("desktop".into()),
+    }
+    // Audio (dshow) opcional — loopback del sistema si está disponible.
+    let has_audio = opts.audio_device.is_some();
+    if let Some(dev) = &opts.audio_device {
+        args.push("-f".into());
+        args.push("dshow".into());
+        args.push("-i".into());
+        args.push(format!("audio={dev}"));
+    }
+    args.push("-t".into());
+    args.push(opts.duration_s.clamp(2, 600).to_string());
+    args.push("-c:v".into());
+    args.push("libx264".into());
+    args.push("-preset".into());
+    args.push("veryfast".into());
+    args.push("-pix_fmt".into());
+    args.push("yuv420p".into());
+    if has_audio {
+        args.push("-c:a".into());
+        args.push("aac".into());
+    }
+    args.push(out.to_string_lossy().into_owned());
+
     let output = std::process::Command::new(ffmpeg)
-        .args([
-            "-y",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            "30",
-            "-i",
-            "desktop",
-            "-t",
-            &dur,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-pix_fmt",
-            "yuv420p",
-            &out_s,
-        ])
+        .args(&args)
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if output.status.success() && out.is_file() {
@@ -269,8 +350,106 @@ pub fn record_desktop_clip(ffmpeg: &Path, out: &Path, duration_s: i64) -> anyhow
 }
 
 #[cfg(not(windows))]
-pub fn record_desktop_clip(_ffmpeg: &Path, _out: &Path, _duration_s: i64) -> anyhow::Result<()> {
+pub fn record_clip(_ffmpeg: &Path, _out: &Path, _opts: &RecordOptions) -> anyhow::Result<()> {
     anyhow::bail!("la grabación de pantalla solo está soportada en Windows")
+}
+
+/// Lista los dispositivos de audio dshow (para el selector de audio).
+#[cfg(windows)]
+pub fn list_audio_devices(ffmpeg: &Path) -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-list_devices",
+            "true",
+            "-f",
+            "dshow",
+            "-i",
+            "dummy",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) => parse_dshow_audio(&String::from_utf8_lossy(&o.stderr)),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn list_audio_devices(_ffmpeg: &Path) -> Vec<String> {
+    Vec::new()
+}
+
+/// Extrae los nombres de dispositivos de audio del stderr de ffmpeg
+/// (`-list_devices`). Soporta el formato nuevo (`"Nombre" (audio)`) y el
+/// antiguo (sección "DirectShow audio devices").
+fn parse_dshow_audio(stderr: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Formato nuevo: líneas con `(audio)`.
+    for line in stderr.lines().filter(|l| l.contains("(audio)")) {
+        if let Some(name) = first_quoted(line) {
+            out.push(name);
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // Formato antiguo: tras "DirectShow audio devices".
+    let mut in_audio = false;
+    for line in stderr.lines() {
+        if line.contains("DirectShow audio devices") {
+            in_audio = true;
+            continue;
+        }
+        if line.contains("DirectShow video devices") {
+            in_audio = false;
+        }
+        if in_audio && !line.contains("Alternative name") {
+            if let Some(name) = first_quoted(line) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+fn first_quoted(line: &str) -> Option<String> {
+    let start = line.find('"')? + 1;
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Elige un dispositivo de audio capaz de capturar el sonido del sistema
+/// (loopback): Stereo Mix, "What U Hear", VB-CABLE, VoiceMeeter, etc.
+pub fn pick_loopback_audio(devices: &[String]) -> Option<String> {
+    const HINTS: [&str; 7] = [
+        "stereo mix",
+        "what u hear",
+        "loopback",
+        "virtual-audio",
+        "cable output",
+        "voicemeeter out",
+        "wave out",
+    ];
+    devices
+        .iter()
+        .find(|d| {
+            let l = d.to_lowercase();
+            HINTS.iter().any(|h| l.contains(h))
+        })
+        .cloned()
+}
+
+/// Resuelve qué dispositivo de audio usar según la config.
+pub fn resolve_audio(cfg: &RecordingConfig, ffmpeg: &Path) -> Option<String> {
+    match cfg.audio_device.as_deref() {
+        Some("off") => None,
+        Some(d) if !d.trim().is_empty() && d != "auto" => Some(d.to_string()),
+        _ => pick_loopback_audio(&list_audio_devices(ffmpeg)),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

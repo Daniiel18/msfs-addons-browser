@@ -41,7 +41,8 @@
     ],
     "resources": {
       "resources/airports.csv": "resources/airports.csv",
-      "resources/SimConnect.dll": "./SimConnect.dll"
+      "resources/SimConnect.dll": "./SimConnect.dll",
+      "resources/ffmpeg": "ffmpeg"
     }
   }
 }

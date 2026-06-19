@@ -285,6 +285,8 @@ fn is_valid_key(key: &str) -> bool {
             | "rec_source_type"
             | "rec_max_clips"
             | "rec_ffmpeg_path"
+            | "rec_unlimited"
+            | "rec_audio_device"
     )
 }
 

@@ -1126,5 +1126,20 @@
   "rec.testing": "Grabando prueba de 8s…",
   "rec.test_ok": "Clip de prueba guardado — míralo en Hangar → Best Landings",
   "rec.test_err": "Falló la grabación de prueba",
-  "rec.note": "El disparo automático al aterrizar y el OSD en vivo llegan en una próxima versión (requieren un vuelo real para validarse). El \"auto-iniciar con el sim\" de LandingToast lo gestiona SimFleet."
+  "rec.note": "El disparo automático al aterrizar y el OSD en vivo llegan en una próxima versión (requieren un vuelo real para validarse). El \"auto-iniciar con el sim\" de LandingToast lo gestiona SimFleet.",
+  "rec.target": "Monitor a grabar (Target)",
+  "rec.source": "Fuente",
+  "rec.source.screen": "Pantalla",
+  "rec.source.msfs": "MSFS",
+  "rec.position": "Posición del OSD",
+  "rec.pos.top": "Arriba",
+  "rec.pos.bottom": "Abajo",
+  "rec.duration": "Duración del clip (s)",
+  "rec.unlimited": "Ilimitado",
+  "rec.audio": "Audio",
+  "rec.audio.auto": "Auto (sonido del sistema)",
+  "rec.audio.off": "Sin audio",
+  "rec.audio.hint": "Para capturar sonido necesitas un dispositivo loopback (p. ej. activar \"Stereo Mix\" en el panel de sonido de Windows).",
+  "rec.installing": "Instalando ffmpeg…",
+  "rec.ffmpeg_pending": "ffmpeg no disponible"
 }

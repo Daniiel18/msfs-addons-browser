@@ -62,6 +62,7 @@ import type {
   RecordingConfig,
   FfmpegStatus,
   LandingClip,
+  MonitorInfo,
   PmdgLivery,
   RefreshSummary,
   ScanReport,
@@ -510,6 +511,10 @@ interface Api {
   setLandingFavorite: (id: string, favorite: boolean) => Promise<void>;
   /** (v6 #2b) Borra un clip (archivo + manifiesto). */
   deleteLandingClip: (id: string) => Promise<void>;
+  /** (v6 #2b) Monitores del sistema (selector "Target"). */
+  listMonitors: () => Promise<MonitorInfo[]>;
+  /** (v6 #2b) Dispositivos de audio dshow (selector de audio). */
+  listAudioDevices: () => Promise<string[]>;
   /** Eventos emitidos por el watcher al auto-puntuar un vuelo. */
   onScoreDone: (cb: (report: ScoreReport) => void) => Promise<UnlistenFn>;
   onScoreUploadSuccess: (cb: (report: unknown) => void) => Promise<UnlistenFn>;
@@ -785,6 +790,8 @@ const realApi: Api = {
   setLandingFavorite: (id, favorite) =>
     invoke<void>("set_landing_favorite", { id, favorite }),
   deleteLandingClip: (id) => invoke<void>("delete_landing_clip", { id }),
+  listMonitors: () => invoke<MonitorInfo[]>("list_monitors"),
+  listAudioDevices: () => invoke<string[]>("list_audio_devices"),
   onScoreDone: (cb) =>
     listen<ScoreReport>("score:done", (event) => cb(event.payload)),
   onScoreUploadSuccess: (cb) =>
@@ -1795,11 +1802,22 @@ const demoApi: Api = {
       osdPosition: 0,
       outputPath: "C:/Users/demo/Videos/SimFleet Landings",
       clipSeconds: 45,
+      unlimited: true,
       monitorIndex: 0,
       sourceType: 0,
       maxClips: 20,
       ffmpegPath: null,
+      audioDevice: null,
     };
+  },
+  async listMonitors() {
+    return [
+      { index: 0, name: "DISPLAY1 - ASUS VG27V", x: 0, y: 0, width: 2560, height: 1440, primary: true },
+      { index: 1, name: "DISPLAY2 - Dell U2419", x: 2560, y: 0, width: 1920, height: 1080, primary: false },
+    ];
+  },
+  async listAudioDevices() {
+    return ["Stereo Mix (Realtek Audio)", "Micrófono (Realtek Audio)"];
   },
   async recordingFfmpegStatus() {
     return { present: false, path: null, source: "missing" };

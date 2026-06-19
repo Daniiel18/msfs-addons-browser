@@ -10,3 +10,5 @@ vite.config.d.ts
 vite.config.js
 src-tauri/secrets.local.toml
 secrets.local.toml
+# ffmpeg embebido (Best Landings) — grande, se baja con scripts/fetch-ffmpeg.ps1
+src-tauri/resources/ffmpeg/ffmpeg.exe

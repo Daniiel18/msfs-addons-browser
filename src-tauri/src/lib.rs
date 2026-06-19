@@ -216,6 +216,8 @@ pub fn run() {
             commands::recording::list_landing_clips,
             commands::recording::set_landing_favorite,
             commands::recording::delete_landing_clip,
+            commands::recording::list_monitors,
+            commands::recording::list_audio_devices,
             commands::flight_log::list_incomplete_flights,
             commands::flight_log::keep_partial_flight,
             commands::flight_log::delete_flight_log_entry,

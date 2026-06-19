@@ -179,13 +179,28 @@ export interface HangarAnalytics {
 /** (v6 #2b) Config de grabación de Best Landings (heredada de LandingToast). */
 export interface RecordingConfig {
   enabled: boolean;
+  /** 0 = Arriba · 1 = Abajo */
   osdPosition: number;
   outputPath: string;
   clipSeconds: number;
+  unlimited: boolean;
   monitorIndex: number;
+  /** 0 = Pantalla (monitor) · 1 = Ventana de MSFS */
   sourceType: number;
   maxClips: number;
   ffmpegPath: string | null;
+  audioDevice: string | null;
+}
+
+/** (v6 #2b) Un monitor del sistema (selector "Target"). */
+export interface MonitorInfo {
+  index: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
 }
 
 /** (v6 #2b) Estado de ffmpeg. */
