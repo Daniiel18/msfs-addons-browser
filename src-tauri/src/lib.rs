@@ -78,18 +78,29 @@ impl AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // (v2.2.0) Single instance — si la app ya está corriendo,
-        // abrir el .exe de nuevo le manda los args a la instancia
-        // existente y trae su ventana al frente. NO arrancar un
-        // segundo proceso.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    // (v6) MODO SEGURO — `SIMFLEET_SAFE_MODE=1`. Permite correr una SEGUNDA
+    // instancia de SimFleet (build de pruebas) junto a la principal mientras
+    // el usuario vuela: salta el single-instance (abajo), NO arranca el
+    // watcher de SimConnect ni el auto-sync a la nube (ver init_state). Así
+    // no captura ni pisa la data del vuelo en curso (ni local ni en Drive).
+    let safe_mode = std::env::var("SIMFLEET_SAFE_MODE").is_ok();
+    if safe_mode {
+        eprintln!("[SimFleet] MODO SEGURO activo — sin SimConnect ni cloud-sync, instancia secundaria permitida.");
+    }
+    let mut builder = tauri::Builder::default();
+    // (v2.2.0) Single instance — si la app ya está corriendo, abrir el .exe
+    // de nuevo le manda los args a la instancia existente y trae su ventana
+    // al frente. En MODO SEGURO NO se registra, para permitir la 2ª instancia.
+    if !safe_mode {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.unminimize();
                 let _ = win.set_focus();
             }
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         // Diálogo nativo de selección de archivos — sostiene el flujo
@@ -158,6 +169,7 @@ pub fn run() {
             commands::airports::lookup_airports,
             commands::community::scan_community,
             commands::community::get_installed_sims,
+            commands::community::is_safe_mode,
             commands::community::list_community_packages,
             commands::community::list_available_updates,
             commands::community::refresh_updates_for_installed,
@@ -512,7 +524,20 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // "¿qué estoy volando ahora?". Emite `flight://current` al
     // frontend cuando cambia el estado. Lo añadimos al state de
     // Tauri para que el comando `get_flight_status` pueda leerlo.
-    let watcher_state = simconnect_watcher::spawn(db.clone(), app.clone());
+    // (v6) En MODO SEGURO NO arrancamos el watcher → cero conexión a
+    // SimConnect → no captura ni interfiere con el vuelo de la instancia
+    // principal. Igual gestionamos un estado vacío para que los comandos
+    // (`get_flight_status`) no fallen.
+    let safe_mode = std::env::var("SIMFLEET_SAFE_MODE").is_ok();
+    let watcher_state = if safe_mode {
+        tracing::warn!(
+            target: "simconnect",
+            "MODO SEGURO — watcher de SimConnect DESACTIVADO (no se captura el vuelo)"
+        );
+        simconnect_watcher::disabled_state()
+    } else {
+        simconnect_watcher::spawn(db.clone(), app.clone())
+    };
     app.manage(watcher_state);
 
     // (v3.1.0) Auto-sync con la nube — silencioso, una vez al día.
@@ -521,7 +546,9 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     //   · Han pasado >24h desde el último sync (settings.google_last_sync_at).
     // En cualquier caso es best-effort — si falla la conexión, no
     // molestamos al usuario, sólo logueamos.
-    {
+    // (v6) En MODO SEGURO NO auto-sincronizamos: una instancia de pruebas
+    // NUNCA debe subir su DB a Drive y pisar la data real del usuario.
+    if !safe_mode {
         let bg_pool = db.clone();
         let bg_http = http.clone();
         tokio::spawn(async move {

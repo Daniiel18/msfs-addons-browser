@@ -24,6 +24,14 @@ pub async fn get_installed_sims() -> Result<InstalledSims, String> {
     Ok(InstalledSims { has2020, has2024 })
 }
 
+/// (v6) `true` si la app corre en MODO SEGURO (`SIMFLEET_SAFE_MODE`): 2ª
+/// instancia de pruebas sin SimConnect ni auto-sync. El frontend muestra un
+/// banner para no confundirla con la instancia principal.
+#[tauri::command]
+pub fn is_safe_mode() -> bool {
+    std::env::var("SIMFLEET_SAFE_MODE").is_ok()
+}
+
 /// Escanea Community y persiste los paquetes encontrados. Acepta
 /// un path opcional — si no viene, se intenta detección automática.
 #[tauri::command]

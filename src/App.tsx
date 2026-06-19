@@ -191,6 +191,12 @@ export default function App() {
     resolve: () => void;
   } | null>(null);
 
+  // (v6) Modo seguro: 2ª instancia de pruebas sin SimConnect/cloud. Banner.
+  const [safeMode, setSafeMode] = useState(false);
+  useEffect(() => {
+    if (isTauri) api.isSafeMode().then(setSafeMode).catch(() => {});
+  }, []);
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
   // (v5.2.3) Gate de versión de MSFS DURANTE el splash. Si es el primer
@@ -624,6 +630,13 @@ export default function App() {
           versión y el usuario no la haya descartado. Se renderiza
           ARRIBA del header de la app, debajo del titlebar. */}
       <UpdateBanner />
+      {safeMode && (
+        <div className="flex items-center justify-center gap-2 border-b border-rose-500/30 bg-rose-500/15 px-4 py-1.5 text-xs font-semibold text-rose-200">
+          🛡️ MODO SEGURO — instancia de pruebas. SimConnect y la sincronización
+          con la nube están DESACTIVADOS; no afecta el vuelo ni los datos de tu
+          instancia principal.
+        </div>
+      )}
       {!isTauri && (
         <div className="flex items-center justify-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-200">
           <FlaskConical className="h-3.5 w-3.5" />

@@ -89,6 +89,15 @@ pub struct WatcherState {
 
 pub type SharedState = Arc<Mutex<WatcherState>>;
 
+/// (v6) Estado del watcher SIN arrancar el loop de SimConnect ni el fallback
+/// de proceso. Lo usa el MODO SEGURO (`SIMFLEET_SAFE_MODE`): una segunda
+/// instancia de SimFleet (build de pruebas) que corre junto a la principal
+/// mientras el usuario vuela, pero que NUNCA toca SimConnect — así no captura
+/// ni altera la data del vuelo en curso de la instancia principal.
+pub fn disabled_state() -> SharedState {
+    Arc::new(Mutex::new(WatcherState::default()))
+}
+
 pub fn spawn(pool: SqlitePool, app: AppHandle) -> SharedState {
     let state: SharedState = Arc::new(Mutex::new(WatcherState::default()));
     let task_state = state.clone();
