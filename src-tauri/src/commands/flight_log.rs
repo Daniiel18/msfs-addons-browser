@@ -23,6 +23,17 @@ pub async fn list_flight_log(
         .map_err(|e| e.to_string())
 }
 
+/// (v6 #2a) Analítica del Hangar — top aviones por matrícula, aeropuertos
+/// más frecuentados, millas/tiempo acumulados y salud por desgaste (FPM).
+#[tauri::command]
+pub async fn hangar_analytics(
+    state: tauri::State<'_, AppState>,
+) -> Result<flight_log::HangarAnalytics, String> {
+    flight_log::hangar_analytics(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// (v4.23.0) Vuelos INTERRUMPIDOS (status='partial', sin revisar) — el
 /// frontend muestra un modal por cada uno al abrir la app preguntando
 /// si mantenerlo o eliminarlo.

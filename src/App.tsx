@@ -7,6 +7,7 @@ import {
   ListChecks,
   Plane,
   Settings,
+  Warehouse,
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { api, isTauri } from "./lib/tauri";
@@ -28,6 +29,7 @@ import { MapView } from "./components/MapView";
 import { AddonsView } from "./components/AddonsView";
 import { DashboardView } from "./components/DashboardView";
 import { FlightBookView } from "./components/FlightBookView";
+import { HangarView } from "./components/HangarView";
 import { TitleBar } from "./components/TitleBar";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
@@ -831,6 +833,13 @@ export default function App() {
             label={t("nav.flightbook")}
             tourId="nav-flightbook"
           />
+          <ViewTab
+            active={view === "hangar"}
+            onClick={() => setView("hangar")}
+            icon={<Warehouse className="h-4 w-4" />}
+            label={t("nav.hangar")}
+            tourId="nav-hangar"
+          />
       </nav>
 
       <main
@@ -900,6 +909,7 @@ export default function App() {
         {view === "map" && <MapView />}
         {view === "addons" && <AddonsView />}
         {view === "flightbook" && <FlightBookView />}
+        {view === "hangar" && <HangarView />}
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

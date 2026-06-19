@@ -1323,6 +1323,235 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// (v6 #2a) Hangar & Analytics — telemetría agregada por avión/matrícula.
+//
+// Agregamos en Rust sobre los vuelos `completed` (mismo criterio que el
+// FlightBook). El "desgaste/mantenimiento" se deriva del FPM de touchdown:
+// un aterrizaje fino ronda -100..-300; bajo -600 es duro; bajo -1000 abusivo.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// FPM de touchdown a partir del cual el aterrizaje cuenta como "duro".
+const HARD_LANDING_FPM: i64 = -600;
+/// FPM de touchdown a partir del cual es "abusivo" (estrés estructural).
+const ABUSIVE_LANDING_FPM: i64 = -1000;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HangarAircraft {
+    /// Clave de agrupación (matrícula si existe, si no el modelo).
+    pub key: String,
+    pub registration: Option<String>,
+    pub model: Option<String>,
+    pub airline_icao: Option<String>,
+    pub airline_name: Option<String>,
+    pub flights: i64,
+    pub total_nm: f64,
+    pub total_time_s: i64,
+    /// Promedio del FPM de touchdown (negativo = descenso).
+    pub avg_landing_fpm: Option<f64>,
+    /// Peor (más negativo) FPM de touchdown registrado.
+    pub worst_landing_fpm: Option<i64>,
+    /// Nº de aterrizajes duros (FPM ≤ HARD_LANDING_FPM).
+    pub hard_landings: i64,
+    /// Estado de salud derivado del desgaste: "good" | "watch" | "alert".
+    pub health: String,
+    pub last_flight_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HangarAirport {
+    pub icao: String,
+    pub name: Option<String>,
+    /// Veces visitado (como origen o destino).
+    pub visits: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HangarAnalytics {
+    pub total_flights: i64,
+    pub total_nm: f64,
+    pub total_time_s: i64,
+    /// Top 10 aviones más volados.
+    pub aircraft: Vec<HangarAircraft>,
+    /// Aeropuertos más frecuentados.
+    pub airports: Vec<HangarAirport>,
+}
+
+pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalytics> {
+    use std::collections::HashMap;
+
+    // Las entries vienen ordenadas DESC por started_at → la 1ª vista de cada
+    // avión es su vuelo más reciente.
+    let entries = list_entries(pool).await?;
+    let total_flights = entries.len() as i64;
+
+    struct Acc {
+        registration: Option<String>,
+        model: Option<String>,
+        airline_icao: Option<String>,
+        airline_name: Option<String>,
+        flights: i64,
+        total_nm: f64,
+        total_time_s: i64,
+        fpm_sum: i64,
+        fpm_count: i64,
+        worst_fpm: Option<i64>,
+        hard_landings: i64,
+        abusive: bool,
+        last_flight_at: Option<String>,
+    }
+
+    let mut by_ac: HashMap<String, Acc> = HashMap::new();
+    // icao -> (nombre, visitas)
+    let mut airports: HashMap<String, (Option<String>, i64)> = HashMap::new();
+    let mut total_nm = 0.0;
+    let mut total_time_s = 0i64;
+
+    let norm = |s: &Option<String>| -> Option<String> {
+        s.as_deref()
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string())
+    };
+
+    for e in &entries {
+        let reg = norm(&e.aircraft_registration);
+        let model = norm(&e.aircraft_model)
+            .or_else(|| norm(&e.aircraft_atc_type))
+            .or_else(|| norm(&e.aircraft_title));
+        let key = match (&reg, &model) {
+            (Some(r), _) => format!("reg:{}", r.to_uppercase()),
+            (None, Some(m)) => format!("mdl:{}", m.to_uppercase()),
+            _ => "unknown".to_string(),
+        };
+
+        let acc = by_ac.entry(key.clone()).or_insert_with(|| Acc {
+            registration: reg.clone(),
+            model: model.clone(),
+            airline_icao: norm(&e.airline_icao),
+            airline_name: norm(&e.aircraft_airline),
+            flights: 0,
+            total_nm: 0.0,
+            total_time_s: 0,
+            fpm_sum: 0,
+            fpm_count: 0,
+            worst_fpm: None,
+            hard_landings: 0,
+            abusive: false,
+            last_flight_at: None,
+        });
+
+        acc.flights += 1;
+        if let Some(d) = e.distance_nm {
+            acc.total_nm += d;
+            total_nm += d;
+        }
+        if let Some(ts) = e.flight_time_s {
+            acc.total_time_s += ts;
+            total_time_s += ts;
+        }
+        if acc.airline_icao.is_none() {
+            acc.airline_icao = norm(&e.airline_icao);
+        }
+        if acc.airline_name.is_none() {
+            acc.airline_name = norm(&e.aircraft_airline);
+        }
+        if acc.registration.is_none() {
+            acc.registration = reg.clone();
+        }
+        if acc.model.is_none() {
+            acc.model = model.clone();
+        }
+        if let Some(fpm) = e.landing_fpm {
+            acc.fpm_sum += fpm;
+            acc.fpm_count += 1;
+            acc.worst_fpm = Some(acc.worst_fpm.map_or(fpm, |w| w.min(fpm)));
+            if fpm <= HARD_LANDING_FPM {
+                acc.hard_landings += 1;
+            }
+            if fpm <= ABUSIVE_LANDING_FPM {
+                acc.abusive = true;
+            }
+        }
+        if acc.last_flight_at.is_none() {
+            acc.last_flight_at = Some(e.started_at.clone());
+        }
+
+        for (icao, name) in [
+            (norm(&e.origin_icao), norm(&e.origin_name)),
+            (norm(&e.destination_icao), norm(&e.destination_name)),
+        ] {
+            if let Some(ic) = icao {
+                let ent = airports.entry(ic.to_uppercase()).or_insert((name.clone(), 0));
+                ent.1 += 1;
+                if ent.0.is_none() {
+                    ent.0 = name;
+                }
+            }
+        }
+    }
+
+    let mut aircraft: Vec<HangarAircraft> = by_ac
+        .into_iter()
+        .map(|(key, a)| {
+            let avg = if a.fpm_count > 0 {
+                Some(a.fpm_sum as f64 / a.fpm_count as f64)
+            } else {
+                None
+            };
+            let health = if a.abusive || a.hard_landings >= 3 {
+                "alert"
+            } else if a.hard_landings >= 1 || avg.map_or(false, |v| v <= -400.0) {
+                "watch"
+            } else {
+                "good"
+            }
+            .to_string();
+            HangarAircraft {
+                key,
+                registration: a.registration,
+                model: a.model,
+                airline_icao: a.airline_icao,
+                airline_name: a.airline_name,
+                flights: a.flights,
+                total_nm: a.total_nm,
+                total_time_s: a.total_time_s,
+                avg_landing_fpm: avg,
+                worst_landing_fpm: a.worst_fpm,
+                hard_landings: a.hard_landings,
+                health,
+                last_flight_at: a.last_flight_at,
+            }
+        })
+        .collect();
+    aircraft.sort_by(|a, b| {
+        b.flights.cmp(&a.flights).then(
+            b.total_nm
+                .partial_cmp(&a.total_nm)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    aircraft.truncate(10);
+
+    let mut airports: Vec<HangarAirport> = airports
+        .into_iter()
+        .map(|(icao, (name, visits))| HangarAirport { icao, name, visits })
+        .collect();
+    airports.sort_by(|a, b| b.visits.cmp(&a.visits));
+    airports.truncate(12);
+
+    Ok(HangarAnalytics {
+        total_flights,
+        total_nm,
+        total_time_s,
+        aircraft,
+        airports,
+    })
+}
+
 /// (v1.1.1) Borra "vuelos fantasma" creados por bugs de versiones
 /// anteriores cuando MSFS reportaba el avión en world origin (0, 0)
 /// durante el splash. Sólo borra filas con origen claramente

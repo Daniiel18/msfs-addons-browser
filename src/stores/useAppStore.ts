@@ -8,7 +8,13 @@ type Status = "idle" | "loading" | "success" | "error";
  *  Buscar / Mapa (sólo escenarios) / Addons (resto: aircraft,
  *  livery, sound, etc) / FlightBook (historial de vuelos reales
  *  con métricas de SimConnect). */
-export type View = "dashboard" | "search" | "map" | "addons" | "flightbook";
+export type View =
+  | "dashboard"
+  | "search"
+  | "map"
+  | "addons"
+  | "flightbook"
+  | "hangar";
 
 interface AppState {
   sources: SourceDescriptor[];

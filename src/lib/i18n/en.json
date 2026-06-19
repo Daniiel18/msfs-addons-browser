@@ -1042,5 +1042,20 @@
   "crosslink.toast.done": "{n} package(s) linked to {label}",
   "crosslink.toast.skipped": "{n} already existed and were kept.",
   "crosslink.toast.failed": "Couldn't link {n} package(s)",
-  "crosslink.toast.error": "Error creating links"
+  "crosslink.toast.error": "Error creating links",
+  "nav.hangar": "Hangar",
+  "hangar.empty": "No flights logged yet. Go fly and come back here.",
+  "hangar.kpi.flights": "Flights",
+  "hangar.kpi.miles": "Miles",
+  "hangar.kpi.hours": "Hours",
+  "hangar.top_aircraft": "Most-flown aircraft",
+  "hangar.top_airports": "Most-visited airports",
+  "hangar.flights_short": "flights",
+  "hangar.unknown_model": "Unknown model",
+  "hangar.avg_touchdown": "Average landing FPM",
+  "hangar.health.good": "Healthy",
+  "hangar.health.watch": "Watch",
+  "hangar.health.alert": "Alert",
+  "hangar.best_landings.title": "Best Landings",
+  "hangar.best_landings.soon": "Native recording of your best landings — coming soon."
 }

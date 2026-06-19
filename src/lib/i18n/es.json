@@ -1042,5 +1042,20 @@
   "crosslink.toast.done": "{n} paquete(s) enlazado(s) a {label}",
   "crosslink.toast.skipped": "{n} ya existía(n) y se conservaron.",
   "crosslink.toast.failed": "No se pudieron enlazar {n} paquete(s)",
-  "crosslink.toast.error": "Error al crear los enlaces"
+  "crosslink.toast.error": "Error al crear los enlaces",
+  "nav.hangar": "Hangar",
+  "hangar.empty": "Aún no hay vuelos registrados. Vuela y vuelve aquí.",
+  "hangar.kpi.flights": "Vuelos",
+  "hangar.kpi.miles": "Millas",
+  "hangar.kpi.hours": "Horas",
+  "hangar.top_aircraft": "Aviones más volados",
+  "hangar.top_airports": "Aeropuertos más frecuentados",
+  "hangar.flights_short": "vuelos",
+  "hangar.unknown_model": "Modelo desconocido",
+  "hangar.avg_touchdown": "FPM promedio de aterrizaje",
+  "hangar.health.good": "Sano",
+  "hangar.health.watch": "Vigilar",
+  "hangar.health.alert": "Alerta",
+  "hangar.best_landings.title": "Best Landings",
+  "hangar.best_landings.soon": "Grabación nativa de tus mejores aterrizajes — próximamente."
 }

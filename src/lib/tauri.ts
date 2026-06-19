@@ -57,6 +57,7 @@ import type {
   CrossLinkOffer,
   CrossLinkPkg,
   CrossLinkResult,
+  HangarAnalytics,
   PmdgLivery,
   RefreshSummary,
   ScanReport,
@@ -487,6 +488,8 @@ interface Api {
     airlineIcao: string | null,
     airlineName: string | null,
   ) => Promise<AirlineKpis>;
+  /** (v6 #2a) Analítica del Hangar — top aviones, aeropuertos, salud FPM. */
+  hangarAnalytics: () => Promise<HangarAnalytics>;
   /** Eventos emitidos por el watcher al auto-puntuar un vuelo. */
   onScoreDone: (cb: (report: ScoreReport) => void) => Promise<UnlistenFn>;
   onScoreUploadSuccess: (cb: (report: unknown) => void) => Promise<UnlistenFn>;
@@ -749,6 +752,7 @@ const realApi: Api = {
   listAirlines: () => invoke<AirlineTag[]>("list_airlines"),
   airlineKpis: (airlineIcao, airlineName) =>
     invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
+  hangarAnalytics: () => invoke<HangarAnalytics>("hangar_analytics"),
   onScoreDone: (cb) =>
     listen<ScoreReport>("score:done", (event) => cb(event.payload)),
   onScoreUploadSuccess: (cb) =>
@@ -1648,6 +1652,50 @@ const demoApi: Api = {
       totalDistanceNm: 0,
       totalBlockSeconds: 0,
       avgLandingFpm: null,
+    };
+  },
+  async hangarAnalytics() {
+    return {
+      totalFlights: 3,
+      totalNm: 2840,
+      totalTimeS: 27000,
+      aircraft: [
+        {
+          key: "reg:N404DX",
+          registration: "N404DX",
+          model: "Boeing 737-800",
+          airlineIcao: "AAL",
+          airlineName: "American Airlines",
+          flights: 2,
+          totalNm: 2100,
+          totalTimeS: 19800,
+          avgLandingFpm: -142,
+          worstLandingFpm: -210,
+          hardLandings: 0,
+          health: "good",
+          lastFlightAt: new Date().toISOString(),
+        },
+        {
+          key: "reg:EC-MXY",
+          registration: "EC-MXY",
+          model: "Airbus A320neo",
+          airlineIcao: "IBE",
+          airlineName: "Iberia",
+          flights: 1,
+          totalNm: 740,
+          totalTimeS: 7200,
+          avgLandingFpm: -680,
+          worstLandingFpm: -680,
+          hardLandings: 1,
+          health: "watch",
+          lastFlightAt: new Date().toISOString(),
+        },
+      ],
+      airports: [
+        { icao: "KJFK", name: "John F. Kennedy Intl", visits: 2 },
+        { icao: "KLAX", name: "Los Angeles Intl", visits: 2 },
+        { icao: "LEMD", name: "Madrid-Barajas", visits: 1 },
+      ],
     };
   },
   async onScoreDone() {

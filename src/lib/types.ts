@@ -121,6 +121,40 @@ export interface CrossLinkResult {
   failed: string[];
 }
 
+/** (v6 #2a) Hangar — un avión agregado por matrícula/modelo. */
+export interface HangarAircraft {
+  key: string;
+  registration: string | null;
+  model: string | null;
+  airlineIcao: string | null;
+  airlineName: string | null;
+  flights: number;
+  totalNm: number;
+  totalTimeS: number;
+  avgLandingFpm: number | null;
+  worstLandingFpm: number | null;
+  hardLandings: number;
+  /** "good" | "watch" | "alert" */
+  health: string;
+  lastFlightAt: string | null;
+}
+
+/** (v6 #2a) Hangar — aeropuerto frecuentado. */
+export interface HangarAirport {
+  icao: string;
+  name: string | null;
+  visits: number;
+}
+
+/** (v6 #2a) Bundle de analítica del Hangar. */
+export interface HangarAnalytics {
+  totalFlights: number;
+  totalNm: number;
+  totalTimeS: number;
+  aircraft: HangarAircraft[];
+  airports: HangarAirport[];
+}
+
 /** Vuelo persistido del historial SimBrief. La app va acumulando
  *  uno por refresh contra la API pública (que solo expone el
  *  último OFP). El mapa pinta una LineString por cada uno. */

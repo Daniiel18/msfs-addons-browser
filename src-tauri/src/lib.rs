@@ -206,6 +206,7 @@ pub fn run() {
             commands::weather::get_openweather_key,
             commands::stats::get_dashboard_stats,
             commands::flight_log::list_flight_log,
+            commands::flight_log::hangar_analytics,
             commands::flight_log::list_incomplete_flights,
             commands::flight_log::keep_partial_flight,
             commands::flight_log::delete_flight_log_entry,
