@@ -32,6 +32,15 @@ pub fn is_safe_mode() -> bool {
     std::env::var("SIMFLEET_SAFE_MODE").is_ok()
 }
 
+/// (v6) `true` si el watcher de SimConnect está activo. En MODO SEGURO suele
+/// estar apagado, salvo que se fuerce con `SIMFLEET_ENABLE_WATCHER=1` para
+/// probar Best Landings — el banner lo refleja para no confundir al usuario.
+#[tauri::command]
+pub fn is_watcher_active() -> bool {
+    std::env::var("SIMFLEET_SAFE_MODE").is_err()
+        || std::env::var("SIMFLEET_ENABLE_WATCHER").is_ok()
+}
+
 /// (v6 #1) Crea junctions NTFS de los paquetes recién instalados en la
 /// Community de la OTRA versión de MSFS (cross-link 2020 ↔ 2024). Lo invoca
 /// el modal post-instalación cuando el usuario acepta enlazar.

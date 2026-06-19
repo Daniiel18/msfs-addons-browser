@@ -210,6 +210,10 @@ export default function App() {
   // Indicadores: banner rojo + badge en el header + TÍTULO DE VENTANA (para
   // distinguirla en la taskbar/Alt-Tab de la instancia principal).
   const [safeMode, setSafeMode] = useState(false);
+  // (v6) En MODO SEGURO el watcher normalmente está apagado, pero se puede
+  // forzar (SIMFLEET_ENABLE_WATCHER) para probar Best Landings. El banner lo
+  // refleja para no confundir (SimConnect activo, nube siempre apagada).
+  const [watcherActive, setWatcherActive] = useState(false);
   useEffect(() => {
     if (!isTauri) return;
     api
@@ -222,6 +226,10 @@ export default function App() {
             .catch(() => {});
         }
       })
+      .catch(() => {});
+    api
+      .isWatcherActive()
+      .then(setWatcherActive)
       .catch(() => {});
   }, []);
 
@@ -711,9 +719,19 @@ export default function App() {
       <UpdateBanner />
       {safeMode && (
         <div className="flex items-center justify-center gap-2 border-b border-rose-500/30 bg-rose-500/15 px-4 py-1.5 text-xs font-semibold text-rose-200">
-          🛡️ MODO SEGURO — instancia de pruebas. SimConnect y la sincronización
-          con la nube están DESACTIVADOS; no afecta el vuelo ni los datos de tu
-          instancia principal.
+          {watcherActive ? (
+            <>
+              🛡️ MODO SEGURO (pruebas) — SimConnect ACTIVO para probar Best
+              Landings · la nube sigue DESACTIVADA. DB independiente de tu
+              instancia principal.
+            </>
+          ) : (
+            <>
+              🛡️ MODO SEGURO — instancia de pruebas. SimConnect y la
+              sincronización con la nube están DESACTIVADOS; no afecta el vuelo
+              ni los datos de tu instancia principal.
+            </>
+          )}
         </div>
       )}
       {!isTauri && (

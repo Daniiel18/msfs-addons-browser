@@ -172,6 +172,7 @@ pub fn run() {
             commands::community::scan_community,
             commands::community::get_installed_sims,
             commands::community::is_safe_mode,
+            commands::community::is_watcher_active,
             commands::community::cross_link_create,
             commands::community::list_community_packages,
             commands::community::list_available_updates,
@@ -540,22 +541,34 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // principal. Igual gestionamos un estado vacío para que los comandos
     // (`get_flight_status`) no fallen.
     let safe_mode = std::env::var("SIMFLEET_SAFE_MODE").is_ok();
-    let watcher_state = if safe_mode {
+    // (v6) En MODO SEGURO el watcher está apagado por defecto (para no abrir
+    // un 2º cliente SimConnect mientras pruebas). Pero se puede FORZAR con
+    // `SIMFLEET_ENABLE_WATCHER=1` para probar Best Landings en la instancia
+    // safe — sigue sin tocar la nube. La DB de la instancia safe (dev) es
+    // independiente de la app instalada, así que no pisa datos reales.
+    let enable_watcher = !safe_mode || std::env::var("SIMFLEET_ENABLE_WATCHER").is_ok();
+    let watcher_state = if enable_watcher {
+        if safe_mode {
+            tracing::warn!(
+                target: "simconnect",
+                "MODO SEGURO + watcher FORZADO (pruebas) — SimConnect ACTIVO, nube sigue apagada"
+            );
+        }
+        simconnect_watcher::spawn(db.clone(), app.clone())
+    } else {
         tracing::warn!(
             target: "simconnect",
             "MODO SEGURO — watcher de SimConnect DESACTIVADO (no se captura el vuelo)"
         );
         simconnect_watcher::disabled_state()
-    } else {
-        simconnect_watcher::spawn(db.clone(), app.clone())
     };
     app.manage(watcher_state);
 
     // (v6 #2b) Controlador de "Best Landings": arma el replay buffer en
     // aproximación y guarda el clip al touchdown. Reacciona al FlightStatus
     // compartido (no toca el watcher). Opt-in (solo si la grabación está
-    // activada en Ajustes). En MODO SEGURO no corre (no hay watcher real).
-    if !safe_mode {
+    // activada en Ajustes). Requiere el watcher activo.
+    if enable_watcher {
         landing_recorder::spawn_controller(db.clone(), app.clone(), app_data_dir.clone());
     }
 
