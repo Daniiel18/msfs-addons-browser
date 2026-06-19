@@ -58,6 +58,7 @@ import type {
   CrossLinkPkg,
   CrossLinkResult,
   HangarAnalytics,
+  PilotProfile,
   PmdgLivery,
   RefreshSummary,
   ScanReport,
@@ -490,6 +491,8 @@ interface Api {
   ) => Promise<AirlineKpis>;
   /** (v6 #2a) Analítica del Hangar — top aviones, aeropuertos, salud FPM. */
   hangarAnalytics: () => Promise<HangarAnalytics>;
+  /** (v6 #2a) Perfil del piloto + nivel/XP. */
+  pilotProfile: () => Promise<PilotProfile>;
   /** Eventos emitidos por el watcher al auto-puntuar un vuelo. */
   onScoreDone: (cb: (report: ScoreReport) => void) => Promise<UnlistenFn>;
   onScoreUploadSuccess: (cb: (report: unknown) => void) => Promise<UnlistenFn>;
@@ -753,6 +756,7 @@ const realApi: Api = {
   airlineKpis: (airlineIcao, airlineName) =>
     invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
   hangarAnalytics: () => invoke<HangarAnalytics>("hangar_analytics"),
+  pilotProfile: () => invoke<PilotProfile>("pilot_profile"),
   onScoreDone: (cb) =>
     listen<ScoreReport>("score:done", (event) => cb(event.payload)),
   onScoreUploadSuccess: (cb) =>
@@ -1655,47 +1659,106 @@ const demoApi: Api = {
     };
   },
   async hangarAnalytics() {
+    const mkLanding = (
+      fpm: number,
+      icao: string,
+      airportName: string,
+      model: string,
+    ) => ({
+      fpm,
+      icao,
+      airportName,
+      date: new Date().toISOString(),
+      model,
+      registration: "N321US",
+      flightTimeS: 2520,
+      grade: fpm > -150 ? "butter" : fpm >= -300 ? "acceptable" : "hard",
+    });
     return {
-      totalFlights: 3,
-      totalNm: 2840,
-      totalTimeS: 27000,
+      totalFlights: 45,
+      totalNm: 124500,
+      totalTimeS: 1_010_000,
+      totalLandings: 45,
+      globalAvgFpm: -185,
       aircraft: [
         {
-          key: "reg:N404DX",
-          registration: "N404DX",
-          model: "Boeing 737-800",
-          airlineIcao: "AAL",
-          airlineName: "American Airlines",
-          flights: 2,
-          totalNm: 2100,
-          totalTimeS: 19800,
-          avgLandingFpm: -142,
-          worstLandingFpm: -210,
-          hardLandings: 0,
+          key: "reg:N321US",
+          registration: "N321US",
+          model: "Airbus A320-200",
+          airlineIcao: "DAL",
+          airlineName: "Delta Airlines",
+          flights: 45,
+          totalNm: 12400,
+          totalTimeS: 324000,
+          avgLandingFpm: -185,
+          worstLandingFpm: -300,
+          hardLandings: 2,
+          healthPct: 80,
           health: "good",
           lastFlightAt: new Date().toISOString(),
+          lastIcao: "KSEA",
+          lastAirportName: "Seattle Tacoma Intl",
+          recentLandings: [
+            mkLanding(-95, "KBOS", "Boston Logan Intl", "A320-200"),
+            mkLanding(-120, "KJFK", "John F. Kennedy Intl", "A320-200"),
+            mkLanding(-210, "KORD", "Chicago O'Hare", "A320-200"),
+            mkLanding(-160, "KDEN", "Denver Intl", "A320-200"),
+            mkLanding(-300, "KLAX", "Los Angeles Intl", "A320-200"),
+            mkLanding(-180, "KSFO", "San Francisco Intl", "A320-200"),
+            mkLanding(-220, "KSEA", "Seattle Tacoma Intl", "A320-200"),
+            mkLanding(-250, "KPHX", "Phoenix Sky Harbor", "A320-200"),
+            mkLanding(-110, "KMIA", "Miami Intl", "A320-200"),
+            mkLanding(-75, "KATL", "Atlanta Hartsfield", "A320-200"),
+          ],
         },
         {
-          key: "reg:EC-MXY",
-          registration: "EC-MXY",
-          model: "Airbus A320neo",
-          airlineIcao: "IBE",
-          airlineName: "Iberia",
-          flights: 1,
-          totalNm: 740,
-          totalTimeS: 7200,
-          avgLandingFpm: -680,
-          worstLandingFpm: -680,
-          hardLandings: 1,
-          health: "watch",
+          key: "reg:N718AN",
+          registration: "N718AN",
+          model: "Boeing 777-300ER",
+          airlineIcao: "AAL",
+          airlineName: "American Airlines",
+          flights: 12,
+          totalNm: 45200,
+          totalTimeS: 360000,
+          avgLandingFpm: -160,
+          worstLandingFpm: -240,
+          hardLandings: 0,
+          healthPct: 94,
+          health: "good",
           lastFlightAt: new Date().toISOString(),
+          lastIcao: "KJFK",
+          lastAirportName: "John F. Kennedy Intl",
+          recentLandings: [
+            mkLanding(-130, "KJFK", "John F. Kennedy Intl", "B777-300ER"),
+            mkLanding(-210, "EGLL", "London Heathrow", "B777-300ER"),
+          ],
         },
       ],
       airports: [
-        { icao: "KJFK", name: "John F. Kennedy Intl", visits: 2 },
-        { icao: "KLAX", name: "Los Angeles Intl", visits: 2 },
-        { icao: "LEMD", name: "Madrid-Barajas", visits: 1 },
+        { icao: "KJFK", name: "John F. Kennedy Intl", visits: 14 },
+        { icao: "KLAX", name: "Los Angeles Intl", visits: 11 },
+        { icao: "KSEA", name: "Seattle Tacoma Intl", visits: 9 },
+        { icao: "KBOS", name: "Boston Logan Intl", visits: 6 },
       ],
+      bestLandings: [
+        mkLanding(-75, "KATL", "Atlanta Hartsfield", "A320-200"),
+        mkLanding(-95, "KBOS", "Boston Logan Intl", "A320-200"),
+        mkLanding(-105, "KSEA", "Seattle Tacoma Intl", "737 MAX 8"),
+        mkLanding(-110, "KMIA", "Miami Intl", "A320-200"),
+      ],
+    };
+  },
+  async pilotProfile() {
+    return {
+      identity: "daniel",
+      name: "Capitán Daniel",
+      email: "jose.daniel031899@gmail.com",
+      totalXp: 4820,
+      level: 12,
+      xpInLevel: 180,
+      xpForNext: 860,
+      flightsScored: 45,
+      totalPoints: 1607,
     };
   },
   async onScoreDone() {

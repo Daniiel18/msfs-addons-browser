@@ -34,6 +34,16 @@ pub async fn hangar_analytics(
         .map_err(|e| e.to_string())
 }
 
+/// (v6 #2a) Perfil del piloto + nivel/XP (identidad por correo, XP por puntos).
+#[tauri::command]
+pub async fn pilot_profile(
+    state: tauri::State<'_, AppState>,
+) -> Result<flight_log::PilotProfile, String> {
+    flight_log::pilot_profile(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// (v4.23.0) Vuelos INTERRUMPIDOS (status='partial', sin revisar) — el
 /// frontend muestra un modal por cada uno al abrir la app preguntando
 /// si mantenerlo o eliminarlo.

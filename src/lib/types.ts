@@ -121,6 +121,19 @@ export interface CrossLinkResult {
   failed: string[];
 }
 
+/** (v6 #2a) Hangar — un aterrizaje individual. */
+export interface HangarLanding {
+  fpm: number;
+  icao: string | null;
+  airportName: string | null;
+  date: string;
+  model: string | null;
+  registration: string | null;
+  flightTimeS: number | null;
+  /** "butter" | "acceptable" | "hard" */
+  grade: string;
+}
+
 /** (v6 #2a) Hangar — un avión agregado por matrícula/modelo. */
 export interface HangarAircraft {
   key: string;
@@ -134,9 +147,14 @@ export interface HangarAircraft {
   avgLandingFpm: number | null;
   worstLandingFpm: number | null;
   hardLandings: number;
+  /** Salud del tren 0..100. */
+  healthPct: number;
   /** "good" | "watch" | "alert" */
   health: string;
   lastFlightAt: string | null;
+  lastIcao: string | null;
+  lastAirportName: string | null;
+  recentLandings: HangarLanding[];
 }
 
 /** (v6 #2a) Hangar — aeropuerto frecuentado. */
@@ -151,8 +169,25 @@ export interface HangarAnalytics {
   totalFlights: number;
   totalNm: number;
   totalTimeS: number;
+  totalLandings: number;
+  globalAvgFpm: number | null;
   aircraft: HangarAircraft[];
   airports: HangarAirport[];
+  bestLandings: HangarLanding[];
+}
+
+/** (v6 #2a) Perfil del piloto + nivel/XP. */
+export interface PilotProfile {
+  /** "daniel" | "hector" */
+  identity: string;
+  name: string;
+  email: string | null;
+  totalXp: number;
+  level: number;
+  xpInLevel: number;
+  xpForNext: number;
+  flightsScored: number;
+  totalPoints: number;
 }
 
 /** Vuelo persistido del historial SimBrief. La app va acumulando

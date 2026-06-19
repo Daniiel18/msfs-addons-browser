@@ -1331,10 +1331,37 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
 // un aterrizaje fino ronda -100..-300; bajo -600 es duro; bajo -1000 abusivo.
 // ─────────────────────────────────────────────────────────────────────────
 
-/// FPM de touchdown a partir del cual el aterrizaje cuenta como "duro".
-const HARD_LANDING_FPM: i64 = -600;
-/// FPM de touchdown a partir del cual es "abusivo" (estrés estructural).
-const ABUSIVE_LANDING_FPM: i64 = -1000;
+/// Clasifica un aterrizaje por su FPM de touchdown (negativo = descenso):
+///   · butter:     fpm > -150  (mantequilla)
+///   · acceptable: -300 ≤ fpm ≤ -150
+///   · hard:       fpm < -300  (duro)
+pub fn landing_grade(fpm: i64) -> &'static str {
+    if fpm > -150 {
+        "butter"
+    } else if fpm >= -300 {
+        "acceptable"
+    } else {
+        "hard"
+    }
+}
+
+/// Un aterrizaje individual — alimenta el gráfico de tendencia FPM y la tira
+/// "Best Landings".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HangarLanding {
+    pub fpm: i64,
+    /// ICAO del aeropuerto de aterrizaje (destino).
+    pub icao: Option<String>,
+    pub airport_name: Option<String>,
+    /// `started_at` del vuelo (ISO-8601).
+    pub date: String,
+    pub model: Option<String>,
+    pub registration: Option<String>,
+    pub flight_time_s: Option<i64>,
+    /// "butter" | "acceptable" | "hard".
+    pub grade: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1352,11 +1379,18 @@ pub struct HangarAircraft {
     pub avg_landing_fpm: Option<f64>,
     /// Peor (más negativo) FPM de touchdown registrado.
     pub worst_landing_fpm: Option<i64>,
-    /// Nº de aterrizajes duros (FPM ≤ HARD_LANDING_FPM).
+    /// Nº de aterrizajes duros (grade == "hard").
     pub hard_landings: i64,
-    /// Estado de salud derivado del desgaste: "good" | "watch" | "alert".
+    /// Salud del tren 0..100 derivada del desgaste por aterrizajes.
+    pub health_pct: i64,
+    /// Estado derivado: "good" | "watch" | "alert".
     pub health: String,
     pub last_flight_at: Option<String>,
+    /// Aeropuerto del vuelo más reciente (para "ubicación" del avión).
+    pub last_icao: Option<String>,
+    pub last_airport_name: Option<String>,
+    /// Últimos ≤10 aterrizajes (orden antiguo→reciente) para la gráfica FPM.
+    pub recent_landings: Vec<HangarLanding>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1374,10 +1408,26 @@ pub struct HangarAnalytics {
     pub total_flights: i64,
     pub total_nm: f64,
     pub total_time_s: i64,
+    /// Nº de aterrizajes registrados (vuelos con landing_fpm).
+    pub total_landings: i64,
+    /// FPM promedio global de aterrizaje.
+    pub global_avg_fpm: Option<f64>,
     /// Top 10 aviones más volados.
     pub aircraft: Vec<HangarAircraft>,
     /// Aeropuertos más frecuentados.
     pub airports: Vec<HangarAirport>,
+    /// Mejores aterrizajes de la flota (FPM más fino primero).
+    pub best_landings: Vec<HangarLanding>,
+}
+
+/// Salud del tren 0..100 a partir de los conteos de aterrizajes por grado.
+fn gear_health_pct(butter: i64, acceptable: i64, hard: i64) -> i64 {
+    let total = butter + acceptable + hard;
+    if total == 0 {
+        return 100; // sin aterrizajes registrados → asumimos nuevo
+    }
+    // Cada acceptable resta 3, cada hard resta 12 (acotado a 0..100).
+    (100 - acceptable * 3 - hard * 12).clamp(0, 100)
 }
 
 pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalytics> {
@@ -1399,16 +1449,23 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
         fpm_sum: i64,
         fpm_count: i64,
         worst_fpm: Option<i64>,
-        hard_landings: i64,
-        abusive: bool,
+        butter: i64,
+        acceptable: i64,
+        hard: i64,
         last_flight_at: Option<String>,
+        last_icao: Option<String>,
+        last_airport_name: Option<String>,
+        recent: Vec<HangarLanding>, // newest-first, capado a 10
     }
 
     let mut by_ac: HashMap<String, Acc> = HashMap::new();
     // icao -> (nombre, visitas)
     let mut airports: HashMap<String, (Option<String>, i64)> = HashMap::new();
+    let mut best_landings: Vec<HangarLanding> = Vec::new();
     let mut total_nm = 0.0;
     let mut total_time_s = 0i64;
+    let mut global_fpm_sum = 0i64;
+    let mut global_fpm_count = 0i64;
 
     let norm = |s: &Option<String>| -> Option<String> {
         s.as_deref()
@@ -1427,6 +1484,8 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
             (None, Some(m)) => format!("mdl:{}", m.to_uppercase()),
             _ => "unknown".to_string(),
         };
+        let dest_icao = norm(&e.destination_icao);
+        let dest_name = norm(&e.destination_name);
 
         let acc = by_ac.entry(key.clone()).or_insert_with(|| Acc {
             registration: reg.clone(),
@@ -1439,9 +1498,13 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
             fpm_sum: 0,
             fpm_count: 0,
             worst_fpm: None,
-            hard_landings: 0,
-            abusive: false,
+            butter: 0,
+            acceptable: 0,
+            hard: 0,
             last_flight_at: None,
+            last_icao: None,
+            last_airport_name: None,
+            recent: Vec::new(),
         });
 
         acc.flights += 1;
@@ -1465,24 +1528,44 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
         if acc.model.is_none() {
             acc.model = model.clone();
         }
+        // El 1er vuelo visto (más reciente) fija la "ubicación" del avión.
+        if acc.last_flight_at.is_none() {
+            acc.last_flight_at = Some(e.started_at.clone());
+            acc.last_icao = dest_icao.clone();
+            acc.last_airport_name = dest_name.clone();
+        }
+
         if let Some(fpm) = e.landing_fpm {
             acc.fpm_sum += fpm;
             acc.fpm_count += 1;
             acc.worst_fpm = Some(acc.worst_fpm.map_or(fpm, |w| w.min(fpm)));
-            if fpm <= HARD_LANDING_FPM {
-                acc.hard_landings += 1;
+            global_fpm_sum += fpm;
+            global_fpm_count += 1;
+            let grade = landing_grade(fpm);
+            match grade {
+                "butter" => acc.butter += 1,
+                "acceptable" => acc.acceptable += 1,
+                _ => acc.hard += 1,
             }
-            if fpm <= ABUSIVE_LANDING_FPM {
-                acc.abusive = true;
+            let landing = HangarLanding {
+                fpm,
+                icao: dest_icao.clone(),
+                airport_name: dest_name.clone(),
+                date: e.started_at.clone(),
+                model: model.clone(),
+                registration: reg.clone(),
+                flight_time_s: e.flight_time_s,
+                grade: grade.to_string(),
+            };
+            if acc.recent.len() < 10 {
+                acc.recent.push(landing.clone());
             }
-        }
-        if acc.last_flight_at.is_none() {
-            acc.last_flight_at = Some(e.started_at.clone());
+            best_landings.push(landing);
         }
 
         for (icao, name) in [
             (norm(&e.origin_icao), norm(&e.origin_name)),
-            (norm(&e.destination_icao), norm(&e.destination_name)),
+            (dest_icao.clone(), dest_name.clone()),
         ] {
             if let Some(ic) = icao {
                 let ent = airports.entry(ic.to_uppercase()).or_insert((name.clone(), 0));
@@ -1496,20 +1579,23 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
 
     let mut aircraft: Vec<HangarAircraft> = by_ac
         .into_iter()
-        .map(|(key, a)| {
+        .map(|(key, mut a)| {
             let avg = if a.fpm_count > 0 {
                 Some(a.fpm_sum as f64 / a.fpm_count as f64)
             } else {
                 None
             };
-            let health = if a.abusive || a.hard_landings >= 3 {
-                "alert"
-            } else if a.hard_landings >= 1 || avg.map_or(false, |v| v <= -400.0) {
+            let health_pct = gear_health_pct(a.butter, a.acceptable, a.hard);
+            let health = if health_pct >= 80 {
+                "good"
+            } else if health_pct >= 50 {
                 "watch"
             } else {
-                "good"
+                "alert"
             }
             .to_string();
+            // recent venía newest-first → invertimos a antiguo→reciente.
+            a.recent.reverse();
             HangarAircraft {
                 key,
                 registration: a.registration,
@@ -1521,9 +1607,13 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
                 total_time_s: a.total_time_s,
                 avg_landing_fpm: avg,
                 worst_landing_fpm: a.worst_fpm,
-                hard_landings: a.hard_landings,
+                hard_landings: a.hard,
+                health_pct,
                 health,
                 last_flight_at: a.last_flight_at,
+                last_icao: a.last_icao,
+                last_airport_name: a.last_airport_name,
+                recent_landings: a.recent,
             }
         })
         .collect();
@@ -1543,13 +1633,117 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
     airports.sort_by(|a, b| b.visits.cmp(&a.visits));
     airports.truncate(12);
 
+    // Mejores aterrizajes: FPM más cercano a 0 (más fino) primero.
+    best_landings.sort_by(|a, b| b.fpm.cmp(&a.fpm));
+    best_landings.truncate(8);
+
+    let global_avg_fpm = if global_fpm_count > 0 {
+        Some(global_fpm_sum as f64 / global_fpm_count as f64)
+    } else {
+        None
+    };
+
     Ok(HangarAnalytics {
         total_flights,
         total_nm,
         total_time_s,
+        total_landings: global_fpm_count,
+        global_avg_fpm,
         aircraft,
         airports,
+        best_landings,
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// (v6 #2a) Perfil del piloto + sistema de niveles.
+//
+// La IDENTIDAD se deriva del correo del Drive conectado (`google_user_email`):
+//   · contiene "jose.daniel" → Capitán Daniel (el dueño)
+//   · cualquier otro / sin correo → Capitán Héctor
+//
+// El NIVEL se basa en los puntos de scoring acumulados por vuelo. Para que
+// subir no sea tan difícil, cada punto vale `XP_PER_POINT` de experiencia y la
+// curva por nivel es suave (`xp_to_advance`). Ambos son tuneables.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// XP que otorga cada punto de scoring. Subirlo = niveles más fáciles.
+const XP_PER_POINT: f64 = 3.0;
+
+/// XP necesaria para pasar de `level` al siguiente. Crece suave.
+fn xp_to_advance(level: i64) -> i64 {
+    200 + (level - 1) * 60
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PilotProfile {
+    /// "daniel" | "hector".
+    pub identity: String,
+    /// Nombre visible ("Capitán Daniel" / "Capitán Héctor").
+    pub name: String,
+    pub email: Option<String>,
+    pub total_xp: i64,
+    pub level: i64,
+    /// XP acumulada dentro del nivel actual.
+    pub xp_in_level: i64,
+    /// XP necesaria para completar el nivel actual.
+    pub xp_for_next: i64,
+    pub flights_scored: i64,
+    pub total_points: i64,
+}
+
+pub async fn pilot_profile(pool: &SqlitePool) -> anyhow::Result<PilotProfile> {
+    // Identidad por el correo del Drive conectado.
+    let email: Option<String> =
+        sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = 'google_user_email'")
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|(v,)| v)
+            .filter(|s| !s.trim().is_empty());
+    let is_daniel = email
+        .as_deref()
+        .map(|e| e.to_lowercase().contains("jose.daniel"))
+        .unwrap_or(false);
+    let (identity, name) = if is_daniel {
+        ("daniel", "Capitán Daniel")
+    } else {
+        ("hector", "Capitán Héctor")
+    };
+
+    // Puntos acumulados de vuelos completados con score.
+    let (total_points, flights_scored): (i64, i64) = sqlx::query_as(
+        "SELECT CAST(COALESCE(SUM(score_total), 0) AS INTEGER), COUNT(score_total) \
+         FROM flight_log WHERE status = 'completed' AND score_total IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let total_xp = ((total_points as f64) * XP_PER_POINT).round() as i64;
+
+    // Nivel + progreso recorriendo la curva.
+    let mut level = 1i64;
+    let mut remaining = total_xp;
+    loop {
+        let need = xp_to_advance(level);
+        if remaining < need || level > 9999 {
+            return Ok(PilotProfile {
+                identity: identity.to_string(),
+                name: name.to_string(),
+                email,
+                total_xp,
+                level,
+                xp_in_level: remaining.max(0),
+                xp_for_next: need,
+                flights_scored,
+                total_points,
+            });
+        }
+        remaining -= need;
+        level += 1;
+    }
 }
 
 /// (v1.1.1) Borra "vuelos fantasma" creados por bugs de versiones
