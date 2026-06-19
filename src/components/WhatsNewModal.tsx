@@ -7,8 +7,9 @@ import { t } from "../lib/i18n";
  * (v6) Modal "Novedades / What's New" — ANTI-SKIP.
  *
  * Reglas (pedido del usuario):
- *  · Se lanza una sola vez por cada set de novedades (controlado por
- *    `WHATSNEW_ID` + localStorage), tras cargar la app.
+ *  · Instancia principal: se lanza una sola vez cada vez que la app SE
+ *    ACTUALIZA (la versión guardada en localStorage difiere de la actual).
+ *    En MODO SEGURO se muestra siempre (para revisarlo en pruebas).
  *  · NO se cierra de golpe: sin botón X, el backdrop no cierra, Escape no
  *    cierra. La única salida es avanzar TODAS las slides y pulsar "Entendido".
  *  · Temporizador estricto de 2.0s por slide: el botón "Siguiente" queda
@@ -20,10 +21,10 @@ import { t } from "../lib/i18n";
  *    objetos { titleKey, bodyKey, image }.
  */
 
-/** Identificador del set de novedades. Súbelo cuando publiques nuevas
- *  slides — así el modal reaparece una vez por novedad (no por cada patch). */
-export const WHATSNEW_ID = "2026-06-v5.4";
-const SEEN_KEY = "simfleet:whatsnew-seen";
+/** localStorage key — guarda la VERSIÓN de la app para la que ya se mostró el
+ *  What's New. Así en la instancia principal sólo reaparece cuando la app SE
+ *  ACTUALIZA (la versión cambia), una sola vez por versión. */
+const SEEN_KEY = "simfleet:whatsnew-version";
 
 /** ms que el usuario debe permanecer en cada slide antes de poder avanzar. */
 const SLIDE_LOCK_MS = 2000;
@@ -59,28 +60,32 @@ const DEFAULT_SLIDES: WhatsNewSlide[] = [
   },
 ];
 
-/** ¿Hay novedades sin ver? Lo consulta App al terminar de cargar. */
-export function hasUnseenWhatsNew(): boolean {
+/** Versión de la app para la que ya se mostró el What's New (o null). */
+export function getWhatsNewSeenVersion(): string | null {
   try {
-    return localStorage.getItem(SEEN_KEY) !== WHATSNEW_ID;
+    return localStorage.getItem(SEEN_KEY);
   } catch {
-    return false;
+    return null;
   }
 }
 
-function markSeen() {
+/** Marca el What's New como visto para `version` (NO abre el modal). Lo usa
+ *  App para fijar la línea base en primera instalación y al cerrar el modal. */
+export function markWhatsNewSeen(version: string) {
   try {
-    localStorage.setItem(SEEN_KEY, WHATSNEW_ID);
+    localStorage.setItem(SEEN_KEY, version);
   } catch {
     /* ignore */
   }
 }
 
-/** Marca las novedades como vistas SIN abrir el modal — lo usa App en el
- *  primer arranque (usuario nuevo): no tiene sentido mostrarle "novedades"
- *  de versiones anteriores a su instalación. */
-export function markWhatsNewSeen() {
-  markSeen();
+/** ¿La app SE ACTUALIZÓ desde la última vez que se mostró el What's New?
+ *  Sólo true si ya había una versión guardada y difiere de la actual; en
+ *  primera instalación (sin línea base) devuelve false — no es actualización. */
+export function isUpdateSinceLastSeen(currentVersion: string | null): boolean {
+  if (!currentVersion) return false;
+  const seen = getWhatsNewSeenVersion();
+  return seen !== null && seen !== currentVersion;
 }
 
 export function WhatsNewModal({
@@ -124,7 +129,8 @@ export function WhatsNewModal({
       return;
     }
     if (isLast) {
-      markSeen();
+      // El persistir la versión vista lo hace App en onClose (en modo seguro
+      // NO persiste, para que el What's New reaparezca siempre en pruebas).
       onClose();
     } else {
       setIndex((i) => i + 1);

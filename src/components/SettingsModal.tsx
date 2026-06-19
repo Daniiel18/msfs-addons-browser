@@ -284,6 +284,19 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   current={settings.simVersion}
                   onChange={(v) => {
                     void setSimVersion(v);
+                    // (v6 fix) El usuario ya eligió la versión aquí: marca un
+                    // flag de un solo uso para que el splash NO vuelva a
+                    // preguntar en la recarga ("restart now"). Sin esto, con
+                    // 2020+2024 instalados el gate del splash re-preguntaba
+                    // pese a que la elección ya estaba persistida.
+                    try {
+                      localStorage.setItem(
+                        "simfleet:skip-version-prompt-once",
+                        "1",
+                      );
+                    } catch {
+                      /* ignore */
+                    }
                     setSimReload(true);
                   }}
                 />

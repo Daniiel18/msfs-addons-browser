@@ -46,7 +46,8 @@ import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
 import {
   WhatsNewModal,
-  hasUnseenWhatsNew,
+  getWhatsNewSeenVersion,
+  isUpdateSinceLastSeen,
   markWhatsNewSeen,
 } from "./components/WhatsNewModal";
 import { CrossLinkModal } from "./components/CrossLinkModal";
@@ -224,9 +225,10 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
-  // (v6 — #4) Modal de novedades "What's New" anti-skip. Se abre tras `ready`
-  // si hay un set de novedades sin ver (controlado por WHATSNEW_ID +
-  // localStorage). No coexiste con el tour de bienvenida.
+  // (v6 — #4) Modal de novedades "What's New" anti-skip. Se abre tras `ready`:
+  // en la instancia principal sólo cuando la app SE ACTUALIZA (la versión
+  // guardada en localStorage difiere de la actual), una vez por versión; en
+  // MODO SEGURO siempre. No coexiste con el tour de bienvenida.
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   // (v6 — #1) Oferta de cross-link 2020/2024 tras instalar un escenario
   // doble-compat. El backend la emite por `cross-link://offer`.
@@ -326,6 +328,11 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    // (v6) Capturadas DENTRO del closure del bootstrap — las versiones de
+    // `appVersion`/`safeMode` en el scope del render quedan "stale" aquí
+    // (el effect corre una vez al montar). Las usamos para decidir el What's New.
+    let resolvedVersion: string | null = null;
+    let resolvedSafeMode = false;
     const run = async () => {
       const wrap = async (idx: number, fn: () => Promise<unknown>) => {
         try {
@@ -364,10 +371,12 @@ export default function App() {
         try {
           const { getVersion } = await import("@tauri-apps/api/app");
           const v = await getVersion();
+          resolvedVersion = v;
           if (!cancelled) setAppVersion(v);
         } catch (e) {
           console.warn("getVersion failed:", e);
         }
+        resolvedSafeMode = await api.isSafeMode().catch(() => false);
       }
       await wrap(0, async () => {
         const u = await api.checkForUpdate().catch(() => null);
@@ -435,9 +444,24 @@ export default function App() {
           .catch(() => ({ has2020: false, has2024: false }));
         const ver = useSettingsStore.getState().settings.simVersion;
         if (sims.has2020 && sims.has2024) {
-          await new Promise<void>((resolve) => {
-            setSimVersionChoice({ resolve });
-          });
+          // (v6 fix) Si el usuario acaba de cambiar la versión desde Ajustes y
+          // la app se recargó ("restart now"), NO volver a preguntar — la
+          // elección ya está persistida. El flag es de un solo uso.
+          let skipOnce = false;
+          try {
+            skipOnce =
+              localStorage.getItem("simfleet:skip-version-prompt-once") !==
+              null;
+            if (skipOnce)
+              localStorage.removeItem("simfleet:skip-version-prompt-once");
+          } catch {
+            /* ignore */
+          }
+          if (!skipOnce) {
+            await new Promise<void>((resolve) => {
+              setSimVersionChoice({ resolve });
+            });
+          }
         } else if (sims.has2020 && !sims.has2024) {
           if (ver !== "msfs2020") {
             await useSettingsStore.getState().setSimVersion("msfs2020");
@@ -546,15 +570,28 @@ export default function App() {
               "msfs-addons:onboarding-skip-session",
             );
           const done = useSettingsStore.getState().settings.onboardingCompleted;
-          if (!skipped && !done) {
-            // Usuario nuevo: tour de bienvenida + silenciamos las novedades
-            // (no le mostramos "novedades" de versiones previas a su install).
-            setTourOpen(true);
-            markWhatsNewSeen();
-          } else if (hasUnseenWhatsNew()) {
-            // Usuario que vuelve tras actualizar → modal de novedades.
+          const firstRun = !skipped && !done;
+
+          // ── What's New ──────────────────────────────────────────────
+          // · Instancia de pruebas (MODO SEGURO): SIEMPRE se muestra (para
+          //   poder revisarlo); al cerrar NO persiste, así reaparece cada vez.
+          // · Instancia principal: SÓLO cuando la app SE ACTUALIZA (la versión
+          //   cambia), una sola vez por versión. Sin línea base (1ª instalación
+          //   o 1ª vez con esta feature) fijamos la versión SIN mostrar nada,
+          //   para no enseñar novedades retroactivas.
+          if (resolvedSafeMode) {
             setWhatsNewOpen(true);
+          } else {
+            const seen = getWhatsNewSeenVersion();
+            if (seen === null) {
+              if (resolvedVersion) markWhatsNewSeen(resolvedVersion);
+            } else if (isUpdateSinceLastSeen(resolvedVersion)) {
+              setWhatsNewOpen(true);
+            }
           }
+
+          // Tour de bienvenida sólo para usuarios nuevos.
+          if (firstRun) setTourOpen(true);
         }, 600);
       }
     };
@@ -886,9 +923,16 @@ export default function App() {
       <ReplayBanner />
       {/* (v5.1.0) Elección de versión de MSFS al primer arranque. */}
       {settingsLoaded && simVersion === "" && <SimVersionModal />}
-      {/* (v6 — #4) Novedades "What's New" anti-skip. */}
+      {/* (v6 — #4) Novedades "What's New" anti-skip. Al cerrar, en la
+          instancia principal persistimos la versión vista (una vez por
+          actualización); en MODO SEGURO no, para que reaparezca siempre. */}
       {whatsNewOpen && (
-        <WhatsNewModal onClose={() => setWhatsNewOpen(false)} />
+        <WhatsNewModal
+          onClose={() => {
+            setWhatsNewOpen(false);
+            if (!safeMode && appVersion) markWhatsNewSeen(appVersion);
+          }}
+        />
       )}
       {/* (v6 — #1) Oferta de cross-link 2020/2024 tras instalar doble-compat. */}
       {crossLinkOffer && (
