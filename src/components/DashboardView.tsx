@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   HardDrive,
@@ -14,6 +14,7 @@ import {
 import type { DashboardStats } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { derivedType } from "../lib/packageType";
 import { t } from "../lib/i18n";
 
 /**
@@ -35,7 +36,24 @@ export function DashboardView() {
   // false → true → false en cada scan; observamos la transición a
   // false para recargar las stats.
   const scanning = useCommunityStore((s) => s.scanning);
-  const packagesCount = useCommunityStore((s) => s.packages.length);
+  const packages = useCommunityStore((s) => s.packages);
+  const packagesCount = packages.length;
+
+  // (v6 hotfix) Conteo de aviones/liveries con el MISMO clasificador
+  // (`derivedType`) que usan Addons y el Mapa. El backend de `stats` los
+  // contaba crudo (solo content_type=="AIRCRAFT") y subcontaba: liveries con
+  // manifest mínimo o aviones de 3rd-party caían en "Otros". Así el KPI del
+  // Dashboard coincide con la pestaña Addons.
+  const { aircraftCount, liveriesCount } = useMemo(() => {
+    let ac = 0;
+    let lv = 0;
+    for (const p of packages) {
+      const d = derivedType(p);
+      if (d === "AIRCRAFT") ac += 1;
+      else if (d === "LIVERY") lv += 1;
+    }
+    return { aircraftCount: ac, liveriesCount: lv };
+  }, [packages]);
 
   const load = () => {
     setLoading(true);
@@ -110,7 +128,7 @@ export function DashboardView() {
               icon={<Landmark className="h-4 w-4" />}
               label={t("dashboard.kpi.airports")}
               value={stats.airportsCount.toLocaleString("es-ES")}
-              hint={t("dashboard.kpi.airports.hint", { aircraft: stats.aircraftCount, liveries: stats.liveriesCount })}
+              hint={t("dashboard.kpi.airports.hint", { aircraft: aircraftCount, liveries: liveriesCount })}
               tone="emerald"
             />
             <KpiCard
