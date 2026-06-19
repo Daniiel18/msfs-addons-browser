@@ -6,65 +6,31 @@ import {
   CheckCircle2,
   Loader2,
   Video,
-  Monitor,
-  Volume2,
+  Mic,
 } from "lucide-react";
-import type {
-  RecordingConfig,
-  FfmpegStatus,
-  MonitorInfo,
-} from "../lib/types";
+import type { RecordingConfig, EngineStatus } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useToastStore } from "../stores/useToastStore";
 
 /**
- * (v6 #2b) Ajustes de "Best Landings" (grabación) — replica las opciones de
- * LandingToast (Target/Position/Duration+Unlimit/Source/Path) SIN su
- * "auto-launch/exit con el sim" (lo maneja SimFleet). ffmpeg se auto-instala
- * (el usuario no descarga nada a mano).
+ * (v6 #2b) Ajustes de "Best Landings" (grabación). Motor: windows-record
+ * (audio del sistema nativo + captura DX/fullscreen + replay buffer),
+ * integrado en la app — sin descargas. Graba la ventana de MSFS directamente,
+ * así que no hay selector de monitor: opciones = posición OSD, duración,
+ * micrófono y carpeta.
  */
 export function RecordingSettings() {
   const [open, setOpen] = useState(false);
   const [cfg, setCfg] = useState<RecordingConfig | null>(null);
-  const [ffmpeg, setFfmpeg] = useState<FfmpegStatus | null>(null);
-  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
-  const [audioDevices, setAudioDevices] = useState<string[]>([]);
-  const [installing, setInstalling] = useState(false);
+  const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [testing, setTesting] = useState(false);
   const push = useToastStore((s) => s.push);
 
-  const loadFfmpeg = () =>
-    api.recordingFfmpegStatus().then(setFfmpeg).catch(() => {});
-
   useEffect(() => {
     api.recordingConfig().then(setCfg).catch(() => {});
-    api.listMonitors().then(setMonitors).catch(() => {});
-    loadFfmpeg();
+    api.recordingEngineStatus().then(setEngine).catch(() => {});
   }, []);
-
-  // Auto-instalar ffmpeg en segundo plano cuando la grabación está ACTIVA y
-  // falta el binario (sin botón de descarga; no baja 80MB por solo abrir
-  // Ajustes). En releases viene bundleado, así que normalmente no se ejecuta.
-  useEffect(() => {
-    if (!cfg?.enabled || !ffmpeg || ffmpeg.present || installing) return;
-    setInstalling(true);
-    api
-      .recordingDownloadFfmpeg()
-      .then((st) => {
-        setFfmpeg(st);
-        api.listAudioDevices().then(setAudioDevices).catch(() => {});
-      })
-      .catch(() => {})
-      .finally(() => setInstalling(false));
-  }, [cfg?.enabled, ffmpeg, installing]);
-
-  // Cuando ffmpeg está listo, cargamos los dispositivos de audio.
-  useEffect(() => {
-    if (ffmpeg?.present) {
-      api.listAudioDevices().then(setAudioDevices).catch(() => {});
-    }
-  }, [ffmpeg?.present]);
 
   const setKey = async (key: string, value: string) => {
     await api.setAppSetting(key, value).catch(() => {});
@@ -95,8 +61,6 @@ export function RecordingSettings() {
     }
   };
 
-  const audioValue = cfg.audioDevice ?? "auto";
-
   return (
     <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <button
@@ -121,7 +85,6 @@ export function RecordingSettings() {
 
       {open && (
         <div className="mt-3 space-y-3">
-          {/* Grabar automáticamente */}
           <RecToggle
             label={t("rec.enabled")}
             checked={cfg.enabled}
@@ -131,42 +94,7 @@ export function RecordingSettings() {
             }}
           />
 
-          {/* Target (monitor) */}
-          <Field label={t("rec.target")} icon={<Monitor className="h-3.5 w-3.5" />}>
-            <select
-              value={cfg.monitorIndex}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                patch({ monitorIndex: v });
-                void setKey("rec_monitor_index", String(v));
-              }}
-              className="w-full rounded-md border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-xs text-slate-200 focus:border-brand-500/50 focus:outline-none"
-            >
-              {monitors.length === 0 && <option value={0}>Display 1</option>}
-              {monitors.map((m) => (
-                <option key={m.index} value={m.index}>
-                  {m.name} ({m.width}×{m.height}){m.primary ? " ★" : ""}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          {/* Source: Pantalla / MSFS */}
-          <Field label={t("rec.source")}>
-            <Segmented
-              options={[
-                { value: 0, label: t("rec.source.screen") },
-                { value: 1, label: t("rec.source.msfs") },
-              ]}
-              value={cfg.sourceType}
-              onChange={(v) => {
-                patch({ sourceType: v });
-                void setKey("rec_source_type", String(v));
-              }}
-            />
-          </Field>
-
-          {/* Position: Arriba / Abajo (OSD) */}
+          {/* Posición OSD: Arriba / Abajo */}
           <Field label={t("rec.position")}>
             <Segmented
               options={[
@@ -181,7 +109,7 @@ export function RecordingSettings() {
             />
           </Field>
 
-          {/* Duración + Unlimit */}
+          {/* Duración + Ilimitado */}
           <Field label={t("rec.duration")}>
             <div className="flex items-center gap-2">
               <input
@@ -216,29 +144,16 @@ export function RecordingSettings() {
             </div>
           </Field>
 
-          {/* Audio */}
-          <Field label={t("rec.audio")} icon={<Volume2 className="h-3.5 w-3.5" />}>
-            <select
-              value={audioValue}
-              onChange={(e) => {
-                const v = e.target.value;
-                patch({ audioDevice: v });
-                void setKey("rec_audio_device", v);
-              }}
-              className="w-full rounded-md border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-xs text-slate-200 focus:border-brand-500/50 focus:outline-none"
-            >
-              <option value="auto">{t("rec.audio.auto")}</option>
-              <option value="off">{t("rec.audio.off")}</option>
-              {audioDevices.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {audioDevices.length === 0 && ffmpeg?.present && (
-            <p className="text-[10px] text-slate-600">{t("rec.audio.hint")}</p>
-          )}
+          {/* Micrófono */}
+          <RecToggle
+            label={t("rec.microphone")}
+            icon={<Mic className="h-3.5 w-3.5 text-slate-500" />}
+            checked={cfg.captureMicrophone}
+            onChange={(next) => {
+              patch({ captureMicrophone: next });
+              void setKey("rec_microphone", next ? "1" : "0");
+            }}
+          />
 
           {/* Carpeta */}
           <Field label={t("rec.folder")}>
@@ -262,28 +177,23 @@ export function RecordingSettings() {
             </div>
           </Field>
 
-          {/* Estado de ffmpeg (auto) + grabar prueba */}
+          {/* Motor + grabar prueba */}
           <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-2.5 py-2">
             <span className="flex items-center gap-1.5 text-[11px]">
-              {installing ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
-                  <span className="text-slate-400">{t("rec.installing")}</span>
-                </>
-              ) : ffmpeg?.present ? (
+              {engine?.available ? (
                 <>
                   <CheckCircle2 className="h-3.5 w-3.5 text-brand-400" />
                   <span className="text-slate-400">
-                    {t("rec.ffmpeg_ok", { src: ffmpeg.source })}
+                    {t("rec.engine_ok", { engine: engine.engine })}
                   </span>
                 </>
               ) : (
-                <span className="text-amber-300">{t("rec.ffmpeg_pending")}</span>
+                <span className="text-amber-300">{t("rec.engine_unavailable")}</span>
               )}
             </span>
             <button
               onClick={testClip}
-              disabled={testing || !ffmpeg?.present}
+              disabled={testing || !engine?.available}
               className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900/60 px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:border-brand-500/40 disabled:opacity-50"
             >
               {testing ? (
@@ -306,16 +216,21 @@ export function RecordingSettings() {
 
 function RecToggle({
   label,
+  icon,
   checked,
   onChange,
 }: {
   label: string;
+  icon?: React.ReactNode;
   checked: boolean;
   onChange: (next: boolean) => void;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-slate-300">{label}</span>
+      <span className="flex items-center gap-1.5 text-xs text-slate-300">
+        {icon}
+        {label}
+      </span>
       <button
         type="button"
         onClick={() => onChange(!checked)}
@@ -337,19 +252,14 @@ function RecToggle({
 
 function Field({
   label,
-  icon,
   children,
 }: {
   label: string;
-  icon?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="mb-1 flex items-center gap-1 text-[11px] text-slate-500">
-        {icon}
-        {label}
-      </div>
+      <div className="mb-1 text-[11px] text-slate-500">{label}</div>
       {children}
     </div>
   );

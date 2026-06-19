@@ -176,39 +176,24 @@ export interface HangarAnalytics {
   bestLandings: HangarLanding[];
 }
 
-/** (v6 #2b) Config de grabación de Best Landings (heredada de LandingToast). */
+/** (v6 #2b) Config de grabación de Best Landings (motor: windows-record). */
 export interface RecordingConfig {
   enabled: boolean;
-  /** 0 = Arriba · 1 = Abajo */
+  /** 0 = Arriba · 1 = Abajo (OSD) */
   osdPosition: number;
   outputPath: string;
   clipSeconds: number;
   unlimited: boolean;
-  monitorIndex: number;
-  /** 0 = Pantalla (monitor) · 1 = Ventana de MSFS */
-  sourceType: number;
+  /** Capturar también el micrófono (además del audio del sistema). */
+  captureMicrophone: boolean;
   maxClips: number;
-  ffmpegPath: string | null;
-  audioDevice: string | null;
 }
 
-/** (v6 #2b) Un monitor del sistema (selector "Target"). */
-export interface MonitorInfo {
-  index: number;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  primary: boolean;
-}
-
-/** (v6 #2b) Estado de ffmpeg. */
-export interface FfmpegStatus {
-  present: boolean;
-  path: string | null;
-  /** "configured" | "bundled" | "appdata" | "path" | "missing" */
-  source: string;
+/** (v6 #2b) Estado del motor de grabación. */
+export interface EngineStatus {
+  /** true si el motor está disponible (Windows). */
+  available: boolean;
+  engine: string;
 }
 
 /** (v6 #2b) Un clip de aterrizaje grabado. */

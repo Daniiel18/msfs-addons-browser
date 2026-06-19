@@ -287,6 +287,7 @@ fn is_valid_key(key: &str) -> bool {
             | "rec_ffmpeg_path"
             | "rec_unlimited"
             | "rec_audio_device"
+            | "rec_microphone"
     )
 }
 

@@ -113,6 +113,11 @@ libloading = "0.8"
 # aÃ±ade coste de compilaciÃ³n.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# (v6 #2b) Motor de grabación de "Best Landings": Windows.Graphics /
+# Desktop Duplication + WASAPI loopback (audio del sistema nativo) + replay
+# buffer. Reemplaza a ffmpeg/gdigrab (que no captura audio del sistema ni
+# fullscreen DX). Rust puro, compilado dentro de la app — sin descargas.
+windows-record = "0.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

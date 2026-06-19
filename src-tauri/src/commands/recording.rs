@@ -1,14 +1,12 @@
-//! (v6 #2b) Comandos Tauri para la grabación de "Best Landings".
+//! (v6 #2b) Comandos Tauri para la grabación de "Best Landings"
+//! (motor: windows-record).
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
 use tauri::Manager;
 
-use crate::landing_recorder::{
-    self, FfmpegStatus, LandingClip, RecordOptions, RecordingConfig,
-};
+use crate::landing_recorder::{self, EngineStatus, LandingClip, RecordingConfig};
 use crate::{cmd_log, AppState};
 
 fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -17,160 +15,23 @@ fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir())
 }
 
-/// Un monitor del sistema (para el selector "Target").
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MonitorInfo {
-    pub index: i64,
-    pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub primary: bool,
-}
-
-fn enumerate_monitors(app: &tauri::AppHandle) -> Vec<MonitorInfo> {
-    let Some(win) = app.get_webview_window("main") else {
-        return Vec::new();
-    };
-    let primary_name = win
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .and_then(|m| m.name().cloned());
-    win.available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let pos = m.position();
-            let size = m.size();
-            let name = m
-                .name()
-                .cloned()
-                .unwrap_or_else(|| format!("Display {}", i + 1));
-            let primary = primary_name.as_ref() == Some(&name);
-            MonitorInfo {
-                index: i as i64,
-                name,
-                x: pos.x,
-                y: pos.y,
-                width: size.width,
-                height: size.height,
-                primary,
-            }
-        })
-        .collect()
-}
-
-/// Título de la ventana de MSFS según la versión activa (Source = MSFS).
-/// Reservado para el auto-trigger futuro (gdigrab por título es poco fiable
-/// con la ventana DX del sim, así que de momento grabamos el monitor).
-#[allow(dead_code)]
-fn msfs_window_title() -> String {
-    if crate::sim::is_2024() {
-        "Microsoft Flight Simulator 2024".to_string()
-    } else {
-        "Microsoft Flight Simulator".to_string()
-    }
-}
-
-/// Resuelve ffmpeg; si falta, intenta descargarlo automáticamente.
-async fn ensure_ffmpeg(
-    app: &tauri::AppHandle,
-    state: &AppState,
-    cfg: &RecordingConfig,
-) -> Result<PathBuf, String> {
-    let data = app_data_dir(app);
-    let resource = app.path().resource_dir().ok();
-    let (path, _src) =
-        landing_recorder::resolve_ffmpeg(cfg.ffmpeg_path.as_deref(), &data, resource.as_deref());
-    if let Some(p) = path {
-        return Ok(p);
-    }
-    // Auto-provisión silenciosa — el usuario no debe descargar nada a mano.
-    landing_recorder::download_ffmpeg(&state.http, &data)
-        .await
-        .map_err(|e| format!("no se pudo preparar ffmpeg: {e:#}"))
-}
-
-/// Monitores disponibles (selector "Target").
-#[tauri::command]
-pub async fn list_monitors(app: tauri::AppHandle) -> Result<Vec<MonitorInfo>, String> {
-    Ok(enumerate_monitors(&app))
-}
-
-/// Dispositivos de audio dshow (selector de audio). Vacío si ffmpeg falta.
-#[tauri::command]
-pub async fn list_audio_devices(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    let resource = app.path().resource_dir().ok();
-    let (ffmpeg, _) =
-        landing_recorder::resolve_ffmpeg(cfg.ffmpeg_path.as_deref(), &app_data_dir(&app), resource.as_deref());
-    let Some(ffmpeg) = ffmpeg else {
-        return Ok(Vec::new());
-    };
-    let f = ffmpeg.clone();
-    let devices = tokio::task::spawn_blocking(move || landing_recorder::list_audio_devices(&f))
-        .await
-        .unwrap_or_default();
-    Ok(devices)
-}
-
 /// Config actual de grabación (con defaults heredados de LandingToast).
 #[tauri::command]
 pub async fn recording_config(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<RecordingConfig, String> {
-    let data = app_data_dir(&app);
-    Ok(landing_recorder::load_config(&state.db, &data).await)
+    Ok(landing_recorder::load_config(&state.db, &app_data_dir(&app)).await)
 }
 
-/// Estado de ffmpeg (presente/ausente + ruta + fuente).
+/// Estado del motor de grabación (windows-record, integrado — sin descargas).
 #[tauri::command]
-pub async fn recording_ffmpeg_status(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<FfmpegStatus, String> {
-    let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    let resource = app.path().resource_dir().ok();
-    let (path, source) = landing_recorder::resolve_ffmpeg(
-        cfg.ffmpeg_path.as_deref(),
-        &app_data_dir(&app),
-        resource.as_deref(),
-    );
-    Ok(FfmpegStatus {
-        present: path.is_some(),
-        path: path.map(|p| p.to_string_lossy().into_owned()),
-        source,
-    })
+pub async fn recording_engine_status() -> Result<EngineStatus, String> {
+    Ok(landing_recorder::engine_status())
 }
 
-/// Descarga ffmpeg a la carpeta de datos (fallback al bundling).
-#[tauri::command]
-pub async fn recording_download_ffmpeg(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<FfmpegStatus, String> {
-    cmd_log!("recording_download_ffmpeg", "");
-    let data = app_data_dir(&app);
-    let path = landing_recorder::download_ffmpeg(&state.http, &data)
-        .await
-        .map_err(|e| format!("descarga de ffmpeg falló: {e:#}"))?;
-    Ok(FfmpegStatus {
-        present: path.is_file(),
-        path: Some(path.to_string_lossy().into_owned()),
-        source: "appdata".into(),
-    })
-}
-
-/// Graba un clip de PRUEBA de `duration_s` segundos del escritorio y lo añade
-/// a la librería. Testeable sin sim — verifica que ffmpeg captura bien.
+/// Graba un clip de PRUEBA de `duration_s` s. Targetea la ventana de la propia
+/// app ("SimFleet") para verificar vídeo+audio SIN necesitar el sim abierto.
 #[tauri::command]
 pub async fn recording_test_clip(
     duration_s: i64,
@@ -180,7 +41,6 @@ pub async fn recording_test_clip(
     cmd_log!("recording_test_clip", "dur={duration_s}");
     let data = app_data_dir(&app);
     let cfg = landing_recorder::load_config(&state.db, &data).await;
-    let ffmpeg = ensure_ffmpeg(&app, &state, &cfg).await?;
 
     let output_dir = PathBuf::from(&cfg.output_path);
     std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
@@ -190,31 +50,20 @@ pub async fn recording_test_clip(
         .unwrap_or(0);
     let file = output_dir.join(format!("simfleet_test_{millis}.mp4"));
 
-    // La PRUEBA siempre graba la REGIÓN del monitor elegido (no la ventana de
-    // MSFS): gdigrab no captura de forma fiable la ventana DX del sim, y la
-    // prueba se corre normalmente sin el sim abierto. Capturar el monitor es lo
-    // robusto (MSFS debe estar en modo ventana/borderless, no fullscreen
-    // exclusivo, para que se vea).
-    let mons = enumerate_monitors(&app);
-    let region = mons
-        .get(cfg.monitor_index as usize)
-        .or_else(|| mons.first())
-        .map(|m| (m.x, m.y, m.width, m.height));
-    let window_title: Option<String> = None;
     let dur = duration_s.clamp(3, 30);
-    let ffmpeg_c = ffmpeg.clone();
+    let mic = cfg.capture_microphone;
     let file_c = file.clone();
-    let audio = landing_recorder::resolve_audio(&cfg, &ffmpeg);
-    let opts = RecordOptions {
-        duration_s: dur,
-        region,
-        window_title,
-        audio_device: audio,
-    };
-    tokio::task::spawn_blocking(move || landing_recorder::record_clip(&ffmpeg_c, &file_c, &opts))
-        .await
-        .map_err(|e| format!("tarea de grabación falló: {e}"))?
-        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        landing_recorder::record_window_clip(
+            landing_recorder::SELF_WINDOW,
+            &file_c,
+            dur,
+            mic,
+        )
+    })
+    .await
+    .map_err(|e| format!("tarea de grabación falló: {e}"))?
+    .map_err(|e| e.to_string())?;
 
     let recorded_at: (String,) = sqlx::query_as("SELECT datetime('now')")
         .fetch_one(&state.db)
