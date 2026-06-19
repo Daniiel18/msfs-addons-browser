@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tauri dev",
     "dev": "vite",
+    "dev:safe": "set SIMFLEET_SAFE_MODE=1&& tauri dev",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
