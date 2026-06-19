@@ -44,6 +44,11 @@ import { FlyingNowBadge } from "./components/FlyingNowBadge";
 import { OnboardingTour } from "./components/OnboardingTour";
 import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
+import {
+  WhatsNewModal,
+  hasUnseenWhatsNew,
+  markWhatsNewSeen,
+} from "./components/WhatsNewModal";
 
 /**
  * Bootstrap centralizado: una sola tarea async awaita Promise.all
@@ -212,6 +217,10 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
+  // (v6 — #4) Modal de novedades "What's New" anti-skip. Se abre tras `ready`
+  // si hay un set de novedades sin ver (controlado por WHATSNEW_ID +
+  // localStorage). No coexiste con el tour de bienvenida.
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   // (v5.2.3) Gate de versión de MSFS DURANTE el splash. Si es el primer
   // arranque (simVersion vacío), el bootstrap muestra el chooser ANTES de
   // escanear Community y espera por esta promesa para continuar con la
@@ -526,7 +535,13 @@ export default function App() {
             );
           const done = useSettingsStore.getState().settings.onboardingCompleted;
           if (!skipped && !done) {
+            // Usuario nuevo: tour de bienvenida + silenciamos las novedades
+            // (no le mostramos "novedades" de versiones previas a su install).
             setTourOpen(true);
+            markWhatsNewSeen();
+          } else if (hasUnseenWhatsNew()) {
+            // Usuario que vuelve tras actualizar → modal de novedades.
+            setWhatsNewOpen(true);
           }
         }, 600);
       }
@@ -859,6 +874,10 @@ export default function App() {
       <ReplayBanner />
       {/* (v5.1.0) Elección de versión de MSFS al primer arranque. */}
       {settingsLoaded && simVersion === "" && <SimVersionModal />}
+      {/* (v6 — #4) Novedades "What's New" anti-skip. */}
+      {whatsNewOpen && (
+        <WhatsNewModal onClose={() => setWhatsNewOpen(false)} />
+      )}
     </div>
   );
 }

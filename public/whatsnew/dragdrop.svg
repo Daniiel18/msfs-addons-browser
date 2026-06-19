@@ -1,0 +1,62 @@
+<svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <rect width="640" height="360" fill="#0f172a"/>
+  <rect width="640" height="360" fill="url(#g3)" opacity="0.5"/>
+  <defs>
+    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a432b" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- zona de drop -->
+  <g transform="translate(40,56)">
+    <rect width="240" height="248" rx="16" fill="#0f172a" stroke="#1ea45d" stroke-width="2" stroke-dasharray="8 7"/>
+    <!-- zip -->
+    <g transform="translate(54,46)">
+      <rect width="60" height="76" rx="8" fill="#1e293b" stroke="#475569"/>
+      <rect x="26" y="0" width="8" height="50" fill="#3fbf78"/>
+      <rect x="27" y="8" width="6" height="6" fill="#0f172a"/>
+      <rect x="27" y="20" width="6" height="6" fill="#0f172a"/>
+      <!-- candado -->
+      <g transform="translate(40,52)">
+        <rect width="26" height="20" rx="4" fill="#0f693d"/>
+        <path d="M6 0 a7 7 0 0 1 14 0 v4" fill="none" stroke="#3fbf78" stroke-width="2.5"/>
+        <circle cx="13" cy="10" r="3" fill="#d5f5e1"/>
+      </g>
+    </g>
+    <!-- folder -->
+    <g transform="translate(128,52)">
+      <path d="M0 8 a4 4 0 0 1 4 -4 h18 l8 8 h34 a4 4 0 0 1 4 4 v44 a4 4 0 0 1 -4 4 H4 a4 4 0 0 1 -4 -4 Z" fill="#1e293b" stroke="#475569"/>
+      <path d="M0 16 h68" stroke="#3fbf78" stroke-width="2"/>
+    </g>
+    <text x="120" y="176" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle">Suelta aquí</text>
+    <text x="120" y="198" fill="#94a3b8" font-size="11" text-anchor="middle">.zip .rar .7z · con clave</text>
+    <text x="120" y="214" fill="#94a3b8" font-size="11" text-anchor="middle">o carpetas completas</text>
+  </g>
+
+  <!-- flechas a destinos -->
+  <g stroke="#1ea45d" stroke-width="2.5" fill="none">
+    <path d="M285 110 H330"/><path d="M324 104 L334 110 L324 116"/>
+    <path d="M285 180 H330"/><path d="M324 174 L334 180 L324 186"/>
+    <path d="M285 250 H330"/><path d="M324 244 L334 250 L324 256"/>
+  </g>
+
+  <!-- destinos clasificados -->
+  <g transform="translate(345,86)">
+    <rect width="255" height="48" rx="10" fill="#1e293b" stroke="#334155"/>
+    <circle cx="26" cy="24" r="9" fill="#3fbf78"/>
+    <text x="48" y="29" fill="#e2e8f0" font-size="14" font-weight="600">Perfiles GSX</text>
+  </g>
+  <g transform="translate(345,156)">
+    <rect width="255" height="48" rx="10" fill="#1e293b" stroke="#334155"/>
+    <circle cx="26" cy="24" r="9" fill="#3fbf78"/>
+    <text x="48" y="29" fill="#e2e8f0" font-size="14" font-weight="600">Paquetes Community</text>
+  </g>
+  <g transform="translate(345,226)">
+    <rect width="255" height="48" rx="10" fill="#1e293b" stroke="#334155"/>
+    <circle cx="26" cy="24" r="9" fill="#64748b"/>
+    <text x="48" y="29" fill="#cbd5e1" font-size="14" font-weight="600">Otros</text>
+  </g>
+
+  <text x="40" y="330" fill="#64748b" font-size="13">Clasifica e instala en la carpeta correcta · borra el comprimido al terminar</text>
+</svg>

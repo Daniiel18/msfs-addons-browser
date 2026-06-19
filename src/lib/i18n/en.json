@@ -1020,5 +1020,17 @@
   "drop.modal.delete_no": "Keep it",
   "drop.modal.deleting": "Deleting…",
   "drop.modal.installed_ok": "Installed successfully!",
-  "drop.modal.installed_ok_sub": "{count} item(s) installed"
+  "drop.modal.installed_ok_sub": "{count} item(s) installed",
+  "whatsnew.badge": "New",
+  "whatsnew.next": "Next",
+  "whatsnew.done": "Got it",
+  "whatsnew.read_first": "Read the content…",
+  "whatsnew.simbrief.title": "Automatic SimBrief (shared account)",
+  "whatsnew.simbrief.body": "SimFleet now detects your OFP by your email: it links the right plan even if you share the SimBrief account, and refreshes every 30s until the gate. No more linking plans by hand.",
+  "whatsnew.simver.title": "MSFS 2020 and 2024 together",
+  "whatsnew.simver.body": "On launch, SimFleet detects which MSFS versions you have installed and filters scenery and Community packages by the right version. You can switch version from Settings.",
+  "whatsnew.drop.title": "Improved drag & drop",
+  "whatsnew.drop.body": "Drop .zip/.rar/.7z (even password-protected) or whole folders: SimFleet sorts GSX, Community and others, and installs them in the right folder. When done it can delete the original archive.",
+  "whatsnew.flightbook.title": "More accurate logbook",
+  "whatsnew.flightbook.body": "Flight close now waits for real engine shutdown (N2 < 5%) and shows the aircraft's real manufacturer and airline. Your block times and records stay cleaner."
 }
