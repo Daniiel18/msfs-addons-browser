@@ -36,27 +36,29 @@ export interface WhatsNewSlide {
   image: string;
 }
 
-/** Slides por defecto — novedades recientes (5.1 → 5.4). */
+/** Slides por defecto — novedades REALES de la v6 (5.5.0). Sustituyen al
+ *  changelog viejo (5.1→5.4): cross-link 2020/2024, Hangar con analíticas,
+ *  Best Landings (grabación + OSD) y Crew VS. */
 const DEFAULT_SLIDES: WhatsNewSlide[] = [
   {
-    titleKey: "whatsnew.simbrief.title",
-    bodyKey: "whatsnew.simbrief.body",
-    image: "/whatsnew/simbrief.svg",
+    titleKey: "whatsnew.crosslink.title",
+    bodyKey: "whatsnew.crosslink.body",
+    image: "/whatsnew/crosslink.svg",
   },
   {
-    titleKey: "whatsnew.simver.title",
-    bodyKey: "whatsnew.simver.body",
-    image: "/whatsnew/simversion.svg",
+    titleKey: "whatsnew.hangar.title",
+    bodyKey: "whatsnew.hangar.body",
+    image: "/whatsnew/hangar.svg",
   },
   {
-    titleKey: "whatsnew.drop.title",
-    bodyKey: "whatsnew.drop.body",
-    image: "/whatsnew/dragdrop.svg",
+    titleKey: "whatsnew.recording.title",
+    bodyKey: "whatsnew.recording.body",
+    image: "/whatsnew/recording.svg",
   },
   {
-    titleKey: "whatsnew.flightbook.title",
-    bodyKey: "whatsnew.flightbook.body",
-    image: "/whatsnew/flightbook.svg",
+    titleKey: "whatsnew.crewvs.title",
+    bodyKey: "whatsnew.crewvs.body",
+    image: "/whatsnew/crewvs.svg",
   },
 ];
 

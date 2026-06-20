@@ -1,0 +1,55 @@
+<svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <rect width="640" height="360" fill="#0f172a"/>
+  <rect width="640" height="360" fill="url(#gcl)" opacity="0.5"/>
+  <defs>
+    <linearGradient id="gcl" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a432b" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <text x="40" y="52" fill="#e2e8f0" font-size="18" font-weight="700">Un escenario, los dos simuladores</text>
+
+  <!-- MSFS 2020 card -->
+  <g transform="translate(40,84)">
+    <rect width="230" height="150" rx="14" fill="#1e293b" stroke="#334155"/>
+    <text x="20" y="36" fill="#38bdf8" font-size="15" font-weight="700">MSFS 2020</text>
+    <g transform="translate(20,54)">
+      <rect width="190" height="30" rx="7" fill="#0f172a"/>
+      <text x="12" y="20" fill="#cbd5e1" font-size="12">Community\</text>
+      <text x="178" y="20" fill="#3fbf78" font-size="12" font-weight="700" text-anchor="end">EHAM Schiphol</text>
+    </g>
+    <g transform="translate(20,92)">
+      <rect width="190" height="30" rx="7" fill="#0f172a"/>
+      <text x="12" y="20" fill="#cbd5e1" font-size="12">Instalado</text>
+      <text x="178" y="20" fill="#3fbf78" font-size="12" font-weight="700" text-anchor="end">✓</text>
+    </g>
+  </g>
+
+  <!-- junction link arrow -->
+  <g transform="translate(280,135)">
+    <rect x="-6" y="14" width="92" height="52" rx="12" fill="#0a432b" stroke="#1ea45d"/>
+    <text x="40" y="36" fill="#8ef0bb" font-size="11" font-weight="700" text-anchor="middle">JUNCTION</text>
+    <text x="40" y="54" fill="#8ef0bb" font-size="11" font-weight="700" text-anchor="middle">NTFS</text>
+    <path d="M4 90 L84 90 M74 82 L86 90 L74 98" stroke="#3fbf78" stroke-width="3" fill="none"/>
+  </g>
+
+  <!-- MSFS 2024 card -->
+  <g transform="translate(370,84)">
+    <rect width="230" height="150" rx="14" fill="#1e293b" stroke="#1ea45d" stroke-width="1.5"/>
+    <text x="20" y="36" fill="#a78bfa" font-size="15" font-weight="700">MSFS 2024</text>
+    <g transform="translate(20,54)">
+      <rect width="190" height="30" rx="7" fill="#0f172a"/>
+      <text x="12" y="20" fill="#cbd5e1" font-size="12">Community\</text>
+      <text x="178" y="20" fill="#3fbf78" font-size="12" font-weight="700" text-anchor="end">EHAM Schiphol</text>
+    </g>
+    <g transform="translate(20,92)">
+      <rect width="190" height="30" rx="7" fill="#0f172a"/>
+      <text x="12" y="20" fill="#cbd5e1" font-size="12">Enlazado (0 MB)</text>
+      <text x="178" y="20" fill="#3fbf78" font-size="12" font-weight="700" text-anchor="end">✓</text>
+    </g>
+  </g>
+
+  <text x="40" y="280" fill="#94a3b8" font-size="13">Instálalo una vez y enlázalo al otro sim sin duplicar archivos ni ocupar espacio.</text>
+  <text x="40" y="306" fill="#64748b" font-size="12">Sin permisos de administrador · cero copias · borrar el enlace no toca el original.</text>
+</svg>
