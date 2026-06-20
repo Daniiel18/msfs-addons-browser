@@ -1664,9 +1664,15 @@ mod windows_simconnect {
         let mut in_replay_mode: bool = false;
         let mut replay_stable_ticks_normal: u32 = 0;
         let mut prev_absolute_time_s: Option<f64> = None;
-        // (v6 #2b) ¿Ya emitimos el OSD para el aterrizaje actual? Se rearma al
-        // volver al aire. Evita re-emitir cada tick mientras está en tierra.
+        // (v6 #2b) Estado del OSD de aterrizaje:
+        //  · osd_emitted  — ya emitido este toque (evita spam por tick).
+        //  · osd_touch_fpm — FPM del toque ACTUAL (lo fija STREAM-B en CADA
+        //    touch; se rearma al subir >150ft AGL). NO es el "más negativo de
+        //    la sesión" → cada aterrizaje refresca su valor.
+        //  · osd_bounced — hubo rebote en este aterrizaje.
         let mut osd_emitted = false;
+        let mut osd_touch_fpm: Option<i64> = None;
+        let mut osd_bounced = false;
         // (v3.30.0 #2) Buffer de muestras PRE-DEPARTURE (cold-and-dark).
         // El track sólo se persiste cuando ya existe flight_id (post-OUT),
         // así que las reglas de pre-departure salían "No data to evaluate".
@@ -2058,6 +2064,14 @@ mod windows_simconnect {
                                     }
                                 }
 
+                                // (v6 #2b) OSD: FPM del toque ACTUAL (refresca en
+                                // cada aterrizaje) + flag de rebote. osd_emitted
+                                // a false fuerza re-emitir con el valor nuevo en
+                                // el próximo tick (también re-emite tras un rebote).
+                                osd_touch_fpm = Some(fpm_val);
+                                osd_bounced |= is_bounce;
+                                osd_emitted = false;
+
                                 tracing::info!(
                                     target: "simconnect",
                                     "STREAM-B TOUCHDOWN: live_vs={:.1}fpm radio_alt={:.1}ft g={:.2} → candidate={} (prev_captured={:?} update={} bounce={})",
@@ -2330,6 +2344,8 @@ mod windows_simconnect {
                         &mut prev_absolute_time_s,
                         &mut predeparture_buffer,
                         &mut osd_emitted,
+                        &mut osd_touch_fpm,
+                        &mut osd_bounced,
                     );
                     // (v4.1.1 FIX) La detección de gate usa el INI de GSX
                     // en disco (`gsx_parking::find_nearest_parking`), que
@@ -2925,6 +2941,8 @@ mod windows_simconnect {
             crate::flight_log::TrackPointInsert,
         )>,
         osd_emitted: &mut bool,
+        osd_touch_fpm: &mut Option<i64>,
+        osd_bounced: &mut bool,
     ) {
         // (v4.0.0 P7.7) Replay/Slew detection FIRST — antes de
         // procesar cualquier otra lógica del state machine.
@@ -2968,16 +2986,19 @@ mod windows_simconnect {
         let on_ground = data.on_ground >= 0.5;
         let airborne = !on_ground;
 
-        // (v6 #2b) OSD INSTANTÁNEO de aterrizaje: en cuanto hay un FPM de
-        // touchdown capturado (lo fija STREAM-B en el toque real por radio-alt)
-        // y el avión está en tierra, emitimos los datos para el overlay — en el
-        // momento del toque, NO al frenar (la transición de fase a Landed espera
-        // gs<50 y por eso salía 4-5s tarde). Una vez por aterrizaje; se rearma
-        // al volver al aire. Campos packed → copiados a locales.
-        if airborne {
+        // (v6 #2b) OSD INSTANTÁNEO de aterrizaje. Usa `osd_touch_fpm` (FPM del
+        // toque ACTUAL, lo fija STREAM-B en CADA touch — no el "más negativo de
+        // la sesión" de `captured_landing_fpm`, que repetía el mismo valor entre
+        // aterrizajes). Emite en el toque (no al frenar). El rearme usa altura
+        // AGL > 150ft para NO confundir un rebote (sigue bajo) con un go-around
+        // (sube): así un rebote re-emite con el flag bounced en vez de resetear.
+        let agl_ft = data.alt_above_ground_ft;
+        if airborne && agl_ft > 150.0 {
             *osd_emitted = false;
-        } else if !*osd_emitted {
-            if let Some(td_fpm) = *captured_landing_fpm {
+            *osd_touch_fpm = None;
+            *osd_bounced = false;
+        } else if on_ground && !*osd_emitted {
+            if let Some(td_fpm) = *osd_touch_fpm {
                 let g = data.g_force;
                 let pitch_rad = data.pitch_radians;
                 let bank_rad = data.bank_radians;
@@ -2993,10 +3014,14 @@ mod windows_simconnect {
                     "windDir": wind_dir,
                     "windKt": wind_kt,
                     "headingDeg": hdg,
+                    "bounced": *osd_bounced,
                 });
                 let _ = app.emit("landing://osd", payload);
                 *osd_emitted = true;
-                tracing::info!(target: "simconnect", "OSD aterrizaje emitido (fpm={td_fpm})");
+                tracing::info!(
+                    target: "simconnect",
+                    "OSD aterrizaje emitido (fpm={td_fpm} bounce={})", *osd_bounced
+                );
             }
         }
 

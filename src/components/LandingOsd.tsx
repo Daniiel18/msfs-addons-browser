@@ -27,6 +27,7 @@ interface OsdPayload {
   windDir?: number;
   windKt?: number;
   headingDeg?: number;
+  bounced?: boolean;
   position?: number; // legacy (prueba) — normalmente viene de la config
 }
 
@@ -144,6 +145,11 @@ export function LandingOsd() {
               >
                 {t(g.key)}
               </span>
+              {data.bounced && (
+                <span className="rounded-md bg-amber-500/25 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-amber-300">
+                  {t("osd.bounce")}
+                </span>
+              )}
             </div>
 
             {/* FPM grande + G */}

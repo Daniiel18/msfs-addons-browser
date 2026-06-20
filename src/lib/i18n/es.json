@@ -1142,6 +1142,7 @@
   "osd.hard": "Duro",
   "osd.pitch": "Pitch",
   "osd.roll": "Roll",
+  "osd.bounce": "Rebote",
   "rec.target": "Monitor a grabar (Target)",
   "rec.source": "Fuente",
   "rec.source.screen": "Pantalla",

@@ -1142,6 +1142,7 @@
   "osd.hard": "Hard",
   "osd.pitch": "Pitch",
   "osd.roll": "Roll",
+  "osd.bounce": "Bounce",
   "rec.target": "Monitor to record (Target)",
   "rec.source": "Source",
   "rec.source.screen": "Screen",
