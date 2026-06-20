@@ -3668,6 +3668,34 @@ mod windows_simconnect {
                         *captured_landing_fpm, fpm, should_update_from_a
                     );
                     *idle_ticks_in_landed = 0;
+
+                    // (v6 #2b) OSD INSTANTÁNEO: emitimos los datos del touchdown
+                    // para el overlay de "Best Landings" en el mismo momento del
+                    // toque (sin polling/DB). Todos los simvars ya están en
+                    // `data`. La ventana OSD decide si mostrarse (osd_enabled) y
+                    // dónde (posición). Campos packed → se copian por valor.
+                    if let Some(td_fpm) = *captured_landing_fpm {
+                        // Copiamos los campos packed a locales antes de operar.
+                        let g = data.g_force;
+                        let pitch_rad = data.pitch_radians;
+                        let bank_rad = data.bank_radians;
+                        let wind_dir = data.ambient_wind_dir_deg;
+                        let wind_kt = data.ambient_wind_vel_kt;
+                        let hdg = data.heading_deg;
+                        let pitch_deg = pitch_rad.to_degrees();
+                        let roll_deg = bank_rad.to_degrees();
+                        let payload = serde_json::json!({
+                            "fpm": td_fpm,
+                            "grade": crate::flight_log::landing_grade(td_fpm),
+                            "gForce": g,
+                            "pitch": pitch_deg,
+                            "roll": roll_deg,
+                            "windDir": wind_dir,
+                            "windKt": wind_kt,
+                            "headingDeg": hdg,
+                        });
+                        let _ = app.emit("landing://osd", payload);
+                    }
                 }
                 (FlightPhase::Landed, FlightPhase::Airborne) => {
                     // Touch-and-go o despegue forzado tras Landed

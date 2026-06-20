@@ -460,6 +460,9 @@ enum RecCmd {
 fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
     use windows_record::{AudioSource, Recorder};
     let mut rec: Option<Recorder> = None;
+    // Ruta del archivo base del replay buffer — se borra al parar (solo nos
+    // interesa el clip del aterrizaje, no el buffer continuo).
+    let mut buffer_path: Option<PathBuf> = None;
     while let Ok(cmd) = rx.recv() {
         match cmd {
             RecCmd::Arm {
@@ -473,6 +476,7 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                     continue;
                 }
                 let base = Path::new(&output_path).join("simfleet_buffer.mp4");
+                buffer_path = Some(base.clone());
                 let config = Recorder::builder()
                     .fps(fps, 1)
                     .output_dimensions(width, height)
@@ -520,6 +524,12 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                 if let Some(r) = rec.take() {
                     let _ = r.stop_recording();
                     release_recording();
+                    // Borrar el buffer continuo — solo guardamos el clip.
+                    if let Some(bp) = buffer_path.take() {
+                        // Pequeña espera para que windows-record cierre el archivo.
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        let _ = std::fs::remove_file(&bp);
+                    }
                     tracing::info!(target: "rec", "replay buffer detenido");
                 }
             }
@@ -549,7 +559,6 @@ async fn controller_loop(
     let mut armed = false;
     let mut prev_on_ground = true;
     let mut saved = false;
-    let mut osd_done = false;
 
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -567,7 +576,6 @@ async fn controller_loop(
                 saved = false;
             }
             prev_on_ground = true;
-            osd_done = false;
             continue;
         }
 
@@ -579,11 +587,6 @@ async fn controller_loop(
         // cubren el aterrizaje de sobra.
         let approaching = matches!(phase.as_str(), "approach")
             || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 5_000));
-
-        // Volando de nuevo → re-armar el OSD para el siguiente aterrizaje.
-        if !on_ground {
-            osd_done = false;
-        }
 
         // ── Grabación (solo si está activada) ──
         if cfg.enabled {
@@ -608,11 +611,7 @@ async fn controller_loop(
 
         // ── Touchdown: transición airborne → on_ground ──
         if on_ground && !prev_on_ground {
-            // OSD del aterrizaje (independiente de la grabación).
-            if cfg.osd_enabled && !osd_done {
-                osd_done = true;
-                schedule_osd(&pool, &app, cfg.osd_position);
-            }
+            // (El OSD lo emite el watcher al instante; aquí solo grabación.)
             // Guardar el clip si el replay buffer está armado.
             if armed && !saved {
                 saved = true;
@@ -637,39 +636,6 @@ async fn controller_loop(
         }
         prev_on_ground = on_ground;
     }
-}
-
-/// Tras el touchdown, lee el `landing_fpm` que el watcher acaba de escribir y
-/// emite `landing://osd` con el FPM + grado para que la ventana OSD lo muestre.
-#[cfg(windows)]
-fn schedule_osd(pool: &SqlitePool, app: &tauri::AppHandle, osd_position: i64) {
-    use std::time::Duration;
-    use tauri::Emitter;
-    let pool = pool.clone();
-    let app = app.clone();
-    tokio::spawn(async move {
-        // Espera mínima: el watcher escribe el landing_fpm en el touchdown.
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        let fpm: Option<i64> = sqlx::query_as::<_, (Option<i64>,)>(
-            "SELECT landing_fpm FROM flight_log \
-             WHERE landing_fpm IS NOT NULL ORDER BY started_at DESC LIMIT 1",
-        )
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|(v,)| v);
-        let Some(fpm) = fpm else {
-            return;
-        };
-        let payload = serde_json::json!({
-            "fpm": fpm,
-            "grade": crate::flight_log::landing_grade(fpm),
-            "position": osd_position,
-        });
-        let _ = app.emit("landing://osd", payload);
-        tracing::info!(target: "rec", "OSD aterrizaje emitido (fpm={fpm})");
-    });
 }
 
 #[cfg(windows)]

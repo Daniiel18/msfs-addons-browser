@@ -32,16 +32,17 @@ pub async fn recording_engine_status() -> Result<EngineStatus, String> {
 
 /// (v6 #2b) Emite un evento OSD de PRUEBA (sin volar) para validar el overlay.
 #[tauri::command]
-pub async fn osd_test(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn osd_test(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Emitter;
-    let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
     let payload = serde_json::json!({
         "fpm": -142,
         "grade": "butter",
-        "position": cfg.osd_position,
+        "gForce": 1.18,
+        "pitch": 4.2,
+        "roll": -1.5,
+        "windDir": 250.0,
+        "windKt": 8.0,
+        "headingDeg": 270.0,
     });
     app.emit("landing://osd", payload).map_err(|e| e.to_string())?;
     cmd_log!("osd_test", "OSD de prueba emitido");

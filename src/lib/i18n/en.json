@@ -1140,6 +1140,8 @@
   "osd.butter": "Butter",
   "osd.acceptable": "Acceptable",
   "osd.hard": "Hard",
+  "osd.pitch": "Pitch",
+  "osd.roll": "Roll",
   "rec.target": "Monitor to record (Target)",
   "rec.source": "Source",
   "rec.source.screen": "Screen",

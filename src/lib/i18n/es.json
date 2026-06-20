@@ -1140,6 +1140,8 @@
   "osd.butter": "Mantequilla",
   "osd.acceptable": "Aceptable",
   "osd.hard": "Duro",
+  "osd.pitch": "Pitch",
+  "osd.roll": "Roll",
   "rec.target": "Monitor a grabar (Target)",
   "rec.source": "Fuente",
   "rec.source.screen": "Pantalla",

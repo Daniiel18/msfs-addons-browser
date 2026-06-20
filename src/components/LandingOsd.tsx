@@ -1,28 +1,33 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { PlaneLanding } from "lucide-react";
+import { PlaneLanding, ArrowUp } from "lucide-react";
 import {
   getCurrentWindow,
   primaryMonitor,
   PhysicalPosition,
 } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { t } from "../lib/i18n";
+import { t, preloadLocale } from "../lib/i18n";
 import { api } from "../lib/tauri";
 
 /**
- * (v6 #2b) OSD de aterrizaje — ventana overlay transparente, always-on-top y
- * click-through (estilo LandingToast). Al tocar pista, el backend emite
- * `landing://osd` con el FPM y el grado; este componente posiciona la ventana
- * (arriba/abajo del monitor primario), muestra el toast y se auto-oculta.
- *
- * Corre en su propia ventana ("osd"); `main.tsx` enruta por label.
+ * (v6 #2b) OSD de aterrizaje — overlay transparente, always-on-top y
+ * click-through (estilo LandingToast). El watcher emite `landing://osd` en el
+ * MISMO instante del touchdown con FPM, G, viento, pitch y roll (todos
+ * simvars que ya leía). Esta ventana posiciona, muestra el toast y se auto-
+ * oculta. Corre en su propia ventana ("osd"); `main.tsx` enruta por label.
  */
 
 interface OsdPayload {
   fpm: number;
   grade: string; // "butter" | "acceptable" | "hard"
-  position: number; // 0 = arriba, 1 = abajo
+  gForce?: number;
+  pitch?: number;
+  roll?: number;
+  windDir?: number;
+  windKt?: number;
+  headingDeg?: number;
+  position?: number; // legacy (prueba) — normalmente viene de la config
 }
 
 const GRADE: Record<string, { color: string; key: string }> = {
@@ -35,7 +40,6 @@ export function LandingOsd() {
   const [data, setData] = useState<OsdPayload | null>(null);
 
   useEffect(() => {
-    // Fondo transparente (esta ventana comparte index.html con la app).
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
 
@@ -47,7 +51,30 @@ export function LandingOsd() {
     const unlistenP = listen<OsdPayload>("landing://osd", async (e) => {
       const p = e.payload;
       api.osdDebug(`evento recibido fpm=${p.fpm} grade=${p.grade}`).catch(() => {});
+
+      // (fix idioma) Re-leemos el locale en cada evento — la ventana OSD no
+      // se recarga al cambiar idioma; así el toast sale siempre en el actual.
+      try {
+        preloadLocale();
+      } catch {
+        /* ignore */
+      }
+
+      // Config actual: si el OSD está desactivado no mostramos; posición.
+      let position = p.position ?? 0;
+      try {
+        const cfg = await api.recordingConfig();
+        if (!cfg.osdEnabled) {
+          api.osdDebug("osd desactivado en ajustes; no se muestra").catch(() => {});
+          return;
+        }
+        position = cfg.osdPosition;
+      } catch {
+        /* usar default */
+      }
+
       setData(p);
+
       try {
         const mon = await primaryMonitor();
         if (mon) {
@@ -55,7 +82,7 @@ export function LandingOsd() {
           const x =
             mon.position.x + Math.round((mon.size.width - size.width) / 2);
           const y =
-            p.position === 1
+            position === 1
               ? mon.position.y + mon.size.height - size.height - 90
               : mon.position.y + 70;
           await win.setPosition(new PhysicalPosition(x, y));
@@ -63,10 +90,14 @@ export function LandingOsd() {
       } catch (err) {
         api.osdDebug(`error posicionando: ${String(err)}`).catch(() => {});
       }
+
+      // Reforzar always-on-top para aparecer sobre MSFS (en ventana/borderless).
+      await win.setAlwaysOnTop(true).catch(() => {});
       await win.show().catch((err) =>
         api.osdDebug(`error show: ${String(err)}`).catch(() => {}),
       );
       api.osdDebug("show() llamado").catch(() => {});
+
       window.clearTimeout(hideTimer);
       hideTimer = window.setTimeout(() => {
         setData(null);
@@ -81,6 +112,8 @@ export function LandingOsd() {
   }, []);
 
   const g = data ? (GRADE[data.grade] ?? GRADE.acceptable) : null;
+  const windRel =
+    data && data.windDir != null ? data.windDir - (data.headingDeg ?? 0) : 0;
 
   return (
     <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-transparent p-2">
@@ -91,35 +124,57 @@ export function LandingOsd() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
             transition={{ type: "spring", stiffness: 320, damping: 26 }}
-            className="flex w-full items-center gap-3 rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 shadow-2xl backdrop-blur-md"
-            style={{ boxShadow: `0 0 0 1px ${g.color}33, 0 12px 40px #000a` }}
+            className="w-full rounded-2xl border border-white/10 bg-slate-950/92 px-4 py-3 backdrop-blur-md"
+            style={{ boxShadow: `0 0 0 1px ${g.color}40, 0 14px 44px #000c` }}
           >
-            <div
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
-              style={{ backgroundColor: `${g.color}22`, color: g.color }}
-            >
-              <PlaneLanding className="h-6 w-6" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+            {/* Cabecera: LANDING + grado */}
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                <PlaneLanding className="h-3.5 w-3.5" style={{ color: g.color }} />
                 {t("osd.title")}
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <span
-                  className="text-3xl font-extrabold leading-none"
-                  style={{ color: g.color }}
-                >
-                  {Math.round(data.fpm)}
+              </span>
+              <span
+                className="rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide"
+                style={{ backgroundColor: `${g.color}22`, color: g.color }}
+              >
+                {t(g.key)}
+              </span>
+            </div>
+
+            {/* FPM grande + G */}
+            <div className="mt-1 flex items-baseline gap-2">
+              <span
+                className="text-4xl font-extrabold leading-none"
+                style={{ color: g.color }}
+              >
+                {Math.round(data.fpm)}
+              </span>
+              <span className="text-base font-semibold text-slate-400">fpm</span>
+              {data.gForce != null && (
+                <span className="text-base font-semibold text-slate-300">
+                  ({data.gForce.toFixed(2)} G)
                 </span>
-                <span className="text-sm font-semibold text-slate-400">fpm</span>
+              )}
+            </div>
+
+            {/* Viento (flecha relativa al rumbo + nudos) */}
+            {data.windKt != null && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-sm font-semibold text-sky-300">
+                <ArrowUp
+                  className="h-4 w-4"
+                  style={{ transform: `rotate(${windRel}deg)` }}
+                />
+                {Math.round(data.windKt)} kt
               </div>
-            </div>
-            <div
-              className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-bold uppercase tracking-wide"
-              style={{ backgroundColor: `${g.color}22`, color: g.color }}
-            >
-              {t(g.key)}
-            </div>
+            )}
+
+            {/* Pitch / Roll */}
+            {(data.pitch != null || data.roll != null) && (
+              <div className="mt-1 text-[11px] font-medium text-slate-500">
+                {t("osd.pitch")}: {Math.round(data.pitch ?? 0)}° &nbsp;·&nbsp;{" "}
+                {t("osd.roll")}: {Math.round(data.roll ?? 0)}°
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
