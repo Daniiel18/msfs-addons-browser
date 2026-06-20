@@ -20,7 +20,6 @@ import {
   MoreVertical,
   Info,
   Film,
-  ChevronRight,
   AlertTriangle,
   Play,
   Star,
@@ -37,7 +36,8 @@ import type {
   HangarCount,
   LandingClip,
 } from "../lib/types";
-import { api } from "../lib/tauri";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
@@ -61,6 +61,29 @@ const GRADE_COLOR: Record<string, string> = {
   acceptable: "#f59e0b",
   hard: "#f43f5e",
 };
+
+/** (v6.1 #27) ¿El clip pertenece a este avión? Por matrícula si la hay; si no,
+ *  por modelo. */
+function clipMatchesAircraft(c: LandingClip, ac: HangarAircraft): boolean {
+  const reg = ac.registration?.trim().toUpperCase();
+  if (reg && c.registration) {
+    return c.registration.trim().toUpperCase() === reg;
+  }
+  const model = ac.model?.trim().toUpperCase();
+  if (model && c.model) return c.model.trim().toUpperCase() === model;
+  return false;
+}
+
+/** (v6.1 #28) URL reproducible del clip local para la miniatura `<video>`.
+ *  Usa el protocolo asset de Tauri; en demo (web) no aplica. */
+function clipSrc(path: string): string | null {
+  if (!isTauri) return null;
+  try {
+    return convertFileSrc(path);
+  } catch {
+    return null;
+  }
+}
 
 export function HangarView() {
   const [data, setData] = useState<HangarAnalytics | null>(null);
@@ -238,12 +261,15 @@ export function HangarView() {
         {selected ? (
           <AircraftDetail
             ac={selected}
-            synthetic={data.bestLandings}
             recorded={clips}
             onReloadClips={reloadClips}
           />
         ) : (
-          <FleetOverview data={data} />
+          <FleetOverview
+            data={data}
+            clips={clips}
+            onReloadClips={reloadClips}
+          />
         )}
       </div>
     </div>
@@ -277,7 +303,24 @@ function HeaderKpi({
 
 // ── (v6.1 #29) Resumen de flota — vista por defecto sin avión seleccionado ──
 
-function FleetOverview({ data }: { data: HangarAnalytics }) {
+function FleetOverview({
+  data,
+  clips,
+  onReloadClips,
+}: {
+  data: HangarAnalytics;
+  clips: LandingClip[];
+  onReloadClips: () => void;
+}) {
+  // (v6.1 #27) Top 10 de los mejores aterrizajes de TODA la flota: clips reales
+  // ordenados por FPM más fino; si no hay clips, los sintéticos del backend.
+  const topClips = useMemo(
+    () =>
+      [...clips]
+        .sort((a, b) => (b.fpm ?? -9999) - (a.fpm ?? -9999))
+        .slice(0, 10),
+    [clips],
+  );
   // Regiones más voladas: derivadas de TODOS los vuelos (store) por destino,
   // agrupando el ICAO por su zona OACI (mismo criterio que los badges).
   const entries = useFlightLogStore((s) => s.entries);
@@ -334,6 +377,15 @@ function FleetOverview({ data }: { data: HangarAnalytics }) {
           icon={<Globe2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.regions")}
           rows={topRegions.map((r) => ({ label: r.label, count: r.count }))}
+        />
+      </div>
+
+      {/* (v6.1 #27) Top 10 mejores aterrizajes de toda la flota. */}
+      <div className="mt-2">
+        <BestLandings
+          recorded={topClips}
+          synthetic={data.bestLandings}
+          onReload={onReloadClips}
         />
       </div>
     </section>
@@ -467,12 +519,10 @@ const TABS = [
 
 function AircraftDetail({
   ac,
-  synthetic,
   recorded,
   onReloadClips,
 }: {
   ac: HangarAircraft;
-  synthetic: HangarLanding[];
   recorded: LandingClip[];
   onReloadClips: () => void;
 }) {
@@ -578,8 +628,8 @@ function AircraftDetail({
               <FpmTrendCard ac={ac} />
             </div>
             <BestLandings
-              recorded={recorded}
-              synthetic={synthetic}
+              recorded={recorded.filter((c) => clipMatchesAircraft(c, ac))}
+              synthetic={ac.recentLandings}
               onReload={onReloadClips}
             />
           </>
@@ -590,6 +640,109 @@ function AircraftDetail({
         )}
       </div>
     </section>
+  );
+}
+
+// ── (v6.1 #24) Tren de aterrizaje ilustrado según el tipo de avión ──────────
+
+type GearVariant = "wide" | "narrow" | "regional" | "light";
+
+/** Clasifica el tren por el modelo/tipo. Heurística por tokens del nombre. */
+function gearVariant(model: string | null): GearVariant {
+  const m = (model ?? "").toUpperCase();
+  const has = (...ks: string[]) => ks.some((k) => m.includes(k));
+  // Widebody → bogies de 4+ ruedas en tándem.
+  if (
+    has(
+      "747", "777", "787", "767", "A330", "A340", "A350", "A380", "MD11",
+      "MD-11", "DC10", "DC-10", "L1011", "IL96", "A300", "A310",
+    )
+  ) {
+    return "wide";
+  }
+  // Regional / turboprop → tren ligero de 2 ruedas.
+  if (
+    has(
+      "CRJ", "ERJ", "E135", "E145", "E170", "E175", "DH8", "DHC", "AT4", "AT7",
+      "ATR", "Q400", "SF34", "SAAB", "BEH", "B190", "JS", "D328",
+    )
+  ) {
+    return "regional";
+  }
+  // Aviación general / ligeros → una rueda pequeña por pata.
+  if (
+    has(
+      "C150", "C152", "C172", "C182", "C208", "PA", "DA40", "DA42", "SR2",
+      "TBM", "BE", "M20", "P28", "DV20", "CIRRUS", "CESSNA",
+    )
+  ) {
+    return "light";
+  }
+  // Por defecto: narrowbody (737/A320/etc).
+  return "narrow";
+}
+
+/** SVG vista lateral del tren principal — cambia con el tipo de avión. */
+function LandingGear({
+  model,
+  color,
+  size = 96,
+}: {
+  model: string | null;
+  color: string;
+  size?: number;
+}) {
+  const v = gearVariant(model);
+  const stroke = "#94a3b8";
+  // Ruedas por variante (centros X) + radio.
+  const wheels: { cx: number; r: number }[] =
+    v === "wide"
+      ? [
+          { cx: 30, r: 9 },
+          { cx: 50, r: 9 },
+          { cx: 70, r: 9 },
+          { cx: 90, r: 9 },
+        ]
+      : v === "narrow"
+        ? [
+            { cx: 42, r: 11 },
+            { cx: 78, r: 11 },
+          ]
+        : v === "regional"
+          ? [
+              { cx: 48, r: 9 },
+              { cx: 72, r: 9 },
+            ]
+          : [{ cx: 60, r: 10 }];
+  const axleY = 70;
+  const minX = Math.min(...wheels.map((w) => w.cx));
+  const maxX = Math.max(...wheels.map((w) => w.cx));
+  return (
+    <svg
+      width={size}
+      height={size * 0.62}
+      viewBox="0 0 120 80"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      {/* Pata / strut */}
+      <line x1="60" y1="10" x2="60" y2={axleY} stroke={stroke} strokeWidth="4" strokeLinecap="round" />
+      {/* Tijera/torque link */}
+      <line x1="60" y1="34" x2="68" y2="50" stroke={stroke} strokeWidth="2.5" />
+      <line x1="68" y1="50" x2="60" y2={axleY} stroke={stroke} strokeWidth="2.5" />
+      {/* Eje/bogie */}
+      <line x1={minX} y1={axleY} x2={maxX} y2={axleY} stroke={stroke} strokeWidth="4" strokeLinecap="round" />
+      {wheels.length > 1 && (
+        <line x1="60" y1={axleY} x2="60" y2={axleY} stroke={stroke} strokeWidth="4" />
+      )}
+      {/* Ruedas */}
+      {wheels.map((w, i) => (
+        <g key={i}>
+          <circle cx={w.cx} cy={axleY} r={w.r} fill="#0f172a" stroke={color} strokeWidth="3" />
+          <circle cx={w.cx} cy={axleY} r={w.r * 0.4} fill="#334155" />
+        </g>
+      ))}
+    </svg>
   );
 }
 
@@ -628,8 +781,16 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
           {t("hangar.gear.recommend", { n: String(nextDue) })}
         </div>
       )}
-      <div className="mt-4 flex items-center justify-center">
-        <PlaneLanding className="h-12 w-12 text-slate-700" />
+      <div className="mt-4 flex flex-col items-center justify-center gap-1">
+        <LandingGear
+          model={ac.model}
+          color={
+            pct >= 80 ? "#3fbf78" : pct >= 50 ? "#f59e0b" : "#f43f5e"
+          }
+        />
+        <span className="text-[10px] uppercase tracking-wide text-slate-600">
+          {t(`hangar.gear.type.${gearVariant(ac.model)}`)}
+        </span>
       </div>
       <div className="mt-3 flex items-center justify-between border-t border-slate-800 pt-3 text-[11px]">
         <div>
@@ -766,7 +927,6 @@ function BestLandings({
   synthetic: HangarLanding[];
   onReload: () => void;
 }) {
-  const push = useToastStore((s) => s.push);
   const hasClips = recorded.length > 0;
 
   return (
@@ -778,31 +938,21 @@ function BestLandings({
           <Info className="h-3 w-3 text-slate-600" />
         </h3>
         {hasClips && (
-          <button
-            onClick={() =>
-              push({
-                kind: "info",
-                title: t("hangar.best_landings.soon"),
-                ttlMs: 3000,
-              })
-            }
-            className="inline-flex items-center gap-1 text-xs text-brand-300 hover:text-brand-200"
-          >
-            {t("hangar.best_landings.view_all")}
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
+          <span className="text-[11px] text-slate-500">
+            {recorded.length} {t("hangar.flights_short")}
+          </span>
         )}
       </div>
 
       {hasClips ? (
-        <div className="flex gap-3 overflow-x-auto pb-2">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           {recorded.map((c) => (
             <ClipCard key={c.id} clip={c} onReload={onReload} />
           ))}
         </div>
       ) : synthetic.length > 0 ? (
         <>
-          <div className="flex gap-3 overflow-x-auto pb-2">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {synthetic.map((l, i) => (
               <LandingCard key={i} l={l} />
             ))}
@@ -852,15 +1002,29 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
     }
   };
 
+  const src = clipSrc(clip.path);
   return (
-    <div className="group w-52 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
+    <div className="group w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
       <button
         onClick={play}
-        className="relative flex h-24 w-full items-center justify-center bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950"
+        className="relative flex aspect-video w-full items-center justify-center overflow-hidden bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950"
       >
-        <span className="font-mono text-2xl font-bold text-slate-300/70">
-          {clip.airportIcao ?? "✈"}
-        </span>
+        {/* (v6.1 #28) Miniatura REAL: el <video> con preload=metadata pinta
+            el primer frame del clip (como el explorador de Windows). Sin
+            asset/src cae al ICAO. */}
+        {src ? (
+          <video
+            src={src}
+            muted
+            playsInline
+            preload="metadata"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        ) : (
+          <span className="font-mono text-2xl font-bold text-slate-300/70">
+            {clip.airportIcao ?? "✈"}
+          </span>
+        )}
         <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 transition-colors group-hover:bg-slate-950/40">
           <Play className="h-7 w-7 text-white opacity-0 transition-opacity group-hover:opacity-90" />
         </span>
@@ -922,8 +1086,8 @@ function LandingCard({ l }: { l: HangarLanding }) {
         ? t("hangar.fpm.acceptable")
         : t("hangar.fpm.hard");
   return (
-    <div className="w-52 shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
-      <div className="relative flex h-24 items-center justify-center bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950">
+    <div className="w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
+      <div className="relative flex aspect-video items-center justify-center bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950">
         <span className="font-mono text-2xl font-bold text-slate-300/80">
           {l.icao ?? "—"}
         </span>
