@@ -42,8 +42,20 @@ pub async fn recording_test_clip(
     let data = app_data_dir(&app);
     let cfg = landing_recorder::load_config(&state.db, &data).await;
 
+    // (v6 #2b fix) Serializa: si el auto-disparo ya está grabando (replay buffer
+    // armado en aproximación), una 2ª captura del mismo monitor se desconecta.
+    if !landing_recorder::try_acquire_recording() {
+        return Err(
+            "Hay una grabación de aterrizaje en curso. Inténtalo de nuevo cuando termine el vuelo."
+                .to_string(),
+        );
+    }
+
     let output_dir = PathBuf::from(&cfg.output_path);
-    std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        landing_recorder::release_recording();
+        e.to_string()
+    })?;
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -56,7 +68,7 @@ pub async fn recording_test_clip(
     // Sonar). Solo necesitamos el audio del sistema (sonido del sim).
     let (w, h) = landing_recorder::target_monitor_size(&app, true);
     let file_c = file.clone();
-    tokio::task::spawn_blocking(move || {
+    let rec_result = tokio::task::spawn_blocking(move || {
         landing_recorder::record_window_clip(
             landing_recorder::SELF_WINDOW,
             &file_c,
@@ -66,9 +78,12 @@ pub async fn recording_test_clip(
             h,
         )
     })
-    .await
-    .map_err(|e| format!("tarea de grabación falló: {e}"))?
-    .map_err(|e| e.to_string())?;
+    .await;
+    // Liberamos la reserva pase lo que pase con la grabación.
+    landing_recorder::release_recording();
+    rec_result
+        .map_err(|e| format!("tarea de grabación falló: {e}"))?
+        .map_err(|e| e.to_string())?;
 
     let recorded_at: (String,) = sqlx::query_as("SELECT datetime('now')")
         .fetch_one(&state.db)

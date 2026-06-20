@@ -163,6 +163,29 @@ pub fn engine_status() -> EngineStatus {
 /// FPS de captura. 60 = fluido en monitores de alta tasa de refresco.
 const REC_FPS: u32 = 60;
 
+/// (v6 #2b) Solo puede haber UNA grabación activa a la vez. Desktop Duplication
+/// permite una sola duplicación por monitor — si el auto-disparo (replay buffer)
+/// está grabando y se lanza la prueba, la 2ª captura se desconecta
+/// ("Error receiving video sample: Disconnected"). Este flag las serializa.
+static RECORDING_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Intenta reservar la grabación. `false` si ya hay una en curso.
+pub fn try_acquire_recording() -> bool {
+    RECORDING_BUSY
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_ok()
+}
+
+/// Libera la reserva de grabación.
+pub fn release_recording() {
+    RECORDING_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Bitrate de vídeo según resolución y fps (~0.30 bpp). El default de la crate
 /// (5 Mbps) deja el vídeo pixelado en movimiento; como la 0.1.0 sólo expone
 /// bitrate fijo (CBR, sin VBR/Quality como ScreenRecorderLib de LandingToast),
@@ -447,6 +470,11 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                     .enable_replay_buffer(true)
                     .replay_buffer_seconds(clip_seconds.clamp(15, 120) as u32)
                     .build();
+                // Solo armamos si no hay otra grabación (p.ej. una prueba).
+                if !try_acquire_recording() {
+                    tracing::warn!(target: "rec", "ya hay una grabación activa; no se arma el replay buffer");
+                    continue;
+                }
                 match Recorder::new(config) {
                     Ok(r) => {
                         let r = r.with_process_name(MSFS_WINDOW);
@@ -456,11 +484,15 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                                 rec = Some(r);
                             }
                             Err(e) => {
+                                release_recording();
                                 tracing::warn!(target: "rec", "no se pudo armar replay buffer: {e:?}")
                             }
                         }
                     }
-                    Err(e) => tracing::warn!(target: "rec", "Recorder::new falló: {e:?}"),
+                    Err(e) => {
+                        release_recording();
+                        tracing::warn!(target: "rec", "Recorder::new falló: {e:?}");
+                    }
                 }
             }
             RecCmd::Save { path, reply } => {
@@ -473,6 +505,7 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
             RecCmd::Stop => {
                 if let Some(r) = rec.take() {
                     let _ = r.stop_recording();
+                    release_recording();
                     tracing::info!(target: "rec", "replay buffer detenido");
                 }
             }
