@@ -999,95 +999,135 @@ function gearVariant(model: string | null): GearVariant {
   return "narrow";
 }
 
-/** SVG vista lateral del tren principal — cambia con el tipo de avión. */
-// Neumático visto DE FRENTE: cubo plateado al centro, goma negra y banda roja
-// en el flanco (como la foto de referencia). Todo con radial-gradient (CSS).
-const TIRE_BG =
-  "radial-gradient(circle at 50% 42%, #e2e8f0 0 10%, #94a3b8 10% 17%, #1f2937 17% 27%, #060606 27% 62%, #a51d1d 62% 75%, #0a0a0a 75% 100%)";
-const STRUT_METAL =
-  "linear-gradient(90deg,#3f4b5c 0%,#cbd5e1 42%,#f8fafc 50%,#cbd5e1 58%,#3f4b5c 100%)";
-const STRUT_CHROME = "linear-gradient(90deg,#5b6b7d,#f8fafc 50%,#5b6b7d)";
-
-/** Rueda de frente (CSS puro, sin SVG). */
-function Wheel({ d }: { d: number }) {
-  return (
-    <div
-      style={{
-        width: d,
-        height: d,
-        borderRadius: "9999px",
-        background: TIRE_BG,
-        boxShadow:
-          "inset 0 3px 6px rgba(255,255,255,0.18), inset 0 -9px 16px rgba(0,0,0,0.7), 0 8px 14px rgba(0,0,0,0.55)",
-        flex: "0 0 auto",
-      }}
-    />
-  );
-}
-
 /**
- * (v6.1 #24 rediseño) Tren de aterrizaje VISTO DE FRENTE, en CSS/HTML (no SVG),
- * con la configuración real de ruedas por tipo de avión:
+ * (v6.1 #24) Tren de aterrizaje VISTO DE FRENTE, SVG realista (gradientes
+ * metálicos, neumáticos con banda roja y cubo con tornillos, pistón cromado,
+ * líneas hidráulicas y sombra). La configuración de ruedas cambia con el tipo:
  *   widebody = bogie de 4 · narrowbody = 2 · regional = 2 · GA = 1.
  */
 function LandingGear({ model }: { model: string | null }) {
   const v = gearVariant(model);
-  const sizes =
+  const axleY = 150;
+  const wheels: { cx: number; r: number }[] =
     v === "wide"
-      ? [38, 38, 38, 38]
+      ? [
+          { cx: 58, r: 30 },
+          { cx: 98, r: 30 },
+          { cx: 142, r: 30 },
+          { cx: 182, r: 30 },
+        ]
       : v === "narrow"
-        ? [52, 52]
+        ? [
+            { cx: 76, r: 42 },
+            { cx: 164, r: 42 },
+          ]
         : v === "regional"
-          ? [42, 42]
-          : [58];
-  const wheelD = sizes[0];
-  const gap = v === "wide" ? 5 : 16;
-  const strutTopH = Math.round(wheelD * 0.5);
-  const strutBotH = Math.round(wheelD * 0.45);
+          ? [
+              { cx: 84, r: 34 },
+              { cx: 156, r: 34 },
+            ]
+          : [{ cx: 120, r: 46 }];
+  const minCx = Math.min(...wheels.map((w) => w.cx));
+  const maxCx = Math.max(...wheels.map((w) => w.cx));
+
+  const Tire = ({ cx, r }: { cx: number; r: number }) => {
+    const bolts = Array.from({ length: 8 }, (_, i) => {
+      const a = (i / 8) * Math.PI * 2;
+      return { x: cx + Math.cos(a) * r * 0.32, y: axleY + Math.sin(a) * r * 0.32 };
+    });
+    return (
+      <g>
+        {/* Goma */}
+        <circle cx={cx} cy={axleY} r={r} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
+        {/* Banda roja del flanco */}
+        <circle cx={cx} cy={axleY} r={r * 0.78} fill="none" stroke="#a01818" strokeWidth={r * 0.16} />
+        <circle cx={cx} cy={axleY} r={r * 0.7} fill="none" stroke="#000" strokeWidth="1" opacity="0.5" />
+        {/* Cubo */}
+        <circle cx={cx} cy={axleY} r={r * 0.5} fill="url(#lgHub)" stroke="#1e293b" strokeWidth="1" />
+        {bolts.map((b, i) => (
+          <circle key={i} cx={b.x} cy={b.y} r={r * 0.05} fill="#1e293b" />
+        ))}
+        {/* Tapa central */}
+        <circle cx={cx} cy={axleY} r={r * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
+        {/* Brillo */}
+        <ellipse cx={cx - r * 0.28} cy={axleY - r * 0.34} rx={r * 0.22} ry={r * 0.12} fill="#ffffff" opacity="0.12" />
+      </g>
+    );
+  };
 
   return (
-    <div className="flex select-none flex-col items-center">
-      {/* Pata + pistón cromado (se mete por detrás de las ruedas). */}
-      <div
-        className="relative flex flex-col items-center"
-        style={{ marginBottom: -Math.round(wheelD * 0.42), zIndex: 1 }}
-      >
-        <div
-          style={{
-            width: Math.max(13, Math.round(wheelD * 0.27)),
-            height: strutTopH,
-            borderRadius: 6,
-            background: STRUT_METAL,
-            boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
-          }}
-        />
-        <div
-          style={{
-            width: Math.max(9, Math.round(wheelD * 0.17)),
-            height: strutBotH,
-            background: STRUT_CHROME,
-            boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
-          }}
-        />
-      </div>
-      {/* Eje + ruedas. */}
-      <div className="relative flex items-center justify-center" style={{ gap }}>
-        <div
-          className="absolute left-3 right-3 top-1/2 -translate-y-1/2"
-          style={{
-            height: Math.max(7, Math.round(wheelD * 0.17)),
-            background: STRUT_METAL,
-            borderRadius: 6,
-            zIndex: 0,
-          }}
-        />
-        {sizes.map((d, i) => (
-          <div key={i} style={{ zIndex: 2 }}>
-            <Wheel d={d} />
-          </div>
-        ))}
-      </div>
-    </div>
+    <svg
+      viewBox="0 0 240 200"
+      width="210"
+      height="175"
+      xmlns="http://www.w3.org/2000/svg"
+      className="select-none"
+      aria-hidden
+    >
+      <defs>
+        <linearGradient id="lgStrut" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="#26303c" />
+          <stop offset="0.32" stopColor="#8a9bad" />
+          <stop offset="0.5" stopColor="#f3f7fb" />
+          <stop offset="0.68" stopColor="#8a9bad" />
+          <stop offset="1" stopColor="#26303c" />
+        </linearGradient>
+        <linearGradient id="lgChrome" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="#5b6b7d" />
+          <stop offset="0.5" stopColor="#fbfdff" />
+          <stop offset="1" stopColor="#5b6b7d" />
+        </linearGradient>
+        <radialGradient id="lgTire" cx="0.42" cy="0.38" r="0.7">
+          <stop offset="0" stopColor="#3b3b3b" />
+          <stop offset="0.55" stopColor="#161616" />
+          <stop offset="1" stopColor="#000000" />
+        </radialGradient>
+        <radialGradient id="lgHub" cx="0.4" cy="0.36" r="0.75">
+          <stop offset="0" stopColor="#f1f5f9" />
+          <stop offset="0.5" stopColor="#aab6c4" />
+          <stop offset="1" stopColor="#3f4b5a" />
+        </radialGradient>
+        <filter id="lgShadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="4" />
+        </filter>
+      </defs>
+
+      {/* Sombra en el suelo */}
+      <ellipse
+        cx={(minCx + maxCx) / 2}
+        cy={axleY + wheels[0].r + 12}
+        rx={(maxCx - minCx) / 2 + wheels[0].r + 8}
+        ry="9"
+        fill="#000"
+        opacity="0.35"
+        filter="url(#lgShadow)"
+      />
+
+      {/* Eje entre ruedas (detrás) */}
+      {wheels.length > 1 && (
+        <rect x={minCx} y={axleY - 7} width={maxCx - minCx} height="14" rx="7" fill="url(#lgStrut)" />
+      )}
+
+      {/* Pata principal (oleo) + pistón cromado */}
+      <rect x="108" y="14" width="24" height="86" rx="9" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+      <rect x="113" y="92" width="14" height="60" rx="6" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
+      {/* Anillo prensaestopas */}
+      <rect x="106" y="96" width="28" height="7" rx="3" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.5" />
+      {/* Tijera (torque link) */}
+      <path d="M120 104 L132 122 L120 140" fill="none" stroke="#cbd5e1" strokeWidth="3.5" strokeLinejoin="round" />
+      <circle cx="132" cy="122" r="2.6" fill="#475569" />
+      {/* Líneas hidráulicas */}
+      <path d="M104 30 q-8 40 4 70" fill="none" stroke="#1f2937" strokeWidth="3" />
+      <path d="M104 30 q-8 40 4 70" fill="none" stroke="#b8860b" strokeWidth="1.4" />
+      {/* Soportes superiores */}
+      <path d="M120 24 L150 40" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
+      <path d="M120 24 L90 40" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
+
+      {/* Ruedas */}
+      {wheels.map((w, i) => (
+        <Tire key={i} cx={w.cx} r={w.r} />
+      ))}
+    </svg>
   );
 }
 
