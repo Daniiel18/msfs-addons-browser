@@ -116,7 +116,7 @@ export function LandingOsd() {
     data && data.windDir != null ? data.windDir - (data.headingDeg ?? 0) : 0;
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-transparent p-2">
+    <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-transparent p-1.5">
       <AnimatePresence>
         {data && g && (
           <motion.div
@@ -124,34 +124,39 @@ export function LandingOsd() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
             transition={{ type: "spring", stiffness: 320, damping: 26 }}
-            className="w-full rounded-2xl border border-white/10 bg-slate-950/92 px-4 py-3 backdrop-blur-md"
-            style={{ boxShadow: `0 0 0 1px ${g.color}40, 0 14px 44px #000c` }}
+            className="flex w-full flex-col items-center rounded-2xl border px-5 py-3.5 text-center"
+            style={{
+              // Panel OPACO (sólido) para que se lea sobre cualquier fondo.
+              background: "#0b1119",
+              borderColor: `${g.color}66`,
+              boxShadow: `0 0 26px ${g.color}33, 0 16px 48px #000e`,
+            }}
           >
-            {/* Cabecera: LANDING + grado */}
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-                <PlaneLanding className="h-3.5 w-3.5" style={{ color: g.color }} />
+            {/* Cabecera: LANDING + grado (centrado) */}
+            <div className="flex items-center justify-center gap-2">
+              <PlaneLanding className="h-4 w-4" style={{ color: g.color }} />
+              <span className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-300">
                 {t("osd.title")}
               </span>
               <span
-                className="rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide"
-                style={{ backgroundColor: `${g.color}22`, color: g.color }}
+                className="rounded-md px-2 py-0.5 text-xs font-bold uppercase tracking-wide"
+                style={{ backgroundColor: `${g.color}26`, color: g.color }}
               >
                 {t(g.key)}
               </span>
             </div>
 
             {/* FPM grande + G */}
-            <div className="mt-1 flex items-baseline gap-2">
+            <div className="mt-1.5 flex items-baseline justify-center gap-2">
               <span
-                className="text-4xl font-extrabold leading-none"
+                className="text-5xl font-extrabold leading-none"
                 style={{ color: g.color }}
               >
                 {Math.round(data.fpm)}
               </span>
-              <span className="text-base font-semibold text-slate-400">fpm</span>
+              <span className="text-xl font-bold text-slate-300">fpm</span>
               {data.gForce != null && (
-                <span className="text-base font-semibold text-slate-300">
+                <span className="text-xl font-semibold text-slate-400">
                   ({data.gForce.toFixed(2)} G)
                 </span>
               )}
@@ -159,9 +164,9 @@ export function LandingOsd() {
 
             {/* Viento (flecha relativa al rumbo + nudos) */}
             {data.windKt != null && (
-              <div className="mt-1.5 flex items-center gap-1.5 text-sm font-semibold text-sky-300">
+              <div className="mt-2 flex items-center justify-center gap-1.5 text-lg font-semibold text-sky-300">
                 <ArrowUp
-                  className="h-4 w-4"
+                  className="h-5 w-5"
                   style={{ transform: `rotate(${windRel}deg)` }}
                 />
                 {Math.round(data.windKt)} kt
@@ -170,7 +175,7 @@ export function LandingOsd() {
 
             {/* Pitch / Roll */}
             {(data.pitch != null || data.roll != null) && (
-              <div className="mt-1 text-[11px] font-medium text-slate-500">
+              <div className="mt-1 text-sm font-medium text-slate-400">
                 {t("osd.pitch")}: {Math.round(data.pitch ?? 0)}° &nbsp;·&nbsp;{" "}
                 {t("osd.roll")}: {Math.round(data.roll ?? 0)}°
               </div>

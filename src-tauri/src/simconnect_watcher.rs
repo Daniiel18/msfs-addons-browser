@@ -1664,6 +1664,9 @@ mod windows_simconnect {
         let mut in_replay_mode: bool = false;
         let mut replay_stable_ticks_normal: u32 = 0;
         let mut prev_absolute_time_s: Option<f64> = None;
+        // (v6 #2b) ¿Ya emitimos el OSD para el aterrizaje actual? Se rearma al
+        // volver al aire. Evita re-emitir cada tick mientras está en tierra.
+        let mut osd_emitted = false;
         // (v3.30.0 #2) Buffer de muestras PRE-DEPARTURE (cold-and-dark).
         // El track sólo se persiste cuando ya existe flight_id (post-OUT),
         // así que las reglas de pre-departure salían "No data to evaluate".
@@ -2326,6 +2329,7 @@ mod windows_simconnect {
                         &mut replay_stable_ticks_normal,
                         &mut prev_absolute_time_s,
                         &mut predeparture_buffer,
+                        &mut osd_emitted,
                     );
                     // (v4.1.1 FIX) La detección de gate usa el INI de GSX
                     // en disco (`gsx_parking::find_nearest_parking`), que
@@ -2920,6 +2924,7 @@ mod windows_simconnect {
             String,
             crate::flight_log::TrackPointInsert,
         )>,
+        osd_emitted: &mut bool,
     ) {
         // (v4.0.0 P7.7) Replay/Slew detection FIRST — antes de
         // procesar cualquier otra lógica del state machine.
@@ -2962,6 +2967,39 @@ mod windows_simconnect {
         // contando siempre (GSX no los causa).
         let on_ground = data.on_ground >= 0.5;
         let airborne = !on_ground;
+
+        // (v6 #2b) OSD INSTANTÁNEO de aterrizaje: en cuanto hay un FPM de
+        // touchdown capturado (lo fija STREAM-B en el toque real por radio-alt)
+        // y el avión está en tierra, emitimos los datos para el overlay — en el
+        // momento del toque, NO al frenar (la transición de fase a Landed espera
+        // gs<50 y por eso salía 4-5s tarde). Una vez por aterrizaje; se rearma
+        // al volver al aire. Campos packed → copiados a locales.
+        if airborne {
+            *osd_emitted = false;
+        } else if !*osd_emitted {
+            if let Some(td_fpm) = *captured_landing_fpm {
+                let g = data.g_force;
+                let pitch_rad = data.pitch_radians;
+                let bank_rad = data.bank_radians;
+                let wind_dir = data.ambient_wind_dir_deg;
+                let wind_kt = data.ambient_wind_vel_kt;
+                let hdg = data.heading_deg;
+                let payload = serde_json::json!({
+                    "fpm": td_fpm,
+                    "grade": crate::flight_log::landing_grade(td_fpm),
+                    "gForce": g,
+                    "pitch": pitch_rad.to_degrees(),
+                    "roll": bank_rad.to_degrees(),
+                    "windDir": wind_dir,
+                    "windKt": wind_kt,
+                    "headingDeg": hdg,
+                });
+                let _ = app.emit("landing://osd", payload);
+                *osd_emitted = true;
+                tracing::info!(target: "simconnect", "OSD aterrizaje emitido (fpm={td_fpm})");
+            }
+        }
+
         let any_freeze = lat_lon_frozen || altitude_frozen || attitude_frozen;
         // (v3.29.0 #1) HISTÉRESIS entrar/permanecer en replay.
         //
@@ -3668,34 +3706,6 @@ mod windows_simconnect {
                         *captured_landing_fpm, fpm, should_update_from_a
                     );
                     *idle_ticks_in_landed = 0;
-
-                    // (v6 #2b) OSD INSTANTÁNEO: emitimos los datos del touchdown
-                    // para el overlay de "Best Landings" en el mismo momento del
-                    // toque (sin polling/DB). Todos los simvars ya están en
-                    // `data`. La ventana OSD decide si mostrarse (osd_enabled) y
-                    // dónde (posición). Campos packed → se copian por valor.
-                    if let Some(td_fpm) = *captured_landing_fpm {
-                        // Copiamos los campos packed a locales antes de operar.
-                        let g = data.g_force;
-                        let pitch_rad = data.pitch_radians;
-                        let bank_rad = data.bank_radians;
-                        let wind_dir = data.ambient_wind_dir_deg;
-                        let wind_kt = data.ambient_wind_vel_kt;
-                        let hdg = data.heading_deg;
-                        let pitch_deg = pitch_rad.to_degrees();
-                        let roll_deg = bank_rad.to_degrees();
-                        let payload = serde_json::json!({
-                            "fpm": td_fpm,
-                            "grade": crate::flight_log::landing_grade(td_fpm),
-                            "gForce": g,
-                            "pitch": pitch_deg,
-                            "roll": roll_deg,
-                            "windDir": wind_dir,
-                            "windKt": wind_kt,
-                            "headingDeg": hdg,
-                        });
-                        let _ = app.emit("landing://osd", payload);
-                    }
                 }
                 (FlightPhase::Landed, FlightPhase::Airborne) => {
                     // Touch-and-go o despegue forzado tras Landed
