@@ -963,16 +963,19 @@ function Row({ k, v }: { k: string; v: string }) {
 // ── (v6.1 #24) Tren de aterrizaje por avión (config REAL) ────────────────────
 
 /**
- * Especificación del tren PRINCIPAL por tipo, con la configuración real de
- * ruedas (referencias: 737/A320 = 2 por pata; 757/767/787/747/A330/A350-900 =
- * bogie de 4; 777/A350-1000/A380 = bogie de 6). `maker` cambia el estilo visual
- * (Boeing: cubos pulidos, sin compuerta; Airbus: compuerta + cubo gris).
+ * Especificación del tren PRINCIPAL por tipo, con los EJES reales:
+ *   · 737 / A320 / regional: 1 eje (2 ruedas).
+ *   · 757/767/787/747/A330/A350-900: bogie de 2 ejes (4 ruedas).
+ *   · 777 / A350-1000 / A380: bogie de 3 ejes (6 ruedas).
+ *   · GA: 1 eje, 1 rueda.
+ * `maker` cambia el estilo (Boeing: cubos pulidos, sin compuerta; Airbus:
+ * compuerta + cubo gris con agujeros).
  */
 interface GearSpec {
-  wheels: number; // ruedas visibles en el bogie/eje
-  bogie: boolean; // true = truck (varios ejes en tándem)
+  axles: number; // nº de ejes en tándem (1 = pata simple; 2/3 = bogie)
+  perAxle: number; // ruedas por eje (2 normal, 1 en GA)
   maker: "boeing" | "airbus" | "regional" | "ga";
-  big: boolean; // widebody (ruedas/pata más grandes)
+  big: boolean; // widebody (pata más gruesa)
   door: boolean; // compuerta visible (típico Airbus)
 }
 
@@ -980,31 +983,31 @@ function gearSpec(model: string | null): GearSpec {
   const m = (model ?? "").toUpperCase();
   const has = (...ks: string[]) => ks.some((k) => m.includes(k));
 
-  // Aviación general / ligeros.
+  // Aviación general / ligeros — 1 eje, 1 rueda.
   if (has("C150", "C152", "C172", "C182", "C208", "DA40", "DA42", "SR2", "SR20", "SR22", "TBM", "M20", "P28", "PA-", "DV20", "DA62", "CIRRUS", "CESSNA"))
-    return { wheels: 1, bogie: false, maker: "ga", big: false, door: false };
-  // Regionales / turbohélice.
+    return { axles: 1, perAxle: 1, maker: "ga", big: false, door: false };
+  // Regionales / turbohélice — 1 eje, 2 ruedas.
   if (has("CRJ", "ERJ", "E135", "E145", "E170", "E175", "E190", "E195", "DH8", "DHC", "Q400", "ATR", "AT4", "AT7", "SF34", "SAAB", "B190", "JS", "D328", "RJ85", "RJ1"))
-    return { wheels: 2, bogie: false, maker: "regional", big: false, door: false };
+    return { axles: 1, perAxle: 2, maker: "regional", big: false, door: false };
 
-  // Widebody de 6 ruedas (triple eje).
+  // Bogie de 3 ejes (6 ruedas).
   if (has("777", "B777", "A35K", "A350-1000", "351", "A380", "388", "389"))
-    return { wheels: 6, bogie: true, maker: m.includes("A3") ? "airbus" : "boeing", big: true, door: m.includes("A3") };
-  // Widebody de 4 ruedas (bogie).
+    return { axles: 3, perAxle: 2, maker: m.includes("A3") ? "airbus" : "boeing", big: true, door: m.includes("A3") };
+  // Bogie de 2 ejes (4 ruedas).
   if (has("747", "B747", "787", "B787", "767", "B767", "757", "B757", "MD11", "DC10", "L1011"))
-    return { wheels: 4, bogie: true, maker: "boeing", big: true, door: false };
+    return { axles: 2, perAxle: 2, maker: "boeing", big: true, door: false };
   if (has("A330", "A340", "A350", "A359", "A300", "A310", "A33", "A34"))
-    return { wheels: 4, bogie: true, maker: "airbus", big: true, door: true };
+    return { axles: 2, perAxle: 2, maker: "airbus", big: true, door: true };
 
-  // Narrowbody Airbus (A320 family) — 2 ruedas, compuerta, cubo gris.
+  // Narrowbody Airbus (A320 family) — 1 eje, compuerta, cubo gris.
   if (has("A318", "A319", "A320", "A321", "A32", "A20N", "A21N", "A19N", "NEO"))
-    return { wheels: 2, bogie: false, maker: "airbus", big: false, door: true };
-  // Narrowbody Boeing (737/717/MD80) — 2 ruedas, sin compuerta, cubo pulido.
+    return { axles: 1, perAxle: 2, maker: "airbus", big: false, door: true };
+  // Narrowbody Boeing (737/717/MD80) — 1 eje, sin compuerta, cubo pulido.
   if (has("737", "B737", "73", "717", "MD8", "MD9", "DC9", "BBJ"))
-    return { wheels: 2, bogie: false, maker: "boeing", big: false, door: false };
+    return { axles: 1, perAxle: 2, maker: "boeing", big: false, door: false };
 
-  // Por defecto: 2 ruedas genérico.
-  return { wheels: 2, bogie: false, maker: "boeing", big: false, door: false };
+  // Por defecto: 1 eje, 2 ruedas.
+  return { axles: 1, perAxle: 2, maker: "boeing", big: false, door: false };
 }
 
 const MAKER_LABEL: Record<GearSpec["maker"], string> = {
@@ -1015,85 +1018,52 @@ const MAKER_LABEL: Record<GearSpec["maker"], string> = {
 };
 
 /**
- * (v6.1 #24) Tren de aterrizaje VISTO DE FRENTE (elevación frontal simétrica:
- * como mirar el avión desde la nariz). SVG realista con la config REAL por
- * avión — 737≠A320 (Boeing sin compuerta + cubo pulido; Airbus con compuertas
- * + cubo gris), y bogie de 4/6 ruedas en widebodies.
+ * (v6.1 #24) Tren de aterrizaje en ÁNGULO BAJO 3/4 (cámara desde el suelo
+ * mirando hacia arriba, como la foto de referencia): ruedas grandes adelante
+ * con profundidad de banda, y los EJES en tándem recedidos hacia atrás-arriba
+ * para los bogies. La config (nº de ejes/ruedas) es la real por avión.
  */
 function LandingGear({ model }: { model: string | null }) {
   const s = gearSpec(model);
-  const axleY = 152;
-  // Radio de rueda según tipo.
-  const r = s.bogie
-    ? s.wheels >= 6
-      ? 21
-      : 27
-    : s.maker === "ga"
-      ? 46
-      : s.maker === "regional"
-        ? 32
-        : 40;
-  const n = s.wheels;
-  const gap = s.bogie ? 3 : 18;
-  const span = n * 2 * r + (n - 1) * gap;
-  const startX = 120 - span / 2 + r;
-  const centers = Array.from({ length: n }, (_, i) => startX + i * (2 * r + gap));
-  const minCx = centers[0];
-  const maxCx = centers[centers.length - 1];
+  const cx = 120;
+  const r = s.big ? 33 : s.maker === "ga" ? 46 : s.maker === "regional" ? 34 : 42;
+  const track = s.perAxle === 1 ? 0 : r * 1.18;
+  const frontY = 176;
+  const axleStep = r * 0.82;
+  const axleList = Array.from({ length: s.axles }, (_, i) => ({
+    y: frontY - i * axleStep,
+    scale: 1 - i * 0.14,
+    z: i,
+  }));
 
-  const Tire = ({ cx }: { cx: number }) => {
+  const Wheel = ({ wx, wy, rad }: { wx: number; wy: number; rad: number }) => {
     const detail =
       s.maker === "airbus"
-        ? // Agujeros de aligeramiento (estilo Airbus).
-          Array.from({ length: 5 }, (_, i) => {
+        ? Array.from({ length: 5 }, (_, i) => {
             const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
-            return (
-              <circle
-                key={i}
-                cx={cx + Math.cos(a) * r * 0.3}
-                cy={axleY + Math.sin(a) * r * 0.3}
-                r={r * 0.1}
-                fill="#0f172a"
-                opacity="0.8"
-              />
-            );
+            return <circle key={i} cx={wx + Math.cos(a) * rad * 0.3} cy={wy + Math.sin(a) * rad * 0.3} r={rad * 0.1} fill="#0f172a" opacity="0.8" />;
           })
-        : // Tornillos (estilo Boeing).
-          Array.from({ length: 8 }, (_, i) => {
+        : Array.from({ length: 8 }, (_, i) => {
             const a = (i / 8) * Math.PI * 2;
-            return (
-              <circle
-                key={i}
-                cx={cx + Math.cos(a) * r * 0.34}
-                cy={axleY + Math.sin(a) * r * 0.34}
-                r={r * 0.045}
-                fill="#1e293b"
-              />
-            );
+            return <circle key={i} cx={wx + Math.cos(a) * rad * 0.34} cy={wy + Math.sin(a) * rad * 0.34} r={rad * 0.045} fill="#1e293b" />;
           });
     return (
       <g>
-        <circle cx={cx} cy={axleY} r={r} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
-        <circle cx={cx} cy={axleY} r={r * 0.78} fill="none" stroke="#a01818" strokeWidth={r * 0.16} />
-        <circle cx={cx} cy={axleY} r={r * 0.7} fill="none" stroke="#000" strokeWidth="1" opacity="0.5" />
-        <circle
-          cx={cx}
-          cy={axleY}
-          r={r * 0.52}
-          fill={s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)"}
-          stroke="#1e293b"
-          strokeWidth="1"
-        />
+        <ellipse cx={wx + rad * 0.22} cy={wy} rx={rad} ry={rad} fill="#0a0a0a" />
+        <circle cx={wx} cy={wy} r={rad} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
+        <circle cx={wx} cy={wy} r={rad * 0.78} fill="none" stroke="#a81b1b" strokeWidth={rad * 0.17} />
+        <circle cx={wx} cy={wy} r={rad * 0.69} fill="none" stroke="#000" strokeWidth="1" opacity="0.5" />
+        <circle cx={wx} cy={wy} r={rad * 0.52} fill={s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)"} stroke="#1e293b" strokeWidth="1" />
         {detail}
-        <circle cx={cx} cy={axleY} r={r * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
-        <ellipse cx={cx - r * 0.28} cy={axleY - r * 0.34} rx={r * 0.22} ry={r * 0.11} fill="#fff" opacity="0.12" />
+        <circle cx={wx} cy={wy} r={rad * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
+        <ellipse cx={wx - rad * 0.28} cy={wy - rad * 0.34} rx={rad * 0.22} ry={rad * 0.11} fill="#fff" opacity="0.13" />
       </g>
     );
   };
 
-  const strutW = s.big ? 28 : 22;
+  const strutW = s.big ? 30 : 24;
   return (
-    <svg viewBox="0 0 240 210" width="210" height="184" xmlns="http://www.w3.org/2000/svg" className="select-none" aria-hidden>
+    <svg viewBox="0 0 240 230" width="210" height="201" xmlns="http://www.w3.org/2000/svg" className="select-none" aria-hidden>
       <defs>
         <linearGradient id="lgStrut" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#26303c" />
@@ -1107,17 +1077,17 @@ function LandingGear({ model }: { model: string | null }) {
           <stop offset="0.5" stopColor="#fbfdff" />
           <stop offset="1" stopColor="#5b6b7d" />
         </linearGradient>
-        <radialGradient id="lgTire" cx="0.42" cy="0.38" r="0.7">
-          <stop offset="0" stopColor="#3b3b3b" />
+        <radialGradient id="lgTire" cx="0.42" cy="0.36" r="0.72">
+          <stop offset="0" stopColor="#3d3d3d" />
           <stop offset="0.55" stopColor="#161616" />
           <stop offset="1" stopColor="#000000" />
         </radialGradient>
-        <radialGradient id="lgHubB" cx="0.4" cy="0.36" r="0.75">
+        <radialGradient id="lgHubB" cx="0.4" cy="0.34" r="0.78">
           <stop offset="0" stopColor="#f8fafc" />
           <stop offset="0.5" stopColor="#c2ccd6" />
           <stop offset="1" stopColor="#5b6675" />
         </radialGradient>
-        <radialGradient id="lgHubA" cx="0.4" cy="0.36" r="0.75">
+        <radialGradient id="lgHubA" cx="0.4" cy="0.34" r="0.78">
           <stop offset="0" stopColor="#cfd6dd" />
           <stop offset="0.5" stopColor="#94a3b1" />
           <stop offset="1" stopColor="#3f4b59" />
@@ -1127,38 +1097,42 @@ function LandingGear({ model }: { model: string | null }) {
         </filter>
       </defs>
 
-      {/* Sombra */}
-      <ellipse cx="120" cy={axleY + r + 12} rx={(maxCx - minCx) / 2 + r + 8} ry="9" fill="#000" opacity="0.35" filter="url(#lgShadow)" />
+      <ellipse cx={cx} cy={frontY + r + 10} rx={track + r + 8} ry="9" fill="#000" opacity="0.4" filter="url(#lgShadow)" />
 
-      {/* Compuertas de bahía (Airbus) — simétricas */}
       {s.door && (
         <>
-          <rect x={120 - strutW / 2 - 26} y="18" width="20" height="62" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.9" />
-          <rect x={120 + strutW / 2 + 6} y="18" width="20" height="62" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.9" />
+          <rect x={cx - strutW / 2 - 26} y="16" width="20" height="58" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.9" />
+          <rect x={cx + strutW / 2 + 6} y="16" width="20" height="58" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.9" />
         </>
       )}
 
-      {/* Bogie beam (truck) o eje simple */}
-      <rect x={minCx - 4} y={axleY - (s.bogie ? 9 : 7)} width={maxCx - minCx + 8} height={s.bogie ? 18 : 14} rx={s.bogie ? 9 : 7} fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+      <rect x={cx - strutW / 2} y="12" width={strutW} height="86" rx={strutW / 2.6} fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+      <rect x={cx - 7} y="90" width="14" height={frontY - axleStep * (s.axles - 1) - 90 + 18} rx="6" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
+      <rect x={cx - strutW / 2 - 3} y="92" width={strutW + 6} height="7" rx="3" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.5" />
+      <path d={`M${cx - strutW / 2 - 2} 32 q-7 36 0 60`} fill="none" stroke="#b8860b" strokeWidth="1.6" />
+      <path d={`M${cx + strutW / 2 + 2} 32 q7 36 0 60`} fill="none" stroke="#b8860b" strokeWidth="1.6" />
+      <path d="M120 20 L150 36" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
+      <path d="M120 20 L90 36" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
 
-      {/* Pata principal + pistón cromado (simétrico, centrado) */}
-      <rect x={120 - strutW / 2} y="14" width={strutW} height="84" rx={strutW / 2.6} fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
-      <rect x={120 - 7} y="92" width="14" height={axleY - 92} rx="6" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
-      {/* Anillo prensaestopas */}
-      <rect x={120 - strutW / 2 - 3} y="94" width={strutW + 6} height="7" rx="3" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.5" />
-      {/* Tijera (torque link) centrada */}
-      <path d="M114 104 L120 120 L126 104" fill="none" stroke="#cbd5e1" strokeWidth="3" strokeLinejoin="round" />
-      {/* Líneas hidráulicas simétricas */}
-      <path d={`M${120 - strutW / 2 - 2} 34 q-7 38 0 64`} fill="none" stroke="#b8860b" strokeWidth="1.6" />
-      <path d={`M${120 + strutW / 2 + 2} 34 q7 38 0 64`} fill="none" stroke="#b8860b" strokeWidth="1.6" />
-      {/* Anclajes superiores simétricos */}
-      <path d="M120 22 L150 38" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
-      <path d="M120 22 L90 38" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
-
-      {/* Ruedas */}
-      {centers.map((cx, i) => (
-        <Tire key={i} cx={cx} />
-      ))}
+      {[...axleList].reverse().map((ax) => {
+        const rad = r * ax.scale;
+        const tk = track * ax.scale;
+        return (
+          <g key={ax.z}>
+            {s.perAxle > 1 && (
+              <rect x={cx - tk - 4} y={ax.y - 6 * ax.scale} width={tk * 2 + 8} height={12 * ax.scale} rx="6" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+            )}
+            {s.perAxle === 1 ? (
+              <Wheel wx={cx} wy={ax.y} rad={rad} />
+            ) : (
+              <>
+                <Wheel wx={cx - tk} wy={ax.y} rad={rad} />
+                <Wheel wx={cx + tk} wy={ax.y} rad={rad} />
+              </>
+            )}
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -1203,7 +1177,8 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
         <span className="text-[10px] uppercase tracking-wide text-slate-600">
           {(() => {
             const s = gearSpec(ac.model);
-            return `${MAKER_LABEL[s.maker]} · ${t("hangar.gear.wheels_n", { n: String(s.wheels) })}${s.bogie ? " · bogie" : ""}`;
+            const wheels = s.axles * s.perAxle;
+            return `${MAKER_LABEL[s.maker]} · ${t("hangar.gear.wheels_n", { n: String(wheels) })}${s.axles > 1 ? ` · bogie ${s.axles} ejes` : " · 1 eje"}`;
           })()}
         </span>
       </div>
