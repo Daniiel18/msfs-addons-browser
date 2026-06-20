@@ -1131,6 +1131,7 @@
   "rec.engine_ok": "{engine} engine ready",
   "rec.engine_unavailable": "Recording engine unavailable (Windows only)",
   "rec.osd_enabled": "Show landing FPM OSD",
+  "rec.osd_test": "Test OSD",
   "osd.title": "Landing",
   "osd.butter": "Butter",
   "osd.acceptable": "Acceptable",

@@ -212,6 +212,8 @@ pub fn run() {
             commands::flight_log::pilot_profile,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
+            commands::recording::osd_test,
+            commands::recording::osd_debug,
             commands::recording::recording_test_clip,
             commands::recording::list_landing_clips,
             commands::recording::set_landing_favorite,

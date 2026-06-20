@@ -8,6 +8,7 @@ import {
 } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { t } from "../lib/i18n";
+import { api } from "../lib/tauri";
 
 /**
  * (v6 #2b) OSD de aterrizaje — ventana overlay transparente, always-on-top y
@@ -39,11 +40,13 @@ export function LandingOsd() {
     document.body.style.background = "transparent";
 
     const win = getCurrentWindow();
+    api.osdDebug(`OSD montado (label=${win.label})`).catch(() => {});
     win.setIgnoreCursorEvents(true).catch(() => {});
 
     let hideTimer: number | undefined;
     const unlistenP = listen<OsdPayload>("landing://osd", async (e) => {
       const p = e.payload;
+      api.osdDebug(`evento recibido fpm=${p.fpm} grade=${p.grade}`).catch(() => {});
       setData(p);
       try {
         const mon = await primaryMonitor();
@@ -57,10 +60,13 @@ export function LandingOsd() {
               : mon.position.y + 70;
           await win.setPosition(new PhysicalPosition(x, y));
         }
-      } catch {
-        /* ignore */
+      } catch (err) {
+        api.osdDebug(`error posicionando: ${String(err)}`).catch(() => {});
       }
-      await win.show().catch(() => {});
+      await win.show().catch((err) =>
+        api.osdDebug(`error show: ${String(err)}`).catch(() => {}),
+      );
+      api.osdDebug("show() llamado").catch(() => {});
       window.clearTimeout(hideTimer);
       hideTimer = window.setTimeout(() => {
         setData(null);

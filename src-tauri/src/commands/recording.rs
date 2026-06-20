@@ -30,6 +30,30 @@ pub async fn recording_engine_status() -> Result<EngineStatus, String> {
     Ok(landing_recorder::engine_status())
 }
 
+/// (v6 #2b) Emite un evento OSD de PRUEBA (sin volar) para validar el overlay.
+#[tauri::command]
+pub async fn osd_test(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
+    let payload = serde_json::json!({
+        "fpm": -142,
+        "grade": "butter",
+        "position": cfg.osd_position,
+    });
+    app.emit("landing://osd", payload).map_err(|e| e.to_string())?;
+    cmd_log!("osd_test", "OSD de prueba emitido");
+    Ok(())
+}
+
+/// (v6 #2b) Log desde la ventana OSD (diagnóstico — confirma qué hace su JS).
+#[tauri::command]
+pub fn osd_debug(msg: String) {
+    tracing::info!(target: "rec", "[osd-js] {msg}");
+}
+
 /// Graba un clip de PRUEBA de `duration_s` s. Targetea la ventana de la propia
 /// app ("SimFleet") para verificar vídeo+audio SIN necesitar el sim abierto.
 #[tauri::command]

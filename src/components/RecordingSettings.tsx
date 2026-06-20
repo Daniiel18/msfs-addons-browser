@@ -79,6 +79,12 @@ export function RecordingSettings() {
               void setKey("rec_osd_enabled", next ? "1" : "0");
             }}
           />
+          <button
+            onClick={() => api.osdTest().catch(() => {})}
+            className="self-start rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-[11px] text-slate-300 hover:border-brand-500/40"
+          >
+            {t("rec.osd_test")}
+          </button>
 
           {/* Posición OSD: Arriba / Abajo */}
           <Field label={t("rec.position")}>

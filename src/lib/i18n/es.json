@@ -1131,6 +1131,7 @@
   "rec.engine_ok": "Motor {engine} listo",
   "rec.engine_unavailable": "Motor de grabación no disponible (solo Windows)",
   "rec.osd_enabled": "Mostrar OSD del FPM al aterrizar",
+  "rec.osd_test": "Probar OSD",
   "osd.title": "Aterrizaje",
   "osd.butter": "Mantequilla",
   "osd.acceptable": "Aceptable",

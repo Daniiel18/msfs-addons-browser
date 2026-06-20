@@ -502,6 +502,10 @@ interface Api {
   recordingConfig: () => Promise<RecordingConfig>;
   /** (v6 #2b) Estado del motor de grabación (integrado, sin descargas). */
   recordingEngineStatus: () => Promise<EngineStatus>;
+  /** (v6 #2b) Emite un evento OSD de prueba (sin volar). */
+  osdTest: () => Promise<void>;
+  /** (v6 #2b) Log desde la ventana OSD (diagnóstico). */
+  osdDebug: (msg: string) => Promise<void>;
   /** (v6 #2b) Graba un clip de prueba de `durationS` segundos. */
   recordingTestClip: (durationS: number) => Promise<LandingClip>;
   /** (v6 #2b) Lista los clips de aterrizaje guardados. */
@@ -778,6 +782,8 @@ const realApi: Api = {
   recordingConfig: () => invoke<RecordingConfig>("recording_config"),
   recordingEngineStatus: () =>
     invoke<EngineStatus>("recording_engine_status"),
+  osdTest: () => invoke<void>("osd_test"),
+  osdDebug: (msg) => invoke<void>("osd_debug", { msg }),
   recordingTestClip: (durationS) =>
     invoke<LandingClip>("recording_test_clip", { durationS }),
   listLandingClips: () => invoke<LandingClip[]>("list_landing_clips"),
@@ -1806,6 +1812,8 @@ const demoApi: Api = {
   async recordingEngineStatus() {
     return { available: false, engine: "windows-record" };
   },
+  async osdTest() {},
+  async osdDebug() {},
   async recordingTestClip() {
     throw new Error("La grabación solo funciona en la app de escritorio.");
   },
