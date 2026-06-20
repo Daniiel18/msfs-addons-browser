@@ -187,6 +187,8 @@ export interface RecordingConfig {
   /** Capturar también el micrófono (además del audio del sistema). */
   captureMicrophone: boolean;
   maxClips: number;
+  /** Mostrar el OSD de aterrizaje (toast con el FPM) al tocar pista. */
+  osdEnabled: boolean;
 }
 
 /** (v6 #2b) Estado del motor de grabación. */

@@ -45,6 +45,8 @@ pub struct RecordingConfig {
     /// Capturar también el micrófono (comentario), además del audio del sistema.
     pub capture_microphone: bool,
     pub max_clips: i64,
+    /// Mostrar el OSD de aterrizaje (toast con el FPM) al tocar pista.
+    pub osd_enabled: bool,
 }
 
 async fn kv(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -138,6 +140,10 @@ pub async fn load_config(pool: &SqlitePool, fallback_data: &Path) -> RecordingCo
             .map(|s| matches!(s.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false),
         max_clips: kv_i64(pool, "rec_max_clips", 20).await,
+        osd_enabled: kv(pool, "rec_osd_enabled")
+            .await
+            .map(|s| matches!(s.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(true),
     }
 }
 
@@ -535,19 +541,12 @@ async fn controller_loop(
     let mut armed = false;
     let mut prev_on_ground = true;
     let mut saved = false;
+    let mut osd_done = false;
 
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let cfg = load_config(&pool, &data_dir).await;
-        if !cfg.enabled {
-            if armed {
-                let _ = tx.send(RecCmd::Stop);
-                armed = false;
-                saved = false;
-            }
-            continue;
-        }
 
         let status = match app.try_state::<crate::simconnect_watcher::SharedState>() {
             Some(s) => s.lock().await.status.clone(),
@@ -560,6 +559,7 @@ async fn controller_loop(
                 saved = false;
             }
             prev_on_ground = true;
+            osd_done = false;
             continue;
         }
 
@@ -568,35 +568,55 @@ async fn controller_loop(
         let approaching = matches!(phase.as_str(), "descent" | "approach")
             || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 12_000));
 
-        // Armar el replay buffer al entrar en aproximación.
-        if approaching && !on_ground && !armed {
-            let (w, h) = target_monitor_size(&app, false);
-            let _ = tx.send(RecCmd::Arm {
-                output_path: cfg.output_path.clone(),
-                clip_seconds: cfg.clip_seconds,
-                width: w,
-                height: h,
-            });
-            armed = true;
+        // Volando de nuevo → re-armar el OSD para el siguiente aterrizaje.
+        if !on_ground {
+            osd_done = false;
+        }
+
+        // ── Grabación (solo si está activada) ──
+        if cfg.enabled {
+            // Armar el replay buffer al entrar en aproximación.
+            if approaching && !on_ground && !armed {
+                let (w, h) = target_monitor_size(&app, false);
+                let _ = tx.send(RecCmd::Arm {
+                    output_path: cfg.output_path.clone(),
+                    clip_seconds: cfg.clip_seconds,
+                    width: w,
+                    height: h,
+                });
+                armed = true;
+                saved = false;
+            }
+        } else if armed {
+            let _ = tx.send(RecCmd::Stop);
+            armed = false;
             saved = false;
         }
 
-        // Touchdown: transición airborne → on_ground estando armado.
-        if armed && on_ground && !prev_on_ground && !saved {
-            saved = true;
-            schedule_save(
-                &pool,
-                &tx,
-                &cfg.output_path,
-                cfg.clip_seconds,
-                cfg.max_clips,
-                status.destination_icao.clone(),
-                status.destination_name.clone(),
-                status.aircraft_icao.clone(),
-            );
+        // ── Touchdown: transición airborne → on_ground ──
+        if on_ground && !prev_on_ground {
+            // OSD del aterrizaje (independiente de la grabación).
+            if cfg.osd_enabled && !osd_done {
+                osd_done = true;
+                schedule_osd(&pool, &app, cfg.osd_position);
+            }
+            // Guardar el clip si el replay buffer está armado.
+            if armed && !saved {
+                saved = true;
+                schedule_save(
+                    &pool,
+                    &tx,
+                    &cfg.output_path,
+                    cfg.clip_seconds,
+                    cfg.max_clips,
+                    status.destination_icao.clone(),
+                    status.destination_name.clone(),
+                    status.aircraft_icao.clone(),
+                );
+            }
         }
 
-        // Desarmar tras llegar a tierra (taxi/parking).
+        // Desarmar la grabación tras llegar a tierra (taxi/parking).
         if armed && on_ground && matches!(phase.as_str(), "taxi_in" | "parking" | "deboarding") {
             let _ = tx.send(RecCmd::Stop);
             armed = false;
@@ -604,6 +624,39 @@ async fn controller_loop(
         }
         prev_on_ground = on_ground;
     }
+}
+
+/// Tras el touchdown, lee el `landing_fpm` que el watcher acaba de escribir y
+/// emite `landing://osd` con el FPM + grado para que la ventana OSD lo muestre.
+#[cfg(windows)]
+fn schedule_osd(pool: &SqlitePool, app: &tauri::AppHandle, osd_position: i64) {
+    use std::time::Duration;
+    use tauri::Emitter;
+    let pool = pool.clone();
+    let app = app.clone();
+    tokio::spawn(async move {
+        // Pequeña espera para que el watcher persista el FPM de touchdown.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let fpm: Option<i64> = sqlx::query_as::<_, (Option<i64>,)>(
+            "SELECT landing_fpm FROM flight_log \
+             WHERE landing_fpm IS NOT NULL ORDER BY started_at DESC LIMIT 1",
+        )
+        .fetch_optional(&pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(v,)| v);
+        let Some(fpm) = fpm else {
+            return;
+        };
+        let payload = serde_json::json!({
+            "fpm": fpm,
+            "grade": crate::flight_log::landing_grade(fpm),
+            "position": osd_position,
+        });
+        let _ = app.emit("landing://osd", payload);
+        tracing::info!(target: "rec", "OSD aterrizaje emitido (fpm={fpm})");
+    });
 }
 
 #[cfg(windows)]

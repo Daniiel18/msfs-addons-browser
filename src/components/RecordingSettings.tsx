@@ -70,6 +70,16 @@ export function RecordingSettings() {
             }}
           />
 
+          {/* OSD del FPM al aterrizar */}
+          <RecToggle
+            label={t("rec.osd_enabled")}
+            checked={cfg.osdEnabled}
+            onChange={(next) => {
+              patch({ osdEnabled: next });
+              void setKey("rec_osd_enabled", next ? "1" : "0");
+            }}
+          />
+
           {/* Posición OSD: Arriba / Abajo */}
           <Field label={t("rec.position")}>
             <Segmented

@@ -1800,6 +1800,7 @@ const demoApi: Api = {
       unlimited: true,
       captureMicrophone: false,
       maxClips: 20,
+      osdEnabled: true,
     };
   },
   async recordingEngineStatus() {

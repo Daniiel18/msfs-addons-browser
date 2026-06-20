@@ -27,6 +27,21 @@
         "skipTaskbar": false,
         "shadow": true,
         "theme": "Dark"
+      },
+      {
+        "label": "osd",
+        "title": "SimFleet OSD",
+        "url": "index.html",
+        "width": 380,
+        "height": 130,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false,
+        "shadow": false
       }
     ],
     "security": {

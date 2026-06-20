@@ -1,7 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { LandingOsd } from "./components/LandingOsd";
 import { preloadLocale } from "./lib/i18n";
 import "./styles/globals.css";
 
@@ -18,10 +20,31 @@ import "./styles/globals.css";
 // preferencias de otra PC).
 preloadLocale();
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>
-);
+// (v6 #2b) Esta misma index.html sirve a DOS ventanas: la app ("main") y el
+// OSD de aterrizaje ("osd", overlay transparente). Enrutamos por el label de
+// la ventana de Tauri. Fuera de Tauri (demo navegador) siempre es la app.
+function windowLabel(): string {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return "main";
+  }
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+if (windowLabel() === "osd") {
+  root.render(
+    <React.StrictMode>
+      <LandingOsd />
+    </React.StrictMode>,
+  );
+} else {
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+}
