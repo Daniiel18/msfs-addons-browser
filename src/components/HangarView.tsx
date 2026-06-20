@@ -42,6 +42,7 @@ import { t } from "../lib/i18n";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
 import { airportRegion } from "../lib/oaciRegion";
+import { useAircraftPhoto } from "./FlightBookView";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
 
@@ -477,6 +478,8 @@ function AircraftDetail({
 }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("overview");
   const push = useToastStore((s) => s.push);
+  // (v6.1 #26) Foto del avión (planespotters por matrícula) de fondo del banner.
+  const photo = useAircraftPhoto(ac.registration ?? null);
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
   const location =
     ac.lastAirportName && ac.lastIcao
@@ -499,7 +502,28 @@ function AircraftDetail({
             <ChevronDown className="h-3 w-3" />
           </button>
         </div>
-        <div className="flex items-end gap-4 bg-gradient-to-br from-slate-800 via-slate-900 to-brand-900/40 p-5">
+        {/* (v6.1 #26) Foto real del avión de fondo (si hay matrícula con
+            foto en planespotters); overlay oscuro para legibilidad. */}
+        {photo && (
+          <>
+            <img
+              src={photo}
+              alt={ac.registration ?? ""}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-slate-950/95 via-slate-950/70 to-slate-950/30" />
+            <span className="pointer-events-none absolute bottom-1.5 right-2 z-10 rounded bg-slate-950/60 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-slate-300/80 backdrop-blur-sm">
+              planespotters.net
+            </span>
+          </>
+        )}
+        <div
+          className={`relative flex items-end gap-4 p-5 ${
+            photo
+              ? ""
+              : "bg-gradient-to-br from-slate-800 via-slate-900 to-brand-900/40"
+          }`}
+        >
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h2 className="text-3xl font-bold tracking-tight text-slate-50">
@@ -520,7 +544,9 @@ function AircraftDetail({
               {[model, location].filter(Boolean).join(" · ") || "—"}
             </p>
           </div>
-          <PlaneLanding className="h-16 w-16 shrink-0 text-slate-700/60" />
+          {!photo && (
+            <PlaneLanding className="h-16 w-16 shrink-0 text-slate-700/60" />
+          )}
         </div>
       </div>
 
@@ -641,49 +667,50 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+      <h3 className="mb-2 flex items-center gap-1.5 text-base font-semibold text-slate-100">
         <Gauge className="h-4 w-4 text-brand-400" />
         {t("hangar.fpm.title", { n: String(n) })}
         <Info className="h-3 w-3 text-slate-600" />
       </h3>
       {n === 0 ? (
-        <div className="flex h-40 items-center justify-center text-xs text-slate-600">
+        <div className="flex h-40 items-center justify-center text-sm text-slate-600">
           {t("hangar.fpm.no_data")}
         </div>
       ) : (
-        <div className="h-44 w-full">
+        <div className="h-52 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
               data={chartData}
-              margin={{ top: 16, right: 12, left: -8, bottom: 0 }}
+              margin={{ top: 18, right: 14, left: -4, bottom: 0 }}
             >
               <CartesianGrid stroke="#1e293b" vertical={false} />
               <XAxis
                 dataKey="label"
-                tick={{ fill: "#64748b", fontSize: 10 }}
+                tick={{ fill: "#94a3b8", fontSize: 13 }}
                 axisLine={{ stroke: "#1e293b" }}
                 tickLine={false}
               />
               <YAxis
-                tick={{ fill: "#64748b", fontSize: 10 }}
+                tick={{ fill: "#94a3b8", fontSize: 13 }}
                 axisLine={false}
                 tickLine={false}
-                width={40}
+                width={44}
                 domain={["dataMin - 50", 50]}
               />
               <Line
                 type="monotone"
                 dataKey="fpm"
                 stroke="#38bdf8"
-                strokeWidth={2}
+                strokeWidth={2.5}
                 dot={<FpmDot />}
                 isAnimationActive={false}
               >
                 <LabelList
                   dataKey="fpm"
                   position="top"
-                  fontSize={9}
-                  fill="#94a3b8"
+                  fontSize={12}
+                  fontWeight={600}
+                  fill="#e2e8f0"
                 />
               </Line>
             </LineChart>
@@ -692,16 +719,16 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
       )}
       {/* Leyenda */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-3">
-        <div className="flex flex-wrap gap-3 text-[10px]">
+        <div className="flex flex-wrap gap-3 text-[12px]">
           <Legend color={GRADE_COLOR.butter} label={t("hangar.fpm.butter")} n={counts.butter ?? 0} />
           <Legend color={GRADE_COLOR.acceptable} label={t("hangar.fpm.acceptable")} n={counts.acceptable ?? 0} />
           <Legend color={GRADE_COLOR.hard} label={t("hangar.fpm.hard")} n={counts.hard ?? 0} />
         </div>
         <div className="text-right">
-          <div className="text-[9px] uppercase tracking-wide text-slate-600">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">
             {t("hangar.fpm.avg")}
           </div>
-          <div className="text-sm font-semibold text-slate-200">{avg}</div>
+          <div className="text-base font-semibold text-slate-100">{avg}</div>
         </div>
       </div>
     </div>
