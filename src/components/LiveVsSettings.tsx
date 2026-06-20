@@ -16,9 +16,12 @@ export function LiveVsSettings() {
   const [url, setUrl] = useState(settings.vsSupabaseUrl ?? "");
   const [key, setKey] = useState(settings.vsSupabaseKey ?? "");
 
-  const configured =
+  // (v6 #3) Live VS trae credenciales embebidas por defecto → siempre está
+  // configurado. Estos campos solo SOBREESCRIBEN (otro proyecto Supabase).
+  const usingCustom =
     (settings.vsSupabaseUrl ?? "").trim() !== "" &&
     (settings.vsSupabaseKey ?? "").trim() !== "";
+  const configured = true;
 
   const save = async (k: string, v: string) => {
     await api.setAppSetting(k, v.trim()).catch(() => {});
@@ -83,7 +86,7 @@ export function LiveVsSettings() {
             />
           </div>
           <p className="text-[11px] leading-relaxed text-slate-600">
-            {t("vs.note")}
+            {usingCustom ? t("vs.note") : t("vs.note_default")}
           </p>
         </div>
       )}

@@ -1148,6 +1148,7 @@
   "vs.url": "Supabase URL",
   "vs.key": "Supabase anon key",
   "vs.note": "Crea un proyecto gratis en supabase.com → Project Settings → API: copia la \"Project URL\" y la \"anon public\" key aquí. Tú y Héctor usan el MISMO proyecto. Sin esto, Live VS queda desactivado.",
+  "vs.note_default": "Live VS ya viene configurado y activo de fábrica — no necesitas tocar nada. Estos campos solo sirven si quieres apuntar a OTRO proyecto Supabase distinto.",
   "vs.tab": "Crew VS",
   "vs.waiting": "Esperando al rival en la misma ruta…",
   "vs.race": "Carrera",

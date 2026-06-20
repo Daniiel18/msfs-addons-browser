@@ -4,6 +4,11 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useLiveVsStore, type VsOfp } from "../stores/useLiveVsStore";
+import {
+  DEFAULT_VS_SUPABASE_URL,
+  DEFAULT_VS_SUPABASE_KEY,
+  normalizeSupabaseUrl,
+} from "../lib/liveVsConfig";
 
 /**
  * (v6 #3) Componente headless que orquesta Live VS: arma el canal Supabase con
@@ -31,8 +36,10 @@ export function LiveVsManager() {
       .catch(() => {});
   }, []);
 
-  const u = (url ?? "").trim();
-  const k = (key ?? "").trim();
+  // Credenciales: las de Ajustes mandan; si están vacías, usamos las
+  // embebidas por defecto. La URL se normaliza (quita /rest/v1).
+  const u = normalizeSupabaseUrl((url ?? "").trim() || DEFAULT_VS_SUPABASE_URL);
+  const k = (key ?? "").trim() || DEFAULT_VS_SUPABASE_KEY;
   const ofp = flights[0]; // OFP más reciente (ya filtrado por propiedad/correo)
 
   // Arrancar / detener el canal cuando cambian credenciales, identidad u OFP.
