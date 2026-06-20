@@ -23,6 +23,7 @@ import { SourceToggle } from "./components/SourceToggle";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
 import { DownloadsButton } from "./components/DownloadsButton";
+import { PilotBadge } from "./components/PilotBadge";
 import { DownloadsPanel } from "./components/DownloadsPanel";
 import { NotificationsBell } from "./components/NotificationsBell";
 import { MapView } from "./components/MapView";
@@ -814,6 +815,7 @@ export default function App() {
               <NotificationsBell />
             </span>
             <DownloadsButton />
+            <PilotBadge />
           </div>
         </div>
       </header>

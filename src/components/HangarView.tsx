@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   LineChart,
   Line,
@@ -19,7 +19,6 @@ import {
   ChevronDown,
   MoreVertical,
   Info,
-  Camera,
   Film,
   ChevronRight,
   AlertTriangle,
@@ -36,7 +35,6 @@ import type {
   HangarAircraft,
   HangarLanding,
   HangarCount,
-  PilotProfile,
   LandingClip,
 } from "../lib/types";
 import { api } from "../lib/tauri";
@@ -65,7 +63,6 @@ const GRADE_COLOR: Record<string, string> = {
 
 export function HangarView() {
   const [data, setData] = useState<HangarAnalytics | null>(null);
-  const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [clips, setClips] = useState<LandingClip[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,13 +81,11 @@ export function HangarView() {
     setLoading(true);
     Promise.all([
       api.hangarAnalytics(),
-      api.pilotProfile().catch(() => null),
       api.listLandingClips().catch(() => [] as LandingClip[]),
     ])
-      .then(([d, p, c]) => {
+      .then(([d, c]) => {
         if (cancelled) return;
         setData(d);
-        setProfile(p);
         setClips(c);
         // (v6.1 #29) NO auto-seleccionamos: por defecto se muestra el
         // resumen de flota (destinos/aerolíneas/tipos/regiones).
@@ -174,7 +169,6 @@ export function HangarView() {
                 : "—"
             }
           />
-          {profile && <PilotMenu profile={profile} />}
         </div>
       </div>
 
@@ -927,186 +921,6 @@ function LandingCard({ l }: { l: HangarLanding }) {
         </div>
       </div>
     </div>
-  );
-}
-
-// ── Perfil del piloto (menú desplegable) ─────────────────────────────────
-
-const AVATAR_KEY = "simfleet:pilot-avatar";
-
-function PilotMenu({ profile }: { profile: PilotProfile }) {
-  const [open, setOpen] = useState(false);
-  const [avatar, setAvatar] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    try {
-      setAvatar(localStorage.getItem(AVATAR_KEY));
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result);
-      setAvatar(url);
-      try {
-        localStorage.setItem(AVATAR_KEY, url);
-      } catch {
-        /* ignore */
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const pct =
-    profile.xpForNext > 0
-      ? Math.min(100, Math.round((profile.xpInLevel / profile.xpForNext) * 100))
-      : 0;
-
-  return (
-    <div className="relative" ref={menuRef}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 py-1.5 pl-1.5 pr-2.5 hover:border-brand-500/40"
-      >
-        <Avatar avatar={avatar} identity={profile.identity} size={32} />
-        <div className="text-left">
-          <div className="text-xs font-semibold text-slate-100">
-            {profile.name}
-          </div>
-          <div className="text-[10px] text-brand-300">
-            {t("hangar.profile.level", { n: String(profile.level) })}
-          </div>
-        </div>
-        <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 z-50 mt-2 w-64 rounded-2xl border border-slate-800 bg-slate-950 p-4 shadow-2xl ring-1 ring-slate-800">
-          <div className="flex flex-col items-center">
-            <div className="relative">
-              <Avatar avatar={avatar} identity={profile.identity} size={64} />
-              <button
-                onClick={() => fileRef.current?.click()}
-                title={t("hangar.profile.change_photo")}
-                className="absolute -bottom-1 -right-1 rounded-full border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:bg-slate-700"
-              >
-                <Camera className="h-3 w-3" />
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={onPick}
-              />
-            </div>
-            <div className="mt-2 text-sm font-semibold text-slate-100">
-              {profile.name}
-            </div>
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="text-[11px] text-brand-300 hover:text-brand-200"
-            >
-              {t("hangar.profile.change_photo")}
-            </button>
-          </div>
-
-          {/* Nivel + XP */}
-          <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-200">
-                {t("hangar.profile.level", { n: String(profile.level) })}
-              </span>
-              <span className="text-slate-500">
-                {profile.xpInLevel.toLocaleString()} /{" "}
-                {profile.xpForNext.toLocaleString()} XP
-              </span>
-            </div>
-            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
-              <div
-                className="h-full bg-gradient-to-r from-brand-500 to-brand-400"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <div className="mt-1.5 text-[10px] text-slate-500">
-              {t("hangar.profile.to_next", {
-                n: Math.max(
-                  0,
-                  profile.xpForNext - profile.xpInLevel,
-                ).toLocaleString(),
-              })}
-            </div>
-          </div>
-
-          <div className="mt-3 grid grid-cols-2 gap-2 text-center">
-            <div className="rounded-lg bg-slate-900/50 p-2">
-              <div className="text-sm font-semibold text-slate-100">
-                {profile.totalXp.toLocaleString()}
-              </div>
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
-                {t("hangar.profile.total_xp")}
-              </div>
-            </div>
-            <div className="rounded-lg bg-slate-900/50 p-2">
-              <div className="text-sm font-semibold text-slate-100">
-                {profile.flightsScored.toLocaleString()}
-              </div>
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
-                {t("hangar.profile.flights")}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Avatar({
-  avatar,
-  identity,
-  size,
-}: {
-  avatar: string | null;
-  identity: string;
-  size: number;
-}) {
-  if (avatar) {
-    return (
-      <img
-        src={avatar}
-        alt=""
-        style={{ width: size, height: size }}
-        className="rounded-full object-cover ring-2 ring-brand-500/40"
-      />
-    );
-  }
-  const initials = identity === "daniel" ? "D" : "H";
-  return (
-    <span
-      style={{ width: size, height: size, fontSize: size * 0.4 }}
-      className="flex items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 font-bold text-white ring-2 ring-brand-500/40"
-    >
-      {initials}
-    </span>
   );
 }
 
