@@ -49,6 +49,7 @@ import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
 import {
   WhatsNewModal,
+  buildWhatsNewSlides,
   getWhatsNewSeenVersion,
   isUpdateSinceLastSeen,
   markWhatsNewSeen,
@@ -241,6 +242,15 @@ export default function App() {
   // guardada en localStorage difiere de la actual), una vez por versión; en
   // MODO SEGURO siempre. No coexiste con el tour de bienvenida.
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  // (v6.1) Identidad del piloto (daniel/hector) para personalizar el slide
+  // de Crew VS del What's New (el badge "TÚ" en la tarjeta correcta).
+  const [pilotIdentity, setPilotIdentity] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .pilotProfile()
+      .then((p) => setPilotIdentity(p.identity))
+      .catch(() => {});
+  }, []);
   // (v6 — #1) Oferta de cross-link 2020/2024 tras instalar un escenario
   // doble-compat. El backend la emite por `cross-link://offer`.
   const [crossLinkOffer, setCrossLinkOffer] = useState<CrossLinkOffer | null>(
@@ -761,7 +771,7 @@ export default function App() {
         </div>
       )}
 
-      <header className="app-shell-header sticky top-9 z-10 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur">
+      <header className="app-shell-header sticky top-9 z-40 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur">
         {/* Header truly fluid — sin max-w. Se ajusta al ancho de la
             ventana con padding generoso a los lados. */}
         <div className="flex w-full items-center justify-between px-6 py-3">
@@ -958,6 +968,7 @@ export default function App() {
           actualización); en MODO SEGURO no, para que reaparezca siempre. */}
       {whatsNewOpen && (
         <WhatsNewModal
+          slides={buildWhatsNewSlides(pilotIdentity)}
           onClose={() => {
             setWhatsNewOpen(false);
             if (!safeMode && appVersion) markWhatsNewSeen(appVersion);

@@ -26,6 +26,7 @@ pub async fn drop_inspect(
 
 #[tauri::command]
 pub async fn drop_commit(
+    app: tauri::AppHandle,
     session_id: String,
     selected_paths: Vec<String>,
     community_path: Option<String>,
@@ -47,8 +48,21 @@ pub async fn drop_commit(
                 .path,
         ),
     };
-    drop_install::commit(&session_id, &selected_paths, &community, &state.drop_sessions)
-        .map_err(|e| e.to_string())
+    let report =
+        drop_install::commit(&session_id, &selected_paths, &community, &state.drop_sessions)
+            .map_err(|e| e.to_string())?;
+
+    // (v6.1 #37) Cross-link 2020/2024 también para drag&drop: si se instaló al
+    // menos un paquete Community y el usuario tiene ambos sims, ofrecemos
+    // enlazarlo a la otra Community (misma UX que la descarga).
+    if !report.installed_packages.is_empty() {
+        if let Some(offer) = crate::cross_link::build_offer_for_paths(&report.installed_packages) {
+            use tauri::Emitter;
+            let _ = app.emit("cross-link://offer", &offer);
+        }
+    }
+
+    Ok(report)
 }
 
 #[tauri::command]

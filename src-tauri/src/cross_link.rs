@@ -65,6 +65,45 @@ pub fn build_offer(compat_label: &str, packages: &[InstalledPackage]) -> Option<
     if packages.is_empty() || !is_dual_compat(compat_label) {
         return None;
     }
+    let pkgs = packages
+        .iter()
+        .map(|p| CrossLinkPkg {
+            name: p.name.clone(),
+            source_path: p.install_path.clone(),
+        })
+        .collect();
+    build_offer_inner(pkgs)
+}
+
+/// (v6.1 #37) Variante para drag&drop: los archivos soltados NO traen etiqueta
+/// de compatibilidad (a diferencia de SceneryAddons), así que NO hay gate por
+/// `compat_label` — se ofrece el cross-link siempre que el usuario tenga AMBOS
+/// sims (el junction es inocuo y reversible; el usuario decide en el modal).
+/// `install_paths` son rutas absolutas de los paquetes recién instalados en la
+/// Community activa; el nombre del junction se deriva del último componente.
+pub fn build_offer_for_paths(install_paths: &[String]) -> Option<CrossLinkOffer> {
+    let pkgs: Vec<CrossLinkPkg> = install_paths
+        .iter()
+        .filter_map(|p| {
+            let name = Path::new(p).file_name()?.to_string_lossy().into_owned();
+            Some(CrossLinkPkg {
+                name,
+                source_path: p.clone(),
+            })
+        })
+        .collect();
+    if pkgs.is_empty() {
+        return None;
+    }
+    build_offer_inner(pkgs)
+}
+
+/// Núcleo compartido: requiere 2020 **y** 2024 instalados + localizar la
+/// Community de la OTRA versión. Construye la oferta con los paquetes dados.
+fn build_offer_inner(packages: Vec<CrossLinkPkg>) -> Option<CrossLinkOffer> {
+    if packages.is_empty() {
+        return None;
+    }
     let (has2020, has2024) = community::detect_installed_sims();
     if !(has2020 && has2024) {
         return None;
@@ -90,13 +129,7 @@ pub fn build_offer(compat_label: &str, packages: &[InstalledPackage]) -> Option<
         other_version: other_version.to_string(),
         other_label: other_label.to_string(),
         other_community: other.path.clone(),
-        packages: packages
-            .iter()
-            .map(|p| CrossLinkPkg {
-                name: p.name.clone(),
-                source_path: p.install_path.clone(),
-            })
-            .collect(),
+        packages,
     })
 }
 

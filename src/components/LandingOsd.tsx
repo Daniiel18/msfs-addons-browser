@@ -117,7 +117,7 @@ export function LandingOsd() {
     data && data.windDir != null ? data.windDir - (data.headingDeg ?? 0) : 0;
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-transparent p-1.5">
+    <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-transparent p-6">
       <AnimatePresence>
         {data && g && (
           <motion.div
@@ -130,7 +130,11 @@ export function LandingOsd() {
               // Panel OPACO (sólido) para que se lea sobre cualquier fondo.
               background: "#0b1119",
               borderColor: `${g.color}66`,
-              boxShadow: `0 0 26px ${g.color}33, 0 16px 48px #000e`,
+              // (v6.1) Sombra CONTENIDA: con el padding p-6 de la ventana, un
+              // blur pequeño (<= el padding) se desvanece ANTES del borde
+              // rectangular de la ventana transparente. Antes la sombra grande
+              // (48px) llegaba al borde y se recortaba como un cuadrado feo.
+              boxShadow: `0 6px 16px rgba(0,0,0,0.5), 0 0 10px ${g.color}40`,
             }}
           >
             {/* Cabecera: LANDING + grado (centrado) */}

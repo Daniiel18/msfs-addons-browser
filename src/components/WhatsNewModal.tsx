@@ -62,6 +62,19 @@ const DEFAULT_SLIDES: WhatsNewSlide[] = [
   },
 ];
 
+/** (v6.1) Construye los slides personalizando el de Crew VS según la identidad
+ *  del piloto: si eres Héctor, el badge "TÚ" sale en SU tarjeta (izquierda);
+ *  si eres Daniel (o desconocido), se queda en la de Daniel. */
+export function buildWhatsNewSlides(identity?: string | null): WhatsNewSlide[] {
+  const crewImg =
+    identity === "hector"
+      ? "/whatsnew/crewvs-hector.svg"
+      : "/whatsnew/crewvs.svg";
+  return DEFAULT_SLIDES.map((s) =>
+    s.image === "/whatsnew/crewvs.svg" ? { ...s, image: crewImg } : s,
+  );
+}
+
 /** Versión de la app para la que ya se mostró el What's New (o null). */
 export function getWhatsNewSeenVersion(): string | null {
   try {
