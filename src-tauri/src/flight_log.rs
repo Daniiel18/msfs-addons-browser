@@ -1402,6 +1402,17 @@ pub struct HangarAirport {
     pub visits: i64,
 }
 
+/// (v6.1 #29) Conteo genérico etiqueta→nº de vuelos (aerolíneas, tipos…).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HangarCount {
+    /// Etiqueta principal a mostrar (nombre de aerolínea, modelo limpio…).
+    pub label: String,
+    /// Código auxiliar para logo/ícono (ICAO de aerolínea), opcional.
+    pub code: Option<String>,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HangarAnalytics {
@@ -1412,10 +1423,17 @@ pub struct HangarAnalytics {
     pub total_landings: i64,
     /// FPM promedio global de aterrizaje.
     pub global_avg_fpm: Option<f64>,
-    /// Top 10 aviones más volados.
+    /// (v6.1 #33) Flota COMPLETA ordenada por nº de vuelos. El frontend
+    /// muestra el top 10 por defecto y permite buscar el resto.
     pub aircraft: Vec<HangarAircraft>,
-    /// Aeropuertos más frecuentados.
+    /// Aeropuertos más frecuentados (origen + destino).
     pub airports: Vec<HangarAirport>,
+    /// (v6.1 #29) Destinos más visitados (solo destino).
+    pub top_destinations: Vec<HangarAirport>,
+    /// (v6.1 #29) Aerolíneas más voladas.
+    pub top_airlines: Vec<HangarCount>,
+    /// (v6.1 #29) Tipos de avión más volados.
+    pub top_aircraft_types: Vec<HangarCount>,
     /// Mejores aterrizajes de la flota (FPM más fino primero).
     pub best_landings: Vec<HangarLanding>,
 }
@@ -1461,6 +1479,13 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
     let mut by_ac: HashMap<String, Acc> = HashMap::new();
     // icao -> (nombre, visitas)
     let mut airports: HashMap<String, (Option<String>, i64)> = HashMap::new();
+    // (v6.1 #29) Agregados para la vista "sin selección".
+    // destino icao -> (nombre, visitas)
+    let mut destinations: HashMap<String, (Option<String>, i64)> = HashMap::new();
+    // clave aerolínea -> (label, icao, vuelos)
+    let mut airlines: HashMap<String, (String, Option<String>, i64)> = HashMap::new();
+    // modelo (mayúsculas) -> (label, vuelos)
+    let mut types: HashMap<String, (String, i64)> = HashMap::new();
     let mut best_landings: Vec<HangarLanding> = Vec::new();
     let mut total_nm = 0.0;
     let mut total_time_s = 0i64;
@@ -1575,6 +1600,39 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
                 }
             }
         }
+
+        // (v6.1 #29) Destinos más visitados (SOLO destino).
+        if let Some(ic) = &dest_icao {
+            let ent = destinations
+                .entry(ic.to_uppercase())
+                .or_insert((dest_name.clone(), 0));
+            ent.1 += 1;
+            if ent.0.is_none() {
+                ent.0 = dest_name.clone();
+            }
+        }
+        // (v6.1 #29) Aerolíneas más voladas (por nombre; código para el logo).
+        let al_icao = norm(&e.airline_icao);
+        let al_name = norm(&e.aircraft_airline);
+        if al_name.is_some() || al_icao.is_some() {
+            let label = al_name
+                .clone()
+                .or_else(|| al_icao.clone())
+                .unwrap_or_default();
+            let key = label.to_uppercase();
+            let ent = airlines
+                .entry(key)
+                .or_insert((label, al_icao.clone(), 0));
+            ent.2 += 1;
+            if ent.1.is_none() {
+                ent.1 = al_icao.clone();
+            }
+        }
+        // (v6.1 #29) Tipos de avión más volados.
+        if let Some(m) = &model {
+            let ent = types.entry(m.to_uppercase()).or_insert((m.clone(), 0));
+            ent.1 += 1;
+        }
     }
 
     let mut aircraft: Vec<HangarAircraft> = by_ac
@@ -1624,7 +1682,8 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
                 .unwrap_or(std::cmp::Ordering::Equal),
         )
     });
-    aircraft.truncate(10);
+    // (v6.1 #33) NO truncamos: devolvemos la flota completa ordenada. El
+    // frontend pinta el top 10 por defecto y el buscador filtra el resto.
 
     let mut airports: Vec<HangarAirport> = airports
         .into_iter()
@@ -1632,6 +1691,32 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
         .collect();
     airports.sort_by(|a, b| b.visits.cmp(&a.visits));
     airports.truncate(12);
+
+    // (v6.1 #29) Top destinos / aerolíneas / tipos.
+    let mut top_destinations: Vec<HangarAirport> = destinations
+        .into_iter()
+        .map(|(icao, (name, visits))| HangarAirport { icao, name, visits })
+        .collect();
+    top_destinations.sort_by(|a, b| b.visits.cmp(&a.visits));
+    top_destinations.truncate(8);
+
+    let mut top_airlines: Vec<HangarCount> = airlines
+        .into_iter()
+        .map(|(_, (label, code, count))| HangarCount { label, code, count })
+        .collect();
+    top_airlines.sort_by(|a, b| b.count.cmp(&a.count));
+    top_airlines.truncate(8);
+
+    let mut top_aircraft_types: Vec<HangarCount> = types
+        .into_iter()
+        .map(|(_, (label, count))| HangarCount {
+            label,
+            code: None,
+            count,
+        })
+        .collect();
+    top_aircraft_types.sort_by(|a, b| b.count.cmp(&a.count));
+    top_aircraft_types.truncate(8);
 
     // Mejores aterrizajes: FPM más cercano a 0 (más fino) primero.
     best_landings.sort_by(|a, b| b.fpm.cmp(&a.fpm));
@@ -1651,6 +1736,9 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
         global_avg_fpm,
         aircraft,
         airports,
+        top_destinations,
+        top_airlines,
+        top_aircraft_types,
         best_landings,
     })
 }

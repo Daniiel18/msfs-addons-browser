@@ -1784,6 +1784,19 @@ const demoApi: Api = {
         { icao: "KSEA", name: "Seattle Tacoma Intl", visits: 9 },
         { icao: "KBOS", name: "Boston Logan Intl", visits: 6 },
       ],
+      topDestinations: [
+        { icao: "KJFK", name: "John F. Kennedy Intl", visits: 8 },
+        { icao: "KLAX", name: "Los Angeles Intl", visits: 6 },
+        { icao: "KSEA", name: "Seattle Tacoma Intl", visits: 5 },
+      ],
+      topAirlines: [
+        { label: "Delta Airlines", code: "DAL", count: 45 },
+        { label: "American Airlines", code: "AAL", count: 12 },
+      ],
+      topAircraftTypes: [
+        { label: "Airbus A320-200", code: null, count: 45 },
+        { label: "Boeing 777-300ER", code: null, count: 12 },
+      ],
       bestLandings: [
         mkLanding(-75, "KATL", "Atlanta Hartsfield", "A320-200"),
         mkLanding(-95, "KBOS", "Boston Logan Intl", "A320-200"),

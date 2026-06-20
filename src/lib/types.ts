@@ -164,6 +164,13 @@ export interface HangarAirport {
   visits: number;
 }
 
+/** (v6.1 #29) Conteo genérico etiqueta→nº de vuelos (aerolíneas, tipos…). */
+export interface HangarCount {
+  label: string;
+  code: string | null;
+  count: number;
+}
+
 /** (v6 #2a) Bundle de analítica del Hangar. */
 export interface HangarAnalytics {
   totalFlights: number;
@@ -171,8 +178,12 @@ export interface HangarAnalytics {
   totalTimeS: number;
   totalLandings: number;
   globalAvgFpm: number | null;
+  /** (v6.1 #33) Flota completa ordenada; el frontend pinta top 10 + busca. */
   aircraft: HangarAircraft[];
   airports: HangarAirport[];
+  topDestinations: HangarAirport[];
+  topAirlines: HangarCount[];
+  topAircraftTypes: HangarCount[];
   bestLandings: HangarLanding[];
 }
 

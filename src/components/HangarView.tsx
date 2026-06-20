@@ -26,11 +26,16 @@ import {
   Play,
   Star,
   Trash2,
+  MapPin,
+  Building2,
+  Globe2,
+  LayoutGrid,
 } from "lucide-react";
 import type {
   HangarAnalytics,
   HangarAircraft,
   HangarLanding,
+  HangarCount,
   PilotProfile,
   LandingClip,
 } from "../lib/types";
@@ -38,6 +43,8 @@ import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
+import { airportRegion } from "../lib/oaciRegion";
+import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
 
 /**
@@ -85,7 +92,8 @@ export function HangarView() {
         setData(d);
         setProfile(p);
         setClips(c);
-        if (d.aircraft.length) setSelectedKey(d.aircraft[0].key);
+        // (v6.1 #29) NO auto-seleccionamos: por defecto se muestra el
+        // resumen de flota (destinos/aerolíneas/tipos/regiones).
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));
@@ -98,10 +106,11 @@ export function HangarView() {
     };
   }, []);
 
+  // (v6.1 #33) Top 10 por defecto; al buscar, filtra TODA la flota.
   const fleet = useMemo(() => {
     if (!data) return [];
     const q = search.trim().toLowerCase();
-    if (!q) return data.aircraft;
+    if (!q) return data.aircraft.slice(0, 10);
     return data.aircraft.filter((a) =>
       [a.registration, a.model, a.airlineName]
         .filter(Boolean)
@@ -109,8 +118,8 @@ export function HangarView() {
     );
   }, [data, search]);
 
-  const selected =
-    data?.aircraft.find((a) => a.key === selectedKey) ?? data?.aircraft[0] ?? null;
+  // (v6.1 #29) null = vista de resumen de flota (sin avión seleccionado).
+  const selected = data?.aircraft.find((a) => a.key === selectedKey) ?? null;
 
   if (loading) {
     return (
@@ -192,26 +201,54 @@ export function HangarView() {
             </button>
           </div>
           <div className="space-y-1.5">
+            {/* (v6.1 #29) Resumen de flota — vuelve a la vista sin selección. */}
+            <button
+              onClick={() => setSelectedKey(null)}
+              className={`flex w-full items-center gap-2.5 rounded-xl border p-2 text-left transition-colors ${
+                selected == null
+                  ? "border-brand-500/60 bg-brand-500/10 ring-1 ring-brand-500/30"
+                  : "border-transparent bg-slate-950/40 hover:bg-slate-800/40"
+              }`}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 text-brand-300">
+                <LayoutGrid className="h-4 w-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-semibold text-slate-100">
+                  {t("hangar.overview.title")}
+                </div>
+                <div className="truncate text-[11px] text-slate-500">
+                  {t("hangar.overview.subtitle")}
+                </div>
+              </div>
+            </button>
             {fleet.map((ac, i) => (
               <FleetRow
                 key={ac.key}
-                rank={i + 1}
+                rank={search.trim() ? 0 : i + 1}
                 ac={ac}
                 active={ac.key === selected?.key}
                 onClick={() => setSelectedKey(ac.key)}
               />
             ))}
+            {fleet.length === 0 && (
+              <p className="px-1 py-3 text-center text-[11px] text-slate-600">
+                {t("hangar.search_empty")}
+              </p>
+            )}
           </div>
         </section>
 
-        {/* Detalle */}
-        {selected && (
+        {/* Detalle del avión, o resumen de flota si no hay selección. */}
+        {selected ? (
           <AircraftDetail
             ac={selected}
             synthetic={data.bestLandings}
             recorded={clips}
             onReloadClips={reloadClips}
           />
+        ) : (
+          <FleetOverview data={data} />
         )}
       </div>
     </div>
@@ -243,6 +280,138 @@ function HeaderKpi({
   );
 }
 
+// ── (v6.1 #29) Resumen de flota — vista por defecto sin avión seleccionado ──
+
+function FleetOverview({ data }: { data: HangarAnalytics }) {
+  // Regiones más voladas: derivadas de TODOS los vuelos (store) por destino,
+  // agrupando el ICAO por su zona OACI (mismo criterio que los badges).
+  const entries = useFlightLogStore((s) => s.entries);
+  const topRegions = useMemo<HangarCount[]>(() => {
+    const counts = new Map<string, number>();
+    for (const e of entries) {
+      const icao = e.destinationIcao ?? null;
+      if (!icao) continue;
+      const label = airportRegion(icao).label;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([label, count]) => ({ label, code: null, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+  }, [entries]);
+
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 className="mb-1 text-lg font-bold text-slate-100">
+        {t("hangar.overview.heading")}
+      </h2>
+      <p className="mb-4 text-xs text-slate-500">
+        {t("hangar.overview.hint")}
+      </p>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <OverviewCard
+          icon={<MapPin className="h-4 w-4 text-brand-400" />}
+          title={t("hangar.overview.destinations")}
+          rows={data.topDestinations.map((d) => ({
+            label: d.name ?? d.icao,
+            sub: d.icao,
+            count: d.visits,
+          }))}
+        />
+        <OverviewCard
+          icon={<Building2 className="h-4 w-4 text-brand-400" />}
+          title={t("hangar.overview.airlines")}
+          rows={data.topAirlines.map((a) => ({
+            label: a.label,
+            count: a.count,
+            airlineIcao: a.code,
+          }))}
+        />
+        <OverviewCard
+          icon={<Plane className="h-4 w-4 text-brand-400" />}
+          title={t("hangar.overview.aircraft")}
+          rows={data.topAircraftTypes.map((a) => ({
+            label: cleanAtcType(a.label) ?? a.label,
+            count: a.count,
+          }))}
+        />
+        <OverviewCard
+          icon={<Globe2 className="h-4 w-4 text-brand-400" />}
+          title={t("hangar.overview.regions")}
+          rows={topRegions.map((r) => ({ label: r.label, count: r.count }))}
+        />
+      </div>
+    </section>
+  );
+}
+
+interface OverviewRow {
+  label: string;
+  sub?: string | null;
+  count: number;
+  airlineIcao?: string | null;
+}
+
+function OverviewCard({
+  icon,
+  title,
+  rows,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  rows: OverviewRow[];
+}) {
+  const max = rows.reduce((m, r) => Math.max(m, r.count), 0) || 1;
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+        {icon}
+        {title}
+      </h3>
+      {rows.length === 0 ? (
+        <div className="py-6 text-center text-xs text-slate-600">
+          {t("hangar.overview.no_data")}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r, i) => (
+            <div key={i} className="flex items-center gap-2">
+              {r.airlineIcao !== undefined ? (
+                <AirlineLogo icao={r.airlineIcao} name={r.label} size={18} />
+              ) : (
+                <span className="w-4 shrink-0 text-center text-[11px] font-semibold text-slate-600">
+                  {i + 1}
+                </span>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-xs text-slate-200">
+                    {r.label}
+                    {r.sub && (
+                      <span className="ml-1 font-mono text-[10px] text-slate-500">
+                        {r.sub}
+                      </span>
+                    )}
+                  </span>
+                  <span className="shrink-0 text-xs font-semibold text-slate-300">
+                    {r.count}
+                  </span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-brand-500/70"
+                    style={{ width: `${Math.round((r.count / max) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FleetRow({
   rank,
   ac,
@@ -265,7 +434,7 @@ function FleetRow({
       }`}
     >
       <span className="w-4 shrink-0 text-center text-xs font-semibold text-slate-500">
-        {rank}
+        {rank > 0 ? rank : ""}
       </span>
       <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={32} />
       <div className="min-w-0 flex-1">
