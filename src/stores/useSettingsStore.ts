@@ -112,6 +112,8 @@ const DEFAULTS: AppSettings = {
   logsPath: null,
   appDataPath: null,
   simVersion: "",
+  vsSupabaseUrl: "",
+  vsSupabaseKey: "",
 };
 
 const KEY_MAP: Record<string, string> = {

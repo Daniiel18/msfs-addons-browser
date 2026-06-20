@@ -1555,6 +1555,8 @@ const demoApi: Api = {
       logsPath: null,
       appDataPath: null,
       simVersion: "msfs2020", // demo: skip el modal de elección
+      vsSupabaseUrl: "",
+      vsSupabaseKey: "",
     };
   },
   async setAppSetting() {

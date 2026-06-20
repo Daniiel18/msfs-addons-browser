@@ -39,6 +39,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
+import { LiveVsSettings } from "./LiveVsSettings";
 
 /**
  * Modal de configuración.
@@ -303,6 +304,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
                 {/* (v6 #2b) Best Landings — config de grabación. */}
                 <RecordingSettings />
+                {/* (v6 #3) Live VS — credenciales de Supabase. */}
+                <LiveVsSettings />
                 {/* (v4.14.1 #1) Unidades POR CATEGORÍA — TODOS los selectores
                     (botones segmentados) anidados dentro de la MISMA casilla
                     "Units", para elegir cada opción directo sin desplegar nada.

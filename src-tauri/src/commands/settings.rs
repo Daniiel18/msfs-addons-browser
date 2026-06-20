@@ -69,6 +69,10 @@ pub struct AppSettings {
     /// arrancar. Controla el filtro del catálogo de SceneryAddons y la
     /// preferencia de carpeta Community.
     pub sim_version: String,
+    /// (v6 #3) Live VS — credenciales de Supabase Realtime (multiplayer).
+    /// Vacío = función desactivada. Se guardan en `settings`, NO en código.
+    pub vs_supabase_url: String,
+    pub vs_supabase_key: String,
 }
 
 impl Default for AppSettings {
@@ -94,6 +98,8 @@ impl Default for AppSettings {
             logs_path: None,
             app_data_path: None,
             sim_version: String::new(),
+            vs_supabase_url: String::new(),
+            vs_supabase_key: String::new(),
         }
     }
 }
@@ -164,6 +170,8 @@ pub async fn get_app_settings(
         logs_path,
         app_data_path,
         sim_version: kv.get("pref_sim_version").cloned().unwrap_or_default(),
+        vs_supabase_url: kv.get("vs_supabase_url").cloned().unwrap_or_default(),
+        vs_supabase_key: kv.get("vs_supabase_key").cloned().unwrap_or_default(),
     })
 }
 
@@ -290,6 +298,9 @@ fn is_valid_key(key: &str) -> bool {
             | "rec_microphone"
             | "rec_osd_enabled"
             | "rec_fps"
+            // (v6 #3) Live VS — credenciales de Supabase Realtime.
+            | "vs_supabase_url"
+            | "vs_supabase_key"
     )
 }
 

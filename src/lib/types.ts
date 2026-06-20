@@ -406,6 +406,9 @@ export interface AppSettings {
   /** (v5.1.0) Versión de MSFS activa: "msfs2020" | "msfs2024". Vacío =
    *  no elegida → el frontend muestra el modal de elección al arrancar. */
   simVersion: string;
+  /** (v6 #3) Live VS — credenciales de Supabase Realtime (multiplayer). */
+  vsSupabaseUrl: string;
+  vsSupabaseKey: string;
 }
 
 /** Vuelo registrado por el watcher de SimConnect. A diferencia de
