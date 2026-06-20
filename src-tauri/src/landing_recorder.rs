@@ -163,30 +163,40 @@ pub fn engine_status() -> EngineStatus {
 /// FPS de captura. 60 = fluido en monitores de alta tasa de refresco.
 const REC_FPS: u32 = 60;
 
-/// Bitrate de vídeo según resolución y fps (~0.16 bpp). El default de la crate
-/// (5 Mbps) deja el vídeo pixelado en movimiento; esto lo sube a calidad alta.
+/// Bitrate de vídeo según resolución y fps (~0.30 bpp). El default de la crate
+/// (5 Mbps) deja el vídeo pixelado en movimiento; como la 0.1.0 sólo expone
+/// bitrate fijo (CBR, sin VBR/Quality como ScreenRecorderLib de LandingToast),
+/// compensamos con un bitrate ALTO para que las escenas con mucho movimiento
+/// no pierdan detalle. Ej.: 1080p60 ≈ 37 Mbps, 1440p60 ≈ 66 Mbps.
 fn compute_bitrate(width: u32, height: u32, fps: u32) -> u32 {
-    let raw = (width as u64) * (height as u64) * (fps as u64) * 16 / 100;
-    raw.clamp(12_000_000, 50_000_000) as u32
+    let raw = (width as u64) * (height as u64) * (fps as u64) * 30 / 100;
+    raw.clamp(25_000_000, 80_000_000) as u32
 }
 
-/// Resolución del monitor más grande (para igualar la salida a la nativa y no
-/// reescalar = sin borrosidad). Fallback 1920x1080.
+/// Resolución del monitor objetivo, para igualar la salida a la NATIVA y NO
+/// reescalar (el reescalado emborrona). `prefer_current`=true usa el monitor
+/// donde está la ventana de la app (para la prueba); false usa el primario
+/// (mejor apuesta para dónde corre MSFS). Fallback 1920x1080.
 #[cfg(windows)]
-pub fn best_monitor_size(app: &tauri::AppHandle) -> (u32, u32) {
+pub fn target_monitor_size(app: &tauri::AppHandle, prefer_current: bool) -> (u32, u32) {
     use tauri::Manager;
-    app.get_webview_window("main")
-        .and_then(|w| w.available_monitors().ok())
-        .and_then(|mons| {
-            mons.iter()
-                .map(|m| (m.size().width, m.size().height))
-                .max_by_key(|(w, h)| (*w as u64) * (*h as u64))
-        })
+    let Some(win) = app.get_webview_window("main") else {
+        return (1920, 1080);
+    };
+    let mon = if prefer_current {
+        win.current_monitor().ok().flatten()
+    } else {
+        None
+    }
+    .or_else(|| win.primary_monitor().ok().flatten())
+    .or_else(|| win.current_monitor().ok().flatten());
+    mon.map(|m| (m.size().width, m.size().height))
+        .filter(|(w, h)| *w > 0 && *h > 0)
         .unwrap_or((1920, 1080))
 }
 
 #[cfg(not(windows))]
-pub fn best_monitor_size(_app: &tauri::AppHandle) -> (u32, u32) {
+pub fn target_monitor_size(_app: &tauri::AppHandle, _prefer_current: bool) -> (u32, u32) {
     (1920, 1080)
 }
 
@@ -527,7 +537,7 @@ async fn controller_loop(
 
         // Armar el replay buffer al entrar en aproximación.
         if approaching && !on_ground && !armed {
-            let (w, h) = best_monitor_size(&app);
+            let (w, h) = target_monitor_size(&app, false);
             let _ = tx.send(RecCmd::Arm {
                 output_path: cfg.output_path.clone(),
                 clip_seconds: cfg.clip_seconds,
