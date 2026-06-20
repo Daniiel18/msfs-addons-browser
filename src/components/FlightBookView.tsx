@@ -15,15 +15,18 @@ import {
   PlaneLanding,
   Ruler,
   Search,
+  Swords,
   Trash2,
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
 import { WeatherModal } from "./WeatherModal";
+import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
 import { icaoToName } from "../lib/airlineCodes";
@@ -127,6 +130,8 @@ export function FlightBookView() {
   const [checklistOpen, setChecklistOpen] = useState(false);
   // (v4.0.0 — P7) Estado del Weather modal.
   const [weatherOpen, setWeatherOpen] = useState(false);
+  // (v6 #3) Estado del modal de combate Live VS.
+  const [vsOpen, setVsOpen] = useState(false);
   // (v3.6.1 fix I6) Colapso del SelectedFlightPanel. Cuando true,
   // sólo se muestra el header con la ruta y el grade — el resto del
   // mapa queda visible para que el usuario pueda ver la trayectoria
@@ -488,6 +493,8 @@ export function FlightBookView() {
               checklistOpen={checklistOpen && selectedFlightId != null}
               onToggleWeather={() => setWeatherOpen((v) => !v)}
               weatherOpen={weatherOpen && selectedFlightId != null}
+              onToggleVs={() => setVsOpen((v) => !v)}
+              vsOpen={vsOpen && selectedFlightId != null}
             />
           )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
@@ -516,6 +523,12 @@ export function FlightBookView() {
                 entry={selectedFlight}
                 onClose={() => setWeatherOpen(false)}
               />
+            )}
+
+            {/* (v6 #3) Modal de combate Live VS — comparativa Daniel vs
+                Héctor (avión, aerolínea, matrícula, foto, FPM en vivo). */}
+            {vsOpen && selectedFlightId != null && (
+              <VsCombatModal onClose={() => setVsOpen(false)} />
             )}
 
             {/* GLASS OVERLAY — card de detalle flotando sobre el mapa.
@@ -1536,7 +1549,7 @@ async function fetchPlanespottersPhoto(reg: string): Promise<string | null> {
 /** Hook React que devuelve la URL de la foto cuando la registration
  *  existe y la API responde. Si la entrada está en cache (memoria o
  *  localStorage), devuelve el valor inmediatamente sin parpadeo. */
-function useAircraftPhoto(registration: string | null): string | null {
+export function useAircraftPhoto(registration: string | null): string | null {
   const initial = (() => {
     if (!registration) return null;
     const reg = registration.trim().toUpperCase();
@@ -1740,6 +1753,8 @@ function DetailActionsBar({
   checklistOpen,
   onToggleWeather,
   weatherOpen,
+  onToggleVs,
+  vsOpen,
 }: {
   selectedFlightId: number | null;
   selectedFlightSource: string | null;
@@ -1747,8 +1762,13 @@ function DetailActionsBar({
   checklistOpen: boolean;
   onToggleWeather: () => void;
   weatherOpen: boolean;
+  onToggleVs: () => void;
+  vsOpen: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
+  // (v6 #3) Live VS — el tab "Crew VS" solo se habilita cuando el rival
+  // (Daniel/Héctor) está presente en el mismo canal (misma ruta+día).
+  const vsMatchReady = useLiveVsStore((s) => s.matchReady);
   // (v4.0.0 — P3 + P3.2) Tabs gated por source del vuelo:
   //   · **Checklist** — solo vuelos hechos en SimFleet (`simconnect`).
   //     Para VAS imports el rubric depende de simvars que no existen
@@ -1780,12 +1800,24 @@ function DetailActionsBar({
       onClick: onToggleWeather,
       active: weatherOpen,
     },
+    {
+      // (v6 #3) Crew VS — duelo en vivo Daniel vs Héctor. Habilitado solo
+      // cuando hay rival presente; sale del filtro si no es vuelo SimFleet.
+      key: "vs" as const,
+      icon: <Swords className="h-3.5 w-3.5" />,
+      label: t("vs.tab"),
+      dot: vsMatchReady ? "bg-fuchsia-400" : "bg-slate-500",
+      enabled: vsMatchReady,
+      onClick: onToggleVs,
+      active: vsOpen,
+    },
     // (v4.23.0) Tab de NOTAMs eliminada — pedido del usuario ("esto no
     // me interesa ya"). NotamsModal borrado junto con sus i18n keys.
   ];
   const tabs = allTabs.filter((t) => {
     if (t.key === "weather" && !isSimflownFlight) return false;
     if (t.key === "checklist" && !isSimflownFlight) return false;
+    if (t.key === "vs" && !isSimflownFlight) return false;
     return true;
   });
   // Grid responsive: el ancho de los tabs se ajusta según cuántos
@@ -1811,13 +1843,17 @@ function DetailActionsBar({
               ? tab.active
                 ? t("fb.checklist.close.tooltip")
                 : t("fb.checklist.open.tooltip")
-              : checklistDisabled && tab.key === "checklist"
-                ? t("fb.checklist.disabled.tooltip")
-                : t("fb.tabs.coming_soon", { feature: tab.label })
+              : tab.key === "vs"
+                ? t("vs.waiting")
+                : checklistDisabled && tab.key === "checklist"
+                  ? t("fb.checklist.disabled.tooltip")
+                  : t("fb.tabs.coming_soon", { feature: tab.label })
           }
           className={`relative flex flex-col items-center gap-1 rounded-xl border px-2 py-2 text-[10px] font-medium ring-1 backdrop-blur-xl transition-all ${
             tab.active
-              ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-100 ring-emerald-500/30"
+              ? tab.key === "vs"
+                ? "border-fuchsia-500/60 bg-fuchsia-500/15 text-fuchsia-100 ring-fuchsia-500/30"
+                : "border-emerald-500/60 bg-emerald-500/15 text-emerald-100 ring-emerald-500/30"
               : tab.enabled
                 ? "border-slate-700/60 bg-slate-950/65 text-slate-200 ring-slate-800/60 hover:border-slate-600 hover:bg-slate-900/75"
                 : "border-slate-700/60 bg-slate-950/65 text-slate-300 opacity-60 ring-slate-800/60 disabled:cursor-not-allowed"

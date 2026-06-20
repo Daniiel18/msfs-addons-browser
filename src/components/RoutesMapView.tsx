@@ -8,6 +8,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { greatCircleLine } from "../lib/greatCircle";
 import { t } from "../lib/i18n";
 import type { RouteFix } from "../lib/types";
@@ -61,6 +62,11 @@ const TERMINATOR_STEP = 1;
  *  Path tomado del set Material Icons (`flight` / `airplanemode_active`),
  *  un icono estándar de la industria — no inventado. */
 const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#fbbf24" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
+
+/** (v6 #3) Avión del RIVAL en Live VS — mismo silueta cenital pero en
+ *  fucsia para distinguirlo del avión propio (ámbar). Se dibuja sobre el
+ *  ROUTEMAP existente, no en un mapa nuevo. */
+const RIVAL_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#e879f9" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
 
 // (v4.33.0) Persistencia de la CÁMARA del routemap. FlightBook se
 // desmonta al cambiar de pestaña y MapLibre re-crea el mapa en la
@@ -164,6 +170,10 @@ export function RoutesMapView({
   // poder hacer setLngLat + rotación sin reconstruir el elemento cada
   // tick — el rerender de React no toca el mapa, sólo este efecto.
   const planeMarkerRef = useRef<maplibregl.Marker | null>(null);
+  // (v6 #3) Marker DOM del avión RIVAL (Live VS). Se mantiene en ref por
+  // las mismas razones que el propio: setLngLat/rotación sin reconstruir.
+  const rivalMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const rivalElementRef = useRef<HTMLDivElement | null>(null);
   // (v4.18.0) Panel de detalle del vuelo EN VIVO (estilo VATSIM-Radar):
   // X lo cierra, ^ lo minimiza, ⌖ centra el mapa en el avión, y un click
   // en el icono del avión del mapa lo reabre.
@@ -188,6 +198,11 @@ export function RoutesMapView({
   // (v1.1.4) Estado en vivo del watcher SimConnect — usado para
   // pintar el avión en el mapa cuando hay vuelo en curso.
   const flightStatus = useFlightLogStore((s) => s.status);
+  // (v6 #3) Posición en vivo del rival (Live VS). Llega por broadcast del
+  // canal Supabase; la pintamos en ESTE mapa (no en uno nuevo).
+  const rivalPos = useLiveVsStore((s) => s.rivalPos);
+  const rivalName = useLiveVsStore((s) => s.rival?.name ?? null);
+  const rivalPosAt = useLiveVsStore((s) => s.rivalPosAt);
   // (v4.27.0) Seguimiento sticky del avión en vivo. Cuando el usuario
   // pulsa "Center on aircraft" lo activamos; cada nueva posición del
   // watcher re-centra el mapa automáticamente. Solo un DRAG del mapa
@@ -1164,6 +1179,51 @@ export function RoutesMapView({
     flightStatus?.currentLon,
     flightStatus?.currentHeadingDeg,
   ]);
+
+  // (v6 #3) Marker del avión RIVAL en Live VS. Misma mecánica que el
+  // propio pero alimentado por `rivalPos` (broadcast Supabase). Se oculta
+  // si la posición está "stale" (>15s sin update) — el rival cerró el sim
+  // o perdió conexión. Se pinta en el routemap existente.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const fresh = rivalPos != null && Date.now() - rivalPosAt < 15000;
+    if (!fresh) {
+      if (rivalMarkerRef.current) {
+        rivalMarkerRef.current.remove();
+        rivalMarkerRef.current = null;
+        rivalElementRef.current = null;
+      }
+      return;
+    }
+    const { lat, lon, heading } = rivalPos;
+    if (!rivalMarkerRef.current) {
+      const el = document.createElement("div");
+      el.style.width = "32px";
+      el.style.height = "32px";
+      el.style.display = "flex";
+      el.style.alignItems = "center";
+      el.style.justifyContent = "center";
+      el.style.filter = "drop-shadow(0 0 6px rgba(232, 121, 249, 0.6))";
+      el.style.transition = "transform 250ms linear";
+      el.innerHTML = RIVAL_PLANE_SVG;
+      if (rivalName) el.title = rivalName;
+      rivalElementRef.current = el;
+      rivalMarkerRef.current = new maplibregl.Marker({
+        element: el,
+        rotationAlignment: "map",
+        pitchAlignment: "map",
+      })
+        .setLngLat([lon, lat])
+        .addTo(map);
+    } else {
+      rivalMarkerRef.current.setLngLat([lon, lat]);
+      if (rivalName && rivalElementRef.current) {
+        rivalElementRef.current.title = rivalName;
+      }
+    }
+    rivalMarkerRef.current.setRotation(heading);
+  }, [mapReady, rivalPos, rivalPosAt, rivalName]);
 
   // Auto-fit bounds. Doble lógica:
   //   1. Modo globo (sin selección): fit a la primera carga de
