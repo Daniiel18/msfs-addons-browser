@@ -124,6 +124,7 @@ export function UpdateWizard() {
         addonTitle: addon.name,
         source: addon.source,
         method,
+        addonSimulator: addon.simulator,
       });
       shift();
       rescan().catch(() => {});

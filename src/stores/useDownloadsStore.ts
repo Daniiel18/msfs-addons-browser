@@ -44,6 +44,9 @@ interface DownloadsState {
     addonTitle: string;
     source: string;
     method: DownloadMethod;
+    /** (v6 #1 fix) Compatibilidad de sim ("MSFS 2020/2024") para la
+     *  oferta de cross-link tras instalar. */
+    addonSimulator?: string;
   }) => Promise<void>;
   cancel: (id: string) => Promise<void>;
   pause: (id: string) => Promise<void>;
@@ -149,13 +152,13 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     }
   },
 
-  async start({ addonId, addonTitle, source, method }) {
+  async start({ addonId, addonTitle, source, method, addonSimulator }) {
     // Intentionally do NOT auto-open the panel here. The button in the
     // header has a live badge count, and surprising the user with a
     // full-screen scrim on every click is worse UX than letting them
     // open the panel themselves when they care.
     try {
-      const job = await api.startDownload({ addonId, addonTitle, source, method });
+      const job = await api.startDownload({ addonId, addonTitle, source, method, addonSimulator });
       // Ensure the store has the initial state even if the event for
       // "queued" beat us (race between invoke-return and event-emit).
       get().reconcile(job);

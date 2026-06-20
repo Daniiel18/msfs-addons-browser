@@ -90,6 +90,11 @@ interface StartDownloadInput {
   addonTitle: string;
   source: string;
   method: DownloadMethod;
+  /** (v6 #1 fix) Etiqueta de compatibilidad de simulador del addon
+   *  ("MSFS 2020/2024" | "MSFS 2020" | "MSFS 2024"). El backend la usa
+   *  para ofrecer el cross-link tras instalar — el título limpio no
+   *  menciona los años. Opcional por retro-compatibilidad. */
+  addonSimulator?: string;
 }
 
 interface Api {
@@ -538,12 +543,13 @@ const realApi: Api = {
   openLocalPath: (path) => openPath(path),
 
   listDownloads: () => invoke<DownloadJob[]>("list_downloads"),
-  startDownload: ({ addonId, addonTitle, source, method }) =>
+  startDownload: ({ addonId, addonTitle, source, method, addonSimulator }) =>
     invoke<DownloadJob>("start_download", {
       addonId,
       addonTitle,
       source,
       method,
+      addonSimulator: addonSimulator ?? "",
     }),
   cancelDownload: (id) => invoke<void>("cancel_download", { id }),
   pauseDownload: (id) => invoke<void>("pause_download", { id }),

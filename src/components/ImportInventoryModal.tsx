@@ -186,6 +186,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
         addonTitle: match.name,
         source: match.source,
         method,
+        addonSimulator: match.simulator,
       });
       queued++;
     }

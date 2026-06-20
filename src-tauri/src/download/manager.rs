@@ -59,6 +59,12 @@ struct Inner {
     /// progreso (sin él, una descarga de 5min hace ~600 inserts).
     /// Cambios de fase ignoran este map y persisten siempre.
     last_persisted: RwLock<HashMap<String, Instant>>,
+    /// (v6 #1 fix) Compatibilidad de simulador por job_id (ej.
+    /// "MSFS 2020/2024"). El `addon_title` del job es el nombre LIMPIO
+    /// (sin los años), así que no sirve para detectar doble-compat; el
+    /// frontend nos pasa el campo `simulator` autoritativo y lo
+    /// guardamos aquí para la oferta de cross-link tras instalar.
+    sim_compat: RwLock<HashMap<String, String>>,
 }
 
 impl DownloadManager {
@@ -72,6 +78,7 @@ impl DownloadManager {
                 db,
                 torrent_slot: Semaphore::new(1),
                 last_persisted: RwLock::default(),
+                sim_compat: RwLock::default(),
             }),
         }
     }
@@ -90,9 +97,20 @@ impl DownloadManager {
         addon_title: String,
         source: String,
         method: DownloadMethod,
+        addon_simulator: String,
     ) -> anyhow::Result<DownloadJob> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
+
+        // (v6 #1 fix) Recordamos la compatibilidad de simulador para la oferta
+        // de cross-link post-instalación (el addon_title viene sin los años).
+        if !addon_simulator.trim().is_empty() {
+            self.inner
+                .sim_compat
+                .write()
+                .await
+                .insert(id.clone(), addon_simulator);
+        }
 
         let kind_str = match method.kind {
             DownloadKind::Torrent => "torrent",
@@ -734,12 +752,24 @@ impl DownloadManager {
                 // una oferta para enlazar el paquete a la otra Community vía
                 // junction NTFS. El frontend muestra un modal post-instalación.
                 if let Some(snapshot) = self.snapshot(id).await {
-                    if let Some(offer) =
-                        crate::cross_link::build_offer(&snapshot.addon_title, &res.packages)
-                    {
+                    // La etiqueta de compatibilidad autoritativa es el campo
+                    // `simulator` ("MSFS 2020/2024"); el addon_title es el
+                    // nombre limpio. Caemos al título sólo si no se guardó.
+                    let compat = self
+                        .inner
+                        .sim_compat
+                        .read()
+                        .await
+                        .get(id)
+                        .cloned()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| snapshot.addon_title.clone());
+                    if let Some(offer) = crate::cross_link::build_offer(&compat, &res.packages) {
                         let _ = self.inner.app.emit("cross-link://offer", &offer);
                     }
                 }
+                // Liberamos el registro de compat de este job (ya consumido).
+                self.inner.sim_compat.write().await.remove(id);
 
                 // (v5.0.0) Motor de rendimiento: al DESCARGAR un aeropuerto
                 // bajamos la nota "Optional Configuration" de su página en

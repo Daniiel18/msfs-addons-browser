@@ -53,12 +53,16 @@ pub fn is_dual_compat(title: &str) -> bool {
 
 /// Construye una oferta de cross-link SI:
 ///   · hay 2020 **y** 2024 instalados, y
-///   · `title` marca doble compatibilidad, y
+///   · `compat_label` marca doble compatibilidad, y
 ///   · hay al menos un paquete y se localiza la Community de la otra versión.
 ///
+/// `compat_label` debe ser la etiqueta de compatibilidad de simulador (campo
+/// `simulator`, ej. "MSFS 2020/2024"), NO el nombre limpio del addon — éste no
+/// menciona los años y haría que la oferta nunca se dispare.
+///
 /// Devuelve `None` en cualquier otro caso (no se ofrece nada).
-pub fn build_offer(title: &str, packages: &[InstalledPackage]) -> Option<CrossLinkOffer> {
-    if packages.is_empty() || !is_dual_compat(title) {
+pub fn build_offer(compat_label: &str, packages: &[InstalledPackage]) -> Option<CrossLinkOffer> {
+    if packages.is_empty() || !is_dual_compat(compat_label) {
         return None;
     }
     let (has2020, has2024) = community::detect_installed_sims();

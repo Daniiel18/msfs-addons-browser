@@ -151,6 +151,7 @@ export function MapAirportCard({
         addonTitle: addon.name,
         source: addon.source,
         method,
+        addonSimulator: addon.simulator,
       });
       await rescan();
       onClose();

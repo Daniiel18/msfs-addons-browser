@@ -197,6 +197,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
         addonTitle: addon.name,
         source: addon.source,
         method,
+        addonSimulator: addon.simulator,
       });
       await rescan();
       onClose();

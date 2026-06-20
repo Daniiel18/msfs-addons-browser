@@ -330,6 +330,7 @@ export function ResultCard({ addon }: Props) {
       addonTitle: addon.name,
       source: addon.source,
       method,
+      addonSimulator: addon.simulator,
     });
   };
 

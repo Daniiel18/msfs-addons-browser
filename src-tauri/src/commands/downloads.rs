@@ -13,16 +13,24 @@ pub async fn start_download(
     addon_title: String,
     source: String,
     method: DownloadMethod,
+    #[allow(non_snake_case)] addon_simulator: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<DownloadJob, String> {
+    let addon_simulator = addon_simulator.unwrap_or_default();
     cmd_log!(
         "start_download",
-        "addon={} title={:?} source={} method={:?} url={}",
-        addon_id, addon_title, source, method.kind, method.url
+        "addon={} title={:?} sim={:?} source={} method={:?} url={}",
+        addon_id, addon_title, addon_simulator, source, method.kind, method.url
     );
     let result = state
         .downloads
-        .start(addon_id.clone(), addon_title.clone(), source.clone(), method.clone())
+        .start(
+            addon_id.clone(),
+            addon_title.clone(),
+            source.clone(),
+            method.clone(),
+            addon_simulator,
+        )
         .await
         .map_err(|e| {
             tracing::error!(target: "download", "start_download error: {e:#}");
