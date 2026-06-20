@@ -1,16 +1,8 @@
 import { useEffect, useState } from "react";
-import {
-  Film,
-  ChevronDown,
-  FolderOpen,
-  CheckCircle2,
-  Loader2,
-  Video,
-} from "lucide-react";
+import { Film, ChevronDown, FolderOpen, CheckCircle2 } from "lucide-react";
 import type { RecordingConfig, EngineStatus } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
-import { useToastStore } from "../stores/useToastStore";
 
 /**
  * (v6 #2b) Ajustes de "Best Landings" (grabación). Motor: windows-record
@@ -23,8 +15,6 @@ export function RecordingSettings() {
   const [open, setOpen] = useState(false);
   const [cfg, setCfg] = useState<RecordingConfig | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
-  const [testing, setTesting] = useState(false);
-  const push = useToastStore((s) => s.push);
 
   useEffect(() => {
     api.recordingConfig().then(setCfg).catch(() => {});
@@ -38,19 +28,6 @@ export function RecordingSettings() {
     setCfg((c) => (c ? { ...c, ...p } : c));
 
   if (!cfg) return null;
-
-  const testClip = async () => {
-    setTesting(true);
-    push({ kind: "info", title: t("rec.testing"), ttlMs: 10000 });
-    try {
-      await api.recordingTestClip(8);
-      push({ kind: "success", title: t("rec.test_ok") });
-    } catch (e) {
-      push({ kind: "error", title: t("rec.test_err"), message: String(e), ttlMs: 9000 });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   const pickFolder = async () => {
     const folder = await api.pickFolderPath().catch(() => null);
@@ -165,32 +142,18 @@ export function RecordingSettings() {
             </div>
           </Field>
 
-          {/* Motor + grabar prueba */}
-          <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-2.5 py-2">
-            <span className="flex items-center gap-1.5 text-[11px]">
-              {engine?.available ? (
-                <>
-                  <CheckCircle2 className="h-3.5 w-3.5 text-brand-400" />
-                  <span className="text-slate-400">
-                    {t("rec.engine_ok", { engine: engine.engine })}
-                  </span>
-                </>
-              ) : (
-                <span className="text-amber-300">{t("rec.engine_unavailable")}</span>
-              )}
-            </span>
-            <button
-              onClick={testClip}
-              disabled={testing || !engine?.available}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900/60 px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:border-brand-500/40 disabled:opacity-50"
-            >
-              {testing ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Video className="h-3.5 w-3.5" />
-              )}
-              {t("rec.test")}
-            </button>
+          {/* Estado del motor */}
+          <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/40 px-2.5 py-2 text-[11px]">
+            {engine?.available ? (
+              <>
+                <CheckCircle2 className="h-3.5 w-3.5 text-brand-400" />
+                <span className="text-slate-400">
+                  {t("rec.engine_ok", { engine: engine.engine })}
+                </span>
+              </>
+            ) : (
+              <span className="text-amber-300">{t("rec.engine_unavailable")}</span>
+            )}
           </div>
 
           <p className="text-[11px] leading-relaxed text-slate-600">
