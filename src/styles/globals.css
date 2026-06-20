@@ -438,3 +438,23 @@ html.light input::placeholder {
 .perf-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.7);
 }
+
+/* (v6.1 #32) Impresión del reporte de mantenimiento: al imprimir ocultamos
+   toda la app y mostramos SOLO la hoja del reporte (.hangar-print-area), que
+   pasa a flujo normal para ocupar la página. Exporta a PDF con el diálogo del
+   sistema (Guardar como PDF). */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  .hangar-print-area,
+  .hangar-print-area * {
+    visibility: visible !important;
+  }
+  .hangar-print-area {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}

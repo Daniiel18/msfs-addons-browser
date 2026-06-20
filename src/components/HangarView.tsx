@@ -28,6 +28,11 @@ import {
   Building2,
   Globe2,
   LayoutGrid,
+  Wrench,
+  FileText,
+  Printer,
+  Clock,
+  X,
 } from "lucide-react";
 import type {
   HangarAnalytics,
@@ -42,6 +47,11 @@ import { t } from "../lib/i18n";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
 import { airportRegion } from "../lib/oaciRegion";
+import {
+  deriveMaintenance,
+  type MaintenanceData,
+  type MaintenanceReport,
+} from "../lib/hangarMaintenance";
 import { useAircraftPhoto } from "./FlightBookView";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
@@ -530,6 +540,8 @@ function AircraftDetail({
   const push = useToastStore((s) => s.push);
   // (v6.1 #26) Foto del avión (planespotters por matrícula) de fondo del banner.
   const photo = useAircraftPhoto(ac.registration ?? null);
+  // (v6.1 #31 #32) Mantenimiento sintético derivado del uso (determinista).
+  const mx = useMemo(() => deriveMaintenance(ac), [ac]);
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
   const location =
     ac.lastAirportName && ac.lastIcao
@@ -621,7 +633,7 @@ function AircraftDetail({
       </div>
 
       <div className="p-4">
-        {tab === "overview" ? (
+        {tab === "overview" && (
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <GearHealthCard ac={ac} />
@@ -633,13 +645,318 @@ function AircraftDetail({
               onReload={onReloadClips}
             />
           </>
-        ) : (
-          <div className="flex h-40 items-center justify-center text-sm text-slate-500">
-            {t("hangar.tab_soon")}
-          </div>
         )}
+        {tab === "performance" && <PerformanceTab ac={ac} mx={mx} />}
+        {tab === "maintenance" && <MaintenanceTab mx={mx} />}
+        {tab === "flights" && <FlightsTab ac={ac} />}
+        {tab === "history" && <HistoryTab mx={mx} />}
+        {tab === "documents" && <DocumentsTab ac={ac} mx={mx} />}
       </div>
     </section>
+  );
+}
+
+// ── (v6.1 #31 #32) Pestañas: Performance / Maintenance / Flights / Documents ─
+
+function hours(s: number): string {
+  return `${Math.round(s / 3600).toLocaleString()} h`;
+}
+function money(n: number): string {
+  return `$${Math.round(n).toLocaleString()}`;
+}
+const STATUS_COLOR: Record<string, string> = {
+  good: "#3fbf78",
+  watch: "#f59e0b",
+  alert: "#f43f5e",
+};
+
+function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 text-xl font-bold text-slate-100">{value}</div>
+      {sub && <div className="text-[11px] text-slate-500">{sub}</div>}
+    </div>
+  );
+}
+
+function PerformanceTab({ ac, mx }: { ac: HangarAircraft; mx: MaintenanceData }) {
+  const butter = ac.recentLandings.filter((l) => l.grade === "butter").length;
+  const rate =
+    ac.recentLandings.length > 0
+      ? Math.round((butter / ac.recentLandings.length) * 100)
+      : 0;
+  const avgLeg =
+    ac.flights > 0 ? Math.round(ac.totalNm / ac.flights) : 0;
+  return (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <StatTile label={t("hangar.kpi.miles")} value={`${Math.round(ac.totalNm).toLocaleString()} nm`} />
+      <StatTile label={t("hangar.perf.hours")} value={hours(ac.totalTimeS)} />
+      <StatTile label={t("hangar.perf.cycles")} value={mx.cycles.toLocaleString()} />
+      <StatTile label={t("hangar.perf.avg_leg")} value={`${avgLeg.toLocaleString()} nm`} />
+      <StatTile label={t("hangar.fpm.avg")} value={ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)} fpm` : "—"} />
+      <StatTile label={t("hangar.perf.worst")} value={ac.worstLandingFpm != null ? `${ac.worstLandingFpm} fpm` : "—"} />
+      <StatTile label={t("hangar.perf.butter_rate")} value={`${rate}%`} sub={`${butter}/${ac.recentLandings.length}`} />
+      <StatTile label={t("hangar.perf.hard")} value={String(ac.hardLandings)} />
+    </div>
+  );
+}
+
+function ComponentBar({ label, health, status, nextDueHours }: {
+  label: string; health: number; status: string; nextDueHours: number;
+}) {
+  const color = STATUS_COLOR[status] ?? "#38bdf8";
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-200">{label}</span>
+        <span className="text-xs font-semibold" style={{ color }}>{health}%</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+        <div className="h-full rounded-full" style={{ width: `${health}%`, backgroundColor: color }} />
+      </div>
+      <div className="mt-1.5 text-[10px] text-slate-500">
+        {nextDueHours <= 0
+          ? t("hangar.mx.overdue")
+          : t("hangar.mx.next_in", { n: nextDueHours.toLocaleString() })}
+      </div>
+    </div>
+  );
+}
+
+function MaintenanceTab({ mx }: { mx: MaintenanceData }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatTile label={t("hangar.mx.total_hours")} value={`${mx.hours.toLocaleString()} h`} />
+        <StatTile label={t("hangar.perf.cycles")} value={mx.cycles.toLocaleString()} />
+        <StatTile label={t("hangar.mx.next_service")} value={`${Math.max(0, mx.nextServiceHours).toLocaleString()} h`} />
+        <StatTile label={t("hangar.mx.lifetime_cost")} value={money(mx.lifetimeCost)} />
+      </div>
+      <div>
+        <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+          <Wrench className="h-4 w-4 text-brand-400" />
+          {t("hangar.mx.components")}
+        </h4>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {mx.components.map((c) => (
+            <ComponentBar key={c.key} label={c.label} health={c.healthPct} status={c.status} nextDueHours={c.nextDueHours} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FlightsTab({ ac }: { ac: HangarAircraft }) {
+  const flights = [...ac.recentLandings].reverse(); // reciente→antiguo
+  if (flights.length === 0) {
+    return <div className="py-10 text-center text-sm text-slate-500">{t("hangar.flights.empty")}</div>;
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-800">
+      <table className="w-full text-left text-xs">
+        <thead className="bg-slate-900/60 text-[10px] uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="px-3 py-2">{t("hangar.flights.date")}</th>
+            <th className="px-3 py-2">{t("hangar.flights.dest")}</th>
+            <th className="px-3 py-2 text-right">{t("hangar.flights.time")}</th>
+            <th className="px-3 py-2 text-right">FPM</th>
+          </tr>
+        </thead>
+        <tbody>
+          {flights.map((l, i) => (
+            <tr key={i} className="border-t border-slate-800/60">
+              <td className="px-3 py-2 text-slate-300">{fmtDate(l.date)}</td>
+              <td className="px-3 py-2 text-slate-200">
+                {l.airportName ?? l.icao ?? "—"}
+              </td>
+              <td className="px-3 py-2 text-right text-slate-400">
+                {l.flightTimeS ? hours(l.flightTimeS) : "—"}
+              </td>
+              <td className="px-3 py-2 text-right font-semibold" style={{ color: GRADE_COLOR[l.grade] ?? "#94a3b8" }}>
+                {l.fpm}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function HistoryTab({ mx }: { mx: MaintenanceData }) {
+  return (
+    <div className="space-y-2">
+      {mx.reports.map((r) => (
+        <div key={r.id} className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white" style={{ backgroundColor: r.shop.color }}>
+            {r.shop.code}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-100">{r.type} · {r.shop.name}</span>
+              <span className="shrink-0 text-[11px] text-slate-500">{fmtDate(r.date)}</span>
+            </div>
+            <p className="mt-0.5 truncate text-[11px] text-slate-400">{r.summary}</p>
+            <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500">
+              <span><Clock className="mr-0.5 inline h-3 w-3" />{r.hoursAtService.toLocaleString()} h</span>
+              <span className="font-semibold text-slate-300">{money(r.totalCost)}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DocumentsTab({ ac, mx }: { ac: HangarAircraft; mx: MaintenanceData }) {
+  const [report, setReport] = useState<MaintenanceReport | null>(null);
+  return (
+    <div>
+      <p className="mb-3 text-[11px] text-slate-500">{t("hangar.docs.hint")}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {mx.reports.map((r) => (
+          <button
+            key={r.id}
+            onClick={() => setReport(r)}
+            className="group flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left hover:border-brand-500/40"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-brand-300 ring-1 ring-slate-800 group-hover:text-brand-200">
+              <FileText className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs font-semibold text-slate-100">
+                {t("hangar.docs.report")} · {r.type}
+              </div>
+              <div className="truncate text-[11px] text-slate-500">
+                {r.shop.name} · {fmtDate(r.date)}
+              </div>
+              <div className="text-[11px] font-semibold text-slate-300">{money(r.totalCost)}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+      {report && (
+        <ReportModal ac={ac} report={report} hoursTotal={mx.hours} onClose={() => setReport(null)} />
+      )}
+    </div>
+  );
+}
+
+/** Reporte de mantenimiento imprimible (→ PDF con el diálogo del sistema). */
+function ReportModal({ ac, report, hoursTotal, onClose }: {
+  ac: HangarAircraft; report: MaintenanceReport; hoursTotal: number; onClose: () => void;
+}) {
+  const r = report;
+  const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : "—";
+  return (
+    <div className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-6 backdrop-blur-sm print:bg-white print:p-0" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl print:max-w-none print:rounded-none print:shadow-none"
+      >
+        {/* Encabezado del taller */}
+        <div className="flex items-start justify-between border-b-2 pb-4" style={{ borderColor: r.shop.color }}>
+          <div className="flex items-center gap-3">
+            <span className="flex h-12 w-12 items-center justify-center rounded-lg text-lg font-black text-white" style={{ backgroundColor: r.shop.color }}>
+              {r.shop.code}
+            </span>
+            <div>
+              <div className="text-lg font-bold">{r.shop.name}</div>
+              <div className="text-xs text-slate-500">{t("hangar.docs.work_order")} #{r.id.slice(-6).toUpperCase()}</div>
+            </div>
+          </div>
+          <div className="text-right text-xs text-slate-500">
+            <div className="font-semibold text-slate-700">{t("hangar.docs.report")}</div>
+            <div>{fmtDate(r.date)}</div>
+          </div>
+        </div>
+
+        {/* Datos del avión */}
+        <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-1 text-sm sm:grid-cols-4">
+          <Field2 k={t("hangar.docs.reg")} v={ac.registration ?? "—"} />
+          <Field2 k={t("hangar.docs.model")} v={model} />
+          <Field2 k={t("hangar.docs.airframe_hours")} v={`${r.hoursAtService.toLocaleString()} h`} />
+          <Field2 k={t("hangar.perf.cycles")} v={r.cyclesAtService.toLocaleString()} />
+          <Field2 k={t("hangar.docs.check_type")} v={r.type} />
+          <Field2 k={t("hangar.docs.mechanic")} v={r.mechanic} />
+          <Field2 k={t("hangar.docs.total_hours")} v={`${hoursTotal.toLocaleString()} h`} />
+          <Field2 k={t("hangar.docs.next_due")} v={`${fmtDate(r.nextDueDate)} (${r.nextDueHours} h)`} />
+        </div>
+
+        {/* Resumen */}
+        <div className="mt-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.docs.summary")}</div>
+          <p className="mt-1 text-sm">{r.summary}</p>
+        </div>
+
+        {/* Tabla de piezas */}
+        <table className="mt-4 w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-300 text-xs uppercase tracking-wide text-slate-500">
+              <th className="py-1.5">{t("hangar.docs.part")}</th>
+              <th className="py-1.5">{t("hangar.docs.pn")}</th>
+              <th className="py-1.5 text-center">{t("hangar.docs.qty")}</th>
+              <th className="py-1.5">{t("hangar.docs.reason")}</th>
+              <th className="py-1.5 text-right">{t("hangar.docs.cost")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.parts.map((p, i) => (
+              <tr key={i} className="border-b border-slate-200">
+                <td className="py-1.5 font-medium">{p.name}</td>
+                <td className="py-1.5 font-mono text-xs text-slate-600">{p.partNumber}</td>
+                <td className="py-1.5 text-center">{p.qty}</td>
+                <td className="py-1.5 text-xs text-slate-600">{p.reason}</td>
+                <td className="py-1.5 text-right">{money(p.cost * p.qty)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {/* Totales */}
+        <div className="mt-4 ml-auto w-56 space-y-1 text-sm">
+          <Row k={t("hangar.docs.parts")} v={money(r.partsCost)} />
+          <Row k={t("hangar.docs.labor")} v={money(r.laborCost)} />
+          <div className="flex justify-between border-t border-slate-300 pt-1 font-bold">
+            <span>{t("hangar.docs.total")}</span>
+            <span>{money(r.totalCost)}</span>
+          </div>
+        </div>
+
+        <p className="mt-6 text-[10px] text-slate-400">{t("hangar.docs.disclaimer")}</p>
+
+        {/* Acciones (no se imprimen) */}
+        <div className="mt-6 flex justify-end gap-2 print:hidden">
+          <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
+            <X className="h-4 w-4" />
+            {t("common.close")}
+          </button>
+          <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
+            <Printer className="h-4 w-4" />
+            {t("hangar.docs.print")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field2({ k, v }: { k: string; v: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-slate-400">{k}</div>
+      <div className="font-medium">{v}</div>
+    </div>
+  );
+}
+function Row({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex justify-between text-slate-600">
+      <span>{k}</span>
+      <span className="font-medium text-slate-800">{v}</span>
+    </div>
   );
 }
 
