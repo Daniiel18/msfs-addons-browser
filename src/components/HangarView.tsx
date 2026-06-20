@@ -960,110 +960,140 @@ function Row({ k, v }: { k: string; v: string }) {
   );
 }
 
-// ── (v6.1 #24) Tren de aterrizaje ilustrado según el tipo de avión ──────────
-
-type GearVariant = "wide" | "narrow" | "regional" | "light";
-
-/** Clasifica el tren por el modelo/tipo. Heurística por tokens del nombre. */
-function gearVariant(model: string | null): GearVariant {
-  const m = (model ?? "").toUpperCase();
-  const has = (...ks: string[]) => ks.some((k) => m.includes(k));
-  // Widebody → bogies de 4+ ruedas en tándem.
-  if (
-    has(
-      "747", "777", "787", "767", "A330", "A340", "A350", "A380", "MD11",
-      "MD-11", "DC10", "DC-10", "L1011", "IL96", "A300", "A310",
-    )
-  ) {
-    return "wide";
-  }
-  // Regional / turboprop → tren ligero de 2 ruedas.
-  if (
-    has(
-      "CRJ", "ERJ", "E135", "E145", "E170", "E175", "DH8", "DHC", "AT4", "AT7",
-      "ATR", "Q400", "SF34", "SAAB", "BEH", "B190", "JS", "D328",
-    )
-  ) {
-    return "regional";
-  }
-  // Aviación general / ligeros → una rueda pequeña por pata.
-  if (
-    has(
-      "C150", "C152", "C172", "C182", "C208", "PA", "DA40", "DA42", "SR2",
-      "TBM", "BE", "M20", "P28", "DV20", "CIRRUS", "CESSNA",
-    )
-  ) {
-    return "light";
-  }
-  // Por defecto: narrowbody (737/A320/etc).
-  return "narrow";
-}
+// ── (v6.1 #24) Tren de aterrizaje por avión (config REAL) ────────────────────
 
 /**
- * (v6.1 #24) Tren de aterrizaje VISTO DE FRENTE, SVG realista (gradientes
- * metálicos, neumáticos con banda roja y cubo con tornillos, pistón cromado,
- * líneas hidráulicas y sombra). La configuración de ruedas cambia con el tipo:
- *   widebody = bogie de 4 · narrowbody = 2 · regional = 2 · GA = 1.
+ * Especificación del tren PRINCIPAL por tipo, con la configuración real de
+ * ruedas (referencias: 737/A320 = 2 por pata; 757/767/787/747/A330/A350-900 =
+ * bogie de 4; 777/A350-1000/A380 = bogie de 6). `maker` cambia el estilo visual
+ * (Boeing: cubos pulidos, sin compuerta; Airbus: compuerta + cubo gris).
+ */
+interface GearSpec {
+  wheels: number; // ruedas visibles en el bogie/eje
+  bogie: boolean; // true = truck (varios ejes en tándem)
+  maker: "boeing" | "airbus" | "regional" | "ga";
+  big: boolean; // widebody (ruedas/pata más grandes)
+  door: boolean; // compuerta visible (típico Airbus)
+}
+
+function gearSpec(model: string | null): GearSpec {
+  const m = (model ?? "").toUpperCase();
+  const has = (...ks: string[]) => ks.some((k) => m.includes(k));
+
+  // Aviación general / ligeros.
+  if (has("C150", "C152", "C172", "C182", "C208", "DA40", "DA42", "SR2", "SR20", "SR22", "TBM", "M20", "P28", "PA-", "DV20", "DA62", "CIRRUS", "CESSNA"))
+    return { wheels: 1, bogie: false, maker: "ga", big: false, door: false };
+  // Regionales / turbohélice.
+  if (has("CRJ", "ERJ", "E135", "E145", "E170", "E175", "E190", "E195", "DH8", "DHC", "Q400", "ATR", "AT4", "AT7", "SF34", "SAAB", "B190", "JS", "D328", "RJ85", "RJ1"))
+    return { wheels: 2, bogie: false, maker: "regional", big: false, door: false };
+
+  // Widebody de 6 ruedas (triple eje).
+  if (has("777", "B777", "A35K", "A350-1000", "351", "A380", "388", "389"))
+    return { wheels: 6, bogie: true, maker: m.includes("A3") ? "airbus" : "boeing", big: true, door: m.includes("A3") };
+  // Widebody de 4 ruedas (bogie).
+  if (has("747", "B747", "787", "B787", "767", "B767", "757", "B757", "MD11", "DC10", "L1011"))
+    return { wheels: 4, bogie: true, maker: "boeing", big: true, door: false };
+  if (has("A330", "A340", "A350", "A359", "A300", "A310", "A33", "A34"))
+    return { wheels: 4, bogie: true, maker: "airbus", big: true, door: true };
+
+  // Narrowbody Airbus (A320 family) — 2 ruedas, compuerta, cubo gris.
+  if (has("A318", "A319", "A320", "A321", "A32", "A20N", "A21N", "A19N", "NEO"))
+    return { wheels: 2, bogie: false, maker: "airbus", big: false, door: true };
+  // Narrowbody Boeing (737/717/MD80) — 2 ruedas, sin compuerta, cubo pulido.
+  if (has("737", "B737", "73", "717", "MD8", "MD9", "DC9", "BBJ"))
+    return { wheels: 2, bogie: false, maker: "boeing", big: false, door: false };
+
+  // Por defecto: 2 ruedas genérico.
+  return { wheels: 2, bogie: false, maker: "boeing", big: false, door: false };
+}
+
+const MAKER_LABEL: Record<GearSpec["maker"], string> = {
+  boeing: "Boeing",
+  airbus: "Airbus",
+  regional: "Regional",
+  ga: "GA",
+};
+
+/**
+ * (v6.1 #24) Tren de aterrizaje VISTO DE FRENTE (elevación frontal simétrica:
+ * como mirar el avión desde la nariz). SVG realista con la config REAL por
+ * avión — 737≠A320 (Boeing sin compuerta + cubo pulido; Airbus con compuertas
+ * + cubo gris), y bogie de 4/6 ruedas en widebodies.
  */
 function LandingGear({ model }: { model: string | null }) {
-  const v = gearVariant(model);
-  const axleY = 150;
-  const wheels: { cx: number; r: number }[] =
-    v === "wide"
-      ? [
-          { cx: 58, r: 30 },
-          { cx: 98, r: 30 },
-          { cx: 142, r: 30 },
-          { cx: 182, r: 30 },
-        ]
-      : v === "narrow"
-        ? [
-            { cx: 76, r: 42 },
-            { cx: 164, r: 42 },
-          ]
-        : v === "regional"
-          ? [
-              { cx: 84, r: 34 },
-              { cx: 156, r: 34 },
-            ]
-          : [{ cx: 120, r: 46 }];
-  const minCx = Math.min(...wheels.map((w) => w.cx));
-  const maxCx = Math.max(...wheels.map((w) => w.cx));
+  const s = gearSpec(model);
+  const axleY = 152;
+  // Radio de rueda según tipo.
+  const r = s.bogie
+    ? s.wheels >= 6
+      ? 21
+      : 27
+    : s.maker === "ga"
+      ? 46
+      : s.maker === "regional"
+        ? 32
+        : 40;
+  const n = s.wheels;
+  const gap = s.bogie ? 3 : 18;
+  const span = n * 2 * r + (n - 1) * gap;
+  const startX = 120 - span / 2 + r;
+  const centers = Array.from({ length: n }, (_, i) => startX + i * (2 * r + gap));
+  const minCx = centers[0];
+  const maxCx = centers[centers.length - 1];
 
-  const Tire = ({ cx, r }: { cx: number; r: number }) => {
-    const bolts = Array.from({ length: 8 }, (_, i) => {
-      const a = (i / 8) * Math.PI * 2;
-      return { x: cx + Math.cos(a) * r * 0.32, y: axleY + Math.sin(a) * r * 0.32 };
-    });
+  const Tire = ({ cx }: { cx: number }) => {
+    const detail =
+      s.maker === "airbus"
+        ? // Agujeros de aligeramiento (estilo Airbus).
+          Array.from({ length: 5 }, (_, i) => {
+            const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+            return (
+              <circle
+                key={i}
+                cx={cx + Math.cos(a) * r * 0.3}
+                cy={axleY + Math.sin(a) * r * 0.3}
+                r={r * 0.1}
+                fill="#0f172a"
+                opacity="0.8"
+              />
+            );
+          })
+        : // Tornillos (estilo Boeing).
+          Array.from({ length: 8 }, (_, i) => {
+            const a = (i / 8) * Math.PI * 2;
+            return (
+              <circle
+                key={i}
+                cx={cx + Math.cos(a) * r * 0.34}
+                cy={axleY + Math.sin(a) * r * 0.34}
+                r={r * 0.045}
+                fill="#1e293b"
+              />
+            );
+          });
     return (
       <g>
-        {/* Goma */}
         <circle cx={cx} cy={axleY} r={r} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
-        {/* Banda roja del flanco */}
         <circle cx={cx} cy={axleY} r={r * 0.78} fill="none" stroke="#a01818" strokeWidth={r * 0.16} />
         <circle cx={cx} cy={axleY} r={r * 0.7} fill="none" stroke="#000" strokeWidth="1" opacity="0.5" />
-        {/* Cubo */}
-        <circle cx={cx} cy={axleY} r={r * 0.5} fill="url(#lgHub)" stroke="#1e293b" strokeWidth="1" />
-        {bolts.map((b, i) => (
-          <circle key={i} cx={b.x} cy={b.y} r={r * 0.05} fill="#1e293b" />
-        ))}
-        {/* Tapa central */}
+        <circle
+          cx={cx}
+          cy={axleY}
+          r={r * 0.52}
+          fill={s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)"}
+          stroke="#1e293b"
+          strokeWidth="1"
+        />
+        {detail}
         <circle cx={cx} cy={axleY} r={r * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
-        {/* Brillo */}
-        <ellipse cx={cx - r * 0.28} cy={axleY - r * 0.34} rx={r * 0.22} ry={r * 0.12} fill="#ffffff" opacity="0.12" />
+        <ellipse cx={cx - r * 0.28} cy={axleY - r * 0.34} rx={r * 0.22} ry={r * 0.11} fill="#fff" opacity="0.12" />
       </g>
     );
   };
 
+  const strutW = s.big ? 28 : 22;
   return (
-    <svg
-      viewBox="0 0 240 200"
-      width="210"
-      height="175"
-      xmlns="http://www.w3.org/2000/svg"
-      className="select-none"
-      aria-hidden
-    >
+    <svg viewBox="0 0 240 210" width="210" height="184" xmlns="http://www.w3.org/2000/svg" className="select-none" aria-hidden>
       <defs>
         <linearGradient id="lgStrut" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#26303c" />
@@ -1082,50 +1112,52 @@ function LandingGear({ model }: { model: string | null }) {
           <stop offset="0.55" stopColor="#161616" />
           <stop offset="1" stopColor="#000000" />
         </radialGradient>
-        <radialGradient id="lgHub" cx="0.4" cy="0.36" r="0.75">
-          <stop offset="0" stopColor="#f1f5f9" />
-          <stop offset="0.5" stopColor="#aab6c4" />
-          <stop offset="1" stopColor="#3f4b5a" />
+        <radialGradient id="lgHubB" cx="0.4" cy="0.36" r="0.75">
+          <stop offset="0" stopColor="#f8fafc" />
+          <stop offset="0.5" stopColor="#c2ccd6" />
+          <stop offset="1" stopColor="#5b6675" />
+        </radialGradient>
+        <radialGradient id="lgHubA" cx="0.4" cy="0.36" r="0.75">
+          <stop offset="0" stopColor="#cfd6dd" />
+          <stop offset="0.5" stopColor="#94a3b1" />
+          <stop offset="1" stopColor="#3f4b59" />
         </radialGradient>
         <filter id="lgShadow" x="-30%" y="-30%" width="160%" height="160%">
           <feGaussianBlur stdDeviation="4" />
         </filter>
       </defs>
 
-      {/* Sombra en el suelo */}
-      <ellipse
-        cx={(minCx + maxCx) / 2}
-        cy={axleY + wheels[0].r + 12}
-        rx={(maxCx - minCx) / 2 + wheels[0].r + 8}
-        ry="9"
-        fill="#000"
-        opacity="0.35"
-        filter="url(#lgShadow)"
-      />
+      {/* Sombra */}
+      <ellipse cx="120" cy={axleY + r + 12} rx={(maxCx - minCx) / 2 + r + 8} ry="9" fill="#000" opacity="0.35" filter="url(#lgShadow)" />
 
-      {/* Eje entre ruedas (detrás) */}
-      {wheels.length > 1 && (
-        <rect x={minCx} y={axleY - 7} width={maxCx - minCx} height="14" rx="7" fill="url(#lgStrut)" />
+      {/* Compuertas de bahía (Airbus) — simétricas */}
+      {s.door && (
+        <>
+          <rect x={120 - strutW / 2 - 26} y="18" width="20" height="62" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.9" />
+          <rect x={120 + strutW / 2 + 6} y="18" width="20" height="62" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.9" />
+        </>
       )}
 
-      {/* Pata principal (oleo) + pistón cromado */}
-      <rect x="108" y="14" width="24" height="86" rx="9" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
-      <rect x="113" y="92" width="14" height="60" rx="6" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
+      {/* Bogie beam (truck) o eje simple */}
+      <rect x={minCx - 4} y={axleY - (s.bogie ? 9 : 7)} width={maxCx - minCx + 8} height={s.bogie ? 18 : 14} rx={s.bogie ? 9 : 7} fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+
+      {/* Pata principal + pistón cromado (simétrico, centrado) */}
+      <rect x={120 - strutW / 2} y="14" width={strutW} height="84" rx={strutW / 2.6} fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+      <rect x={120 - 7} y="92" width="14" height={axleY - 92} rx="6" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
       {/* Anillo prensaestopas */}
-      <rect x="106" y="96" width="28" height="7" rx="3" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.5" />
-      {/* Tijera (torque link) */}
-      <path d="M120 104 L132 122 L120 140" fill="none" stroke="#cbd5e1" strokeWidth="3.5" strokeLinejoin="round" />
-      <circle cx="132" cy="122" r="2.6" fill="#475569" />
-      {/* Líneas hidráulicas */}
-      <path d="M104 30 q-8 40 4 70" fill="none" stroke="#1f2937" strokeWidth="3" />
-      <path d="M104 30 q-8 40 4 70" fill="none" stroke="#b8860b" strokeWidth="1.4" />
-      {/* Soportes superiores */}
-      <path d="M120 24 L150 40" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
-      <path d="M120 24 L90 40" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
+      <rect x={120 - strutW / 2 - 3} y="94" width={strutW + 6} height="7" rx="3" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.5" />
+      {/* Tijera (torque link) centrada */}
+      <path d="M114 104 L120 120 L126 104" fill="none" stroke="#cbd5e1" strokeWidth="3" strokeLinejoin="round" />
+      {/* Líneas hidráulicas simétricas */}
+      <path d={`M${120 - strutW / 2 - 2} 34 q-7 38 0 64`} fill="none" stroke="#b8860b" strokeWidth="1.6" />
+      <path d={`M${120 + strutW / 2 + 2} 34 q7 38 0 64`} fill="none" stroke="#b8860b" strokeWidth="1.6" />
+      {/* Anclajes superiores simétricos */}
+      <path d="M120 22 L150 38" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
+      <path d="M120 22 L90 38" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
 
       {/* Ruedas */}
-      {wheels.map((w, i) => (
-        <Tire key={i} cx={w.cx} r={w.r} />
+      {centers.map((cx, i) => (
+        <Tire key={i} cx={cx} />
       ))}
     </svg>
   );
@@ -1169,7 +1201,10 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
       <div className="mt-4 flex flex-col items-center justify-center gap-2">
         <LandingGear model={ac.model} />
         <span className="text-[10px] uppercase tracking-wide text-slate-600">
-          {t(`hangar.gear.type.${gearVariant(ac.model)}`)}
+          {(() => {
+            const s = gearSpec(ac.model);
+            return `${MAKER_LABEL[s.maker]} · ${t("hangar.gear.wheels_n", { n: String(s.wheels) })}${s.bogie ? " · bogie" : ""}`;
+          })()}
         </span>
       </div>
       <div className="mt-3 flex items-center justify-between border-t border-slate-800 pt-3 text-[11px]">
