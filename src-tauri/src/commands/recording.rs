@@ -54,6 +54,7 @@ pub async fn recording_test_clip(
     // (v6 #2b fix) SIN micrófono: windows-record 0.1.0 crashea el proceso al
     // mezclar audio del sistema + un micrófono virtual (p.ej. SteelSeries
     // Sonar). Solo necesitamos el audio del sistema (sonido del sim).
+    let (w, h) = landing_recorder::best_monitor_size(&app);
     let file_c = file.clone();
     tokio::task::spawn_blocking(move || {
         landing_recorder::record_window_clip(
@@ -61,6 +62,8 @@ pub async fn recording_test_clip(
             &file_c,
             dur,
             false,
+            w,
+            h,
         )
     })
     .await

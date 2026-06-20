@@ -160,6 +160,36 @@ pub fn engine_status() -> EngineStatus {
     }
 }
 
+/// FPS de captura. 60 = fluido en monitores de alta tasa de refresco.
+const REC_FPS: u32 = 60;
+
+/// Bitrate de vídeo según resolución y fps (~0.16 bpp). El default de la crate
+/// (5 Mbps) deja el vídeo pixelado en movimiento; esto lo sube a calidad alta.
+fn compute_bitrate(width: u32, height: u32, fps: u32) -> u32 {
+    let raw = (width as u64) * (height as u64) * (fps as u64) * 16 / 100;
+    raw.clamp(12_000_000, 50_000_000) as u32
+}
+
+/// Resolución del monitor más grande (para igualar la salida a la nativa y no
+/// reescalar = sin borrosidad). Fallback 1920x1080.
+#[cfg(windows)]
+pub fn best_monitor_size(app: &tauri::AppHandle) -> (u32, u32) {
+    use tauri::Manager;
+    app.get_webview_window("main")
+        .and_then(|w| w.available_monitors().ok())
+        .and_then(|mons| {
+            mons.iter()
+                .map(|m| (m.size().width, m.size().height))
+                .max_by_key(|(w, h)| (*w as u64) * (*h as u64))
+        })
+        .unwrap_or((1920, 1080))
+}
+
+#[cfg(not(windows))]
+pub fn best_monitor_size(_app: &tauri::AppHandle) -> (u32, u32) {
+    (1920, 1080)
+}
+
 /// Graba `duration_s` s de la ventana cuyo título contiene `target_title`
 /// (substring, case-insensitive), con audio del sistema. Bloqueante
 /// (~duration_s) — llamar desde `spawn_blocking`.
@@ -169,12 +199,16 @@ pub fn record_window_clip(
     out: &Path,
     duration_s: i64,
     capture_microphone: bool,
+    width: u32,
+    height: u32,
 ) -> anyhow::Result<()> {
     use std::time::Duration;
     use windows_record::{AudioSource, Recorder};
 
     let config = Recorder::builder()
-        .fps(30, 1)
+        .fps(REC_FPS, 1)
+        .output_dimensions(width, height)
+        .video_bitrate(compute_bitrate(width, height, REC_FPS))
         .capture_audio(true)
         .capture_microphone(capture_microphone)
         .audio_source(AudioSource::Desktop)
@@ -209,6 +243,8 @@ pub fn record_window_clip(
     _out: &Path,
     _duration_s: i64,
     _capture_microphone: bool,
+    _width: u32,
+    _height: u32,
 ) -> anyhow::Result<()> {
     anyhow::bail!("la grabación solo está soportada en Windows")
 }
@@ -362,6 +398,8 @@ enum RecCmd {
     Arm {
         output_path: String,
         clip_seconds: i64,
+        width: u32,
+        height: u32,
     },
     Save {
         path: String,
@@ -381,13 +419,17 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
             RecCmd::Arm {
                 output_path,
                 clip_seconds,
+                width,
+                height,
             } => {
                 if rec.is_some() {
                     continue;
                 }
                 let base = Path::new(&output_path).join("simfleet_buffer.mp4");
                 let config = Recorder::builder()
-                    .fps(30, 1)
+                    .fps(REC_FPS, 1)
+                    .output_dimensions(width, height)
+                    .video_bitrate(compute_bitrate(width, height, REC_FPS))
                     .capture_audio(true)
                     .capture_microphone(false)
                     .audio_source(AudioSource::Desktop)
@@ -485,9 +527,12 @@ async fn controller_loop(
 
         // Armar el replay buffer al entrar en aproximación.
         if approaching && !on_ground && !armed {
+            let (w, h) = best_monitor_size(&app);
             let _ = tx.send(RecCmd::Arm {
                 output_path: cfg.output_path.clone(),
                 clip_seconds: cfg.clip_seconds,
+                width: w,
+                height: h,
             });
             armed = true;
             saved = false;
@@ -535,8 +580,9 @@ fn schedule_save(
     let tx = tx.clone();
     let out_dir = PathBuf::from(output_path);
     tokio::spawn(async move {
-        // ~5s para que el rollout entre en el buffer antes de guardar.
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // ~12s para que el rollout completo entre en el buffer antes de
+        // guardar (antes se cortaba muy temprano el vídeo).
+        tokio::time::sleep(Duration::from_secs(12)).await;
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
