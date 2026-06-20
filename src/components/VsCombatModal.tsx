@@ -1,7 +1,12 @@
 import { motion } from "framer-motion";
-import { Swords, X, Plane, Gauge, ArrowUp, Flag } from "lucide-react";
+import { Swords, X, Plane, Gauge, ArrowUp, Flag, Trophy } from "lucide-react";
 import { t } from "../lib/i18n";
-import { useLiveVsStore, type VsPilot, type VsPos } from "../stores/useLiveVsStore";
+import {
+  useLiveVsStore,
+  type VsPilot,
+  type VsPos,
+  type VsLanding,
+} from "../stores/useLiveVsStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { AirlineLogo } from "./AirlineLogo";
@@ -39,6 +44,8 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
   const self = useLiveVsStore((s) => s.self);
   const rival = useLiveVsStore((s) => s.rival);
   const rivalPos = useLiveVsStore((s) => s.rivalPos);
+  const selfLanding = useLiveVsStore((s) => s.selfLanding);
+  const rivalLanding = useLiveVsStore((s) => s.rivalLanding);
   const flightStatus = useFlightLogStore((s) => s.status);
   const ofp = useSimBriefStore((s) => s.flights)[0];
 
@@ -157,8 +164,100 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
             </p>
           )}
         </div>
+
+        {/* (v6.1 #34) Resultado del aterrizaje — aparece cuando alguno aterriza. */}
+        {(selfLanding || rivalLanding) && (
+          <LandingResult
+            selfName={self.name}
+            rivalName={rival.name}
+            self={selfLanding}
+            rival={rivalLanding}
+          />
+        )}
       </motion.div>
     </motion.div>
+  );
+}
+
+const GRADE_META: Record<string, { color: string; key: string }> = {
+  butter: { color: "#3fbf78", key: "osd.butter" },
+  acceptable: { color: "#f59e0b", key: "osd.acceptable" },
+  hard: { color: "#f43f5e", key: "osd.hard" },
+};
+
+function LandingResult({
+  selfName,
+  rivalName,
+  self,
+  rival,
+}: {
+  selfName: string;
+  rivalName: string;
+  self: VsLanding | null;
+  rival: VsLanding | null;
+}) {
+  // Mejor aterrizaje = FPM más cercano a 0 (menos negativo).
+  let winner: "self" | "rival" | "tie" | null = null;
+  if (self && rival) {
+    winner = self.fpm > rival.fpm ? "self" : rival.fpm > self.fpm ? "rival" : "tie";
+  }
+  return (
+    <div className="border-t border-slate-800 bg-slate-900/40 px-4 py-3">
+      <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-fuchsia-300">
+        <Trophy className="h-3.5 w-3.5" />
+        {t("vs.touchdown")}
+      </div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <LandingCell name={selfName} r={self} win={winner === "self"} accent="sky" />
+        <span className="text-xs font-black text-slate-500">—</span>
+        <LandingCell name={rivalName} r={rival} win={winner === "rival"} accent="rose" />
+      </div>
+      {winner === "tie" && (
+        <p className="mt-2 text-center text-[10px] text-slate-400">{t("vs.tie")}</p>
+      )}
+    </div>
+  );
+}
+
+function LandingCell({
+  name,
+  r,
+  win,
+  accent,
+}: {
+  name: string;
+  r: VsLanding | null;
+  win: boolean;
+  accent: "sky" | "rose";
+}) {
+  const text = accent === "sky" ? "text-sky-300" : "text-rose-300";
+  const g = r ? (GRADE_META[r.grade] ?? GRADE_META.acceptable) : null;
+  return (
+    <div
+      className={`rounded-xl border p-2 text-center ${
+        win
+          ? "border-amber-500/50 bg-amber-500/10"
+          : "border-slate-800 bg-slate-950/40"
+      }`}
+    >
+      <div className={`flex items-center justify-center gap-1 truncate text-[11px] font-semibold ${text}`}>
+        {win && <Trophy className="h-3 w-3 text-amber-400" />}
+        {name}
+      </div>
+      {r ? (
+        <>
+          <div className="text-xl font-extrabold" style={{ color: g!.color }}>
+            {Math.round(r.fpm)}
+            <span className="ml-1 text-xs font-semibold text-slate-400">fpm</span>
+          </div>
+          <div className="text-[10px] font-bold uppercase tracking-wide" style={{ color: g!.color }}>
+            {t(g!.key)}
+          </div>
+        </>
+      ) : (
+        <div className="py-1.5 text-[11px] text-slate-500">{t("vs.waiting_landing")}</div>
+      )}
+    </div>
   );
 }
 

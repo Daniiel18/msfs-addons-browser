@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { api, isTauri } from "../lib/tauri";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
@@ -23,6 +24,7 @@ export function LiveVsManager() {
   const start = useLiveVsStore((s) => s.start);
   const stop = useLiveVsStore((s) => s.stop);
   const broadcastPos = useLiveVsStore((s) => s.broadcastPos);
+  const broadcastLanding = useLiveVsStore((s) => s.broadcastLanding);
 
   const [identity, setIdentity] = useState<{ identity: string; name: string } | null>(
     null,
@@ -89,6 +91,21 @@ export function LiveVsManager() {
     }, 1500);
     return () => clearInterval(interval);
   }, [broadcastPos]);
+
+  // (v6.1 #34) Al tocar pista el watcher emite `landing://osd` con el FPM/grado.
+  // Lo retransmitimos al rival para la comparativa final del duelo.
+  useEffect(() => {
+    if (!isTauri) return;
+    const un = listen<{ fpm: number; grade: string }>("landing://osd", (e) => {
+      const p = e.payload;
+      if (p && typeof p.fpm === "number") {
+        broadcastLanding({ fpm: p.fpm, grade: p.grade });
+      }
+    });
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  }, [broadcastLanding]);
 
   return null;
 }

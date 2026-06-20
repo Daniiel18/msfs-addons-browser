@@ -43,6 +43,12 @@ export interface VsPos {
   gs: number;
 }
 
+/** (v6.1 #34) Resultado de aterrizaje para la comparativa final del duelo. */
+export interface VsLanding {
+  fpm: number;
+  grade: string; // "butter" | "acceptable" | "hard"
+}
+
 interface LiveVsState {
   connected: boolean;
   self: VsPilot | null;
@@ -52,9 +58,13 @@ interface LiveVsState {
   matchReady: boolean;
   /** Última actualización de la posición rival (ms epoch) — para "stale". */
   rivalPosAt: number;
+  /** (v6.1 #34) Aterrizaje propio / del rival (para el resultado del duelo). */
+  selfLanding: VsLanding | null;
+  rivalLanding: VsLanding | null;
 
   start: (url: string, key: string, self: VsPilot) => void;
   broadcastPos: (pos: VsPos) => void;
+  broadcastLanding: (result: VsLanding) => void;
   stop: () => void;
 }
 
@@ -74,6 +84,8 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
   rivalPos: null,
   matchReady: false,
   rivalPosAt: 0,
+  selfLanding: null,
+  rivalLanding: null,
 
   start: (url, key, self) => {
     const name = channelName(self.ofp);
@@ -93,7 +105,15 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
     }
 
     currentChannelName = name;
-    set({ self, connected: false, rival: null, rivalPos: null, matchReady: false });
+    set({
+      self,
+      connected: false,
+      rival: null,
+      rivalPos: null,
+      matchReady: false,
+      selfLanding: null,
+      rivalLanding: null,
+    });
 
     const ch = client.channel(name, {
       config: {
@@ -126,6 +146,12 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
         rivalPosAt: Date.now(),
       });
     });
+    // (v6.1 #34) Resultado de aterrizaje del rival.
+    ch.on("broadcast", { event: "landing" }, ({ payload }) => {
+      const p = payload as (VsLanding & { identity?: string }) | undefined;
+      if (!p || p.identity === self.identity) return;
+      set({ rivalLanding: { fpm: p.fpm, grade: p.grade } });
+    });
 
     ch.subscribe((status) => {
       if (status === "SUBSCRIBED") {
@@ -153,6 +179,18 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
     });
   },
 
+  broadcastLanding: (result) => {
+    // Fija el aterrizaje propio (aunque no haya canal) y lo emite al rival.
+    set({ selfLanding: result });
+    if (!channel || !get().connected) return;
+    const self = get().self;
+    void channel.send({
+      type: "broadcast",
+      event: "landing",
+      payload: { identity: self?.identity, ...result },
+    });
+  },
+
   stop: () => {
     if (channel && client) {
       try {
@@ -168,6 +206,8 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
       rival: null,
       rivalPos: null,
       matchReady: false,
+      selfLanding: null,
+      rivalLanding: null,
     });
   },
 }));
