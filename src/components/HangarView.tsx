@@ -1000,66 +1000,94 @@ function gearVariant(model: string | null): GearVariant {
 }
 
 /** SVG vista lateral del tren principal — cambia con el tipo de avión. */
-function LandingGear({
-  model,
-  color,
-  size = 96,
-}: {
-  model: string | null;
-  color: string;
-  size?: number;
-}) {
-  const v = gearVariant(model);
-  const stroke = "#94a3b8";
-  // Ruedas por variante (centros X) + radio.
-  const wheels: { cx: number; r: number }[] =
-    v === "wide"
-      ? [
-          { cx: 30, r: 9 },
-          { cx: 50, r: 9 },
-          { cx: 70, r: 9 },
-          { cx: 90, r: 9 },
-        ]
-      : v === "narrow"
-        ? [
-            { cx: 42, r: 11 },
-            { cx: 78, r: 11 },
-          ]
-        : v === "regional"
-          ? [
-              { cx: 48, r: 9 },
-              { cx: 72, r: 9 },
-            ]
-          : [{ cx: 60, r: 10 }];
-  const axleY = 70;
-  const minX = Math.min(...wheels.map((w) => w.cx));
-  const maxX = Math.max(...wheels.map((w) => w.cx));
+// Neumático visto DE FRENTE: cubo plateado al centro, goma negra y banda roja
+// en el flanco (como la foto de referencia). Todo con radial-gradient (CSS).
+const TIRE_BG =
+  "radial-gradient(circle at 50% 42%, #e2e8f0 0 10%, #94a3b8 10% 17%, #1f2937 17% 27%, #060606 27% 62%, #a51d1d 62% 75%, #0a0a0a 75% 100%)";
+const STRUT_METAL =
+  "linear-gradient(90deg,#3f4b5c 0%,#cbd5e1 42%,#f8fafc 50%,#cbd5e1 58%,#3f4b5c 100%)";
+const STRUT_CHROME = "linear-gradient(90deg,#5b6b7d,#f8fafc 50%,#5b6b7d)";
+
+/** Rueda de frente (CSS puro, sin SVG). */
+function Wheel({ d }: { d: number }) {
   return (
-    <svg
-      width={size}
-      height={size * 0.62}
-      viewBox="0 0 120 80"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-    >
-      {/* Pata / strut */}
-      <line x1="60" y1="10" x2="60" y2={axleY} stroke={stroke} strokeWidth="4" strokeLinecap="round" />
-      {/* Tijera/torque link */}
-      <line x1="60" y1="34" x2="68" y2="50" stroke={stroke} strokeWidth="2.5" />
-      <line x1="68" y1="50" x2="60" y2={axleY} stroke={stroke} strokeWidth="2.5" />
-      {/* Eje/bogie */}
-      <line x1={minX} y1={axleY} x2={maxX} y2={axleY} stroke={stroke} strokeWidth="4" strokeLinecap="round" />
-      {wheels.length > 1 && (
-        <line x1="60" y1={axleY} x2="60" y2={axleY} stroke={stroke} strokeWidth="4" />
-      )}
-      {/* Ruedas */}
-      {wheels.map((w, i) => (
-        <g key={i}>
-          <circle cx={w.cx} cy={axleY} r={w.r} fill="#0f172a" stroke={color} strokeWidth="3" />
-          <circle cx={w.cx} cy={axleY} r={w.r * 0.4} fill="#334155" />
-        </g>
-      ))}
-    </svg>
+    <div
+      style={{
+        width: d,
+        height: d,
+        borderRadius: "9999px",
+        background: TIRE_BG,
+        boxShadow:
+          "inset 0 3px 6px rgba(255,255,255,0.18), inset 0 -9px 16px rgba(0,0,0,0.7), 0 8px 14px rgba(0,0,0,0.55)",
+        flex: "0 0 auto",
+      }}
+    />
+  );
+}
+
+/**
+ * (v6.1 #24 rediseño) Tren de aterrizaje VISTO DE FRENTE, en CSS/HTML (no SVG),
+ * con la configuración real de ruedas por tipo de avión:
+ *   widebody = bogie de 4 · narrowbody = 2 · regional = 2 · GA = 1.
+ */
+function LandingGear({ model }: { model: string | null }) {
+  const v = gearVariant(model);
+  const sizes =
+    v === "wide"
+      ? [38, 38, 38, 38]
+      : v === "narrow"
+        ? [52, 52]
+        : v === "regional"
+          ? [42, 42]
+          : [58];
+  const wheelD = sizes[0];
+  const gap = v === "wide" ? 5 : 16;
+  const strutTopH = Math.round(wheelD * 0.5);
+  const strutBotH = Math.round(wheelD * 0.45);
+
+  return (
+    <div className="flex select-none flex-col items-center">
+      {/* Pata + pistón cromado (se mete por detrás de las ruedas). */}
+      <div
+        className="relative flex flex-col items-center"
+        style={{ marginBottom: -Math.round(wheelD * 0.42), zIndex: 1 }}
+      >
+        <div
+          style={{
+            width: Math.max(13, Math.round(wheelD * 0.27)),
+            height: strutTopH,
+            borderRadius: 6,
+            background: STRUT_METAL,
+            boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
+          }}
+        />
+        <div
+          style={{
+            width: Math.max(9, Math.round(wheelD * 0.17)),
+            height: strutBotH,
+            background: STRUT_CHROME,
+            boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
+          }}
+        />
+      </div>
+      {/* Eje + ruedas. */}
+      <div className="relative flex items-center justify-center" style={{ gap }}>
+        <div
+          className="absolute left-3 right-3 top-1/2 -translate-y-1/2"
+          style={{
+            height: Math.max(7, Math.round(wheelD * 0.17)),
+            background: STRUT_METAL,
+            borderRadius: 6,
+            zIndex: 0,
+          }}
+        />
+        {sizes.map((d, i) => (
+          <div key={i} style={{ zIndex: 2 }}>
+            <Wheel d={d} />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1098,13 +1126,8 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
           {t("hangar.gear.recommend", { n: String(nextDue) })}
         </div>
       )}
-      <div className="mt-4 flex flex-col items-center justify-center gap-1">
-        <LandingGear
-          model={ac.model}
-          color={
-            pct >= 80 ? "#3fbf78" : pct >= 50 ? "#f59e0b" : "#f43f5e"
-          }
-        />
+      <div className="mt-4 flex flex-col items-center justify-center gap-2">
+        <LandingGear model={ac.model} />
         <span className="text-[10px] uppercase tracking-wide text-slate-600">
           {t(`hangar.gear.type.${gearVariant(ac.model)}`)}
         </span>
