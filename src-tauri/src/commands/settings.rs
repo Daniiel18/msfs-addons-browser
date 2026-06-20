@@ -289,6 +289,7 @@ fn is_valid_key(key: &str) -> bool {
             | "rec_audio_device"
             | "rec_microphone"
             | "rec_osd_enabled"
+            | "rec_fps"
     )
 }
 

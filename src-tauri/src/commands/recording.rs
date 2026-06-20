@@ -91,6 +91,7 @@ pub async fn recording_test_clip(
     // mezclar audio del sistema + un micrófono virtual (p.ej. SteelSeries
     // Sonar). Solo necesitamos el audio del sistema (sonido del sim).
     let (w, h) = landing_recorder::target_monitor_size(&app, true);
+    let fps = cfg.fps.clamp(24, 120) as u32;
     let file_c = file.clone();
     let rec_result = tokio::task::spawn_blocking(move || {
         landing_recorder::record_window_clip(
@@ -100,6 +101,7 @@ pub async fn recording_test_clip(
             false,
             w,
             h,
+            fps,
         )
     })
     .await;

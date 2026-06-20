@@ -101,6 +101,24 @@ export function RecordingSettings() {
             />
           </Field>
 
+          {/* Calidad / rendimiento: FPS */}
+          <Field label={t("rec.fps")}>
+            <Segmented
+              options={[
+                { value: 30, label: t("rec.fps_30") },
+                { value: 60, label: t("rec.fps_60") },
+              ]}
+              value={cfg.fps >= 60 ? 60 : 30}
+              onChange={(v) => {
+                patch({ fps: v });
+                void setKey("rec_fps", String(v));
+              }}
+            />
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+              {t("rec.fps_hint")}
+            </p>
+          </Field>
+
           {/* Duración + Ilimitado */}
           <Field label={t("rec.duration")}>
             <div className="flex items-center gap-2">

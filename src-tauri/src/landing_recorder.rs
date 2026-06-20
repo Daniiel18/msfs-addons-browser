@@ -47,6 +47,8 @@ pub struct RecordingConfig {
     pub max_clips: i64,
     /// Mostrar el OSD de aterrizaje (toast con el FPM) al tocar pista.
     pub osd_enabled: bool,
+    /// FPS de grabación (30 = rendimiento, 60 = fluido). Clamp 24..120.
+    pub fps: i64,
 }
 
 async fn kv(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -144,6 +146,7 @@ pub async fn load_config(pool: &SqlitePool, fallback_data: &Path) -> RecordingCo
             .await
             .map(|s| matches!(s.as_str(), "1" | "true" | "yes"))
             .unwrap_or(true),
+        fps: kv_i64(pool, "rec_fps", DEFAULT_FPS).await.clamp(24, 120),
     }
 }
 
@@ -166,8 +169,9 @@ pub fn engine_status() -> EngineStatus {
     }
 }
 
-/// FPS de captura. 60 = fluido en monitores de alta tasa de refresco.
-const REC_FPS: u32 = 60;
+/// FPS de captura por defecto. 30 = más seguro (menos carga de captura/copia de
+/// GPU que compite con MSFS en escenarios pesados). El usuario puede subir a 60.
+const DEFAULT_FPS: i64 = 30;
 
 /// (v6 #2b) Solo puede haber UNA grabación activa a la vez. Desktop Duplication
 /// permite una sola duplicación por monitor — si el auto-disparo (replay buffer)
@@ -240,14 +244,15 @@ pub fn record_window_clip(
     capture_microphone: bool,
     width: u32,
     height: u32,
+    fps: u32,
 ) -> anyhow::Result<()> {
     use std::time::Duration;
     use windows_record::{AudioSource, Recorder};
 
     let config = Recorder::builder()
-        .fps(REC_FPS, 1)
+        .fps(fps, 1)
         .output_dimensions(width, height)
-        .video_bitrate(compute_bitrate(width, height, REC_FPS))
+        .video_bitrate(compute_bitrate(width, height, fps))
         .capture_audio(true)
         .capture_microphone(capture_microphone)
         .audio_source(AudioSource::Desktop)
@@ -284,6 +289,7 @@ pub fn record_window_clip(
     _capture_microphone: bool,
     _width: u32,
     _height: u32,
+    _fps: u32,
 ) -> anyhow::Result<()> {
     anyhow::bail!("la grabación solo está soportada en Windows")
 }
@@ -439,6 +445,7 @@ enum RecCmd {
         clip_seconds: i64,
         width: u32,
         height: u32,
+        fps: u32,
     },
     Save {
         path: String,
@@ -460,15 +467,16 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                 clip_seconds,
                 width,
                 height,
+                fps,
             } => {
                 if rec.is_some() {
                     continue;
                 }
                 let base = Path::new(&output_path).join("simfleet_buffer.mp4");
                 let config = Recorder::builder()
-                    .fps(REC_FPS, 1)
+                    .fps(fps, 1)
                     .output_dimensions(width, height)
-                    .video_bitrate(compute_bitrate(width, height, REC_FPS))
+                    .video_bitrate(compute_bitrate(width, height, fps))
                     .capture_audio(true)
                     .capture_microphone(false)
                     .audio_source(AudioSource::Desktop)
@@ -544,7 +552,7 @@ async fn controller_loop(
     let mut osd_done = false;
 
     loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         let cfg = load_config(&pool, &data_dir).await;
 
@@ -565,8 +573,12 @@ async fn controller_loop(
 
         let phase = status.phase_label.clone().unwrap_or_default();
         let on_ground = status.on_ground.unwrap_or(true);
-        let approaching = matches!(phase.as_str(), "descent" | "approach")
-            || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 12_000));
+        // (v6 #2b perf) Armamos TARDE — solo en aproximación final / baja
+        // altitud — para no cargar la GPU durante todo el descenso en
+        // escenarios pesados. El replay buffer captura los últimos N s, que
+        // cubren el aterrizaje de sobra.
+        let approaching = matches!(phase.as_str(), "approach")
+            || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 5_000));
 
         // Volando de nuevo → re-armar el OSD para el siguiente aterrizaje.
         if !on_ground {
@@ -583,6 +595,7 @@ async fn controller_loop(
                     clip_seconds: cfg.clip_seconds,
                     width: w,
                     height: h,
+                    fps: cfg.fps.clamp(24, 120) as u32,
                 });
                 armed = true;
                 saved = false;
@@ -635,8 +648,8 @@ fn schedule_osd(pool: &SqlitePool, app: &tauri::AppHandle, osd_position: i64) {
     let pool = pool.clone();
     let app = app.clone();
     tokio::spawn(async move {
-        // Pequeña espera para que el watcher persista el FPM de touchdown.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // Espera mínima: el watcher escribe el landing_fpm en el touchdown.
+        tokio::time::sleep(Duration::from_millis(800)).await;
         let fpm: Option<i64> = sqlx::query_as::<_, (Option<i64>,)>(
             "SELECT landing_fpm FROM flight_log \
              WHERE landing_fpm IS NOT NULL ORDER BY started_at DESC LIMIT 1",

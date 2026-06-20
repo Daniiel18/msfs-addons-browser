@@ -1807,6 +1807,7 @@ const demoApi: Api = {
       captureMicrophone: false,
       maxClips: 20,
       osdEnabled: true,
+      fps: 30,
     };
   },
   async recordingEngineStatus() {

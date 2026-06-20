@@ -189,6 +189,8 @@ export interface RecordingConfig {
   maxClips: number;
   /** Mostrar el OSD de aterrizaje (toast con el FPM) al tocar pista. */
   osdEnabled: boolean;
+  /** FPS de grabación (30 = rendimiento, 60 = fluido). */
+  fps: number;
 }
 
 /** (v6 #2b) Estado del motor de grabación. */
