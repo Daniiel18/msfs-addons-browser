@@ -1060,15 +1060,15 @@ function gearSpec(model: string | null): GearSpec {
   if (has("A330", "A340", "A350", "A359", "A300", "A310", "A33", "A34"))
     return { axles: 2, perAxle: 2, maker: "airbus", big: true, door: true };
 
-  // Narrowbody Airbus (A320 family) — 1 eje, compuerta, cubo gris.
+  // Narrowbody Airbus (A320 family) — 1 eje, 1 rueda (pedido del usuario).
   if (has("A318", "A319", "A320", "A321", "A32", "A20N", "A21N", "A19N", "NEO"))
-    return { axles: 1, perAxle: 2, maker: "airbus", big: false, door: true };
-  // Narrowbody Boeing (737/717/MD80) — 1 eje, sin compuerta, cubo pulido.
+    return { axles: 1, perAxle: 1, maker: "airbus", big: false, door: true };
+  // Narrowbody Boeing (737/717/MD80) — 1 eje, 1 rueda (pedido del usuario).
   if (has("737", "B737", "73", "717", "MD8", "MD9", "DC9", "BBJ"))
-    return { axles: 1, perAxle: 2, maker: "boeing", big: false, door: false };
+    return { axles: 1, perAxle: 1, maker: "boeing", big: false, door: false };
 
-  // Por defecto: 1 eje, 2 ruedas.
-  return { axles: 1, perAxle: 2, maker: "boeing", big: false, door: false };
+  // Por defecto: 1 eje, 1 rueda.
+  return { axles: 1, perAxle: 1, maker: "boeing", big: false, door: false };
 }
 
 const MAKER_LABEL: Record<GearSpec["maker"], string> = {
