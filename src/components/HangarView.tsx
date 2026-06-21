@@ -7,6 +7,13 @@ import {
   CartesianGrid,
   ResponsiveContainer,
   LabelList,
+  Treemap,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar,
+  Tooltip,
 } from "recharts";
 import {
   Plane,
@@ -27,7 +34,6 @@ import {
   MapPin,
   Building2,
   Globe2,
-  LayoutGrid,
   Wrench,
   FileText,
   Printer,
@@ -207,9 +213,9 @@ export function HangarView() {
       </div>
 
       {/* ── Cuerpo maestro/detalle ─────────────────────────────── */}
-      <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
+      <div className="mt-5 grid grid-cols-1 items-start gap-4 lg:grid-cols-[320px_1fr]">
         {/* Flota */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-3">
+        <section className="self-start rounded-2xl border border-slate-800 bg-slate-900/40 p-3">
           <h2 className="mb-2 flex items-center gap-1.5 px-1 text-sm font-semibold text-slate-200">
             {t("hangar.fleet")}
             <Info className="h-3.5 w-3.5 text-slate-600" />
@@ -229,34 +235,16 @@ export function HangarView() {
             </button>
           </div>
           <div className="space-y-1.5">
-            {/* (v6.1 #29) Resumen de flota — vuelve a la vista sin selección. */}
-            <button
-              onClick={() => setSelectedKey(null)}
-              className={`flex w-full items-center gap-2.5 rounded-xl border p-2 text-left transition-colors ${
-                selected == null
-                  ? "border-brand-500/60 bg-brand-500/10 ring-1 ring-brand-500/30"
-                  : "border-transparent bg-slate-950/40 hover:bg-slate-800/40"
-              }`}
-            >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 text-brand-300">
-                <LayoutGrid className="h-4 w-4" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-semibold text-slate-100">
-                  {t("hangar.overview.title")}
-                </div>
-                <div className="truncate text-[11px] text-slate-500">
-                  {t("hangar.overview.subtitle")}
-                </div>
-              </div>
-            </button>
             {fleet.map((ac, i) => (
               <FleetRow
                 key={ac.key}
                 rank={search.trim() ? 0 : i + 1}
                 ac={ac}
                 active={ac.key === selected?.key}
-                onClick={() => setSelectedKey(ac.key)}
+                // (v6.1) Re-click sobre el avión activo → cierra y vuelve al resumen.
+                onClick={() =>
+                  setSelectedKey((k) => (k === ac.key ? null : ac.key))
+                }
               />
             ))}
             {fleet.length === 0 && (
@@ -348,45 +336,43 @@ function FleetOverview({
       .slice(0, 8);
   }, [entries]);
 
+  const aircraftData = data.topAircraftTypes.map((a) => ({
+    name: cleanAtcType(a.label) ?? a.label,
+    size: a.count,
+  }));
+  const airlineData = data.topAirlines.map((a) => ({ name: a.label, size: a.count }));
+  const destData = data.topDestinations.map((d) => ({
+    name: d.icao,
+    size: d.visits,
+  }));
+  const regionData = topRegions.map((r) => ({ label: r.label, count: r.count }));
+
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <h2 className="mb-1 text-lg font-bold text-slate-100">
         {t("hangar.overview.heading")}
       </h2>
-      <p className="mb-4 text-xs text-slate-500">
-        {t("hangar.overview.hint")}
-      </p>
+      <p className="mb-4 text-xs text-slate-500">{t("hangar.overview.hint")}</p>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <OverviewCard
-          icon={<MapPin className="h-4 w-4 text-brand-400" />}
-          title={t("hangar.overview.destinations")}
-          rows={data.topDestinations.map((d) => ({
-            label: d.name ?? d.icao,
-            sub: d.icao,
-            count: d.visits,
-          }))}
-        />
-        <OverviewCard
-          icon={<Building2 className="h-4 w-4 text-brand-400" />}
-          title={t("hangar.overview.airlines")}
-          rows={data.topAirlines.map((a) => ({
-            label: a.label,
-            count: a.count,
-            airlineIcao: a.code,
-          }))}
-        />
-        <OverviewCard
+        <TreemapCard
           icon={<Plane className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.aircraft")}
-          rows={data.topAircraftTypes.map((a) => ({
-            label: cleanAtcType(a.label) ?? a.label,
-            count: a.count,
-          }))}
+          data={aircraftData}
         />
-        <OverviewCard
+        <TreemapCard
+          icon={<Building2 className="h-4 w-4 text-brand-400" />}
+          title={t("hangar.overview.airlines")}
+          data={airlineData}
+        />
+        <TreemapCard
+          icon={<MapPin className="h-4 w-4 text-brand-400" />}
+          title={t("hangar.overview.destinations")}
+          data={destData}
+        />
+        <RadarCard
           icon={<Globe2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.regions")}
-          rows={topRegions.map((r) => ({ label: r.label, count: r.count }))}
+          data={regionData}
         />
       </div>
 
@@ -402,70 +388,103 @@ function FleetOverview({
   );
 }
 
-interface OverviewRow {
-  label: string;
-  sub?: string | null;
-  count: number;
-  airlineIcao?: string | null;
-}
+const TREE_COLORS = [
+  "#0ea5e9", "#22c55e", "#f59e0b", "#a855f7", "#ef4444", "#14b8a6",
+  "#eab308", "#6366f1", "#ec4899", "#84cc16", "#fb7185", "#64748b",
+];
 
-function OverviewCard({
+function CardShell({
   icon,
   title,
-  rows,
+  empty,
+  children,
 }: {
   icon: React.ReactNode;
   title: string;
-  rows: OverviewRow[];
+  empty: boolean;
+  children: React.ReactNode;
 }) {
-  const max = rows.reduce((m, r) => Math.max(m, r.count), 0) || 1;
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
         {icon}
         {title}
       </h3>
-      {rows.length === 0 ? (
-        <div className="py-6 text-center text-xs text-slate-600">
+      {empty ? (
+        <div className="py-10 text-center text-xs text-slate-600">
           {t("hangar.overview.no_data")}
         </div>
       ) : (
-        <div className="space-y-2">
-          {rows.map((r, i) => (
-            <div key={i} className="flex items-center gap-2">
-              {r.airlineIcao !== undefined ? (
-                <AirlineLogo icao={r.airlineIcao} name={r.label} size={18} />
-              ) : (
-                <span className="w-4 shrink-0 text-center text-[11px] font-semibold text-slate-600">
-                  {i + 1}
-                </span>
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-xs text-slate-200">
-                    {r.label}
-                    {r.sub && (
-                      <span className="ml-1 font-mono text-[10px] text-slate-500">
-                        {r.sub}
-                      </span>
-                    )}
-                  </span>
-                  <span className="shrink-0 text-xs font-semibold text-slate-300">
-                    {r.count}
-                  </span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className="h-full rounded-full bg-brand-500/70"
-                    style={{ width: `${Math.round((r.count / max) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        children
       )}
     </div>
+  );
+}
+
+function TreeLabel(props: {
+  x?: number; y?: number; width?: number; height?: number; index?: number; name?: string;
+}) {
+  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "" } = props;
+  const c = TREE_COLORS[index % TREE_COLORS.length];
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} fill={c} stroke="#0b1220" strokeWidth={2} />
+      {width > 46 && height > 24 && (
+        <text x={x + 7} y={y + 18} fill="#0b1220" fontSize={12} fontWeight={600}>
+          {name.length > Math.floor(width / 8) ? name.slice(0, Math.floor(width / 8) - 1) + "…" : name}
+        </text>
+      )}
+    </g>
+  );
+}
+
+function TreeTip({ active, payload }: { active?: boolean; payload?: Array<{ payload: { name: string; size: number } }> }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-950/95 px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-semibold text-slate-100">{p.name}</div>
+      <div className="text-slate-400">{p.size} {t("hangar.flights_short")}</div>
+    </div>
+  );
+}
+
+function TreemapCard({
+  icon, title, data,
+}: {
+  icon: React.ReactNode; title: string; data: Array<{ name: string; size: number }>;
+}) {
+  return (
+    <CardShell icon={icon} title={title} empty={data.length === 0}>
+      <div className="h-52 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <Treemap data={data} dataKey="size" stroke="#0b1220" isAnimationActive={false} content={<TreeLabel />}>
+            <Tooltip content={<TreeTip />} />
+          </Treemap>
+        </ResponsiveContainer>
+      </div>
+    </CardShell>
+  );
+}
+
+function RadarCard({
+  icon, title, data,
+}: {
+  icon: React.ReactNode; title: string; data: Array<{ label: string; count: number }>;
+}) {
+  return (
+    <CardShell icon={icon} title={title} empty={data.length < 3}>
+      <div className="h-52 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <RadarChart data={data} outerRadius="70%">
+            <PolarGrid stroke="#334155" />
+            <PolarAngleAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+            <PolarRadiusAxis tick={{ fill: "#64748b", fontSize: 9 }} stroke="#334155" angle={45} />
+            <Radar dataKey="count" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.45} isAnimationActive={false} />
+          </RadarChart>
+        </ResponsiveContainer>
+      </div>
+    </CardShell>
   );
 }
 
@@ -1017,13 +1036,23 @@ const MAKER_LABEL: Record<GearSpec["maker"], string> = {
   ga: "GA",
 };
 
+/** Salud por ZONA del tren (0-100). El rojo parpadea donde hay daño. */
+interface GearDamage {
+  strut: number; // amortiguador / pata
+  wheels: number; // frenos y neumáticos
+  braces: number; // soportes / hidráulico
+}
+
+const DAMAGE_TH = 78; // por debajo de esto, la zona parpadea en rojo
+const redOf = (h: number) => (h >= 70 ? "#f87171" : h >= 45 ? "#ef4444" : "#dc2626");
+
 /**
  * (v6.1 #24) Tren de aterrizaje en VISTA FRONTAL estilo diagrama técnico (como
  * la referencia): horquilla de drag-braces arriba, fitting central, pata-oleo
- * con bandas, pistón, eje y dos ruedas. La zona que "ha sufrido" (el oleo, que
- * absorbe el impacto) parpadea en ROJO con intensidad según la salud del tren.
+ * con bandas, pistón, eje y dos ruedas. Las ZONAS con daño (según mantenimiento)
+ * parpadean en ROJO: oleo (strut), frenos/neumáticos (wheels) o soportes (braces).
  */
-function LandingGear({ model, healthPct }: { model: string | null; healthPct: number }) {
+function LandingGear({ model, damage }: { model: string | null; damage: GearDamage }) {
   const s = gearSpec(model);
   const cx = 120;
   const big = s.big;
@@ -1032,8 +1061,10 @@ function LandingGear({ model, healthPct }: { model: string | null; healthPct: nu
   const wy = 198;
   const hub = s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)";
 
-  const redColor = healthPct >= 70 ? "#f87171" : healthPct >= 45 ? "#ef4444" : "#dc2626";
-  const redW = healthPct >= 70 ? 16 : healthPct >= 45 ? 21 : 26;
+  const strutHurt = damage.strut < DAMAGE_TH;
+  const wheelsHurt = damage.wheels < DAMAGE_TH;
+  const bracesHurt = damage.braces < DAMAGE_TH;
+  const redW = damage.strut >= 70 ? 16 : damage.strut >= 45 ? 21 : 26;
 
   const Limb = ({ x1, y1, x2, y2, w }: { x1: number; y1: number; x2: number; y2: number; w: number }) => (
     <>
@@ -1061,6 +1092,18 @@ function LandingGear({ model, healthPct }: { model: string | null; healthPct: nu
         {detail}
         <circle cx={x} cy={wy} r={wr * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
         <ellipse cx={x - wr * 0.28} cy={wy - wr * 0.34} rx={wr * 0.22} ry={wr * 0.11} fill="#fff" opacity="0.12" />
+        {/* Daño en frenos/neumáticos → anillo rojo parpadeante en el cubo */}
+        {wheelsHurt && (
+          <circle
+            className="gear-blink"
+            cx={x}
+            cy={wy}
+            r={wr * 0.62}
+            fill="none"
+            stroke={redOf(damage.wheels)}
+            strokeWidth={wr * 0.16}
+          />
+        )}
       </g>
     );
   };
@@ -1113,6 +1156,13 @@ function LandingGear({ model, healthPct }: { model: string | null; healthPct: nu
           <line x1={fx} y1={fy} x2={fx + 7} y2={fy - 11} stroke="#475569" strokeWidth="3.5" strokeLinecap="round" />
         </g>
       ))}
+      {/* Daño en soportes/hidráulico → parpadeo rojo sobre las braces */}
+      {bracesHurt && (
+        <g className="gear-blink" style={{ mixBlendMode: "screen" }}>
+          <line x1={cx - 6} y1={86} x2={56} y2={42} stroke={redOf(damage.braces)} strokeWidth="9" strokeLinecap="round" />
+          <line x1={cx + 6} y1={86} x2={184} y2={42} stroke={redOf(damage.braces)} strokeWidth="9" strokeLinecap="round" />
+        </g>
+      )}
 
       {/* Fitting central (trunnion) */}
       <rect x={cx - 19} y="78" width="38" height="34" rx="6" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="1" />
@@ -1130,17 +1180,19 @@ function LandingGear({ model, healthPct }: { model: string | null; healthPct: nu
       ))}
       <rect x={cx - 9} y="156" width="18" height="30" rx="4" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
 
-      {/* PARPADEO ROJO — el oleo es la zona que sufre el impacto */}
-      <rect
-        className="gear-blink"
-        x={cx - redW / 2}
-        y="108"
-        width={redW}
-        height="80"
-        rx={redW / 2}
-        fill={redColor}
-        style={{ mixBlendMode: "screen" }}
-      />
+      {/* Daño en el oleo/amortiguador → parpadeo rojo en la pata */}
+      {strutHurt && (
+        <rect
+          className="gear-blink"
+          x={cx - redW / 2}
+          y="108"
+          width={redW}
+          height="80"
+          rx={redW / 2}
+          fill={redOf(damage.strut)}
+          style={{ mixBlendMode: "screen" }}
+        />
+      )}
 
       {/* Eje + ruedas */}
       <rect x={cx - track - 6} y={wy - 7} width={track * 2 + 12} height="14" rx="7" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
@@ -1158,6 +1210,16 @@ function LandingGear({ model, healthPct }: { model: string | null; healthPct: nu
 
 function GearHealthCard({ ac }: { ac: HangarAircraft }) {
   const pct = ac.healthPct;
+  // (v6.1) Daño por ZONA del tren a partir del mantenimiento sintético
+  // (determinista por matrícula → cada avión "ha sufrido" en sitios distintos).
+  const mx = useMemo(() => deriveMaintenance(ac), [ac]);
+  const compHealth = (k: string) =>
+    mx.components.find((c) => c.key === k)?.healthPct ?? 100;
+  const damage = {
+    strut: ac.healthPct, // el tren propiamente dicho (salud del tren)
+    wheels: compHealth("brakes"),
+    braces: compHealth("hydraulics"),
+  };
   const color =
     pct >= 80 ? "text-brand-400" : pct >= 50 ? "text-amber-400" : "text-rose-400";
   const barColor =
@@ -1192,7 +1254,7 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
         </div>
       )}
       <div className="mt-4 flex flex-col items-center justify-center gap-2">
-        <LandingGear model={ac.model} healthPct={pct} />
+        <LandingGear model={ac.model} damage={damage} />
         <span className="text-[10px] uppercase tracking-wide text-slate-600">
           {(() => {
             const s = gearSpec(ac.model);
