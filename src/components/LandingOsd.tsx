@@ -101,8 +101,12 @@ export function LandingOsd() {
 
       window.clearTimeout(hideTimer);
       hideTimer = window.setTimeout(() => {
+        // (v6.1 fix) NO ocultamos la ventana: WebView2 SUSPENDE el webview de
+        // las ventanas ocultas, y el evento del SIGUIENTE aterrizaje (2º vuelo
+        // sin salir del sim) no repintaba → el OSD no salía la 2ª vez. En su
+        // lugar limpiamos el contenido (queda transparente/click-through) y
+        // dejamos la ventana mostrada para que el webview siga vivo.
         setData(null);
-        win.hide().catch(() => {});
       }, 7000);
     });
 

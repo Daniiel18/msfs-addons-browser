@@ -473,49 +473,51 @@ function CardShell({
 /** Logo de aerolínea (avs.io) desde ICAO/nombre, o null si no hay IATA. */
 function airlineLogoUrl(code: string | null, name: string): string | null {
   const iata = resolveIata((code ?? "").toUpperCase(), name);
-  return iata ? `https://pics.avs.io/al_square/60/60/${iata}.png` : null;
+  return iata ? `https://pics.avs.io/al_square/120/120/${iata}.png` : null;
 }
 /** Bandera del país (flagcdn) desde el ICAO del aeropuerto, o null. */
 function flagUrl(icao: string): string | null {
   const code = airportRegion(icao).code;
   const iso = code === "USA" ? "us" : /^[A-Z]{2}$/.test(code) ? code.toLowerCase() : null;
-  return iso ? `https://flagcdn.com/40x30/${iso}.png` : null;
+  return iso ? `https://flagcdn.com/120x90/${iso}.png` : null;
 }
 
+/**
+ * (v6.1) Celda del treemap: CUADRADA (las 4 esquinas del dashboard las redondea
+ * el contenedor). Logo/bandera GRANDE y CENTRADO, escalado al tamaño de la
+ * celda (responsive), con el nombre debajo, también centrado.
+ */
 function TreeLabel(props: {
   x?: number; y?: number; width?: number; height?: number; index?: number;
   name?: string; img?: string | null;
 }) {
   const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", img } = props;
   const c = TREE_COLORS[index % TREE_COLORS.length];
-  const pad = 7;
-  const showImg = !!img && width > 40 && height > 34;
-  const imgW = Math.min(26, width * 0.3);
-  const imgH = imgW * 0.75;
-  // Nombre: una sola línea recortada; cabe si la celda tiene ancho mínimo.
-  const maxChars = Math.max(3, Math.floor((width - pad * 2) / 7));
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  const hasImg = !!img && width > 44 && height > 44;
+  // Imagen responsive: hasta ~52% del lado menor de la celda.
+  const isz = hasImg ? Math.min(width, height) * 0.52 : 0;
+  const fontSize = Math.max(10, Math.min(14, Math.min(width, height) * 0.13));
+  const maxChars = Math.max(3, Math.floor((width - 10) / (fontSize * 0.6)));
   const label = name.length > maxChars ? name.slice(0, maxChars - 1) + "…" : name;
+  const textY = hasImg ? cy + isz / 2 + fontSize : cy + fontSize * 0.36;
   return (
     <g>
-      <rect x={x} y={y} width={width} height={height} rx={8} ry={8} fill={c} stroke="#0b1220" strokeWidth={1.5} />
-      {showImg && (
+      {/* Cuadrada: el "gap" entre celdas lo da el stroke; sin rx. */}
+      <rect x={x} y={y} width={width} height={height} fill={c} stroke="#0b1220" strokeWidth={2.5} />
+      {hasImg && (
         <image
           href={img!}
-          x={x + pad}
-          y={y + pad}
-          width={imgW}
-          height={imgH}
+          x={cx - isz / 2}
+          y={cy - isz / 2 - fontSize * 0.6}
+          width={isz}
+          height={isz * 0.78}
           preserveAspectRatio="xMidYMid meet"
         />
       )}
-      {width > 46 && height > 24 && (
-        <text
-          x={x + pad}
-          y={showImg ? y + pad + imgH + 14 : y + 17}
-          fill="#0b1220"
-          fontSize={11.5}
-          fontWeight={500}
-        >
+      {width > 40 && height > 22 && (
+        <text x={cx} y={textY} textAnchor="middle" fill="#0b1220" fontSize={fontSize} fontWeight={500}>
           {label}
         </text>
       )}
@@ -541,7 +543,7 @@ function TreemapCard({
 }) {
   return (
     <CardShell icon={icon} title={title} empty={data.length === 0}>
-      <div className="h-52 w-full">
+      <div className="h-52 w-full overflow-hidden rounded-lg">
         <ResponsiveContainer width="100%" height="100%">
           <Treemap data={data} dataKey="size" stroke="#0b1220" isAnimationActive={false} content={<TreeLabel />}>
             <Tooltip content={<TreeTip />} />

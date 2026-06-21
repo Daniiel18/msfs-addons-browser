@@ -1448,6 +1448,147 @@ fn gear_health_pct(butter: i64, acceptable: i64, hard: i64) -> i64 {
     (100 - acceptable * 3 - hard * 12).clamp(0, 100)
 }
 
+/// (v6.1) Normaliza el modelo del avión a un nombre CANÓNICO para que el mismo
+/// tipo —escrito de mil formas por cada addon— cuente como uno solo:
+///   "PMDG 737", "Boeing 737-800", "B738"  → "Boeing 737-800"
+///   "iniBuilds A350", "Airbus A350-900"   → "Airbus A350-900"
+///   "Fenix A320", "Airbus A320"           → "Airbus A320"
+/// Quita el prefijo del desarrollador y canoniza por tokens.
+pub fn normalize_model(raw: &str) -> String {
+    let mut s = raw.trim().to_string();
+    // 1. Quitar prefijos de desarrollador (case-insensitive, al inicio).
+    const DEVS: &[&str] = &[
+        "PMDG", "FENIX", "INIBUILDS", "INIBUILD", "FLYBYWIRE", "FLY BY WIRE", "FBW",
+        "AEROSOFT", "CAPTAIN SIM", "CAPTAINSIM", "LEONARDO", "A2A", "MILVIZ",
+        "JUST FLIGHT", "JUSTFLIGHT", "QUALITYWINGS", "QUALITY WINGS", "MADDOG",
+        "ROTATE", "TFDI", "BREDOK3D", "BREDOK", "ASOBO", "MICROSOFT", "CARENADO",
+        "BLACKBOX", "IFLY", "FLIGHT FACTOR", "FLIGHTFACTOR", "TOLISS", "HEADWIND",
+    ];
+    loop {
+        let up = s.trim().to_uppercase();
+        let mut stripped = false;
+        for d in DEVS {
+            if up.starts_with(d) {
+                s = s.trim()[d.len()..].trim_start_matches(['-', ':', ' ']).to_string();
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    let u = s.to_uppercase();
+    let has = |k: &str| u.contains(k);
+
+    // 2. Canonización por tokens (los más específicos primero).
+    // Boeing
+    if has("747") {
+        return "Boeing 747-400".into();
+    }
+    if has("737") || has("73M") || (has("MAX") && has("73")) {
+        if has("MAX 8") || has("7M8") || has("738M") || (has("MAX") && has("8")) {
+            return "Boeing 737 MAX 8".into();
+        }
+        if has("MAX 9") || has("7M9") || (has("MAX") && has("9")) {
+            return "Boeing 737 MAX 9".into();
+        }
+        if has("900") || has("73W") {
+            return "Boeing 737-900".into();
+        }
+        if has("700") || has("73G") {
+            return "Boeing 737-700".into();
+        }
+        if has("600") {
+            return "Boeing 737-600".into();
+        }
+        return "Boeing 737-800".into();
+    }
+    if has("777") {
+        if has("200") {
+            return "Boeing 777-200".into();
+        }
+        return "Boeing 777-300ER".into();
+    }
+    if has("787") {
+        if has("10") {
+            return "Boeing 787-10".into();
+        }
+        if has("8") {
+            return "Boeing 787-8".into();
+        }
+        return "Boeing 787-9".into();
+    }
+    if has("767") {
+        return "Boeing 767-300".into();
+    }
+    if has("757") {
+        return "Boeing 757-200".into();
+    }
+    // Airbus
+    if has("A380") || has("A388") {
+        return "Airbus A380".into();
+    }
+    if has("A350") || has("A359") || has("A35K") {
+        if has("1000") || has("35K") {
+            return "Airbus A350-1000".into();
+        }
+        return "Airbus A350-900".into();
+    }
+    if has("A330") {
+        if has("900") || has("NEO") || has("A339") {
+            return "Airbus A330-900neo".into();
+        }
+        if has("200") {
+            return "Airbus A330-200".into();
+        }
+        return "Airbus A330-300".into();
+    }
+    if has("A340") {
+        return "Airbus A340".into();
+    }
+    if has("A321") || has("A21") {
+        return if has("NEO") || has("NX") || has("A21N") {
+            "Airbus A321neo".into()
+        } else {
+            "Airbus A321".into()
+        };
+    }
+    if has("A319") || has("A19") {
+        return "Airbus A319".into();
+    }
+    if has("A318") {
+        return "Airbus A318".into();
+    }
+    if has("A320") || has("A20") || has("A32N") {
+        return if has("NEO") || has("NX") || has("A20N") {
+            "Airbus A320neo".into()
+        } else {
+            "Airbus A320".into()
+        };
+    }
+    // Embraer / regional
+    if has("E195") || has("E190") || has("E170") || has("E175") || has("EMB") || has("ERJ") {
+        return "Embraer E-Jet".into();
+    }
+    if has("CRJ") {
+        return "Bombardier CRJ".into();
+    }
+    if has("DH8") || has("DHC8") || has("Q400") || has("DASH 8") {
+        return "Dash 8 Q400".into();
+    }
+    if has("ATR") || has("AT7") || has("AT4") {
+        return "ATR 72".into();
+    }
+
+    // 3. Sin match: devolvemos el nombre ya sin prefijo de dev (limpio).
+    if s.trim().is_empty() {
+        raw.trim().to_string()
+    } else {
+        s.trim().to_string()
+    }
+}
+
 pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalytics> {
     use std::collections::HashMap;
 
@@ -1503,7 +1644,8 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
         let reg = norm(&e.aircraft_registration);
         let model = norm(&e.aircraft_model)
             .or_else(|| norm(&e.aircraft_atc_type))
-            .or_else(|| norm(&e.aircraft_title));
+            .or_else(|| norm(&e.aircraft_title))
+            .map(|m| normalize_model(&m));
         let key = match (&reg, &model) {
             (Some(r), _) => format!("reg:{}", r.to_uppercase()),
             (None, Some(m)) => format!("mdl:{}", m.to_uppercase()),
