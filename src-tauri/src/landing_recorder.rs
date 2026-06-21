@@ -581,12 +581,15 @@ async fn controller_loop(
 
         let phase = status.phase_label.clone().unwrap_or_default();
         let on_ground = status.on_ground.unwrap_or(true);
-        // (v6 #2b perf) Armamos TARDE — solo en aproximación final / baja
-        // altitud — para no cargar la GPU durante todo el descenso en
-        // escenarios pesados. El replay buffer captura los últimos N s, que
-        // cubren el aterrizaje de sobra.
+        // (v6.1 perf) Armamos LO MÁS TARDE posible — solo en aproximación final
+        // — para minimizar la carga de GPU (FPS) durante el descenso en
+        // escenarios pesados. El replay buffer mantiene los últimos N s (cubren
+        // el aterrizaje de sobra), así que no hace falta armar antes. La fase
+        // "approach" del watcher es por ALTURA SOBRE EL TERRENO (sirve también
+        // en aeropuertos de gran altitud); el fallback por altitud MSL baja a
+        // 3000ft solo por si la fase no se derivara.
         let approaching = matches!(phase.as_str(), "approach")
-            || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 5_000));
+            || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 3_000));
 
         // ── Grabación (solo si está activada) ──
         if cfg.enabled {
