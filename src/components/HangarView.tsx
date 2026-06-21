@@ -53,6 +53,7 @@ import { t } from "../lib/i18n";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
 import { airportRegion } from "../lib/oaciRegion";
+import { resolveIata } from "../lib/airlineCodes";
 import {
   deriveMaintenance,
   type MaintenanceData,
@@ -340,16 +341,21 @@ function FleetOverview({
     name: cleanAtcType(a.label) ?? a.label,
     size: a.count,
   }));
-  const airlineData = data.topAirlines.map((a) => ({ name: a.label, size: a.count }));
+  const airlineData = data.topAirlines.map((a) => ({
+    name: a.label,
+    size: a.count,
+    img: airlineLogoUrl(a.code, a.label),
+  }));
   const destData = data.topDestinations.map((d) => ({
     name: d.icao,
     size: d.visits,
+    img: flagUrl(d.icao),
   }));
   const regionData = topRegions.map((r) => ({ label: r.label, count: r.count }));
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-      <h2 className="mb-1 text-lg font-bold text-slate-100">
+      <h2 className="mb-1 text-base font-semibold text-slate-100">
         {t("hangar.overview.heading")}
       </h2>
       <p className="mb-4 text-xs text-slate-500">{t("hangar.overview.hint")}</p>
@@ -421,17 +427,53 @@ function CardShell({
   );
 }
 
+/** Logo de aerolínea (avs.io) desde ICAO/nombre, o null si no hay IATA. */
+function airlineLogoUrl(code: string | null, name: string): string | null {
+  const iata = resolveIata((code ?? "").toUpperCase(), name);
+  return iata ? `https://pics.avs.io/al_square/60/60/${iata}.png` : null;
+}
+/** Bandera del país (flagcdn) desde el ICAO del aeropuerto, o null. */
+function flagUrl(icao: string): string | null {
+  const code = airportRegion(icao).code;
+  const iso = code === "USA" ? "us" : /^[A-Z]{2}$/.test(code) ? code.toLowerCase() : null;
+  return iso ? `https://flagcdn.com/40x30/${iso}.png` : null;
+}
+
 function TreeLabel(props: {
-  x?: number; y?: number; width?: number; height?: number; index?: number; name?: string;
+  x?: number; y?: number; width?: number; height?: number; index?: number;
+  name?: string; img?: string | null;
 }) {
-  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "" } = props;
+  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", img } = props;
   const c = TREE_COLORS[index % TREE_COLORS.length];
+  const pad = 7;
+  const showImg = !!img && width > 40 && height > 34;
+  const imgW = Math.min(26, width * 0.3);
+  const imgH = imgW * 0.75;
+  // Nombre: una sola línea recortada; cabe si la celda tiene ancho mínimo.
+  const maxChars = Math.max(3, Math.floor((width - pad * 2) / 7));
+  const label = name.length > maxChars ? name.slice(0, maxChars - 1) + "…" : name;
   return (
     <g>
-      <rect x={x} y={y} width={width} height={height} fill={c} stroke="#0b1220" strokeWidth={2} />
+      <rect x={x} y={y} width={width} height={height} rx={8} ry={8} fill={c} stroke="#0b1220" strokeWidth={1.5} />
+      {showImg && (
+        <image
+          href={img!}
+          x={x + pad}
+          y={y + pad}
+          width={imgW}
+          height={imgH}
+          preserveAspectRatio="xMidYMid meet"
+        />
+      )}
       {width > 46 && height > 24 && (
-        <text x={x + 7} y={y + 18} fill="#0b1220" fontSize={12} fontWeight={600}>
-          {name.length > Math.floor(width / 8) ? name.slice(0, Math.floor(width / 8) - 1) + "…" : name}
+        <text
+          x={x + pad}
+          y={showImg ? y + pad + imgH + 14 : y + 17}
+          fill="#0b1220"
+          fontSize={11.5}
+          fontWeight={500}
+        >
+          {label}
         </text>
       )}
     </g>
