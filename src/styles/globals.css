@@ -458,3 +458,13 @@ html.light input::placeholder {
     width: 100%;
   }
 }
+
+/* (v6.1 #24) Parpadeo rojo del tren de aterrizaje — marca la zona que ha
+   "sufrido" (impacto/desgaste). La intensidad la fija el componente por opacidad. */
+@keyframes gear-blink {
+  0%, 100% { opacity: 0.18; }
+  50% { opacity: 1; }
+}
+.gear-blink {
+  animation: gear-blink 1.1s ease-in-out infinite;
+}

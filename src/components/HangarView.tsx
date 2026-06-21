@@ -1018,73 +1018,70 @@ const MAKER_LABEL: Record<GearSpec["maker"], string> = {
 };
 
 /**
- * (v6.1 #24) Tren de aterrizaje principal en vista 3/4 con la ESTRUCTURA real
- * (estilo diagrama L'avionnaire): muñón/fijación arriba, pata-amortiguador,
- * soporte lateral, puntal de bloqueo con rodilla, actuador, tijera (biela
- * antiparti) y el bogie/ruedas abajo. Las estaciones de rueda = ejes reales:
- * 737/A320 = 1 eje, bogie de 2 o 3 ejes en widebodies. Boeing/Airbus difieren
- * en el cubo y la compuerta.
+ * (v6.1 #24) Tren de aterrizaje en VISTA FRONTAL estilo diagrama técnico (como
+ * la referencia): horquilla de drag-braces arriba, fitting central, pata-oleo
+ * con bandas, pistón, eje y dos ruedas. La zona que "ha sufrido" (el oleo, que
+ * absorbe el impacto) parpadea en ROJO con intensidad según la salud del tren.
  */
-function LandingGear({ model }: { model: string | null }) {
+function LandingGear({ model, healthPct }: { model: string | null; healthPct: number }) {
   const s = gearSpec(model);
-  const stations = s.axles;
-  const wr = s.big ? 23 : s.maker === "ga" ? 34 : s.maker === "regional" ? 27 : 33;
-  const bottomX = 116;
-  const beamY = 188;
-  const stationGap = wr * 1.9;
-  const beamHalf = ((stations - 1) * stationGap) / 2;
-  const xs = Array.from({ length: stations }, (_, i) => bottomX - beamHalf + i * stationGap);
+  const cx = 120;
+  const big = s.big;
+  const wr = big ? 36 : s.maker === "ga" ? 30 : 34;
+  const track = s.perAxle === 1 ? 0 : wr * 0.96;
+  const wy = 198;
+  const hub = s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)";
 
-  const Wheel = ({ wx, wy, rad, ghost = false }: { wx: number; wy: number; rad: number; ghost?: boolean }) => {
-    if (ghost) {
-      return (
-        <g opacity="0.85">
-          <circle cx={wx} cy={wy} r={rad} fill="#0c0c0c" stroke="#000" strokeWidth="1.5" />
-          <circle cx={wx} cy={wy} r={rad * 0.78} fill="none" stroke="#7c1414" strokeWidth={rad * 0.16} />
-          <circle cx={wx} cy={wy} r={rad * 0.5} fill="#1f2937" />
-        </g>
-      );
-    }
+  const redColor = healthPct >= 70 ? "#f87171" : healthPct >= 45 ? "#ef4444" : "#dc2626";
+  const redW = healthPct >= 70 ? 16 : healthPct >= 45 ? 21 : 26;
+
+  const Limb = ({ x1, y1, x2, y2, w }: { x1: number; y1: number; x2: number; y2: number; w: number }) => (
+    <>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#1e293b" strokeWidth={w + 2.5} strokeLinecap="round" />
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="url(#lgStrut)" strokeWidth={w} strokeLinecap="round" />
+    </>
+  );
+
+  const Wheel = ({ x }: { x: number }) => {
     const detail =
       s.maker === "airbus"
         ? Array.from({ length: 5 }, (_, i) => {
             const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
-            return <circle key={i} cx={wx + Math.cos(a) * rad * 0.3} cy={wy + Math.sin(a) * rad * 0.3} r={rad * 0.1} fill="#0f172a" opacity="0.85" />;
+            return <circle key={i} cx={x + Math.cos(a) * wr * 0.3} cy={wy + Math.sin(a) * wr * 0.3} r={wr * 0.1} fill="#0f172a" opacity="0.85" />;
           })
         : Array.from({ length: 8 }, (_, i) => {
             const a = (i / 8) * Math.PI * 2;
-            return <circle key={i} cx={wx + Math.cos(a) * rad * 0.34} cy={wy + Math.sin(a) * rad * 0.34} r={rad * 0.05} fill="#1e293b" />;
+            return <circle key={i} cx={x + Math.cos(a) * wr * 0.34} cy={wy + Math.sin(a) * wr * 0.34} r={wr * 0.05} fill="#1e293b" />;
           });
     return (
       <g>
-        <circle cx={wx} cy={wy} r={rad} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
-        <circle cx={wx} cy={wy} r={rad * 0.78} fill="none" stroke="#a81b1b" strokeWidth={rad * 0.17} />
-        <circle cx={wx} cy={wy} r={rad * 0.69} fill="none" stroke="#000" strokeWidth="1" opacity="0.5" />
-        <circle cx={wx} cy={wy} r={rad * 0.52} fill={s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)"} stroke="#1e293b" strokeWidth="1" />
+        <circle cx={x} cy={wy} r={wr} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
+        <circle cx={x} cy={wy} r={wr * 0.74} fill="none" stroke="#0a0a0a" strokeWidth={wr * 0.12} />
+        <circle cx={x} cy={wy} r={wr * 0.52} fill={hub} stroke="#1e293b" strokeWidth="1" />
         {detail}
-        <circle cx={wx} cy={wy} r={rad * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
-        <ellipse cx={wx - rad * 0.28} cy={wy - rad * 0.34} rx={rad * 0.22} ry={rad * 0.11} fill="#fff" opacity="0.13" />
+        <circle cx={x} cy={wy} r={wr * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
+        <ellipse cx={x - wr * 0.28} cy={wy - wr * 0.34} rx={wr * 0.22} ry={wr * 0.11} fill="#fff" opacity="0.12" />
       </g>
     );
   };
 
   return (
-    <svg viewBox="0 0 240 240" width="210" height="210" xmlns="http://www.w3.org/2000/svg" className="select-none" aria-hidden>
+    <svg viewBox="0 0 240 252" width="208" height="218" xmlns="http://www.w3.org/2000/svg" className="select-none" aria-hidden>
       <defs>
         <linearGradient id="lgStrut" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stopColor="#26303c" />
-          <stop offset="0.34" stopColor="#8a9bad" />
-          <stop offset="0.5" stopColor="#f3f7fb" />
-          <stop offset="0.66" stopColor="#8a9bad" />
-          <stop offset="1" stopColor="#26303c" />
+          <stop offset="0" stopColor="#5b6675" />
+          <stop offset="0.4" stopColor="#c7d0da" />
+          <stop offset="0.5" stopColor="#eef3f8" />
+          <stop offset="0.6" stopColor="#c7d0da" />
+          <stop offset="1" stopColor="#5b6675" />
         </linearGradient>
         <linearGradient id="lgChrome" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stopColor="#5b6b7d" />
+          <stop offset="0" stopColor="#64748b" />
           <stop offset="0.5" stopColor="#fbfdff" />
-          <stop offset="1" stopColor="#5b6b7d" />
+          <stop offset="1" stopColor="#64748b" />
         </linearGradient>
         <radialGradient id="lgTire" cx="0.42" cy="0.36" r="0.72">
-          <stop offset="0" stopColor="#3d3d3d" />
+          <stop offset="0" stopColor="#3a3a3a" />
           <stop offset="0.55" stopColor="#161616" />
           <stop offset="1" stopColor="#000000" />
         </radialGradient>
@@ -1103,52 +1100,58 @@ function LandingGear({ model }: { model: string | null }) {
         </filter>
       </defs>
 
-      {/* Sombra */}
-      <ellipse cx={bottomX} cy={beamY + wr + 9} rx={beamHalf + wr + 8} ry="8" fill="#000" opacity="0.4" filter="url(#lgShadow)" />
+      <ellipse cx={cx} cy={wy + wr + 7} rx={track + wr + 10} ry="8" fill="#000" opacity="0.4" filter="url(#lgShadow)" />
 
-      {/* Fijación superior (muñón) al ala */}
-      <rect x="70" y="14" width="104" height="12" rx="4" fill="#334155" stroke="#1e293b" strokeWidth="1" />
-      <circle cx="138" cy="32" r="6" fill="url(#lgChrome)" stroke="#1e293b" strokeWidth="1" />
+      {/* Horquilla de drag-braces (A-frame), simétrica */}
+      <Limb x1={cx - 6} y1={86} x2={56} y2={42} w={9} />
+      <Limb x1={cx + 6} y1={86} x2={184} y2={42} w={9} />
+      <Limb x1={cx - 4} y1={92} x2={92} y2={50} w={7} />
+      <Limb x1={cx + 4} y1={92} x2={148} y2={50} w={7} />
+      {[[56, 42], [184, 42], [92, 50], [148, 50]].map(([fx, fy], i) => (
+        <g key={i}>
+          <line x1={fx} y1={fy} x2={fx - 7} y2={fy - 11} stroke="#475569" strokeWidth="3.5" strokeLinecap="round" />
+          <line x1={fx} y1={fy} x2={fx + 7} y2={fy - 11} stroke="#475569" strokeWidth="3.5" strokeLinecap="round" />
+        </g>
+      ))}
 
-      {/* Soporte lateral (side stay) */}
-      <path d="M166 24 L138 96" stroke="url(#lgStrut)" strokeWidth="9" strokeLinecap="round" />
-      <circle cx="166" cy="24" r="4" fill="#475569" />
-
-      {/* Puntal de bloqueo (drag stay) con rodilla */}
-      <path d="M86 24 L96 92" stroke="url(#lgStrut)" strokeWidth="8" strokeLinecap="round" />
-      <path d="M96 92 L124 130" stroke="url(#lgStrut)" strokeWidth="7" strokeLinecap="round" />
-      <circle cx="96" cy="92" r="4.5" fill="#64748b" stroke="#1e293b" strokeWidth="0.8" />
-      {/* Actuador de maniobra */}
-      <rect x="100" y="30" width="11" height="30" rx="5" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" transform="rotate(-14 105 45)" />
+      {/* Fitting central (trunnion) */}
+      <rect x={cx - 19} y="78" width="38" height="34" rx="6" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="1" />
+      <rect x={cx - 19} y="90" width="38" height="8" fill="#94a3b8" opacity="0.5" />
 
       {/* Compuerta (Airbus) */}
       {s.door && (
-        <rect x="150" y="20" width="16" height="46" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.85" transform="rotate(8 158 43)" />
+        <rect x={cx + 22} y="78" width="15" height="40" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.85" />
       )}
 
-      {/* Pata principal (amortiguador) + pistón cromado */}
-      <path d="M126 28 L148 30 L140 120 L122 120 Z" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.8" />
-      <rect x={bottomX + 6} y="116" width="15" height={beamY - 116 - 14} rx="6" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" transform="rotate(3 124 150)" />
-      <rect x="118" y="116" width="28" height="8" rx="3" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
-      {/* Tijera (biela antiparti) */}
-      <path d="M132 124 L142 146 L128 166" fill="none" stroke="#cbd5e1" strokeWidth="3" strokeLinejoin="round" />
-      <circle cx="142" cy="146" r="2.4" fill="#475569" />
-
-      {/* Ruedas traseras del par (ghost) */}
-      {s.perAxle > 1 &&
-        xs.map((x, i) => <Wheel key={`g${i}`} wx={x + wr * 0.62} wy={beamY - wr * 0.42} rad={wr * 0.84} ghost />)}
-
-      {/* Viga del bogie */}
-      {stations > 1 && (
-        <rect x={xs[0] - 6} y={beamY - 7} width={xs[xs.length - 1] - xs[0] + 12} height="14" rx="7" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
-      )}
-      {/* Enlace pata→bogie */}
-      <rect x={bottomX - 4} y={beamY - 26} width="9" height="26" rx="4" fill="url(#lgStrut)" />
-
-      {/* Ruedas delanteras del par */}
-      {xs.map((x, i) => (
-        <Wheel key={`n${i}`} wx={x} wy={beamY} rad={wr} />
+      {/* Oleo (pata) con bandas + pistón */}
+      <rect x={cx - 13} y="110" width="26" height="48" rx="6" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.8" />
+      {[120, 132, 144].map((y) => (
+        <rect key={y} x={cx - 13} y={y} width="26" height="3" fill="#1e293b" opacity="0.35" />
       ))}
+      <rect x={cx - 9} y="156" width="18" height="30" rx="4" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
+
+      {/* PARPADEO ROJO — el oleo es la zona que sufre el impacto */}
+      <rect
+        className="gear-blink"
+        x={cx - redW / 2}
+        y="108"
+        width={redW}
+        height="80"
+        rx={redW / 2}
+        fill={redColor}
+        style={{ mixBlendMode: "screen" }}
+      />
+
+      {/* Eje + ruedas */}
+      <rect x={cx - track - 6} y={wy - 7} width={track * 2 + 12} height="14" rx="7" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
+      {s.perAxle === 1 ? (
+        <Wheel x={cx} />
+      ) : (
+        <>
+          <Wheel x={cx - track} />
+          <Wheel x={cx + track} />
+        </>
+      )}
     </svg>
   );
 }
@@ -1189,7 +1192,7 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
         </div>
       )}
       <div className="mt-4 flex flex-col items-center justify-center gap-2">
-        <LandingGear model={ac.model} />
+        <LandingGear model={ac.model} healthPct={pct} />
         <span className="text-[10px] uppercase tracking-wide text-slate-600">
           {(() => {
             const s = gearSpec(ac.model);
