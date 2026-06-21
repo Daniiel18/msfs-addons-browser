@@ -617,7 +617,7 @@ function AircraftDetail({
       : ac.lastIcao ?? null;
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+    <section className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40 lg:self-stretch">
       {/* Banner */}
       <div className="relative overflow-hidden">
         <div className="absolute right-3 top-3 z-10 flex">
@@ -698,7 +698,7 @@ function AircraftDetail({
         ))}
       </div>
 
-      <div className="p-4">
+      <div className="flex-1 p-4">
         {tab === "overview" && (
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -960,81 +960,113 @@ function FlightDetail({ flight, engineHealth }: { flight: FlightLogEntry; engine
 }
 
 /**
- * (v6.1) Motor a reacción en ángulo cielo→tierra bajo el ala SEMITRANSPARENTE
- * (para ver los componentes internos), con las ZONAS DE CALOR (cámara de
- * combustión + turbina) marcadas en naranja/rojo según la intensidad.
+ * (v6.1) Turbofan de alto bypass en CUTAWAY, ligeramente inclinado (cielo→
+ * tierra) bajo el ala SEMITRANSPARENTE. Se ven los componentes (fan, compresor,
+ * cámara de combustión, turbina, tobera) y la ZONA CALIENTE (cámara+turbina)
+ * marcada en rojo/naranja. El tamaño del fan y el nombre del motor cambian con
+ * el tipo de avión. Para turbohélices dibuja la hélice.
  */
 function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
-  const heat = tel.heat / 100; // 0..1
+  const heat = tel.heat / 100;
   const hotColor = heat > 0.75 ? "#dc2626" : heat > 0.5 ? "#ef4444" : "#f97316";
+  const cy = 130;
+  const fanR = Math.max(20, Math.min(52, 36 * tel.fan));
+  const coreR = fanR * 0.4;
+  const turboprop = tel.turboprop;
+
   return (
-    <svg viewBox="0 0 360 210" width="100%" className="select-none" aria-hidden>
+    <svg viewBox="0 0 380 220" width="100%" className="select-none" aria-hidden>
       <defs>
-        <linearGradient id="cowl" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#e2e8f0" />
-          <stop offset="0.5" stopColor="#94a3b8" />
+        <linearGradient id="engMetal" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#cbd5e1" />
+          <stop offset="0.5" stopColor="#8a9bad" />
           <stop offset="1" stopColor="#475569" />
         </linearGradient>
-        <radialGradient id="fan" cx="0.5" cy="0.5" r="0.5">
-          <stop offset="0" stopColor="#334155" />
-          <stop offset="1" stopColor="#0b1220" />
-        </radialGradient>
-        <radialGradient id="hot" cx="0.5" cy="0.5" r="0.5">
-          <stop offset="0" stopColor={hotColor} stopOpacity={0.95} />
-          <stop offset="0.6" stopColor={hotColor} stopOpacity={0.5} />
-          <stop offset="1" stopColor={hotColor} stopOpacity={0} />
+        <linearGradient id="engCore" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#94a3b8" />
+          <stop offset="1" stopColor="#334155" />
+        </linearGradient>
+        <radialGradient id="engHot" cx="0.5" cy="0.5" r="0.55">
+          <stop offset="0" stopColor="#fde68a" />
+          <stop offset="0.35" stopColor={hotColor} stopOpacity="0.95" />
+          <stop offset="1" stopColor={hotColor} stopOpacity="0" />
         </radialGradient>
       </defs>
 
-      {/* Ala semitransparente (vista en ángulo) */}
-      <path d="M20 40 L340 18 L348 54 L40 86 Z" fill="#94a3b8" fillOpacity="0.18" stroke="#94a3b8" strokeOpacity="0.5" strokeWidth="1" />
-      <text x="300" y="40" fill="#94a3b8" fontSize="10" opacity="0.7">ala</text>
+      {/* Ala semitransparente (en ángulo) + pilón */}
+      <path d="M24 34 L356 16 L362 50 L40 80 Z" fill="#94a3b8" fillOpacity="0.16" stroke="#94a3b8" strokeOpacity="0.45" strokeWidth="1" />
+      <path d={`M150 66 L182 66 L176 ${cy - fanR * 0.95} L156 ${cy - fanR * 0.95} Z`} fill="#64748b" stroke="#334155" strokeWidth="1" />
 
-      {/* Pilón */}
-      <path d="M150 70 L170 70 L176 96 L150 96 Z" fill="#64748b" stroke="#334155" strokeWidth="1" />
+      {turboprop ? (
+        <g>
+          {/* Hélice */}
+          <g stroke="#1e293b" strokeWidth="1.5" fill="#334155">
+            {Array.from({ length: 5 }, (_, i) => {
+              const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+              return <ellipse key={i} cx={70 + Math.cos(a) * 4} cy={cy + Math.sin(a) * 44} rx="5" ry="22" transform={`rotate(${(a * 180) / Math.PI + 90} ${70} ${cy})`} />;
+            })}
+          </g>
+          <circle cx="70" cy={cy} r="10" fill="url(#engMetal)" stroke="#1e293b" strokeWidth="1.5" />
+          {/* Góndola del turbohélice */}
+          <path d={`M86 ${cy - 22} L300 ${cy - 16} Q316 ${cy - 14} 316 ${cy} Q316 ${cy + 14} 300 ${cy + 16} L86 ${cy + 22} Z`} fill="url(#engMetal)" stroke="#1e293b" strokeWidth="1.5" />
+          <rect x="250" y={cy - 9} width="56" height="18" rx="9" fill="url(#engHot)" />
+        </g>
+      ) : (
+        <g>
+          {/* Góndola translúcida (vemos el interior) */}
+          <path
+            d={`M60 ${cy - fanR * 1.12}
+                Q56 ${cy} 60 ${cy + fanR * 1.12}
+                L210 ${cy + fanR * 1.05}
+                Q300 ${cy + fanR * 0.96} 300 ${cy + fanR * 0.6}
+                L300 ${cy - fanR * 0.6}
+                Q300 ${cy - fanR * 0.96} 210 ${cy - fanR * 1.05} Z`}
+            fill="#94a3b8" fillOpacity="0.16" stroke="#94a3b8" strokeOpacity="0.55" strokeWidth="1.5"
+          />
+          {/* Labio del inlet */}
+          <path d={`M60 ${cy - fanR * 1.12} Q44 ${cy} 60 ${cy + fanR * 1.12}`} fill="none" stroke="url(#engMetal)" strokeWidth="6" strokeLinecap="round" />
 
-      {/* Carcasa del motor (cowling) en ángulo */}
-      <g>
-        <ellipse cx="300" cy="140" rx="20" ry="34" fill="#334155" />
-        <path d="M70 116 Q70 96 110 96 L300 110 Q322 116 322 140 Q322 164 300 170 L110 184 Q70 184 70 164 Z" fill="url(#cowl)" stroke="#1e293b" strokeWidth="1.5" />
-        {/* Cutaway: dejamos ver el interior por una banda translúcida */}
-        <path d="M120 108 L300 120 L300 160 L120 172 Z" fill="#0b1220" fillOpacity="0.55" />
+          {/* Spinner + Fan (disco de canto) */}
+          <path d={`M50 ${cy} L70 ${cy - fanR} L70 ${cy + fanR} Z`} fill="url(#engMetal)" stroke="#1e293b" strokeWidth="1" />
+          <ellipse cx="72" cy={cy} rx="9" ry={fanR} fill="url(#engCore)" stroke="#0b1220" strokeWidth="1.5" />
+          {Array.from({ length: 13 }, (_, i) => {
+            const yy = cy - fanR + ((2 * fanR) / 12) * i;
+            return <line key={i} x1="66" y1={yy} x2="78" y2={yy - 3} stroke="#cbd5e1" strokeWidth="1" opacity="0.8" />;
+          })}
 
-        {/* Fan (admisión, izquierda) */}
-        <ellipse cx="96" cy="140" rx="20" ry="40" fill="url(#fan)" stroke="#0b1220" strokeWidth="2" />
-        {Array.from({ length: 12 }, (_, i) => {
-          const a = (i / 12) * Math.PI * 2;
-          return <line key={i} x1="96" y1="140" x2={96 + Math.cos(a) * 18} y2={140 + Math.sin(a) * 36} stroke="#475569" strokeWidth="1" />;
-        })}
+          {/* Núcleo: cárter + ejes */}
+          <path d={`M100 ${cy - coreR} L255 ${cy - coreR * 0.78} L288 ${cy - coreR * 0.5} L288 ${cy + coreR * 0.5} L255 ${cy + coreR * 0.78} L100 ${cy + coreR} Z`} fill="url(#engCore)" stroke="#1e293b" strokeWidth="1" />
+          {/* Compresor (etapas decrecientes) */}
+          {Array.from({ length: 7 }, (_, i) => {
+            const x = 108 + i * 10;
+            const h = coreR * (0.95 - i * 0.07);
+            return <line key={i} x1={x} y1={cy - h} x2={x} y2={cy + h} stroke="#e2e8f0" strokeWidth="1.6" opacity="0.85" />;
+          })}
+          {/* Cámara de combustión (caliente) */}
+          <rect x="186" y={cy - coreR * 0.82} width="26" height={coreR * 1.64} rx="5" fill="url(#engHot)" stroke={hotColor} strokeWidth="1" />
+          {/* Turbina (etapas calientes) */}
+          {Array.from({ length: 4 }, (_, i) => {
+            const x = 218 + i * 9;
+            const h = coreR * (0.6 + i * 0.06);
+            return <line key={i} x1={x} y1={cy - h} x2={x} y2={cy + h} stroke={hotColor} strokeWidth="2.4" opacity="0.95" />;
+          })}
+          {/* Glow de la zona caliente */}
+          <ellipse cx="206" cy={cy} rx="58" ry={coreR * 1.5} fill="url(#engHot)" opacity="0.55" />
+          {/* Cono de salida + tobera */}
+          <path d={`M288 ${cy - coreR * 0.5} L320 ${cy} L288 ${cy + coreR * 0.5} Z`} fill="url(#engCore)" stroke="#1e293b" strokeWidth="1" />
+        </g>
+      )}
 
-        {/* Compresor (etapas) */}
-        {Array.from({ length: 6 }, (_, i) => (
-          <line key={i} x1={140 + i * 12} y1={120} x2={140 + i * 12} y2={160} stroke="#94a3b8" strokeWidth="2" opacity="0.7" />
-        ))}
-
-        {/* Zona caliente: cámara de combustión + turbina (marcada) */}
-        <rect x="222" y="118" width="66" height="44" rx="8" fill="url(#hot)" />
-        {Array.from({ length: 4 }, (_, i) => (
-          <line key={i} x1={236 + i * 14} y1={122} x2={236 + i * 14} y2={158} stroke={hotColor} strokeWidth="2.5" opacity="0.9" />
-        ))}
-
-        {/* Tobera de escape */}
-        <path d="M318 120 L344 128 L344 152 L318 160 Z" fill="#1f2937" stroke="#0b1220" strokeWidth="1" />
+      {/* Etiqueta del motor */}
+      <g transform="translate(20,18)">
+        <rect x="0" y="0" width={tel.engineName.length * 6.6 + 16} height="18" rx="9" fill="#0b1220" fillOpacity="0.7" stroke="#334155" />
+        <text x="8" y="13" fill="#e2e8f0" fontSize="11" fontWeight="600">{tel.engines}× {tel.engineName}</text>
       </g>
-
-      {/* Etiqueta de zona caliente */}
-      <g transform="translate(214,96)">
-        <rect x="0" y="0" width="92" height="18" rx="9" fill={hotColor} fillOpacity="0.22" stroke={hotColor} strokeOpacity="0.6" />
-        <text x="46" y="13" textAnchor="middle" fill={hotColor} fontSize="10" fontWeight="600">
-          {t("hangar.fd.hot")} · {tel.maxEgtC}°C
-        </text>
-      </g>
-
-      {/* Segundo motor (si aplica) atenuado detrás */}
-      {tel.engines > 1 && (
-        <g opacity="0.4" transform="translate(-44,-58) scale(0.7)">
-          <path d="M70 116 Q70 96 110 96 L300 110 Q322 116 322 140 Q322 164 300 170 L110 184 Q70 184 70 164 Z" fill="url(#cowl)" stroke="#1e293b" strokeWidth="1.5" />
-          <ellipse cx="96" cy="140" rx="20" ry="40" fill="url(#fan)" />
+      {/* Etiqueta zona caliente */}
+      {!turboprop && (
+        <g transform={`translate(160,${cy + fanR * 1.12 + 8})`}>
+          <rect x="0" y="0" width="118" height="17" rx="8" fill={hotColor} fillOpacity="0.2" stroke={hotColor} strokeOpacity="0.6" />
+          <text x="59" y="12" textAnchor="middle" fill={hotColor} fontSize="10" fontWeight="600">{t("hangar.fd.hot")} · {tel.maxEgtC}°C</text>
         </g>
       )}
     </svg>
@@ -1105,12 +1137,26 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
   ac: HangarAircraft; report: MaintenanceReport; hoursTotal: number; onClose: () => void;
 }) {
   const r = report;
+  const push = useToastStore((s) => s.push);
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : "—";
+  const doPrint = () => {
+    const onAfter = () => {
+      push({
+        kind: "success",
+        title: t("hangar.report.saved"),
+        message: t("hangar.report.saved_hint"),
+        ttlMs: 6000,
+      });
+      window.removeEventListener("afterprint", onAfter);
+    };
+    window.addEventListener("afterprint", onAfter);
+    window.print();
+  };
   return (
-    <div className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-6 backdrop-blur-sm print:bg-white print:p-0" onClick={onClose}>
+    <div className="hangar-print-overlay fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-6 backdrop-blur-sm" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl print:max-w-none print:rounded-none print:shadow-none"
+        className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl"
       >
         {/* Encabezado del taller */}
         <div className="flex items-start justify-between border-b-2 pb-4" style={{ borderColor: r.shop.color }}>
@@ -1189,7 +1235,7 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
             <X className="h-4 w-4" />
             {t("common.close")}
           </button>
-          <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
+          <button onClick={doPrint} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
             <Printer className="h-4 w-4" />
             {t("hangar.docs.print")}
           </button>
@@ -1290,6 +1336,7 @@ function AircraftReportModal({
   ac: HangarAircraft; mx: MaintenanceData; onClose: () => void;
 }) {
   const entries = useFlightLogStore((s) => s.entries);
+  const push = useToastStore((s) => s.push);
   const photo = useAircraftPhoto(ac.registration ?? null);
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : "—";
   const reg = ac.registration?.toUpperCase() ?? null;
@@ -1304,11 +1351,25 @@ function AircraftReportModal({
   );
   const recent = flights.slice(0, 12);
 
+  const doPrint = () => {
+    const onAfter = () => {
+      push({
+        kind: "success",
+        title: t("hangar.report.saved"),
+        message: t("hangar.report.saved_hint"),
+        ttlMs: 6000,
+      });
+      window.removeEventListener("afterprint", onAfter);
+    };
+    window.addEventListener("afterprint", onAfter);
+    window.print();
+  };
+
   return (
-    <div className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-6 backdrop-blur-sm print:bg-white print:p-0" onClick={onClose}>
+    <div className="hangar-print-overlay fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-6 backdrop-blur-sm" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl print:max-w-none print:rounded-none print:shadow-none"
+        className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl"
       >
         {/* Encabezado */}
         <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
@@ -1391,7 +1452,7 @@ function AircraftReportModal({
           <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
             <X className="h-4 w-4" /> {t("common.close")}
           </button>
-          <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
+          <button onClick={doPrint} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
             <Printer className="h-4 w-4" /> {t("hangar.docs.print")}
           </button>
         </div>

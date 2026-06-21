@@ -1124,6 +1124,8 @@
   "hangar.report.routes": "Trazado de rutas",
   "hangar.report.recent": "Vuelos recientes",
   "hangar.report.disclaimer": "Reporte generado por SimFleet con fines de simulación. Métricas de motor estimadas.",
+  "hangar.report.saved": "Reporte exportado",
+  "hangar.report.saved_hint": "El PDF se guardó en la ubicación que elegiste (por defecto, tu carpeta de Descargas).",
   "hangar.docs.hint": "Reportes de mantenimiento generados a partir del uso del avión. Ábrelos para imprimir o guardar como PDF.",
   "hangar.docs.report": "Reporte de mantenimiento",
   "hangar.docs.work_order": "Orden de trabajo",

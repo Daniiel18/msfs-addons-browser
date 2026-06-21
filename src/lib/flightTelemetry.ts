@@ -36,6 +36,30 @@ export function engineCount(model: string | null): number {
   return 2;
 }
 
+/** Motor real por tipo (nombre comercial + factor de tamaño del fan). */
+export function engineModel(model: string | null): { name: string; fan: number; turboprop: boolean } {
+  const m = (model ?? "").toUpperCase();
+  const t = (name: string, fan: number, turboprop = false) => ({ name, fan, turboprop });
+  if (/7M8|7M9|7M7|B38M|B39M|MAX|737-?8|737-?9/.test(m)) return t("CFM LEAP-1B", 1.0);
+  if (/737|73[0-9]|B73|717|BBJ/.test(m)) return t("CFM56-7B", 0.82);
+  if (/A20N|A21N|A19N|NEO/.test(m)) return t("LEAP-1A / PW1100G", 0.95);
+  if (/A318|A319|A320|A321|A32/.test(m)) return t("CFM56-5B / V2500", 0.8);
+  if (/777|B777|A35K|A350-?1000/.test(m)) return t("GE90 / GE9X", 1.3);
+  if (/787|B787/.test(m)) return t("GEnx-1B / Trent 1000", 1.15);
+  if (/A350|A359/.test(m)) return t("Trent XWB", 1.15);
+  if (/A330|A33/.test(m)) return t("Trent 700 / CF6", 1.05);
+  if (/A340|A34/.test(m)) return t("CFM56-5C", 0.85);
+  if (/747|B747/.test(m)) return t("GEnx-2B / CF6", 1.0);
+  if (/A380|A388/.test(m)) return t("Trent 900 / GP7200", 1.1);
+  if (/757|B757/.test(m)) return t("RB211 / PW2000", 0.92);
+  if (/767|B767|MD11|DC10/.test(m)) return t("CF6 / PW4000", 1.0);
+  if (/CRJ|ERJ|E17|E19|E13|E14|RJ/.test(m)) return t("CF34", 0.6);
+  if (/DH8|DHC|Q400|ATR|AT4|AT7|SF34|D328/.test(m)) return t("PW100 / PW150", 0.5, true);
+  if (/TBM|C208|PC12|KODIAK/.test(m)) return t("PT6", 0.42, true);
+  if (/C150|C152|C172|C182|PA28|PA-28|DA40|SR2|M20|DV20/.test(m)) return t("Pistón Lycoming/Cont.", 0.38, true);
+  return t("CFM56", 0.85);
+}
+
 export interface TelemetryPoint {
   /** % del vuelo (0..100). */
   t: number;
@@ -49,6 +73,10 @@ export interface TelemetryPoint {
 
 export interface FlightTelemetry {
   engines: number;
+  engineName: string;
+  /** Factor de tamaño del fan (perspectiva del dibujo). */
+  fan: number;
+  turboprop: boolean;
   cruiseAltFt: number;
   cruiseSpeedKt: number;
   maxSpeedKt: number;
@@ -80,7 +108,9 @@ export function deriveTelemetry(
   engineHealth = 100,
 ): FlightTelemetry {
   const r = rng(seed(`${f.id}-${f.aircraftRegistration ?? ""}`));
-  const engines = engineCount(f.aircraftModel ?? f.aircraftAtcType ?? f.aircraftTitle);
+  const mdl = f.aircraftModel ?? f.aircraftAtcType ?? f.aircraftTitle;
+  const engines = engineCount(mdl);
+  const em = engineModel(mdl);
   const cruiseAltFt = Math.round((f.maxAltitudeFt ?? 34000 + r() * 6000) * 0.97);
   const maxSpeedKt = Math.round(f.maxTrueAirspeedKt ?? f.maxGroundSpeedKt ?? 440 + r() * 60);
   const cruiseSpeedKt = Math.round(maxSpeedKt * (0.92 + r() * 0.05));
@@ -109,6 +139,9 @@ export function deriveTelemetry(
 
   return {
     engines,
+    engineName: em.name,
+    fan: em.fan,
+    turboprop: em.turboprop,
     cruiseAltFt,
     cruiseSpeedKt,
     maxSpeedKt,

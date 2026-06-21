@@ -447,6 +447,16 @@ html.light input::placeholder {
   body * {
     visibility: hidden !important;
   }
+  /* El overlay del modal es `fixed` + scrollable: en impresión eso recortaba
+     la hoja por arriba. Lo volvemos estático y sin clipping para que el reporte
+     fluya desde el borde superior de la página. */
+  .hangar-print-overlay {
+    position: static !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: none !important;
+    backdrop-filter: none !important;
+  }
   .hangar-print-area,
   .hangar-print-area * {
     visibility: visible !important;
@@ -456,6 +466,10 @@ html.light input::placeholder {
     left: 0;
     top: 0;
     width: 100%;
+    max-width: none !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
   }
 }
 
