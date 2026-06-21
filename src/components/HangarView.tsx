@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   LineChart,
   Line,
@@ -14,6 +14,8 @@ import {
   PolarRadiusAxis,
   Radar,
   Tooltip,
+  AreaChart,
+  Area,
 } from "recharts";
 import {
   Plane,
@@ -39,6 +41,9 @@ import {
   Printer,
   Clock,
   X,
+  Flame,
+  Thermometer,
+  ChevronRight,
 } from "lucide-react";
 import type {
   HangarAnalytics,
@@ -46,7 +51,9 @@ import type {
   HangarLanding,
   HangarCount,
   LandingClip,
+  FlightLogEntry,
 } from "../lib/types";
+import { deriveTelemetry, type FlightTelemetry } from "../lib/flightTelemetry";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
@@ -598,11 +605,11 @@ function AircraftDetail({
   onReloadClips: () => void;
 }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("overview");
-  const push = useToastStore((s) => s.push);
   // (v6.1 #26) Foto del avión (planespotters por matrícula) de fondo del banner.
   const photo = useAircraftPhoto(ac.registration ?? null);
   // (v6.1 #31 #32) Mantenimiento sintético derivado del uso (determinista).
   const mx = useMemo(() => deriveMaintenance(ac), [ac]);
+  const [reportOpen, setReportOpen] = useState(false);
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
   const location =
     ac.lastAirportName && ac.lastIcao
@@ -615,9 +622,7 @@ function AircraftDetail({
       <div className="relative overflow-hidden">
         <div className="absolute right-3 top-3 z-10 flex">
           <button
-            onClick={() =>
-              push({ kind: "info", title: t("hangar.export_soon"), ttlMs: 3000 })
-            }
+            onClick={() => setReportOpen(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-1.5 text-xs text-slate-200 backdrop-blur hover:border-brand-500/40"
           >
             <Download className="h-3.5 w-3.5" />
@@ -713,6 +718,10 @@ function AircraftDetail({
         {tab === "history" && <HistoryTab mx={mx} />}
         {tab === "documents" && <DocumentsTab ac={ac} mx={mx} />}
       </div>
+
+      {reportOpen && (
+        <AircraftReportModal ac={ac} mx={mx} onClose={() => setReportOpen(false)} />
+      )}
     </section>
   );
 }
@@ -809,8 +818,32 @@ function MaintenanceTab({ mx }: { mx: MaintenanceData }) {
   );
 }
 
+function fpmGrade(fpm: number | null): string {
+  if (fpm == null) return "acceptable";
+  return fpm > -150 ? "butter" : fpm >= -300 ? "acceptable" : "hard";
+}
+
 function FlightsTab({ ac }: { ac: HangarAircraft }) {
-  const flights = [...ac.recentLandings].reverse(); // reciente→antiguo
+  const entries = useFlightLogStore((s) => s.entries);
+  const mx = useMemo(() => deriveMaintenance(ac), [ac]);
+  const engineHealth = mx.components.find((c) => c.key === "engine")?.healthPct ?? 100;
+  const reg = ac.registration?.toUpperCase() ?? null;
+  const model = ac.model?.toUpperCase() ?? null;
+  const flights = useMemo(
+    () =>
+      entries
+        .filter((e) =>
+          reg
+            ? e.aircraftRegistration?.toUpperCase() === reg
+            : model
+              ? (e.aircraftModel ?? e.aircraftAtcType ?? e.aircraftTitle ?? "").toUpperCase() === model
+              : false,
+        )
+        .slice(0, 40),
+    [entries, reg, model],
+  );
+  const [open, setOpen] = useState<number | null>(null);
+
   if (flights.length === 0) {
     return <div className="py-10 text-center text-sm text-slate-500">{t("hangar.flights.empty")}</div>;
   }
@@ -819,30 +852,192 @@ function FlightsTab({ ac }: { ac: HangarAircraft }) {
       <table className="w-full text-left text-xs">
         <thead className="bg-slate-900/60 text-[10px] uppercase tracking-wide text-slate-500">
           <tr>
-            <th className="px-3 py-2">{t("hangar.flights.date")}</th>
-            <th className="px-3 py-2">{t("hangar.flights.dest")}</th>
-            <th className="px-3 py-2 text-right">{t("hangar.flights.time")}</th>
+            <th className="w-6 px-2 py-2"></th>
+            <th className="px-2 py-2">{t("hangar.flights.date")}</th>
+            <th className="px-2 py-2">{t("hangar.flights.dest")}</th>
+            <th className="px-2 py-2 text-right">{t("hangar.flights.time")}</th>
             <th className="px-3 py-2 text-right">FPM</th>
           </tr>
         </thead>
         <tbody>
-          {flights.map((l, i) => (
-            <tr key={i} className="border-t border-slate-800/60">
-              <td className="px-3 py-2 text-slate-300">{fmtDate(l.date)}</td>
-              <td className="px-3 py-2 text-slate-200">
-                {l.airportName ?? l.icao ?? "—"}
-              </td>
-              <td className="px-3 py-2 text-right text-slate-400">
-                {l.flightTimeS ? hours(l.flightTimeS) : "—"}
-              </td>
-              <td className="px-3 py-2 text-right font-semibold" style={{ color: GRADE_COLOR[l.grade] ?? "#94a3b8" }}>
-                {l.fpm}
-              </td>
-            </tr>
-          ))}
+          {flights.map((f) => {
+            const isOpen = open === f.id;
+            return (
+              <Fragment key={f.id}>
+                <tr
+                  onClick={() => setOpen(isOpen ? null : f.id)}
+                  className={`cursor-pointer border-t border-slate-800/60 transition-colors hover:bg-slate-800/30 ${isOpen ? "bg-slate-800/30" : ""}`}
+                >
+                  <td className="px-2 py-2 text-slate-500">
+                    <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                  </td>
+                  <td className="px-2 py-2 text-slate-300">{fmtDate(f.startedAt)}</td>
+                  <td className="px-2 py-2 text-slate-200">
+                    {f.originIcao ?? "—"} → {f.destinationIcao ?? f.destinationName ?? "—"}
+                  </td>
+                  <td className="px-2 py-2 text-right text-slate-400">
+                    {f.flightTimeS ? hours(f.flightTimeS) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold" style={{ color: GRADE_COLOR[fpmGrade(f.landingFpm)] ?? "#94a3b8" }}>
+                    {f.landingFpm ?? "—"}
+                  </td>
+                </tr>
+                {isOpen && (
+                  <tr className="border-t border-slate-800/60 bg-slate-950/50">
+                    <td colSpan={5} className="p-0">
+                      <FlightDetail flight={f} engineHealth={engineHealth} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function FlightDetail({ flight, engineHealth }: { flight: FlightLogEntry; engineHealth: number }) {
+  const tel = useMemo(() => deriveTelemetry(flight, engineHealth), [flight, engineHealth]);
+  const chartData = tel.series.map((p) => ({
+    t: `${p.t}%`,
+    EGT1: p.egt1,
+    EGT2: p.egt2 || null,
+    N1: p.n1,
+  }));
+  return (
+    <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
+      {/* Métricas + gráfico EGT */}
+      <div>
+        <div className="grid grid-cols-3 gap-2">
+          <StatTile label={t("hangar.fd.cruise_alt")} value={`${Math.round(tel.cruiseAltFt).toLocaleString()} ft`} />
+          <StatTile label={t("hangar.fd.cruise_spd")} value={`${tel.cruiseSpeedKt} kt`} />
+          <StatTile label={t("hangar.fd.max_spd")} value={`${tel.maxSpeedKt} kt`} />
+          <StatTile label={t("hangar.fd.avg_n1")} value={`${tel.avgN1}%`} />
+          <StatTile label={t("hangar.fd.max_egt")} value={`${tel.maxEgtC}°C`} />
+          <StatTile label={t("hangar.fd.fuel")} value={tel.fuelKg != null ? `${Math.round(tel.fuelKg).toLocaleString()} kg` : "—"} />
+        </div>
+        <div className="mt-3">
+          <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+            <Thermometer className="h-3.5 w-3.5 text-rose-400" />
+            {t("hangar.fd.egt_title")}
+          </h4>
+          <div className="h-40 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 6, right: 8, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="egtFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stopColor="#f43f5e" stopOpacity={0.5} />
+                    <stop offset="1" stopColor="#f43f5e" stopOpacity={0.04} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="t" tick={{ fill: "#64748b", fontSize: 10 }} axisLine={{ stroke: "#1e293b" }} tickLine={false} />
+                <YAxis tick={{ fill: "#64748b", fontSize: 10 }} axisLine={false} tickLine={false} width={36} unit="°" />
+                <Tooltip contentStyle={{ background: "#020617", border: "1px solid #334155", borderRadius: 8, fontSize: 11 }} />
+                <Area type="monotone" dataKey="EGT1" stroke="#f43f5e" strokeWidth={2} fill="url(#egtFill)" isAnimationActive={false} />
+                {tel.engines > 1 && (
+                  <Area type="monotone" dataKey="EGT2" stroke="#fb923c" strokeWidth={2} fill="none" isAnimationActive={false} />
+                )}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Dibujo de los motores con zonas de calor */}
+      <div>
+        <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+          <Flame className="h-3.5 w-3.5 text-orange-400" />
+          {t("hangar.fd.engine_title", { n: String(tel.engines) })}
+        </h4>
+        <EngineDiagram tel={tel} />
+        <p className="mt-1 text-[10px] text-slate-500">{t("hangar.fd.engine_hint")}</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * (v6.1) Motor a reacción en ángulo cielo→tierra bajo el ala SEMITRANSPARENTE
+ * (para ver los componentes internos), con las ZONAS DE CALOR (cámara de
+ * combustión + turbina) marcadas en naranja/rojo según la intensidad.
+ */
+function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
+  const heat = tel.heat / 100; // 0..1
+  const hotColor = heat > 0.75 ? "#dc2626" : heat > 0.5 ? "#ef4444" : "#f97316";
+  return (
+    <svg viewBox="0 0 360 210" width="100%" className="select-none" aria-hidden>
+      <defs>
+        <linearGradient id="cowl" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#e2e8f0" />
+          <stop offset="0.5" stopColor="#94a3b8" />
+          <stop offset="1" stopColor="#475569" />
+        </linearGradient>
+        <radialGradient id="fan" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stopColor="#334155" />
+          <stop offset="1" stopColor="#0b1220" />
+        </radialGradient>
+        <radialGradient id="hot" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stopColor={hotColor} stopOpacity={0.95} />
+          <stop offset="0.6" stopColor={hotColor} stopOpacity={0.5} />
+          <stop offset="1" stopColor={hotColor} stopOpacity={0} />
+        </radialGradient>
+      </defs>
+
+      {/* Ala semitransparente (vista en ángulo) */}
+      <path d="M20 40 L340 18 L348 54 L40 86 Z" fill="#94a3b8" fillOpacity="0.18" stroke="#94a3b8" strokeOpacity="0.5" strokeWidth="1" />
+      <text x="300" y="40" fill="#94a3b8" fontSize="10" opacity="0.7">ala</text>
+
+      {/* Pilón */}
+      <path d="M150 70 L170 70 L176 96 L150 96 Z" fill="#64748b" stroke="#334155" strokeWidth="1" />
+
+      {/* Carcasa del motor (cowling) en ángulo */}
+      <g>
+        <ellipse cx="300" cy="140" rx="20" ry="34" fill="#334155" />
+        <path d="M70 116 Q70 96 110 96 L300 110 Q322 116 322 140 Q322 164 300 170 L110 184 Q70 184 70 164 Z" fill="url(#cowl)" stroke="#1e293b" strokeWidth="1.5" />
+        {/* Cutaway: dejamos ver el interior por una banda translúcida */}
+        <path d="M120 108 L300 120 L300 160 L120 172 Z" fill="#0b1220" fillOpacity="0.55" />
+
+        {/* Fan (admisión, izquierda) */}
+        <ellipse cx="96" cy="140" rx="20" ry="40" fill="url(#fan)" stroke="#0b1220" strokeWidth="2" />
+        {Array.from({ length: 12 }, (_, i) => {
+          const a = (i / 12) * Math.PI * 2;
+          return <line key={i} x1="96" y1="140" x2={96 + Math.cos(a) * 18} y2={140 + Math.sin(a) * 36} stroke="#475569" strokeWidth="1" />;
+        })}
+
+        {/* Compresor (etapas) */}
+        {Array.from({ length: 6 }, (_, i) => (
+          <line key={i} x1={140 + i * 12} y1={120} x2={140 + i * 12} y2={160} stroke="#94a3b8" strokeWidth="2" opacity="0.7" />
+        ))}
+
+        {/* Zona caliente: cámara de combustión + turbina (marcada) */}
+        <rect x="222" y="118" width="66" height="44" rx="8" fill="url(#hot)" />
+        {Array.from({ length: 4 }, (_, i) => (
+          <line key={i} x1={236 + i * 14} y1={122} x2={236 + i * 14} y2={158} stroke={hotColor} strokeWidth="2.5" opacity="0.9" />
+        ))}
+
+        {/* Tobera de escape */}
+        <path d="M318 120 L344 128 L344 152 L318 160 Z" fill="#1f2937" stroke="#0b1220" strokeWidth="1" />
+      </g>
+
+      {/* Etiqueta de zona caliente */}
+      <g transform="translate(214,96)">
+        <rect x="0" y="0" width="92" height="18" rx="9" fill={hotColor} fillOpacity="0.22" stroke={hotColor} strokeOpacity="0.6" />
+        <text x="46" y="13" textAnchor="middle" fill={hotColor} fontSize="10" fontWeight="600">
+          {t("hangar.fd.hot")} · {tel.maxEgtC}°C
+        </text>
+      </g>
+
+      {/* Segundo motor (si aplica) atenuado detrás */}
+      {tel.engines > 1 && (
+        <g opacity="0.4" transform="translate(-44,-58) scale(0.7)">
+          <path d="M70 116 Q70 96 110 96 L300 110 Q322 116 322 140 Q322 164 300 170 L110 184 Q70 184 70 164 Z" fill="url(#cowl)" stroke="#1e293b" strokeWidth="1.5" />
+          <ellipse cx="96" cy="140" rx="20" ry="40" fill="url(#fan)" />
+        </g>
+      )}
+    </svg>
   );
 }
 
@@ -1017,6 +1212,199 @@ function Row({ k, v }: { k: string; v: string }) {
     <div className="flex justify-between text-slate-600">
       <span>{k}</span>
       <span className="font-medium text-slate-800">{v}</span>
+    </div>
+  );
+}
+
+// ── (v6.1) Reporte completo del avión (PDF imprimible) + mapa 2D de rutas ─────
+
+/** Mapa 2D (equirectangular) con las rutas de la matrícula. Ajusta el encuadre
+ *  al bounding-box de los vuelos. Para imprimir en el reporte. */
+function FlightMapSvg({ flights }: { flights: FlightLogEntry[] }) {
+  const pts = flights.flatMap((f) => {
+    const a: Array<[number, number]> = [];
+    if (f.originLat != null && f.originLon != null) a.push([f.originLat, f.originLon]);
+    if (f.destinationLat != null && f.destinationLon != null) a.push([f.destinationLat, f.destinationLon]);
+    return a;
+  });
+  const W = 640;
+  const H = 300;
+  if (pts.length === 0) {
+    return <div className="py-8 text-center text-xs text-slate-400">—</div>;
+  }
+  const lats = pts.map((p) => p[0]);
+  const lons = pts.map((p) => p[1]);
+  let minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  let minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const padLat = Math.max(3, (maxLat - minLat) * 0.18);
+  const padLon = Math.max(3, (maxLon - minLon) * 0.18);
+  minLat -= padLat; maxLat += padLat; minLon -= padLon; maxLon += padLon;
+  const px = (lon: number) => ((lon - minLon) / (maxLon - minLon || 1)) * W;
+  const py = (lat: number) => ((maxLat - lat) / (maxLat - minLat || 1)) * H;
+
+  const airports = new Map<string, [number, number]>();
+  for (const f of flights) {
+    if (f.originIcao && f.originLat != null) airports.set(f.originIcao, [f.originLat, f.originLon]);
+    if (f.destinationIcao && f.destinationLat != null && f.destinationLon != null)
+      airports.set(f.destinationIcao, [f.destinationLat, f.destinationLon]);
+  }
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block" }}>
+      <rect x="0" y="0" width={W} height={H} rx="8" fill="#dbeafe" />
+      {/* Graticula */}
+      {Array.from({ length: 7 }, (_, i) => {
+        const x = (W / 6) * i;
+        const y = (H / 6) * i;
+        return (
+          <g key={i} stroke="#bcd2f0" strokeWidth="0.6">
+            <line x1={x} y1="0" x2={x} y2={H} />
+            <line x1="0" y1={y} x2={W} y2={y} />
+          </g>
+        );
+      })}
+      {/* Rutas */}
+      {flights.map((f, i) => {
+        if (f.originLat == null || f.destinationLat == null || f.destinationLon == null) return null;
+        const x1 = px(f.originLon), y1 = py(f.originLat);
+        const x2 = px(f.destinationLon), y2 = py(f.destinationLat);
+        const mx2 = (x1 + x2) / 2, my2 = (y1 + y2) / 2 - Math.abs(x2 - x1) * 0.12;
+        return (
+          <path key={i} d={`M${x1} ${y1} Q${mx2} ${my2} ${x2} ${y2}`} fill="none" stroke="#1d4ed8" strokeOpacity="0.55" strokeWidth="1.4" />
+        );
+      })}
+      {/* Aeropuertos */}
+      {[...airports.entries()].map(([icao, [lat, lon]], i) => (
+        <g key={i}>
+          <circle cx={px(lon)} cy={py(lat)} r="3.4" fill="#dc2626" stroke="#fff" strokeWidth="1" />
+          <text x={px(lon) + 5} y={py(lat) + 3} fontSize="9" fill="#0f172a" fontWeight="600">{icao}</text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function AircraftReportModal({
+  ac, mx, onClose,
+}: {
+  ac: HangarAircraft; mx: MaintenanceData; onClose: () => void;
+}) {
+  const entries = useFlightLogStore((s) => s.entries);
+  const photo = useAircraftPhoto(ac.registration ?? null);
+  const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : "—";
+  const reg = ac.registration?.toUpperCase() ?? null;
+  const flights = useMemo(
+    () =>
+      entries.filter((e) =>
+        reg
+          ? e.aircraftRegistration?.toUpperCase() === reg
+          : (e.aircraftModel ?? "").toUpperCase() === (ac.model ?? "").toUpperCase(),
+      ),
+    [entries, reg, ac.model],
+  );
+  const recent = flights.slice(0, 12);
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-slate-950/80 p-6 backdrop-blur-sm print:bg-white print:p-0" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl print:max-w-none print:rounded-none print:shadow-none"
+      >
+        {/* Encabezado */}
+        <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+          <div className="flex items-center gap-3">
+            <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={40} />
+            <div>
+              <div className="text-xl font-bold">{ac.registration ?? model}</div>
+              <div className="text-xs text-slate-500">
+                {[ac.airlineName, model].filter(Boolean).join(" · ")}
+              </div>
+            </div>
+          </div>
+          <div className="text-right text-xs text-slate-500">
+            <div className="font-semibold text-slate-700">{t("hangar.report.title")}</div>
+            <div>{fmtDate(new Date().toISOString())}</div>
+          </div>
+        </div>
+
+        {photo && (
+          <img src={photo} alt="" className="mt-4 h-40 w-full rounded-lg object-cover" />
+        )}
+
+        {/* KPIs */}
+        <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">
+          <RKpi k={t("hangar.kpi.miles")} v={`${Math.round(ac.totalNm).toLocaleString()} nm`} />
+          <RKpi k={t("hangar.mx.total_hours")} v={`${mx.hours.toLocaleString()} h`} />
+          <RKpi k={t("hangar.perf.cycles")} v={mx.cycles.toLocaleString()} />
+          <RKpi k={t("hangar.flights_short")} v={String(flights.length)} />
+          <RKpi k={t("hangar.fpm.avg")} v={ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)}` : "—"} />
+          <RKpi k={t("hangar.gear.title")} v={`${ac.healthPct}%`} />
+        </div>
+
+        {/* Mapa de rutas */}
+        <div className="mt-5">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.report.routes")}</h3>
+          <FlightMapSvg flights={flights} />
+        </div>
+
+        {/* Salud de componentes */}
+        <div className="mt-5">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.mx.components")}</h3>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
+            {mx.components.map((c) => (
+              <div key={c.key} className="flex justify-between border-b border-slate-200 py-0.5">
+                <span className="text-slate-600">{c.label}</span>
+                <span className="font-semibold">{c.healthPct}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Vuelos recientes */}
+        <div className="mt-5">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.report.recent")}</h3>
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-300 text-xs uppercase tracking-wide text-slate-500">
+                <th className="py-1">{t("hangar.flights.date")}</th>
+                <th className="py-1">{t("hangar.flights.dest")}</th>
+                <th className="py-1 text-right">{t("hangar.flights.time")}</th>
+                <th className="py-1 text-right">FPM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((f) => (
+                <tr key={f.id} className="border-b border-slate-200">
+                  <td className="py-1">{fmtDate(f.startedAt)}</td>
+                  <td className="py-1">{f.originIcao ?? "—"} → {f.destinationIcao ?? "—"}</td>
+                  <td className="py-1 text-right">{f.flightTimeS ? hours(f.flightTimeS) : "—"}</td>
+                  <td className="py-1 text-right">{f.landingFpm ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="mt-6 text-[10px] text-slate-400">{t("hangar.report.disclaimer")}</p>
+
+        <div className="mt-6 flex justify-end gap-2 print:hidden">
+          <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
+            <X className="h-4 w-4" /> {t("common.close")}
+          </button>
+          <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
+            <Printer className="h-4 w-4" /> {t("hangar.docs.print")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RKpi({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="rounded-lg bg-slate-100 p-2 text-center">
+      <div className="text-base font-bold text-slate-900">{v}</div>
+      <div className="text-[9px] uppercase tracking-wide text-slate-500">{k}</div>
     </div>
   );
 }
