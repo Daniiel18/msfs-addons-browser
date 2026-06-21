@@ -1673,6 +1673,12 @@ mod windows_simconnect {
         let mut osd_emitted = false;
         let mut osd_touch_fpm: Option<i64> = None;
         let mut osd_bounced = false;
+        // (v6.1 fix) "Armado" del touchdown: solo contamos un toque como
+        // aterrizaje si el avión REALMENTE voló (radio-altura > 100ft) desde el
+        // último contacto con tierra. Sin esto, aparecer en el aeropuerto
+        // (spawn en tierra) disparaba un OSD/STREAM-B falso. Se rearma al subir
+        // y se desarma al asentarse en tierra (fase ya no Airborne).
+        let mut flew_high = false;
         // (v3.30.0 #2) Buffer de muestras PRE-DEPARTURE (cold-and-dark).
         // El track sólo se persiste cuando ya existe flight_id (post-OUT),
         // así que las reglas de pre-departure salían "No data to evaluate".
@@ -1965,6 +1971,15 @@ mod windows_simconnect {
                         let radio_alt = td.radio_height_ft;
                         let g = td.g_force;
 
+                        // (v6.1 fix) Arma el touchdown al volar >100ft; lo desarma
+                        // cuando ya está asentado en tierra (fase no Airborne).
+                        // Así un spawn en tierra NO cuenta como aterrizaje.
+                        if !on_ground_now && radio_alt > 100.0 {
+                            flew_high = true;
+                        } else if on_ground_now && !matches!(phase, FlightPhase::Airborne) {
+                            flew_high = false;
+                        }
+
                         // Mantener buffer ~30 frames (~500ms a 60fps).
                         if vs_now.is_finite() {
                             if stream_b_recent_vs.len() >= 30 {
@@ -1983,6 +1998,7 @@ mod windows_simconnect {
                         let prev = prev_on_ground.unwrap_or(false);
                         if !prev
                             && on_ground_now
+                            && flew_high
                             && matches!(phase, FlightPhase::Airborne)
                             && radio_alt < 50.0
                         {
@@ -2985,26 +3001,6 @@ mod windows_simconnect {
         // contando siempre (GSX no los causa).
         let on_ground = data.on_ground >= 0.5;
         let airborne = !on_ground;
-
-        // (v6.1 diag #23) Heartbeat de las señales de replay/slew para
-        // diagnosticar MSFS2024 — el usuario reporta que allí NO se detectan
-        // slew/repetición (sí en 2020). Sospecha: el replay nativo nuevo de
-        // 2024 no toca SIMULATION RATE / IS SLEW ACTIVE / ABSOLUTE TIME ni los
-        // freezes. Esto SÓLO loguea (cero cambios de comportamiento), throttled
-        // ~cada 5s en vuelo, para confirmar con logs reales qué reporta 2024.
-        {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static DIAG_TICK: AtomicU64 = AtomicU64::new(0);
-            let n = DIAG_TICK.fetch_add(1, Ordering::Relaxed);
-            if airborne && n % 20 == 0 {
-                tracing::info!(
-                    target: "simconnect",
-                    "[diag replay/slew] sim_rate={:.3} slew={} abs_time={:.1} time_regressed={} latlon_freeze={} alt_freeze={} att_freeze={}",
-                    sim_rate, slew_active, abs_time, time_regressed,
-                    lat_lon_frozen, altitude_frozen, attitude_frozen
-                );
-            }
-        }
 
         // (v6 #2b) OSD INSTANTÁNEO de aterrizaje. Usa `osd_touch_fpm` (FPM del
         // toque ACTUAL, lo fija STREAM-B en CADA touch — no el "más negativo de
