@@ -54,6 +54,7 @@ import type {
   FlightLogEntry,
 } from "../lib/types";
 import { deriveTelemetry, type FlightTelemetry } from "../lib/flightTelemetry";
+import worldLand from "../lib/worldLand.json";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
@@ -116,6 +117,7 @@ export function HangarView() {
   const [error, setError] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0); // (v6.1) paginación de la flota (10/pág)
 
   const reloadClips = () => {
     api
@@ -149,17 +151,26 @@ export function HangarView() {
     };
   }, []);
 
-  // (v6.1 #33) Top 10 por defecto; al buscar, filtra TODA la flota.
+  // (v6.1 #33) Buscando → filtra TODA la flota; si no, 10 por página.
+  const PER_PAGE = 10;
+  const searching = search.trim() !== "";
+  const pageCount = data ? Math.max(1, Math.ceil(data.aircraft.length / PER_PAGE)) : 1;
   const fleet = useMemo(() => {
     if (!data) return [];
     const q = search.trim().toLowerCase();
-    if (!q) return data.aircraft.slice(0, 10);
-    return data.aircraft.filter((a) =>
-      [a.registration, a.model, a.airlineName]
-        .filter(Boolean)
-        .some((s) => s!.toLowerCase().includes(q)),
-    );
-  }, [data, search]);
+    if (q) {
+      return data.aircraft.filter((a) =>
+        [a.registration, a.model, a.airlineName]
+          .filter(Boolean)
+          .some((s) => s!.toLowerCase().includes(q)),
+      );
+    }
+    return data.aircraft.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
+  }, [data, search, page]);
+  // Al buscar, reseteamos a la primera página al limpiar la búsqueda.
+  useEffect(() => {
+    if (searching) setPage(0);
+  }, [searching]);
 
   // (v6.1 #29) null = vista de resumen de flota (sin avión seleccionado).
   const selected = data?.aircraft.find((a) => a.key === selectedKey) ?? null;
@@ -246,7 +257,7 @@ export function HangarView() {
             {fleet.map((ac, i) => (
               <FleetRow
                 key={ac.key}
-                rank={search.trim() ? 0 : i + 1}
+                rank={searching ? 0 : page * PER_PAGE + i + 1}
                 ac={ac}
                 active={ac.key === selected?.key}
                 // (v6.1) Re-click sobre el avión activo → cierra y vuelve al resumen.
@@ -261,6 +272,31 @@ export function HangarView() {
               </p>
             )}
           </div>
+
+          {/* (v6.1) Paginación de la flota (cuando hay más de 10 y no se busca) */}
+          {!searching && pageCount > 1 && (
+            <div className="mt-3 flex items-center justify-between border-t border-slate-800 pt-2.5">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-500/40 disabled:opacity-40"
+              >
+                <ChevronRight className="h-3.5 w-3.5 rotate-180" />
+                {t("hangar.page.prev")}
+              </button>
+              <span className="text-[11px] text-slate-500">
+                {t("hangar.page.of", { a: String(page + 1), b: String(pageCount) })}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={page >= pageCount - 1}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-500/40 disabled:opacity-40"
+              >
+                {t("hangar.page.next")}
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </section>
 
         {/* Detalle del avión, o resumen de flota si no hay selección. */}
@@ -1295,9 +1331,49 @@ function FlightMapSvg({ flights }: { flights: FlightLogEntry[] }) {
       airports.set(f.destinationIcao, [f.destinationLat, f.destinationLon]);
   }
 
+  // (v6.1) Continentes de fondo (ne_110m_land) proyectados en equirectangular y
+  // recortados al encuadre. Da un mapa real detrás de las rutas (app + PDF).
+  const landPaths: string[] = [];
+  for (const ft of (worldLand as { features: Array<{ geometry: { type: string; coordinates: number[][][] | number[][][][] } }> }).features) {
+    const g = ft.geometry;
+    const polys: number[][][][] =
+      g.type === "Polygon"
+        ? [g.coordinates as number[][][]]
+        : g.type === "MultiPolygon"
+          ? (g.coordinates as number[][][][])
+          : [];
+    for (const poly of polys) {
+      const outer = poly[0];
+      let mnx = 999, mxx = -999, mny = 999, mxy = -999;
+      for (const c of outer) {
+        if (c[0] < mnx) mnx = c[0];
+        if (c[0] > mxx) mxx = c[0];
+        if (c[1] < mny) mny = c[1];
+        if (c[1] > mxy) mxy = c[1];
+      }
+      if (mxx < minLon || mnx > maxLon || mxy < minLat || mny > maxLat) continue;
+      let d = "";
+      for (const ring of poly) {
+        d += "M" + ring.map((c) => `${px(c[0]).toFixed(1)} ${py(c[1]).toFixed(1)}`).join("L") + "Z";
+      }
+      landPaths.push(d);
+    }
+  }
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block" }}>
-      <rect x="0" y="0" width={W} height={H} rx="8" fill="#dbeafe" />
+      <defs>
+        <clipPath id="mapClip">
+          <rect x="0" y="0" width={W} height={H} rx="8" />
+        </clipPath>
+      </defs>
+      <rect x="0" y="0" width={W} height={H} rx="8" fill="#cfe2f3" />
+      {/* Continentes */}
+      <g clipPath="url(#mapClip)">
+        {landPaths.map((d, i) => (
+          <path key={i} d={d} fill="#e7ecd6" stroke="#bcc8a2" strokeWidth="0.6" fillRule="evenodd" />
+        ))}
+      </g>
       {/* Graticula */}
       {Array.from({ length: 7 }, (_, i) => {
         const x = (W / 6) * i;
