@@ -41,6 +41,11 @@ export interface WhatsNewSlide {
  *  Best Landings (grabación + OSD) y Crew VS. */
 const DEFAULT_SLIDES: WhatsNewSlide[] = [
   {
+    titleKey: "whatsnew.finance.title",
+    bodyKey: "whatsnew.finance.body",
+    image: "/whatsnew/finance.svg",
+  },
+  {
     titleKey: "whatsnew.crosslink.title",
     bodyKey: "whatsnew.crosslink.body",
     image: "/whatsnew/crosslink.svg",
@@ -94,13 +99,14 @@ export function markWhatsNewSeen(version: string) {
   }
 }
 
-/** ¿La app SE ACTUALIZÓ desde la última vez que se mostró el What's New?
- *  Sólo true si ya había una versión guardada y difiere de la actual; en
- *  primera instalación (sin línea base) devuelve false — no es actualización. */
+/** ¿Hay que mostrar el What's New en la instancia principal?
+ *  `true` siempre que la versión vista guardada NO coincida con la actual —
+ *  incluido cuando NO hay línea base (primera vez con esta feature o instalación
+ *  fresca). El usuario lo pidió explícito: "debe salir CADA VEZ que se actualiza".
+ *  Antes se saltaba la primera vez sin baseline y por eso no salió en 5.4→6. */
 export function isUpdateSinceLastSeen(currentVersion: string | null): boolean {
   if (!currentVersion) return false;
-  const seen = getWhatsNewSeenVersion();
-  return seen !== null && seen !== currentVersion;
+  return getWhatsNewSeenVersion() !== currentVersion;
 }
 
 export function WhatsNewModal({

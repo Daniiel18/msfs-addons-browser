@@ -63,6 +63,18 @@ SimFleet helps manage a local MSFS setup:
   thumbnails, updates, package detail modal.
 - FlightBook: real and imported flight history, route map, live/preflight
   status, airline filters, score checklist, performance charts, weather modal.
+- Hangar: per-aircraft analytics (telemetry, landing-FPM health), fleet
+  overview (most-flown aircraft/airlines/destinations/regions), Best Landings.
+- Finance: airline economy built from your flight history. One canonical airline
+  per flight (livery names collapse to the real carrier; cargo vs passenger told
+  apart by callsign/pax). Per airline: market value ("bank"), revenue (tickets or
+  freight + ancillaries) vs costs (fuel, catering, handling, maintenance, taxes,
+  plus real GSX `Receipts` invoices when matched), net/margin/balance, and a
+  holistic passenger-satisfaction score (landings, reliability, services, load
+  factor). Management ecosystem: pick a maintenance level and toggle onboard
+  services (snacks, meals, wifi, seats, priority, baggage) — each with adoption,
+  cost and possible loss, recomputed live. Click an airline in the Hangar
+  "Most Flown Airlines" to jump straight to its Finance detail.
 - Settings: theme/language, autostart, tray behavior, SimBrief, display toggles,
   folders, backup/export/import, GSX tools, cloud/folder sync, cache reset.
 

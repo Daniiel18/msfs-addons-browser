@@ -6,6 +6,7 @@ pub mod cloud;
 pub mod community;
 pub mod downloads;
 pub mod drop;
+pub mod economy;
 pub mod flight_log;
 pub mod gsx;
 pub mod install;

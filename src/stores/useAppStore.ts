@@ -14,7 +14,8 @@ export type View =
   | "map"
   | "addons"
   | "flightbook"
-  | "hangar";
+  | "hangar"
+  | "economy";
 
 interface AppState {
   sources: SourceDescriptor[];
@@ -24,6 +25,13 @@ interface AppState {
   status: Status;
   error: string | null;
   view: View;
+
+  /** (v6.1) Aerolínea enfocada en la pantalla de Finanzas. `null` = mostrar
+   *  todas. La fija `openEconomy` cuando se clica una aerolínea en el Hangar. */
+  economyFocus: string | null;
+  /** (v6.1) Matrícula para abrir DIRECTO el mantenimiento (clic en el Hangar).
+   *  La consume EconomyView una vez y se limpia. */
+  economyMaintReg: string | null;
 
   /** Página del browse-mode (cuando el query está vacío). */
   browsePage: number;
@@ -47,6 +55,12 @@ interface AppState {
   setStatus: (s: Status) => void;
   setError: (e: string | null) => void;
   setView: (v: View) => void;
+  /** (v6.1) Abre la pantalla de Finanzas. Con `airlineKey` la enfoca en esa
+   *  aerolínea (ICAO o clave); sin argumento muestra todas. Con `maintReg`
+   *  abre directo el mantenimiento de esa matrícula. */
+  openEconomy: (airlineKey?: string | null, maintReg?: string | null) => void;
+  /** (v6.1) Limpia la matrícula de mantenimiento tras consumirla. */
+  clearEconomyMaintReg: () => void;
   /** Pre-carga la página 1 del catálogo de una fuente. Idempotente:
    *  si ya está cacheado, no toca la red. */
   preloadCatalog: (sourceId: string) => Promise<void>;
@@ -68,6 +82,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   status: "idle",
   error: null,
   view: "dashboard",
+  economyFocus: null,
+  economyMaintReg: null,
   browsePage: 1,
   browseHasMore: false,
   browseMode: "browse",
@@ -137,6 +153,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setStatus: (status) => set({ status }),
   setError: (error) => set({ error }),
   setView: (view) => set({ view }),
+  openEconomy: (airlineKey = null, maintReg = null) =>
+    set({ view: "economy", economyFocus: airlineKey, economyMaintReg: maintReg }),
+  clearEconomyMaintReg: () => set({ economyMaintReg: null }),
 
   async triggerSearch(query, sourceId) {
     const targetSource = sourceId ?? get().activeSourceId;

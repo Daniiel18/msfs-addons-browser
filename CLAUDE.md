@@ -46,6 +46,14 @@ Common entry points:
   (download/manager) y vía botón "Escanear FPS" del Link Map. Nunca
   auto-activa: el addon queda en su estado por defecto.
 - Scoring/Flight Evaluation: `src-tauri/src/scoring/{mod,rubric}.rs`
+- Airline Finance/economy (v6.1): `src-tauri/src/airline_economy.rs`
+  (canonical airline detection shared with Hangar via `canonical_airline`;
+  cargo vs passenger; per-flight P&L; holistic satisfaction; `AirlinePolicy`
+  management). Command facade `commands/economy.rs`; UI `src/components/EconomyView.tsx`;
+  view `"economy"` + `economyFocus`/`openEconomy` in `useAppStore`. Recompute is
+  lazy (on query) and rebuilds `airline_economy`/`flight_pnl` from flight_log;
+  `airline_policy` is config (kept). Hangar "Most Flown Airlines" treemap cell
+  click → `openEconomy(icao)`.
 - Cloud sync: `src-tauri/src/cloud_sync.rs`
 - i18n: `src/lib/i18n.ts` + `src/lib/i18n/{es,en}.json` (no hardcoded UI strings)
 

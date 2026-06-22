@@ -7,6 +7,7 @@ import {
   ListChecks,
   Plane,
   Settings,
+  Wallet,
   Warehouse,
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -31,6 +32,7 @@ import { AddonsView } from "./components/AddonsView";
 import { DashboardView } from "./components/DashboardView";
 import { FlightBookView } from "./components/FlightBookView";
 import { HangarView } from "./components/HangarView";
+import { EconomyView } from "./components/EconomyView";
 import { TitleBar } from "./components/TitleBar";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
@@ -51,7 +53,6 @@ import { ImportInventoryModal } from "./components/ImportInventoryModal";
 import {
   WhatsNewModal,
   buildWhatsNewSlides,
-  getWhatsNewSeenVersion,
   isUpdateSinceLastSeen,
   markWhatsNewSeen,
 } from "./components/WhatsNewModal";
@@ -69,7 +70,7 @@ export default function App() {
     sources, activeSourceId, query, results, status, error, view,
     browsePage, browseHasMore, browseMode,
     setSources, setActiveSource, setQuery, setResults, setStatus, setError, setView,
-    loadBrowsePage,
+    loadBrowsePage, openEconomy,
   } = useAppStore();
 
   const bootstrapDownloads = useDownloadsStore((s) => s.bootstrap);
@@ -601,15 +602,13 @@ export default function App() {
           //   cambia), una sola vez por versión. Sin línea base (1ª instalación
           //   o 1ª vez con esta feature) fijamos la versión SIN mostrar nada,
           //   para no enseñar novedades retroactivas.
-          if (resolvedSafeMode) {
+          // Sale en MODO SEGURO siempre, y en la instancia principal cada vez
+          // que la versión cambia (incluida la 1ª vez sin línea base — el
+          // usuario lo pidió: "debe salir cada vez que se actualiza"). Al
+          // cerrarlo se marca la versión vista, así no reaparece hasta el
+          // siguiente bump.
+          if (resolvedSafeMode || isUpdateSinceLastSeen(resolvedVersion)) {
             setWhatsNewOpen(true);
-          } else {
-            const seen = getWhatsNewSeenVersion();
-            if (seen === null) {
-              if (resolvedVersion) markWhatsNewSeen(resolvedVersion);
-            } else if (isUpdateSinceLastSeen(resolvedVersion)) {
-              setWhatsNewOpen(true);
-            }
           }
 
           // Tour de bienvenida sólo para usuarios nuevos.
@@ -871,6 +870,13 @@ export default function App() {
             label={t("nav.hangar")}
             tourId="nav-hangar"
           />
+          <ViewTab
+            active={view === "economy"}
+            onClick={() => openEconomy(null)}
+            icon={<Wallet className="h-4 w-4" />}
+            label={t("nav.economy")}
+            tourId="nav-economy"
+          />
       </nav>
 
       <main
@@ -941,6 +947,7 @@ export default function App() {
         {view === "addons" && <AddonsView />}
         {view === "flightbook" && <FlightBookView />}
         {view === "hangar" && <HangarView />}
+        {view === "economy" && <EconomyView />}
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

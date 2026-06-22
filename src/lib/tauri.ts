@@ -77,6 +77,10 @@ import type {
   UpdateInfo,
   AirlineTag,
   AirlineKpis,
+  AirlineLedger,
+  AirlinePolicy,
+  AircraftMaint,
+  MaintRecord,
   ScoreReport,
 } from "./types";
 
@@ -501,6 +505,22 @@ interface Api {
   ) => Promise<AirlineKpis>;
   /** (v6 #2a) Analítica del Hangar — top aviones, aeropuertos, salud FPM. */
   hangarAnalytics: () => Promise<HangarAnalytics>;
+  /** (v6.1) Economía por aerolínea — valor base, ingresos vs costes, saldo.
+   *  Recalcula consumiendo los vuelos actuales (+ recibos GSX). Sin pantalla
+   *  aún; el contrato queda listo para cuando se construya la UI. */
+  airlineEconomy: () => Promise<AirlineLedger[]>;
+  /** (v6.1) Política de gestión de una aerolínea (mantenimiento + servicios). */
+  airlinePolicy: (key: string) => Promise<AirlinePolicy>;
+  /** (v6.1) Guarda la política y recalcula el ledger. */
+  setAirlinePolicy: (key: string, policy: AirlinePolicy) => Promise<void>;
+  /** (v6.1) Mantenimiento de la flota de una aerolínea (desgaste por avión). */
+  airlineFleetMaintenance: (key: string) => Promise<AircraftMaint[]>;
+  /** (v6.1) Mantenimiento de UNA matrícula (Hangar → silueta, misma data). */
+  aircraftMaintenance: (registration: string) => Promise<AircraftMaint | null>;
+  /** (v6.1) Historial de mantenimiento real de una matrícula. */
+  aircraftMaintenanceHistory: (registration: string) => Promise<MaintRecord[]>;
+  /** (v6.1) Hace un servicio a una aeronave (resetea componente + cobra según nivel). */
+  serviceAircraft: (registration: string, component: string, airlineKey: string) => Promise<void>;
   /** (v6 #2a) Perfil del piloto + nivel/XP. */
   pilotProfile: () => Promise<PilotProfile>;
   /** (v6 #2b) Config de grabación de Best Landings. */
@@ -784,6 +804,18 @@ const realApi: Api = {
   airlineKpis: (airlineIcao, airlineName) =>
     invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
   hangarAnalytics: () => invoke<HangarAnalytics>("hangar_analytics"),
+  airlineEconomy: () => invoke<AirlineLedger[]>("airline_economy"),
+  airlinePolicy: (key) => invoke<AirlinePolicy>("airline_policy", { key }),
+  setAirlinePolicy: (key, policy) =>
+    invoke<void>("set_airline_policy", { key, policy }),
+  airlineFleetMaintenance: (key) =>
+    invoke<AircraftMaint[]>("airline_fleet_maintenance", { key }),
+  aircraftMaintenance: (registration) =>
+    invoke<AircraftMaint | null>("aircraft_maintenance", { registration }),
+  aircraftMaintenanceHistory: (registration) =>
+    invoke<MaintRecord[]>("aircraft_maintenance_history", { registration }),
+  serviceAircraft: (registration, component, airlineKey) =>
+    invoke<void>("service_aircraft", { registration, component, airlineKey }),
   pilotProfile: () => invoke<PilotProfile>("pilot_profile"),
   recordingConfig: () => invoke<RecordingConfig>("recording_config"),
   recordingEngineStatus: () =>
@@ -938,6 +970,8 @@ const demoAddons: Addon[] = [
 type DemoListener = (job: DownloadJob) => void;
 const demoJobs = new Map<string, DownloadJob>();
 const demoListeners = new Set<DemoListener>();
+/** (v6.1) Políticas de aerolínea en memoria para el modo demo (navegador). */
+const demoPolicies = new Map<string, AirlinePolicy>();
 
 function demoEmit(job: DownloadJob) {
   demoJobs.set(job.id, job);
@@ -1804,6 +1838,122 @@ const demoApi: Api = {
         mkLanding(-110, "KMIA", "Miami Intl", "A320-200"),
       ],
     };
+  },
+  async airlineEconomy() {
+    const mk = (
+      key: string,
+      icao: string,
+      name: string,
+      lowcost: boolean,
+      valuation: number,
+      revenue: number,
+      costs: number,
+      flights: number,
+      passengers: number,
+      avgFpm: number,
+      cargo = false,
+    ): AirlineLedger => {
+      const tickets = revenue * (lowcost ? 0.62 : 0.9);
+      const ancillary = revenue - tickets;
+      const satisfaction = Math.max(
+        25,
+        Math.min(100, 100 - Math.max(0, Math.abs(avgFpm) - 150) * 0.09),
+      );
+      return {
+        key,
+        icao,
+        name,
+        lowcost,
+        cargo,
+        valuation,
+        revenue,
+        costs,
+        net: revenue - costs,
+        balance: valuation + (revenue - costs),
+        flights,
+        passengers,
+        revenueTickets: tickets,
+        revenueAncillary: ancillary,
+        costFuel: costs * 0.45,
+        costCatering: costs * 0.08,
+        costHandling: costs * 0.07,
+        costMaintenance: costs * 0.22,
+        costFees: costs * 0.18,
+        avgLandingFpm: avgFpm,
+        satisfaction,
+        gsxFlights: Math.round(flights * 0.6),
+        fleetSize: cargo ? 4 : 8,
+        fleetValue: (cargo ? 4 : 8) * (lowcost ? 55e6 : 120e6),
+      };
+    };
+    return [
+      mk("DAL", "DAL", "Delta Air Lines", false, 32e9, 7_420_000, 4_180_000, 45, 9800, -185),
+      mk("AAL", "AAL", "American Airlines", false, 9e9, 2_310_000, 1_640_000, 12, 3100, -240),
+      mk("RYR", "RYR", "Ryanair", true, 25e9, 980_000, 720_000, 8, 1450, -310),
+      mk("FDX", "FDX", "FedEx Express", false, 60e9, 1_840_000, 1_520_000, 6, 0, -210, true),
+    ];
+  },
+  async airlinePolicy(key) {
+    return (
+      demoPolicies.get(key) ?? {
+        maintenanceLevel: 1,
+        snacks: false,
+        meals: false,
+        wifi: false,
+        seatUpgrades: false,
+        priorityBoarding: false,
+        extraBaggage: false,
+      }
+    );
+  },
+  async setAirlinePolicy(key, policy) {
+    demoPolicies.set(key, policy);
+  },
+  async airlineFleetMaintenance() {
+    const COSTS: Record<string, number> = {
+      tires: 8000, brakes: 12000, engine_oil: 1500, hydraulics: 2500,
+      fire_bottles: 4000, oxygen: 1200, egt: 3000, idg: 2000,
+    };
+    const ZONE: Record<string, string> = {
+      tires: "gears", brakes: "gears", engine_oil: "engines",
+      hydraulics: "fuselage", fire_bottles: "engines", oxygen: "fuselage",
+      egt: "engines", idg: "engines",
+    };
+    const mk = (registration: string, model: string, flights: number, wears: Record<string, number>): AircraftMaint => {
+      const components = Object.keys(COSTS).map((id) => {
+        const wearPct = wears[id] ?? 20;
+        return {
+          id,
+          zone: ZONE[id],
+          wearPct,
+          status: wearPct >= 80 ? "due" : wearPct >= 50 ? "watch" : "ok",
+          actionCost: COSTS[id],
+        };
+      });
+      return {
+        registration,
+        model,
+        flights,
+        overallWear: Math.max(...components.map((c) => c.wearPct)),
+        components,
+      };
+    };
+    return [
+      mk("N827DN", "Boeing 737-900ER", 22, { tires: 88, brakes: 72, egt: 60, engine_oil: 40, hydraulics: 30, idg: 35, fire_bottles: 12, oxygen: 18 }),
+      mk("N374DA", "Airbus A320-200", 14, { tires: 54, brakes: 45, egt: 38, engine_oil: 25, hydraulics: 20, idg: 22, fire_bottles: 8, oxygen: 11 }),
+    ];
+  },
+  async aircraftMaintenance(registration) {
+    const fleet = await this.airlineFleetMaintenance("");
+    return fleet.find((a) => a.registration === registration) ?? fleet[0] ?? null;
+  },
+  async aircraftMaintenanceHistory() {
+    return [
+      { component: "tires", cost: 8000, servicedAt: new Date().toISOString() },
+    ];
+  },
+  async serviceAircraft() {
+    /* demo: no-op */
   },
   async pilotProfile() {
     return {

@@ -1596,6 +1596,9 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
     // avión es su vuelo más reciente.
     let entries = list_entries(pool).await?;
     let total_flights = entries.len() as i64;
+    // (v6.1) ICAOs aprendidos de los propios vuelos para agrupar aerolíneas
+    // sin duplicar (mismo criterio que Finanzas).
+    let learned_airlines = crate::airline_economy::learn_airline_icaos(&entries);
 
     struct Acc {
         registration: Option<String>,
@@ -1753,21 +1756,22 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
                 ent.0 = dest_name.clone();
             }
         }
-        // (v6.1 #29) Aerolíneas más voladas (por nombre; código para el logo).
-        let al_icao = norm(&e.airline_icao);
-        let al_name = norm(&e.aircraft_airline);
-        if al_name.is_some() || al_icao.is_some() {
-            let label = al_name
-                .clone()
-                .or_else(|| al_icao.clone())
-                .unwrap_or_default();
-            let key = label.to_uppercase();
+        // (v6.1) Aerolíneas más voladas — agrupación CANÓNICA compartida con
+        // Finanzas: colapsa ICAO/callsign/livery-con-nombre-parecido en una
+        // sola aerolínea (igual que los tags del FlightBook), sin duplicar.
+        if let Some(canon) = crate::airline_economy::canonical_airline(
+            e.airline_icao.as_deref(),
+            e.callsign.as_deref(),
+            e.aircraft_airline.as_deref(),
+            e.aircraft_title.as_deref(),
+            &learned_airlines,
+        ) {
             let ent = airlines
-                .entry(key)
-                .or_insert((label, al_icao.clone(), 0));
+                .entry(canon.key)
+                .or_insert((canon.name.clone(), canon.icao.clone(), 0));
             ent.2 += 1;
             if ent.1.is_none() {
-                ent.1 = al_icao.clone();
+                ent.1 = canon.icao.clone();
             }
         }
         // (v6.1 #29) Tipos de avión más volados.

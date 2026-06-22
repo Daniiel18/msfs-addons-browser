@@ -563,6 +563,93 @@ export interface AirlineKpis {
   avgLandingFpm: number | null;
 }
 
+/** (v6.1) Ledger económico por aerolínea. El backend arranca cada aerolínea
+ *  con un valor base realista ("banco") y acumula ingresos (billetes +
+ *  ancillaries) vs costes (fuel, catering, handling, mantenimiento, tasas y
+ *  fees de GSX) consumiendo los vuelos actuales. La pantalla aún no existe;
+ *  este es el contrato que consumirá cuando se construya. */
+export interface AirlineLedger {
+  /** Clave de ledger (ICAO o nombre normalizado). */
+  key: string;
+  icao: string | null;
+  name: string;
+  lowcost: boolean;
+  /** Operador de carga (sin pasajeros; ingreso por flete). */
+  cargo: boolean;
+  /** Valor base USD ("banco"). */
+  valuation: number;
+  revenue: number;
+  costs: number;
+  /** `revenue - costs` acumulado. */
+  net: number;
+  /** `valuation + net` — saldo actual. */
+  balance: number;
+  flights: number;
+  passengers: number;
+  revenueTickets: number;
+  revenueAncillary: number;
+  costFuel: number;
+  costCatering: number;
+  costHandling: number;
+  costMaintenance: number;
+  costFees: number;
+  /** Media de FPM al tocar pista (negativo). null si ningún vuelo lo midió. */
+  avgLandingFpm: number | null;
+  /** Satisfacción del pasajero 0-100 (la afecta el FPM de aterrizaje). */
+  satisfaction: number | null;
+  /** Nº de vuelos cuyos costes salieron de facturas GSX reales. */
+  gsxFlights: number;
+  /** Aviones distintos comprados (matrículas/liveries voladas). */
+  fleetSize: number;
+  /** Inversión total en flota (USD) — ya descontada del saldo. */
+  fleetValue: number;
+}
+
+/** (v6.1) Decisiones de gestión por aerolínea (el "ecosistema"). Alimentan el
+ *  P&L: el nivel de mantenimiento mueve coste/satisfacción; cada servicio a
+ *  bordo añade ingreso ancillary. */
+export interface AirlinePolicy {
+  /** 0 = básico, 1 = estándar, 2 = premium. */
+  maintenanceLevel: number;
+  snacks: boolean;
+  meals: boolean;
+  wifi: boolean;
+  seatUpgrades: boolean;
+  priorityBoarding: boolean;
+  extraBaggage: boolean;
+}
+
+/** (v6.1) Componente mantenible de una aeronave (estilo EFB de PMDG). */
+export interface MaintComponent {
+  /** id: tires/brakes/engine_oil/hydraulics/fire_bottles/oxygen/egt/idg. */
+  id: string;
+  /** Zona de la silueta: engines/gears/fuselage. */
+  zone: string;
+  /** Desgaste 0-100. */
+  wearPct: number;
+  /** ok / watch / due. */
+  status: string;
+  /** Coste del servicio (USD). */
+  actionCost: number;
+}
+
+/** (v6.1) Estado de mantenimiento de una aeronave, derivado de sus vuelos. */
+export interface AircraftMaint {
+  registration: string;
+  model: string | null;
+  flights: number;
+  /** Peor componente (para ordenar y pintar la silueta). */
+  overallWear: number;
+  components: MaintComponent[];
+}
+
+/** (v6.1) Servicio de mantenimiento realmente hecho (historial real). */
+export interface MaintRecord {
+  component: string;
+  cost: number;
+  servicedAt: string;
+}
+
 /** Estadísticas agregadas que pinta la vista «Dashboard». Sale de
  *  `community_packages` + `compute_available`; el backend hace todo
  *  el group-by en SQL para que la UI sólo renderice. */

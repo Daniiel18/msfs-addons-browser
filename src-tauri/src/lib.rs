@@ -1,3 +1,5 @@
+pub mod aircraft_maintenance;
+pub mod airline_economy;
 pub mod airport_thumbs;
 pub mod airports;
 pub mod cloud_sync;
@@ -210,6 +212,13 @@ pub fn run() {
             commands::flight_log::list_flight_log,
             commands::flight_log::hangar_analytics,
             commands::flight_log::pilot_profile,
+            commands::economy::airline_economy,
+            commands::economy::airline_policy,
+            commands::economy::set_airline_policy,
+            commands::economy::airline_fleet_maintenance,
+            commands::economy::service_aircraft,
+            commands::economy::aircraft_maintenance,
+            commands::economy::aircraft_maintenance_history,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
             commands::recording::osd_test,

@@ -52,12 +52,16 @@ import type {
   HangarCount,
   LandingClip,
   FlightLogEntry,
+  AircraftMaint,
+  MaintRecord,
 } from "../lib/types";
 import { deriveTelemetry, type FlightTelemetry } from "../lib/flightTelemetry";
 import worldLand from "../lib/worldLand.json";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { useAppStore } from "../stores/useAppStore";
+import { SilhouetteView, zoneWearOf } from "./AircraftMaintenance";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
 import { airportRegion } from "../lib/oaciRegion";
@@ -388,6 +392,7 @@ function FleetOverview({
     name: a.label,
     size: a.count,
     img: airlineLogoUrl(a.code, a.label),
+    code: a.code,
   }));
   const destData = data.topDestinations.map((d) => ({
     name: d.icao,
@@ -412,6 +417,10 @@ function FleetOverview({
           icon={<Building2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.airlines")}
           data={airlineData}
+          hint={t("hangar.overview.airlines_hint")}
+          onSelect={(item) =>
+            useAppStore.getState().openEconomy(item.code ?? item.name)
+          }
         />
         <TreemapCard
           icon={<MapPin className="h-4 w-4 text-brand-400" />}
@@ -446,11 +455,13 @@ function CardShell({
   icon,
   title,
   empty,
+  hint,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
   empty: boolean;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -458,6 +469,11 @@ function CardShell({
       <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
         {icon}
         {title}
+        {hint && (
+          <span className="ml-auto text-[10px] font-normal text-slate-500">
+            {hint}
+          </span>
+        )}
       </h3>
       {empty ? (
         <div className="py-10 text-center text-xs text-slate-600">
@@ -489,9 +505,10 @@ function flagUrl(icao: string): string | null {
  */
 function TreeLabel(props: {
   x?: number; y?: number; width?: number; height?: number; index?: number;
-  name?: string; img?: string | null;
+  name?: string; img?: string | null; code?: string | null;
+  onSelect?: (item: { name: string; code: string | null }) => void;
 }) {
-  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", img } = props;
+  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", img, code, onSelect } = props;
   const c = TREE_COLORS[index % TREE_COLORS.length];
   const cx = x + width / 2;
   const cy = y + height / 2;
@@ -502,8 +519,12 @@ function TreeLabel(props: {
   const maxChars = Math.max(3, Math.floor((width - 10) / (fontSize * 0.6)));
   const label = name.length > maxChars ? name.slice(0, maxChars - 1) + "…" : name;
   const textY = hasImg ? cy + isz / 2 + fontSize : cy + fontSize * 0.36;
+  const clickable = !!onSelect && !!name;
   return (
-    <g>
+    <g
+      onClick={clickable ? () => onSelect!({ name, code: code ?? null }) : undefined}
+      style={clickable ? { cursor: "pointer" } : undefined}
+    >
       {/* Cuadrada: el "gap" entre celdas lo da el stroke; sin rx. */}
       <rect x={x} y={y} width={width} height={height} fill={c} stroke="#0b1220" strokeWidth={2.5} />
       {hasImg && (
@@ -537,15 +558,27 @@ function TreeTip({ active, payload }: { active?: boolean; payload?: Array<{ payl
 }
 
 function TreemapCard({
-  icon, title, data,
+  icon, title, data, hint, onSelect,
 }: {
-  icon: React.ReactNode; title: string; data: Array<{ name: string; size: number }>;
+  icon: React.ReactNode;
+  title: string;
+  data: Array<{ name: string; size: number; code?: string | null }>;
+  /** Pista bajo el título (ej. "clic para ver finanzas"). */
+  hint?: string;
+  /** Si se pasa, cada celda es clicable y dispara esto con su item. */
+  onSelect?: (item: { name: string; code: string | null }) => void;
 }) {
   return (
-    <CardShell icon={icon} title={title} empty={data.length === 0}>
+    <CardShell icon={icon} title={title} empty={data.length === 0} hint={hint}>
       <div className="h-52 w-full overflow-hidden rounded-lg">
         <ResponsiveContainer width="100%" height="100%">
-          <Treemap data={data} dataKey="size" stroke="#0b1220" isAnimationActive={false} content={<TreeLabel />}>
+          <Treemap
+            data={data}
+            dataKey="size"
+            stroke="#0b1220"
+            isAnimationActive={false}
+            content={<TreeLabel onSelect={onSelect} />}
+          >
             <Tooltip content={<TreeTip />} />
           </Treemap>
         </ResponsiveContainer>
@@ -647,6 +680,30 @@ function AircraftDetail({
   const photo = useAircraftPhoto(ac.registration ?? null);
   // (v6.1 #31 #32) Mantenimiento sintético derivado del uso (determinista).
   const mx = useMemo(() => deriveMaintenance(ac), [ac]);
+  // (v6.1) Mantenimiento REAL (componentes + historial) — fuente única
+  // compartida con Finanzas. Sincroniza la silueta, el tab Mantenimiento,
+  // Historial y Documentos. Se refresca al volver a esta vista.
+  const [realHistory, setRealHistory] = useState<MaintRecord[]>([]);
+  const [realMaint, setRealMaint] = useState<AircraftMaint | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (ac.registration) {
+      api
+        .aircraftMaintenanceHistory(ac.registration)
+        .then((h) => alive && setRealHistory(h))
+        .catch(() => {});
+      api
+        .aircraftMaintenance(ac.registration)
+        .then((m) => alive && setRealMaint(m))
+        .catch(() => {});
+    } else {
+      setRealHistory([]);
+      setRealMaint(null);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [ac.registration]);
   const [reportOpen, setReportOpen] = useState(false);
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
   const location =
@@ -740,7 +797,7 @@ function AircraftDetail({
         {tab === "overview" && (
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <GearHealthCard ac={ac} />
+              <GearHealthCard ac={ac} maint={realMaint} />
               <FpmTrendCard ac={ac} />
             </div>
             <BestLandings
@@ -751,10 +808,10 @@ function AircraftDetail({
           </>
         )}
         {tab === "performance" && <PerformanceTab ac={ac} mx={mx} />}
-        {tab === "maintenance" && <MaintenanceTab mx={mx} />}
+        {tab === "maintenance" && <MaintenanceTab mx={mx} realHistory={realHistory} realMaint={realMaint} />}
         {tab === "flights" && <FlightsTab ac={ac} />}
-        {tab === "history" && <HistoryTab mx={mx} />}
-        {tab === "documents" && <DocumentsTab ac={ac} mx={mx} />}
+        {tab === "history" && <HistoryTab mx={mx} realHistory={realHistory} />}
+        {tab === "documents" && <DocumentsTab ac={ac} mx={mx} realHistory={realHistory} />}
       </div>
 
       {reportOpen && (
@@ -832,7 +889,8 @@ function ComponentBar({ label, health, status, nextDueHours }: {
   );
 }
 
-function MaintenanceTab({ mx }: { mx: MaintenanceData }) {
+function MaintenanceTab({ mx, realHistory, realMaint }: { mx: MaintenanceData; realHistory: MaintRecord[]; realMaint: AircraftMaint | null }) {
+  const realSpend = realHistory.reduce((s, r) => s + r.cost, 0);
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -841,16 +899,42 @@ function MaintenanceTab({ mx }: { mx: MaintenanceData }) {
         <StatTile label={t("hangar.mx.next_service")} value={`${Math.max(0, mx.nextServiceHours).toLocaleString()} h`} />
         <StatTile label={t("hangar.mx.lifetime_cost")} value={money(mx.lifetimeCost)} />
       </div>
+      {realHistory.length > 0 && (
+        <div className="rounded-xl border border-emerald-700/40 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-300">
+          <Wrench className="mr-1 inline h-3.5 w-3.5" />
+          {t("hangar.mx.real_services", { n: String(realHistory.length) })} · {money(realSpend)}
+        </div>
+      )}
       <div>
         <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
           <Wrench className="h-4 w-4 text-brand-400" />
           {t("hangar.mx.components")}
         </h4>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {mx.components.map((c) => (
-            <ComponentBar key={c.key} label={c.label} health={c.healthPct} status={c.status} nextDueHours={c.nextDueHours} />
-          ))}
-        </div>
+        {/* (v6.1) Componentes REALES (misma data que Finanzas) cuando hay
+            matrícula; si no, los sintéticos. Salud = 100 − desgaste. */}
+        {realMaint ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {realMaint.components.map((c) => {
+              const health = Math.round(100 - c.wearPct);
+              const status = c.status === "due" ? "alert" : c.status === "watch" ? "watch" : "good";
+              return (
+                <ComponentBar
+                  key={c.id}
+                  label={t(`economy.comp.${c.id}`)}
+                  health={health}
+                  status={status}
+                  nextDueHours={Math.round((100 - c.wearPct) * 2)}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {mx.components.map((c) => (
+              <ComponentBar key={c.key} label={c.label} health={c.healthPct} status={c.status} nextDueHours={c.nextDueHours} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1111,9 +1195,48 @@ function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
   );
 }
 
-function HistoryTab({ mx }: { mx: MaintenanceData }) {
+/** Talleres de mantenimiento (para dar nombre/identidad a los servicios). */
+const MAINT_SHOPS = [
+  { code: "CAC", name: "Continental AeroCare", color: "#ef4444" },
+  { code: "JTS", name: "Jet Technic Services", color: "#0ea5e9" },
+  { code: "AMS", name: "AeroMaint Solutions", color: "#22c55e" },
+  { code: "GLT", name: "Global Line Technics", color: "#a855f7" },
+  { code: "SKM", name: "SkyMech Industries", color: "#f59e0b" },
+];
+/** Taller estable a partir de una semilla (mismo servicio → mismo taller). */
+function maintShopFor(seed: string) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return MAINT_SHOPS[h % MAINT_SHOPS.length];
+}
+
+function HistoryTab({ mx, realHistory }: { mx: MaintenanceData; realHistory: MaintRecord[] }) {
   return (
     <div className="space-y-2">
+      {/* (v6.1) Servicios REALES — mismo estilo de taller que los reportes
+          (sin "done in finance"); el taller se asigna de forma estable. */}
+      {realHistory.map((r, i) => {
+        const shop = maintShopFor(`${r.component}-${r.servicedAt}`);
+        return (
+          <div key={`real-${i}`} className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white" style={{ backgroundColor: shop.color }}>
+              {shop.code}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-100">
+                  {t(`economy.comp.${r.component}`)} · {shop.name}
+                </span>
+                <span className="shrink-0 text-[11px] text-slate-500">{fmtDate(r.servicedAt)}</span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-slate-400">{t("hangar.history.work")}</p>
+              <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500">
+                <span className="font-semibold text-slate-300">{money(r.cost)}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
       {mx.reports.map((r) => (
         <div key={r.id} className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
           <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white" style={{ backgroundColor: r.shop.color }}>
@@ -1136,11 +1259,86 @@ function HistoryTab({ mx }: { mx: MaintenanceData }) {
   );
 }
 
-function DocumentsTab({ ac, mx }: { ac: HangarAircraft; mx: MaintenanceData }) {
+/** Un cierre diario = todos los servicios reales de un mismo día. */
+interface DailyClose {
+  day: string; // YYYY-MM-DD
+  records: MaintRecord[];
+  total: number;
+}
+
+/** Construye un reporte (estilo Continental AeroCare) a partir de TODOS los
+ *  servicios reales de un día — si hubo más de uno, salen como líneas/piezas. */
+function buildDailyReport(d: DailyClose, mx: MaintenanceData): MaintenanceReport {
+  const shop = maintShopFor(d.day);
+  const parts = d.records.map((r, i) => ({
+    name: t(`economy.comp.${r.component}`),
+    partNumber: `${r.component.slice(0, 3).toUpperCase()}-${1000 + i}`,
+    qty: 1,
+    reason: t("hangar.history.work"),
+    cost: Math.round(r.cost),
+  }));
+  const partsCost = Math.round(d.total * 0.7);
+  return {
+    id: `daily-${d.day}`,
+    date: d.day,
+    shop,
+    mechanic: "Line Maintenance Crew",
+    hoursAtService: mx.hours,
+    cyclesAtService: mx.cycles,
+    type: d.records.length > 1 ? "Line Check" : t(`economy.comp.${d.records[0].component}`),
+    parts,
+    laborCost: Math.round(d.total - partsCost),
+    partsCost,
+    totalCost: Math.round(d.total),
+    summary: t("hangar.docs.daily_summary", { n: String(d.records.length) }),
+    nextDueHours: mx.nextServiceHours,
+    nextDueDate: d.day,
+  };
+}
+
+function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: MaintenanceData; realHistory: MaintRecord[] }) {
   const [report, setReport] = useState<MaintenanceReport | null>(null);
+  // (v6.1) Agrupa los servicios reales por DÍA → un solo reporte/PDF por día.
+  const dailyCloses = useMemo<DailyClose[]>(() => {
+    const byDay = new Map<string, MaintRecord[]>();
+    for (const r of realHistory) {
+      const day = (r.servicedAt ?? "").slice(0, 10);
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day)!.push(r);
+    }
+    return [...byDay.entries()]
+      .map(([day, records]) => ({ day, records, total: records.reduce((s, x) => s + x.cost, 0) }))
+      .sort((a, b) => b.day.localeCompare(a.day));
+  }, [realHistory]);
+
   return (
     <div>
       <p className="mb-3 text-[11px] text-slate-500">{t("hangar.docs.hint")}</p>
+      {/* (v6.1) Cierre DIARIO: un PDF por día con todos los servicios hechos. */}
+      {dailyCloses.length > 0 && (
+        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {dailyCloses.map((d) => (
+            <button
+              key={d.day}
+              onClick={() => setReport(buildDailyReport(d, mx))}
+              className="group flex items-center gap-3 rounded-xl border border-emerald-700/40 bg-emerald-950/20 p-3 text-left hover:border-emerald-500/60"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-700/40">
+                <FileText className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-semibold text-slate-100">
+                  {t("hangar.docs.daily_close")}
+                </div>
+                <div className="truncate text-[11px] text-slate-500">
+                  {fmtDate(d.day)} · {t("hangar.docs.n_services", { n: String(d.records.length) })}
+                </div>
+                <div className="text-[11px] font-semibold text-emerald-300">{money(d.total)}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {mx.reports.map((r) => (
           <button
@@ -1598,13 +1796,6 @@ function gearSpec(model: string | null): GearSpec {
   return { axles: 1, perAxle: 1, maker: "boeing", big: false, door: false };
 }
 
-const MAKER_LABEL: Record<GearSpec["maker"], string> = {
-  boeing: "Boeing",
-  airbus: "Airbus",
-  regional: "Regional",
-  ga: "GA",
-};
-
 /** Salud por ZONA del tren (0-100). El rojo parpadea donde hay daño. */
 interface GearDamage {
   strut: number; // amortiguador / pata
@@ -1777,7 +1968,7 @@ function LandingGear({ model, damage }: { model: string | null; damage: GearDama
   );
 }
 
-function GearHealthCard({ ac }: { ac: HangarAircraft }) {
+function GearHealthCard({ ac, maint }: { ac: HangarAircraft; maint: AircraftMaint | null }) {
   const pct = ac.healthPct;
   // (v6.1) Daño por ZONA del tren a partir del mantenimiento sintético
   // (determinista por matrícula → cada avión "ha sufrido" en sitios distintos).
@@ -1789,6 +1980,8 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
     wheels: compHealth("brakes"),
     braces: compHealth("hydraulics"),
   };
+  // (v6.1) Desgaste REAL por zona (misma data que Finanzas) para la silueta.
+  const zoneWear = maint ? zoneWearOf(maint.components) : { engines: 0, gears: 0, fuselage: 0 };
   const color =
     pct >= 80 ? "text-brand-400" : pct >= 50 ? "text-amber-400" : "text-rose-400";
   const barColor =
@@ -1823,14 +2016,15 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
         </div>
       )}
       <div className="mt-4 flex flex-col items-center justify-center gap-2">
-        <LandingGear model={ac.model} damage={damage} />
-        <span className="text-[10px] uppercase tracking-wide text-slate-600">
-          {(() => {
-            const s = gearSpec(ac.model);
-            const wheels = s.axles * s.perAxle;
-            return `${MAKER_LABEL[s.maker]} · ${t("hangar.gear.wheels_n", { n: String(wheels) })}${s.axles > 1 ? ` · bogie ${s.axles} ejes` : " · 1 eje"}`;
-          })()}
-        </span>
+        {/* (v6.1) Silueta top-view con desgaste real — MISMA que Mantenimiento
+            en Finanzas. Si no hay matrícula, cae al dibujo del tren (backup). */}
+        {ac.registration ? (
+          <div className="h-56 w-full max-w-[260px]">
+            <SilhouetteView zoneWear={zoneWear} model={ac.model} />
+          </div>
+        ) : (
+          <LandingGear model={ac.model} damage={damage} />
+        )}
       </div>
       <div className="mt-3 flex items-center justify-between border-t border-slate-800 pt-3 text-[11px]">
         <div>
@@ -1844,6 +2038,21 @@ function GearHealthCard({ ac }: { ac: HangarAircraft }) {
           </div>
         </div>
       </div>
+      {/* (v6.1) Salta al mantenimiento real (estilo EFB) en Finanzas, con la
+          silueta y los componentes — misma data, todo relacionado. */}
+      {ac.registration && (ac.airlineIcao || ac.airlineName) && (
+        <button
+          onClick={() =>
+            useAppStore
+              .getState()
+              .openEconomy(ac.airlineIcao ?? ac.airlineName ?? null, ac.registration)
+          }
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 py-1.5 text-[11px] font-semibold text-amber-300 transition-colors hover:bg-amber-500/20"
+        >
+          <Wrench className="h-3.5 w-3.5" />
+          {t("hangar.gear.open_maintenance")}
+        </button>
+      )}
     </div>
   );
 }

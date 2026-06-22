@@ -115,6 +115,8 @@ export const ICAO_TO_IATA: Record<string, string> = {
   CCA: "CA", // Air China
   CES: "MU", // China Eastern
   CSN: "CZ", // China Southern
+  CKK: "CK", // China Cargo Airlines
+  TTW: "IT", // Tigerair Taiwan
   CHH: "HU", // Hainan Airlines
   CXA: "MF", // Xiamen Air
   CSC: "3U", // Sichuan Airlines
