@@ -49,6 +49,15 @@ export interface VsLanding {
   grade: string; // "butter" | "acceptable" | "hard"
 }
 
+/** (v6.2.2) Avión REAL que cada piloto está volando en el sim (no el del OFP de
+ *  SimBrief, que puede no coincidir). Se difunde en el broadcast de posición
+ *  para que la ficha muestre la foto/matrícula correctas. */
+export interface VsAircraft {
+  registration: string | null; // matrícula real del sim (para la foto)
+  aircraftType: string | null; // tipo (ej. "B38M")
+  airlineName: string | null; // aerolínea real (nombre o ICAO, para el logo)
+}
+
 interface LiveVsState {
   connected: boolean;
   self: VsPilot | null;
@@ -61,10 +70,15 @@ interface LiveVsState {
   /** (v6.1 #34) Aterrizaje propio / del rival (para el resultado del duelo). */
   selfLanding: VsLanding | null;
   rivalLanding: VsLanding | null;
+  /** (v6.2.2) Avión REAL en vuelo de cada piloto (del sim, no del OFP). */
+  selfAircraft: VsAircraft | null;
+  rivalAircraft: VsAircraft | null;
 
   start: (url: string, key: string, self: VsPilot) => void;
   broadcastPos: (pos: VsPos) => void;
   broadcastLanding: (result: VsLanding) => void;
+  /** (v6.2.2) Fija el avión real propio (lo difunde el siguiente broadcastPos). */
+  setSelfAircraft: (a: VsAircraft) => void;
   stop: () => void;
 }
 
@@ -77,7 +91,56 @@ function channelName(ofp: VsOfp): string {
   return `simfleet-vs-${ofp.date}-${ofp.origin}-${ofp.dest}`.toLowerCase();
 }
 
-export const useLiveVsStore = create<LiveVsState>((set, get) => ({
+/**
+ * (v6.2.2) Persistencia POR-VUELO del resultado del duelo. El modal vivía sólo
+ * en memoria, así que el FPM y el avión "no persistían" (#1) y cada vuelo no
+ * guardaba lo suyo (#4). Guardamos en localStorage con clave = nombre de canal
+ * (fecha+origen+destino), de modo que cada vuelo tiene su propio registro
+ * aislado y sobrevive a remount/cierre de la app. Lo transitorio (posición en
+ * vivo) NO se persiste.
+ */
+interface VsPersisted {
+  selfLanding: VsLanding | null;
+  rivalLanding: VsLanding | null;
+  selfAircraft: VsAircraft | null;
+  rivalAircraft: VsAircraft | null;
+}
+
+const VS_STORE_PREFIX = "simfleet.vs.";
+
+function loadPersisted(name: string): VsPersisted | null {
+  try {
+    const raw = localStorage.getItem(VS_STORE_PREFIX + name);
+    return raw ? (JSON.parse(raw) as VsPersisted) : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePersisted(name: string, data: VsPersisted) {
+  try {
+    localStorage.setItem(VS_STORE_PREFIX + name, JSON.stringify(data));
+  } catch {
+    /* localStorage lleno o no disponible — el duelo sigue en memoria */
+  }
+}
+
+export const useLiveVsStore = create<LiveVsState>((set, get) => {
+  // (v6.2.2) Vuelca el resultado del duelo actual a localStorage bajo la clave
+  // del canal en curso. Se llama tras cada cambio "duradero" (aterrizaje /
+  // avión), no en cada tick de posición.
+  const persist = () => {
+    if (!currentChannelName) return;
+    const st = get();
+    savePersisted(currentChannelName, {
+      selfLanding: st.selfLanding,
+      rivalLanding: st.rivalLanding,
+      selfAircraft: st.selfAircraft,
+      rivalAircraft: st.rivalAircraft,
+    });
+  };
+
+  return {
   connected: false,
   self: null,
   rival: null,
@@ -86,6 +149,8 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
   rivalPosAt: 0,
   selfLanding: null,
   rivalLanding: null,
+  selfAircraft: null,
+  rivalAircraft: null,
 
   start: (url, key, self) => {
     const name = channelName(self.ofp);
@@ -105,14 +170,20 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
     }
 
     currentChannelName = name;
+    // (v6.2.2) Rehidrata el resultado guardado de ESTE vuelo (si lo hubo) para
+    // que el FPM y el avión persistan tras remount/reinicio. Si es un vuelo
+    // nuevo (otra ruta/día) no habrá registro → pizarra limpia (#4).
+    const saved = loadPersisted(name);
     set({
       self,
       connected: false,
       rival: null,
       rivalPos: null,
       matchReady: false,
-      selfLanding: null,
-      rivalLanding: null,
+      selfLanding: saved?.selfLanding ?? null,
+      rivalLanding: saved?.rivalLanding ?? null,
+      selfAircraft: saved?.selfAircraft ?? null,
+      rivalAircraft: saved?.rivalAircraft ?? null,
     });
 
     const ch = client.channel(name, {
@@ -139,18 +210,32 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
     ch.on("presence", { event: "join" }, syncRival);
     ch.on("presence", { event: "leave" }, syncRival);
     ch.on("broadcast", { event: "pos" }, ({ payload }) => {
-      const p = payload as (VsPos & { identity?: string }) | undefined;
+      const p = payload as
+        | (VsPos & { identity?: string; aircraft?: VsAircraft | null })
+        | undefined;
       if (!p || p.identity === self.identity) return;
+      // (v6.2.2) El avión del rival sólo cambia muy de vez en cuando — sólo
+      // actualizamos (y persistimos) cuando difiere, no en cada tick.
+      const prevAc = get().rivalAircraft;
+      const acChanged =
+        !!p.aircraft &&
+        (!prevAc ||
+          prevAc.registration !== p.aircraft.registration ||
+          prevAc.aircraftType !== p.aircraft.aircraftType ||
+          prevAc.airlineName !== p.aircraft.airlineName);
       set({
         rivalPos: { lat: p.lat, lon: p.lon, heading: p.heading, alt: p.alt, gs: p.gs },
         rivalPosAt: Date.now(),
+        ...(acChanged ? { rivalAircraft: p.aircraft } : {}),
       });
+      if (acChanged) persist();
     });
     // (v6.1 #34) Resultado de aterrizaje del rival.
     ch.on("broadcast", { event: "landing" }, ({ payload }) => {
       const p = payload as (VsLanding & { identity?: string }) | undefined;
       if (!p || p.identity === self.identity) return;
       set({ rivalLanding: { fpm: p.fpm, grade: p.grade } });
+      persist(); // (v6.2.2) guarda el aterrizaje del rival para este vuelo
     });
 
     ch.subscribe((status) => {
@@ -175,13 +260,30 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
     void channel.send({
       type: "broadcast",
       event: "pos",
-      payload: { identity: self?.identity, ...pos },
+      // (v6.2.2) Adjuntamos el avión REAL para que el rival muestre la foto
+      // correcta (su matrícula del sim, no la del OFP).
+      payload: { identity: self?.identity, aircraft: get().selfAircraft, ...pos },
     });
+  },
+
+  setSelfAircraft: (a) => {
+    const cur = get().selfAircraft;
+    if (
+      cur &&
+      cur.registration === a.registration &&
+      cur.aircraftType === a.aircraftType &&
+      cur.airlineName === a.airlineName
+    ) {
+      return; // sin cambios
+    }
+    set({ selfAircraft: a });
+    persist(); // (v6.2.2) guarda el avión real propio para este vuelo
   },
 
   broadcastLanding: (result) => {
     // Fija el aterrizaje propio (aunque no haya canal) y lo emite al rival.
     set({ selfLanding: result });
+    persist(); // (v6.2.2) persiste el FPM propio para este vuelo (#1)
     if (!channel || !get().connected) return;
     const self = get().self;
     void channel.send({
@@ -208,6 +310,8 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => ({
       matchReady: false,
       selfLanding: null,
       rivalLanding: null,
+      rivalAircraft: null,
     });
   },
-}));
+  };
+});

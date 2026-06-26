@@ -25,6 +25,7 @@ export function LiveVsManager() {
   const stop = useLiveVsStore((s) => s.stop);
   const broadcastPos = useLiveVsStore((s) => s.broadcastPos);
   const broadcastLanding = useLiveVsStore((s) => s.broadcastLanding);
+  const setSelfAircraft = useLiveVsStore((s) => s.setSelfAircraft);
 
   const [identity, setIdentity] = useState<{ identity: string; name: string } | null>(
     null,
@@ -79,6 +80,16 @@ export function LiveVsManager() {
   useEffect(() => {
     const interval = setInterval(() => {
       const s = useFlightLogStore.getState().status;
+      // (v6.2.2) Fija el avión REAL en vuelo (matrícula/aerolínea del sim) antes
+      // de difundir la posición — así la ficha muestra la foto correcta y el
+      // rival recibe el avión real, no el del OFP.
+      if (s?.aircraftRegistration || s?.aircraftAirline || s?.aircraftIcao) {
+        setSelfAircraft({
+          registration: s.aircraftRegistration ?? null,
+          aircraftType: s.aircraftIcao ?? null,
+          airlineName: s.aircraftAirline ?? null,
+        });
+      }
       if (s?.currentLat != null && s.currentLon != null) {
         broadcastPos({
           lat: s.currentLat,
@@ -90,7 +101,7 @@ export function LiveVsManager() {
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [broadcastPos]);
+  }, [broadcastPos, setSelfAircraft]);
 
   // (v6.1 #34) Al tocar pista el watcher emite `landing://osd` con el FPM/grado.
   // Lo retransmitimos al rival para la comparativa final del duelo.

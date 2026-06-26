@@ -6,6 +6,7 @@ import {
   type VsPilot,
   type VsPos,
   type VsLanding,
+  type VsAircraft,
 } from "../stores/useLiveVsStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
@@ -46,6 +47,8 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
   const rivalPos = useLiveVsStore((s) => s.rivalPos);
   const selfLanding = useLiveVsStore((s) => s.selfLanding);
   const rivalLanding = useLiveVsStore((s) => s.rivalLanding);
+  const selfAircraft = useLiveVsStore((s) => s.selfAircraft);
+  const rivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
   const flightStatus = useFlightLogStore((s) => s.status);
   const ofp = useSimBriefStore((s) => s.flights)[0];
 
@@ -96,7 +99,7 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.94, y: 12 }}
         onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-fuchsia-500/30 bg-slate-950/95 shadow-2xl ring-1 ring-fuchsia-500/20"
+        className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-y-auto rounded-2xl border border-fuchsia-500/30 bg-slate-950/95 shadow-2xl ring-1 ring-fuchsia-500/20"
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-sky-500/10 via-fuchsia-500/10 to-rose-500/10 px-4 py-3">
@@ -121,6 +124,7 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
             pos={selfPos}
             remaining={selfRem}
             isLeader={leader === "self"}
+            live={selfAircraft}
             isYou
             accent="sky"
           />
@@ -134,36 +138,40 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
             pos={rivalPos}
             remaining={rivalRem}
             isLeader={leader === "rival"}
+            live={rivalAircraft}
             accent="rose"
           />
         </div>
 
-        {/* Barra de carrera de progreso sobre la ruta */}
-        <div className="space-y-2 border-t border-slate-800 px-4 py-3">
-          <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500">
-            <span>{ofp?.originIcao ?? self.ofp.origin}</span>
-            <span>{t("vs.race")}</span>
-            <span>{ofp?.destinationIcao ?? self.ofp.dest}</span>
+        {/* Progreso del vuelo sobre la ruta. (v6.2.2) Se OCULTA cuando el vuelo
+            propio ya terminó (aterrizaste) — no es una carrera, es un vuelo. */}
+        {!selfLanding && (
+          <div className="space-y-2 border-t border-slate-800 px-4 py-3">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500">
+              <span>{ofp?.originIcao ?? self.ofp.origin}</span>
+              <span>{t("vs.progress")}</span>
+              <span>{ofp?.destinationIcao ?? self.ofp.dest}</span>
+            </div>
+            <RaceBar
+              label={self.name}
+              remaining={selfRem}
+              total={total}
+              accent="sky"
+              isYou
+            />
+            <RaceBar
+              label={rival.name}
+              remaining={rivalRem}
+              total={total}
+              accent="rose"
+            />
+            {total == null && (
+              <p className="text-center text-[10px] text-slate-500">
+                {t("vs.no_route")}
+              </p>
+            )}
           </div>
-          <RaceBar
-            label={self.name}
-            remaining={selfRem}
-            total={total}
-            accent="sky"
-            isYou
-          />
-          <RaceBar
-            label={rival.name}
-            remaining={rivalRem}
-            total={total}
-            accent="rose"
-          />
-          {total == null && (
-            <p className="text-center text-[10px] text-slate-500">
-              {t("vs.no_route")}
-            </p>
-          )}
-        </div>
+        )}
 
         {/* (v6.1 #34) Resultado del aterrizaje — aparece cuando alguno aterriza. */}
         {(selfLanding || rivalLanding) && (
@@ -266,6 +274,7 @@ function PilotCard({
   pos,
   remaining,
   isLeader,
+  live,
   isYou = false,
   accent,
 }: {
@@ -273,12 +282,18 @@ function PilotCard({
   pos: VsPos | null;
   remaining: number | null;
   isLeader: boolean;
+  /** (v6.2.2) Avión REAL en vuelo (del sim). Manda sobre el del OFP. */
+  live?: VsAircraft | null;
   isYou?: boolean;
   accent: "sky" | "rose";
 }) {
-  const photo = useAircraftPhoto(pilot.ofp.registration ?? null);
+  // (v6.2.2) Preferimos el avión REAL que vuela el piloto (matrícula del sim)
+  // sobre el del OFP de SimBrief, que puede no coincidir.
+  const reg = live?.registration || pilot.ofp.registration || null;
+  const acType = live?.aircraftType || pilot.ofp.aircraft || null;
+  const photo = useAircraftPhoto(reg);
   const alIcao = airlineIcao(pilot.ofp.callsign);
-  const alName = icaoToName(alIcao);
+  const alName = live?.airlineName || icaoToName(alIcao);
   const ring = accent === "sky" ? "ring-sky-500/30" : "ring-rose-500/30";
   const text = accent === "sky" ? "text-sky-300" : "text-rose-300";
 
@@ -291,7 +306,7 @@ function PilotCard({
         {photo ? (
           <img
             src={photo}
-            alt={pilot.ofp.aircraft ?? ""}
+            alt={acType ?? ""}
             className="h-full w-full object-cover"
           />
         ) : (
@@ -324,12 +339,8 @@ function PilotCard({
 
       {/* Modelo + matrícula */}
       <div className="flex items-center justify-between text-[11px] text-slate-400">
-        <span className="font-mono text-slate-200">
-          {pilot.ofp.aircraft ?? "—"}
-        </span>
-        <span className="font-mono uppercase">
-          {pilot.ofp.registration ?? "—"}
-        </span>
+        <span className="font-mono text-slate-200">{acType ?? "—"}</span>
+        <span className="font-mono uppercase">{reg ?? "—"}</span>
       </div>
 
       {/* Telemetría en vivo */}

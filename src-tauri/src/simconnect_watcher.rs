@@ -47,6 +47,10 @@ pub struct FlightStatus {
     pub destination_icao: Option<String>,
     pub destination_name: Option<String>,
     pub aircraft_icao: Option<String>,
+    /// (v6.2.2) Avión REAL en vuelo (del sim, no del OFP) — para Crew VS:
+    /// matrícula (`ATC ID`) y aerolínea (`ATC AIRLINE`). Sólo con SimConnect.
+    pub aircraft_registration: Option<String>,
+    pub aircraft_airline: Option<String>,
     pub distance_nm: Option<i64>,
     /// Posición actual del user aircraft (sólo cuando SimConnect
     /// está conectado). Se actualiza cada segundo aprox.
@@ -882,6 +886,11 @@ mod windows_simconnect {
                     tracing::debug!(target: "simconnect", "ciclo falló: {e:#}");
                 }
             }
+            // (v6.2.2) La sesión del sim terminó (QUIT / desconexión / pantalla
+            // de carga al volver al menú): cierra cualquier vuelo que aterrizó
+            // pero quedó abierto, para que aparezca en el FlightBook sin esperar
+            // a reiniciar la app.
+            finalize_landed_open_sync(&pool, &app);
             // Marca desconectado y emite evento al frontend.
             mark_disconnected(&app, &state);
             std::thread::sleep(Duration::from_secs(10));
@@ -918,6 +927,45 @@ mod windows_simconnect {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// (v6.2.2) Finaliza los vuelos que YA aterrizaron (tienen `landing_fpm`)
+    /// pero quedaron ABIERTOS, AL TERMINAR la sesión del sim — no sólo al
+    /// arrancar. Cubre el caso real de Héctor: aterriza y sale al menú sin
+    /// apagar motores (no se dispara el cierre por ENGINE SHUTDOWN ni el
+    /// IDLE TIMEOUT de 90s). Antes el vuelo quedaba INVISIBLE en el FlightBook
+    /// hasta el próximo arranque; ahora se cierra en cuanto el sim envía QUIT
+    /// o se pierde el heartbeat (pantalla de carga al volver al menú), así que
+    /// aparece sin reiniciar la app. Sólo toca filas con `landing_fpm` → un
+    /// vuelo realmente en el aire nunca se cierra aquí. Corre en un runtime
+    /// efímero porque este hilo es blocking (no puede `await`).
+    fn finalize_landed_open_sync(pool: &SqlitePool, app: &AppHandle) {
+        let n = std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                rt.block_on(async {
+                    crate::flight_log::finalize_landed_open_flights(pool)
+                        .await
+                        .ok()
+                })
+            })
+            .join()
+            .ok()
+            .flatten()
+        });
+        if let Some(n) = n {
+            if n > 0 {
+                tracing::info!(
+                    target: "simconnect",
+                    "finalizados {} vuelo(s) aterrizado(s) al cerrar la sesión del sim",
+                    n
+                );
+                let _ = app.emit("flightlog://changed", ());
+            }
         }
     }
 
@@ -2210,6 +2258,13 @@ mod windows_simconnect {
                                 "AircraftMeta cambio — title={:?} atc_type={:?} model={:?} airline={:?} reg={:?}",
                                 title, atc_type, model, airline, registration
                             );
+                        }
+                        // (v6.2.2) Publica el avión REAL (matrícula + aerolínea,
+                        // ya extraídas con smart_*) en el status compartido para
+                        // Crew VS — la ficha usa esto, no el OFP de SimBrief.
+                        if let Ok(mut guard) = state.try_lock() {
+                            guard.status.aircraft_registration = registration.clone();
+                            guard.status.aircraft_airline = airline.clone();
                         }
                         aircraft_meta_cache = Some(meta);
 

@@ -1372,6 +1372,7 @@
   "vs.tab": "Crew VS",
   "vs.waiting": "Waiting for your rival on the same route…",
   "vs.race": "Race",
+  "vs.progress": "Flight progress",
   "vs.no_route": "No active route to compute progress.",
   "vs.leading": "Leading",
   "vs.you": "You",

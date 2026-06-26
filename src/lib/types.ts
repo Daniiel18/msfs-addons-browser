@@ -340,6 +340,9 @@ export interface FlightStatus {
   destinationIcao: string | null;
   destinationName: string | null;
   aircraftIcao: string | null;
+  /** (v6.2.2) Avión REAL en vuelo (del sim, no del OFP) — para Crew VS. */
+  aircraftRegistration?: string | null;
+  aircraftAirline?: string | null;
   distanceNm: number | null;
   /** Posición en vivo del user aircraft (sólo con SimConnect). */
   currentLat: number | null;

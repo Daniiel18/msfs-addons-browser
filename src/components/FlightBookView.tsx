@@ -208,11 +208,23 @@ export function FlightBookView() {
   // máquina al momento del sync) hacía aparecer un "FLYING NOW" fantasma.
   // El backend ya cierra estos phantoms al boot/post-sync, pero esta
   // guardia previene cualquier flash transitorio.
-  const inFlight =
+  // (v6.2.2) El vuelo ACTIVO en vivo es el abierto (endedAt null) mientras el
+  // watcher esté conectado y reportando posición — ese sigue mostrándose como
+  // "FLYING NOW" incluso en el taxi tras aterrizar (no hay regresión).
+  const liveOpenId =
     status?.simconnectConnected && status.currentLat != null
-      ? entries.find((e) => e.endedAt === null)
-      : undefined;
-  const completed = entries.filter((e) => e.endedAt !== null);
+      ? (entries.find((e) => e.endedAt === null)?.id ?? null)
+      : null;
+  const inFlight =
+    liveOpenId != null ? entries.find((e) => e.id === liveOpenId) : undefined;
+  // (v6.2.2) Un vuelo con `landingFpm` YA aterrizó: es "completado" aunque su
+  // `endedAt` siga null — pasa si el piloto sale sin apagar motores y no se
+  // dispara el cierre por ENGINE SHUTDOWN. El backend lo finaliza al cerrar la
+  // sesión del sim, pero esta guardia lo muestra YA (sin reiniciar) salvo que
+  // sea justamente el vuelo activo en vivo (taxi post-aterrizaje).
+  const completed = entries.filter(
+    (e) => e.endedAt !== null || (e.landingFpm != null && e.id !== liveOpenId),
+  );
 
   // `selectedAirline` ya declarado arriba (antes del useEffect del fix K2).
 

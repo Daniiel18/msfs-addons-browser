@@ -1372,6 +1372,7 @@
   "vs.tab": "Crew VS",
   "vs.waiting": "Esperando al rival en la misma ruta…",
   "vs.race": "Carrera",
+  "vs.progress": "Progreso del vuelo",
   "vs.no_route": "Sin ruta activa para calcular el progreso.",
   "vs.leading": "Líder",
   "vs.you": "Tú",
