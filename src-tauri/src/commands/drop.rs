@@ -48,9 +48,26 @@ pub async fn drop_commit(
                 .path,
         ),
     };
-    let report =
-        drop_install::commit(&session_id, &selected_paths, &community, &state.drop_sessions)
-            .map_err(|e| e.to_string())?;
+    // (v6.1) Versión de MSFS preferida → carpeta de estado (work) donde van los
+    // configs de avión iFly/PMDG. Es DISTINTA por versión (2020 `Packages`, 2024
+    // `WASM\MSFS2020`) y NO es la carpeta Community.
+    let prefer_2024 = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'pref_sim_version'",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .map(|v| v.contains("2024"))
+    .unwrap_or(false);
+    let report = drop_install::commit(
+        &session_id,
+        &selected_paths,
+        &community,
+        prefer_2024,
+        &state.drop_sessions,
+    )
+    .map_err(|e| e.to_string())?;
 
     // (v6.1 #37) Cross-link 2020/2024 también para drag&drop: si se instaló al
     // menos un paquete Community y el usuario tiene ambos sims, ofrecemos

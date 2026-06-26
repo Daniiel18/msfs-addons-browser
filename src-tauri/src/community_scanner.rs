@@ -1145,6 +1145,126 @@ pub fn aircraft_family(text: &str) -> Option<String> {
 /// AIRPORTS del dashboard lo usa igual — así ambos números coinciden
 /// SIEMPRE y los packs de AIRAC/night lights/enhancements/excludes no
 /// aparecen como aeropuertos (pedido del usuario).
+/// (v6.1) Una livery dentro de un pack: la entrada `[FLTSIM.N]` del aircraft.cfg.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackLivery {
+    /// `title` de la entrada (nombre que muestra MSFS).
+    pub title: String,
+    /// `atc_id` — la matrícula (p.ej. "N399DA").
+    pub registration: Option<String>,
+    /// `atc_airline` — aerolínea visible.
+    pub airline: Option<String>,
+    /// `texture` — sufijo de la variante de textura.
+    pub texture: Option<String>,
+    /// Contenedor (carpeta bajo SimObjects/Airplanes) al que pertenece.
+    pub container: String,
+}
+
+/// (v6.1) Enumera las liveries de un pack: lee cada
+/// `SimObjects/{Airplanes,Rotorcraft}/<dir>/aircraft.cfg` y devuelve una entrada
+/// por bloque `[FLTSIM.N]` con su título + matrícula + aerolínea. Para que al
+/// clicar un livery pack (en Addons o Link Map) se vea qué liveries trae.
+pub fn list_pack_liveries(install_path: &str) -> Vec<PackLivery> {
+    let root = Path::new(install_path);
+    let mut out: Vec<PackLivery> = Vec::new();
+    for kind in ["Airplanes", "Rotorcraft"] {
+        let so = root.join("SimObjects").join(kind);
+        let Ok(entries) = std::fs::read_dir(&so) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let container = dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let cfg = dir.join("aircraft.cfg");
+            let Ok(raw) = std::fs::read_to_string(&cfg).or_else(|_| {
+                std::fs::read(&cfg).map(|b| String::from_utf8_lossy(&b).into_owned())
+            }) else {
+                continue;
+            };
+            parse_fltsim_blocks(&raw, &container, &mut out);
+        }
+    }
+    // Ordena por aerolínea y luego matrícula para una lista legible.
+    out.sort_by(|a, b| {
+        a.airline
+            .cmp(&b.airline)
+            .then(a.registration.cmp(&b.registration))
+            .then(a.title.cmp(&b.title))
+    });
+    out
+}
+
+/// Parsea los bloques `[FLTSIM.N]` de un aircraft.cfg y empuja una `PackLivery`
+/// por cada uno que tenga al menos `title`.
+fn parse_fltsim_blocks(raw: &str, container: &str, out: &mut Vec<PackLivery>) {
+    let unquote = |v: &str| -> Option<String> {
+        let s = v.trim().trim_matches('"').trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+    let mut in_block = false;
+    let mut cur: Option<PackLivery> = None;
+    let flush = |cur: &mut Option<PackLivery>, out: &mut Vec<PackLivery>| {
+        if let Some(l) = cur.take() {
+            if !l.title.is_empty() {
+                out.push(l);
+            }
+        }
+    };
+    for line in raw.lines() {
+        let t = line.trim();
+        let low = t.to_ascii_lowercase();
+        if low.starts_with("[fltsim.") {
+            flush(&mut cur, out);
+            in_block = true;
+            cur = Some(PackLivery {
+                title: String::new(),
+                registration: None,
+                airline: None,
+                texture: None,
+                container: container.to_string(),
+            });
+            continue;
+        }
+        // Otra sección [..] cierra el bloque fltsim.
+        if t.starts_with('[') {
+            flush(&mut cur, out);
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        let Some((key, val)) = t.split_once('=') else {
+            continue;
+        };
+        let Some(l) = cur.as_mut() else { continue };
+        match key.trim().to_ascii_lowercase().as_str() {
+            "title" => {
+                if let Some(v) = unquote(val) {
+                    l.title = v;
+                }
+            }
+            "atc_id" => l.registration = unquote(val),
+            "atc_airline" => l.airline = unquote(val),
+            "texture" => l.texture = unquote(val),
+            _ => {}
+        }
+    }
+    flush(&mut cur, out);
+}
+
 pub fn is_library_pack(title: &str, folder_name: &str) -> bool {
     use once_cell::sync::Lazy;
     use regex::Regex;

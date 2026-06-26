@@ -5,6 +5,12 @@ import {
   Pie,
   Cell,
   Tooltip,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ReferenceLine,
 } from "recharts";
 import {
   ArrowLeft,
@@ -17,15 +23,16 @@ import {
   Landmark,
   Wrench,
   ConciergeBell,
-  X,
   Coffee,
   Utensils,
   Wifi,
   Armchair,
   Luggage,
   CheckCircle2,
+  Trophy,
+  Percent,
 } from "lucide-react";
-import type { AirlineLedger, AirlinePolicy } from "../lib/types";
+import type { AirlineLedger, BalancePoint } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useAppStore } from "../stores/useAppStore";
@@ -51,6 +58,19 @@ const intFmt = new Intl.NumberFormat("en-US");
 function fmtSigned(n: number): string {
   const s = usdCompact.format(Math.abs(n));
   return n < 0 ? `−${s}` : `+${s}`;
+}
+
+/** Margen neto en % (neto / ingresos). 0 si no facturó. */
+function marginPct(led: AirlineLedger): number {
+  return led.revenue > 0 ? (led.net / led.revenue) * 100 : 0;
+}
+
+/** Estilo del badge de posición en el ranking (oro/plata/bronce + resto). */
+function rankBadge(rank: number): { background: string; color: string } {
+  if (rank === 1) return { background: "#fbbf24", color: "#1c1917" };
+  if (rank === 2) return { background: "#cbd5e1", color: "#0f172a" };
+  if (rank === 3) return { background: "#d97706", color: "#fff7ed" };
+  return { background: "#334155", color: "#cbd5e1" };
 }
 
 /** Color + etiqueta de satisfacción (0-100). La marca el FPM de aterrizaje. */
@@ -191,6 +211,8 @@ function Overview({
 
   return (
     <>
+      {list.length >= 2 && <RankingStrip list={list} onSelect={onSelect} />}
+
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="text-xs text-slate-500">
           {t("economy.overview.count", { n: list.length })}
@@ -222,15 +244,122 @@ function Overview({
       )}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {sorted.map((led) => (
-          <AirlineCard key={led.key} led={led} onClick={() => onSelect(led)} />
+        {sorted.map((led, i) => (
+          <AirlineCard
+            key={led.key}
+            led={led}
+            rank={i + 1}
+            onClick={() => onSelect(led)}
+          />
         ))}
       </div>
     </>
   );
 }
 
-function AirlineCard({ led, onClick }: { led: AirlineLedger; onClick: () => void }) {
+/** (v6.1) Ranking entre tus aerolíneas: líderes por resultado, margen y
+ *  satisfacción. Cada tarjeta lleva a su aerolínea. */
+function RankingStrip({
+  list,
+  onSelect,
+}: {
+  list: AirlineLedger[];
+  onSelect: (led: AirlineLedger) => void;
+}) {
+  const items = useMemo(() => {
+    const byNet = [...list].sort((a, b) => b.net - a.net)[0];
+    const byMargin = [...list].sort((a, b) => marginPct(b) - marginPct(a))[0];
+    const rated = list.filter((l) => l.satisfaction != null);
+    const bySat = rated.length
+      ? [...rated].sort((a, b) => b.satisfaction! - a.satisfaction!)[0]
+      : null;
+    const out: Array<{
+      key: string;
+      icon: React.ReactNode;
+      accent: string;
+      label: string;
+      led: AirlineLedger;
+      value: string;
+    }> = [
+      {
+        key: "net",
+        icon: <Trophy className="h-4 w-4" />,
+        accent: "#fbbf24",
+        label: t("economy.rank.profit"),
+        led: byNet,
+        value: fmtSigned(byNet.net),
+      },
+      {
+        key: "margin",
+        icon: <Percent className="h-4 w-4" />,
+        accent: "#34d399",
+        label: t("economy.rank.margin"),
+        led: byMargin,
+        value: `${marginPct(byMargin) >= 0 ? "+" : ""}${marginPct(byMargin).toFixed(0)}%`,
+      },
+    ];
+    if (bySat) {
+      out.push({
+        key: "sat",
+        icon: <Smile className="h-4 w-4" />,
+        accent: satTier(bySat.satisfaction!).color,
+        label: t("economy.rank.satisfaction"),
+        led: bySat,
+        value: `${Math.round(bySat.satisfaction!)}%`,
+      });
+    }
+    return out;
+  }, [list]);
+
+  return (
+    <div className="mb-3">
+      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <Trophy className="h-3.5 w-3.5 text-amber-400" />
+        {t("economy.rank.heading")}
+      </h2>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {items.map((it) => (
+          <button
+            key={it.key}
+            onClick={() => onSelect(it.led)}
+            className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-3 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
+          >
+            <span
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+              style={{ background: `${it.accent}1f`, color: it.accent }}
+            >
+              {it.icon}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                {it.label}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <AirlineLogo icao={it.led.icao} name={it.led.name} size={18} />
+                <span className="truncate text-sm font-semibold text-slate-100">
+                  {it.led.name}
+                </span>
+              </div>
+            </div>
+            <span className="shrink-0 text-sm font-bold" style={{ color: it.accent }}>
+              {it.value}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AirlineCard({
+  led,
+  rank,
+  onClick,
+}: {
+  led: AirlineLedger;
+  rank?: number;
+  onClick: () => void;
+}) {
   const profit = led.net >= 0;
   const margin = led.revenue > 0 ? (led.net / led.revenue) * 100 : 0;
   const sat = led.satisfaction;
@@ -239,8 +368,16 @@ function AirlineCard({ led, onClick }: { led: AirlineLedger; onClick: () => void
   return (
     <button
       onClick={onClick}
-      className="group flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
+      className="group relative flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
     >
+      {rank != null && (
+        <span
+          className="absolute -left-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold shadow ring-2 ring-slate-950"
+          style={rankBadge(rank)}
+        >
+          {rank}
+        </span>
+      )}
       <div className="flex items-center gap-3">
         <AirlineLogo icao={led.icao} name={led.name} size={40} />
         <div className="min-w-0 flex-1">
@@ -443,22 +580,37 @@ function AirlineDetail({
           </div>
         </button>
         {!led.cargo && (
-          <button
-            onClick={() => setModal("services")}
-            className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
-          >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/15 text-sky-300">
-              <ConciergeBell className="h-5 w-5" />
-            </span>
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-slate-100">
-                {t("economy.manage.services")}
-              </div>
-              <div className="text-xs text-slate-500">
-                {t("economy.manage.services.hint")}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/15 text-sky-300">
+                <ConciergeBell className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-slate-100">
+                    {t("economy.manage.services")}
+                  </span>
+                  <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+                    {t("economy.svc.auto.badge")}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-500">
+                  {t("economy.svc.auto.hint", { kind: airlineKind(led).label.toLowerCase() })}
+                </div>
               </div>
             </div>
-          </button>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {SERVICES.filter((s) => autoServiceKeys(led).includes(s.key)).map((s) => (
+                <span
+                  key={s.key}
+                  className="flex items-center gap-1 rounded-md bg-slate-950/50 px-2 py-1 text-[11px] text-slate-300 ring-1 ring-slate-800"
+                >
+                  {s.icon}
+                  {t(s.labelKey)}
+                </span>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 
@@ -502,6 +654,9 @@ function AirlineDetail({
           hint={t("economy.kpi.fleet.hint", { n: String(led.fleetSize) })}
         />
       </div>
+
+      {/* Histórico del saldo (banco a lo largo del tiempo) */}
+      <BalanceHistoryCard led={led} />
 
       {/* Satisfacción del pasajero */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
@@ -570,16 +725,145 @@ function AirlineDetail({
           onChanged={onChanged}
         />
       )}
-      {modal === "services" && (
-        <PolicyModal
-          led={led}
-          section="services"
-          onClose={() => setModal(null)}
-          onSaved={async () => {
-            setModal(null);
-            await onChanged();
-          }}
-        />
+      {/* (v6.1) Servicios a bordo ahora son AUTOMÁTICOS por tipo de aerolínea
+          (ver auto_services en el backend) — sin gestión manual. */}
+    </div>
+  );
+}
+
+/** (v6.1) Curva del saldo ("banco") a lo largo del tiempo, vuelo a vuelo. */
+function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
+  const [pts, setPts] = useState<BalancePoint[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api
+      .airlineBalanceHistory(led.key)
+      .then((p) => alive && setPts(p))
+      .catch(() => alive && setPts([]))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [led.key]);
+
+  const data = useMemo(
+    () =>
+      (pts ?? []).map((p) => ({
+        ...p,
+        dateLabel: new Date(p.t).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        }),
+      })),
+    [pts],
+  );
+
+  const positive = led.balance >= 0;
+  const stroke = positive ? "#34d399" : "#f87171";
+  const gradId = `bal-${led.key.replace(/[^a-z0-9]/gi, "")}`;
+
+  // El valor base (miles de millones) eclipsa las variaciones por vuelo: hacemos
+  // zoom al rango real de datos para que se vean las compras de flota y la
+  // recuperación, en vez de una línea plana pegada arriba.
+  const domain = useMemo<[number, number]>(() => {
+    if (data.length < 2) return [0, 1];
+    const vals = data.map((d) => d.balance).concat(led.valuation);
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    const pad = Math.max((hi - lo) * 0.15, Math.abs(hi) * 0.003, 1);
+    return [lo - pad, hi + pad];
+  }, [data, led.valuation]);
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+          <Wallet className="h-4 w-4 text-brand-400" />
+          {t("economy.history.heading")}
+        </h3>
+        <span className="text-xs text-slate-500">{t("economy.history.hint")}</span>
+      </div>
+      {loading ? (
+        <div className="flex h-56 items-center justify-center text-sm text-slate-500">
+          {t("economy.history.loading")}
+        </div>
+      ) : data.length < 2 ? (
+        <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-slate-500">
+          {t("economy.history.nodata")}
+        </div>
+      ) : (
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={stroke} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={stroke} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+              <XAxis
+                dataKey="dateLabel"
+                tick={{ fill: "#64748b", fontSize: 11 }}
+                axisLine={{ stroke: "#1e293b" }}
+                tickLine={false}
+                minTickGap={28}
+              />
+              <YAxis
+                domain={domain}
+                tick={{ fill: "#64748b", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                width={56}
+                tickFormatter={(v: number) => usdCompact.format(v)}
+              />
+              <ReferenceLine
+                y={led.valuation}
+                stroke="#475569"
+                strokeDasharray="4 4"
+              />
+              <Tooltip content={<BalanceTooltip />} />
+              <Area
+                type="monotone"
+                dataKey="balance"
+                stroke={stroke}
+                strokeWidth={2}
+                fill={`url(#${gradId})`}
+                dot={false}
+                activeDot={{ r: 3, fill: stroke }}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function BalanceTooltip({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload as BalancePoint & { dateLabel: string };
+  const up = p.delta >= 0;
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs shadow-xl">
+      <div className="font-semibold text-slate-200">{p.label}</div>
+      <div className="text-slate-500">{p.dateLabel}</div>
+      <div className="mt-1 flex items-center justify-between gap-4">
+        <span className="text-slate-400">{t("economy.history.balance")}</span>
+        <span className="font-semibold text-slate-100">{usdFull.format(p.balance)}</span>
+      </div>
+      {p.kind !== "start" && (
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-slate-400">{t("economy.history.change")}</span>
+          <span className={up ? "text-emerald-400" : "text-red-400"}>
+            {up ? "+" : ""}
+            {usdFull.format(p.delta)}
+          </span>
+        </div>
       )}
     </div>
   );
@@ -716,174 +1000,11 @@ const SERVICES: Array<{
   { key: "extraBaggage", icon: <Luggage className="h-4 w-4" />, labelKey: "economy.svc.baggage", perPax: "+$5" },
 ];
 
-const MAINT_LEVELS = [0, 1, 2] as const;
-
-function PolicyModal({
-  led,
-  section,
-  onClose,
-  onSaved,
-}: {
-  led: AirlineLedger;
-  section: "maintenance" | "services";
-  onClose: () => void;
-  onSaved: () => void | Promise<void>;
-}) {
-  const [policy, setPolicy] = useState<AirlinePolicy | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .airlinePolicy(led.key)
-      .then((p) => alive && setPolicy(p))
-      .catch(() => alive && setPolicy(null));
-    return () => {
-      alive = false;
-    };
-  }, [led.key]);
-
-  const save = async () => {
-    if (!policy) return;
-    setSaving(true);
-    try {
-      await api.setAirlinePolicy(led.key, policy);
-      await onSaved();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const title =
-    section === "maintenance"
-      ? t("economy.modal.maintenance.title")
-      : t("economy.modal.services.title");
-  const desc =
-    section === "maintenance"
-      ? t("economy.modal.maintenance.desc")
-      : t("economy.modal.services.desc");
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-3 border-b border-slate-800 p-4">
-          <AirlineLogo icao={led.icao} name={led.name} size={32} />
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-semibold text-slate-100">{title}</h3>
-            <p className="truncate text-xs text-slate-500">{led.name}</p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="p-4">
-          <p className="mb-3 text-xs text-slate-500">{desc}</p>
-
-          {!policy ? (
-            <p className="py-8 text-center text-sm text-slate-500">
-              {t("economy.modal.loading")}
-            </p>
-          ) : section === "maintenance" ? (
-            <div className="space-y-2">
-              {MAINT_LEVELS.map((lvl) => {
-                const active = policy.maintenanceLevel === lvl;
-                const name = ["basic", "standard", "premium"][lvl];
-                return (
-                  <button
-                    key={lvl}
-                    onClick={() => setPolicy({ ...policy, maintenanceLevel: lvl })}
-                    className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors ${
-                      active
-                        ? "border-brand-500/60 bg-brand-500/10"
-                        : "border-slate-800 bg-slate-950/40 hover:bg-slate-800/40"
-                    }`}
-                  >
-                    <span
-                      className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
-                        active ? "border-brand-400 bg-brand-400" : "border-slate-600"
-                      }`}
-                    />
-                    <div>
-                      <div className="text-sm font-semibold text-slate-100">
-                        {t(`economy.maint.${name}`)}
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        {t(`economy.maint.${name}.desc`)}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {SERVICES.map((s) => {
-                const on = policy[s.key];
-                return (
-                  <button
-                    key={s.key}
-                    onClick={() => setPolicy({ ...policy, [s.key]: !on })}
-                    className="flex w-full items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left transition-colors hover:bg-slate-800/40"
-                  >
-                    <span
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-                        on ? "bg-sky-500/20 text-sky-300" : "bg-slate-800 text-slate-500"
-                      }`}
-                    >
-                      {s.icon}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium text-slate-100">
-                        {t(s.labelKey)}
-                      </div>
-                      <div className="text-[11px] text-emerald-400/80">
-                        {s.perPax}/pax
-                      </div>
-                    </div>
-                    <span
-                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                        on ? "bg-brand-500" : "bg-slate-700"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
-                          on ? "left-[18px]" : "left-0.5"
-                        }`}
-                      />
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 border-t border-slate-800 p-4">
-          <button
-            onClick={onClose}
-            className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-400 hover:text-slate-200"
-          >
-            {t("economy.modal.cancel")}
-          </button>
-          <button
-            onClick={save}
-            disabled={!policy || saving}
-            className="rounded-lg bg-brand-500 px-4 py-1.5 text-sm font-semibold text-white hover:bg-brand-400 disabled:opacity-50"
-          >
-            {saving ? t("economy.modal.saving") : t("economy.modal.save")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+/** (v6.1) Servicios que ofrece AUTOMÁTICAMENTE la aerolínea según su tipo —
+ *  espejo de `auto_services` en el backend. Solo-lectura (ya no se gestiona). */
+function autoServiceKeys(led: AirlineLedger): string[] {
+  if (led.cargo) return [];
+  if (led.lowcost)
+    return ["snacks", "wifi", "seatUpgrades", "priorityBoarding", "extraBaggage"];
+  return ["snacks", "meals", "wifi", "seatUpgrades"];
 }

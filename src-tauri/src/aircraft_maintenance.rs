@@ -55,6 +55,33 @@ pub struct MaintComponent {
     pub action_cost: f64,
 }
 
+/// (v6.1 — datos reales) Telemetría REAL del sim agregada por aeronave: picos
+/// capturados por SimConnect (EGT, aceite, frenos) + dureza de aterrizajes,
+/// horas y ciclos. Es la prueba tangible de que el desgaste sale de datos del
+/// vuelo, no de un modelo sintético. Universal: cualquier addon que publique
+/// estos SimVars (PMDG, Fenix, iniBuilds, iFly, default) la alimenta.
+#[derive(Serialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RealTelemetry {
+    /// Nº de vuelos de esta matrícula que aportaron telemetría real de motor.
+    pub flights_with_data: i64,
+    /// Ciclos (despegues/aterrizajes ≈ vuelos contados).
+    pub cycles: i64,
+    /// Horas de vuelo acumuladas.
+    pub hours: f64,
+    /// Pico de EGT (°C) registrado en cualquier motor/vuelo.
+    pub peak_egt_c: Option<f64>,
+    /// Pico de temperatura de aceite (°C).
+    pub peak_oil_temp_c: Option<f64>,
+    /// Pico de temperatura de frenos (°C) — sólo si el addon publica el LVar.
+    pub peak_brake_temp_c: Option<f64>,
+    /// (v6.1 Layer 2) Desgaste de neumático real máximo (%) — sólo si el addon
+    /// lo publica (iniBuilds). Es la fuente del desgaste de neumáticos cuando existe.
+    pub peak_tire_wear_pct: Option<f64>,
+    /// Aterrizaje más duro (FPM, negativo).
+    pub worst_landing_fpm: Option<i64>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftMaint {
@@ -64,6 +91,8 @@ pub struct AircraftMaint {
     /// Peor componente — para ordenar la flota y pintar la zona roja.
     pub overall_wear: f64,
     pub components: Vec<MaintComponent>,
+    /// (v6.1) Telemetría real del sim que respalda el desgaste de arriba.
+    pub telemetry: RealTelemetry,
 }
 
 fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
@@ -92,16 +121,89 @@ async fn last_services(pool: &SqlitePool) -> Result<HashMap<(String, String), Da
     Ok(map)
 }
 
+/// Picos de telemetría REAL de un vuelo (de `flight_log_track`). `None`/0 cuando
+/// el vuelo no tuvo muestras (vuelos viejos, imports VAS, sim desconectado): el
+/// modelo cae con elegancia al desgaste por conteo de vuelos/horas.
+#[derive(Default, Clone, Copy)]
+struct FlightStress {
+    peak_egt_c: f64,
+    peak_oil_temp_c: f64,
+}
+
+/// Agrega, por `flight_id`, los picos de EGT y temperatura de aceite reales que
+/// el watcher persistió muestra a muestra en `flight_log_track`. Una sola
+/// query para toda la DB; el resto del cálculo es en memoria.
+async fn flight_stress(pool: &SqlitePool) -> Result<HashMap<i64, FlightStress>> {
+    let rows = sqlx::query(
+        r#"SELECT flight_id,
+                  MAX(MAX(COALESCE(eng_egt_1,0), COALESCE(eng_egt_2,0),
+                          COALESCE(eng_egt_3,0), COALESCE(eng_egt_4,0))) AS peak_egt,
+                  MAX(MAX(COALESCE(eng_oil_temp_1,0), COALESCE(eng_oil_temp_2,0),
+                          COALESCE(eng_oil_temp_3,0), COALESCE(eng_oil_temp_4,0))) AS peak_oil
+             FROM flight_log_track
+            GROUP BY flight_id"#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut map = HashMap::with_capacity(rows.len());
+    for r in rows {
+        let id: i64 = r.get("flight_id");
+        let peak_egt: f64 = r.try_get("peak_egt").unwrap_or(0.0);
+        let peak_oil: f64 = r.try_get("peak_oil").unwrap_or(0.0);
+        map.insert(
+            id,
+            FlightStress {
+                peak_egt_c: peak_egt,
+                peak_oil_temp_c: peak_oil,
+            },
+        );
+    }
+    Ok(map)
+}
+
+/// Dureza del aterrizaje 0..2 derivada del FPM real de touchdown: suave
+/// (≤150 fpm)→0, ~300→1, ≥450→2. Reemplaza el binario "hard" por algo continuo.
+fn landing_firmness(fpm: Option<i64>) -> f64 {
+    let abs = fpm.unwrap_or(0).unsigned_abs() as f64;
+    ((abs - 150.0) / 150.0).clamp(0.0, 2.0)
+}
+
 /// Calcula el desgaste de un componente para una matrícula desde su último
-/// servicio (o desde siempre si nunca se sirvió).
+/// servicio (o desde siempre si nunca se sirvió). El desgaste ESCALA con la
+/// telemetría real del sim cuando existe: aterrizar duro gasta más neumáticos,
+/// frenar caliente gasta más frenos, EGT/aceite altos gastan más motor/aceite.
+/// Sin telemetría, cae al modelo por conteo (idéntico para vuelos viejos).
 fn wear_for(
     spec: &CompSpec,
     reg_flights: &[&FlightLogEntry],
     last_service: Option<&DateTime<Utc>>,
+    telemetry: &HashMap<i64, FlightStress>,
 ) -> f64 {
-    let mut flights_since = 0.0;
-    let mut hard_since = 0.0;
-    let mut hours_since = 0.0;
+    // (v6.1 Layer 2) Neumáticos: si el addon publicó su PROPIO desgaste real
+    // (iniBuilds `INI_TIREx_WEAR`), úsalo directamente — es un valor absoluto
+    // 0-100, no incremental. Tomamos el peor de los vuelos posteriores al último
+    // servicio. Sin dato real, cae al modelo sintético de abajo.
+    if spec.id == "tires" {
+        let mut real_max: Option<f64> = None;
+        for f in reg_flights {
+            if let Some(svc) = last_service {
+                if let Some(started) = parse_dt(&f.started_at) {
+                    if started <= *svc {
+                        continue;
+                    }
+                }
+            }
+            if let Some(w) = f.max_tire_wear_pct {
+                if w > 0.0 {
+                    real_max = Some(real_max.map_or(w, |m| m.max(w)));
+                }
+            }
+        }
+        if let Some(w) = real_max {
+            return w.clamp(0.0, 100.0);
+        }
+    }
+    let mut wear = 0.0_f64;
     for f in reg_flights {
         if let Some(svc) = last_service {
             if let Some(started) = parse_dt(&f.started_at) {
@@ -110,18 +212,117 @@ fn wear_for(
                 }
             }
         }
-        flights_since += 1.0;
+        let hours = f
+            .flight_time_s
+            .map(|s| (s as f64 / 3600.0).max(0.0))
+            .unwrap_or(0.0);
+        let firmness = landing_firmness(f.landing_fpm);
+        let st = telemetry.get(&f.id).copied().unwrap_or_default();
+
+        wear += match spec.id {
+            // Neumáticos: un set por aterrizaje, multiplicado por la dureza real.
+            "tires" => spec.per_flight * (1.0 + firmness),
+            // Frenos: por aterrizaje + energía de frenada (dureza) + temp real.
+            "brakes" => {
+                let bt = f.max_brake_temp_c.unwrap_or(0.0);
+                let bt_factor = if bt > 0.0 {
+                    ((bt - 200.0) / 300.0).clamp(0.0, 1.5)
+                } else {
+                    0.0
+                };
+                spec.per_flight * (1.0 + firmness * 0.5 + bt_factor)
+            }
+            // EGT: por hora, agravado cuando el pico real supera la línea roja.
+            "egt" => {
+                let f2 = if st.peak_egt_c > 0.0 {
+                    ((st.peak_egt_c - 750.0) / 150.0).clamp(0.0, 1.5)
+                } else {
+                    0.0
+                };
+                spec.per_flight + spec.per_hour * hours * (1.0 + f2)
+            }
+            // Aceite: por hora, agravado por temperatura de aceite real alta.
+            "engine_oil" => {
+                let f2 = if st.peak_oil_temp_c > 0.0 {
+                    ((st.peak_oil_temp_c - 120.0) / 60.0).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                spec.per_flight + spec.per_hour * hours * (1.0 + f2)
+            }
+            // Resto (hidráulica, IDG, botellas, oxígeno): modelo por conteo/horas
+            // + extra por aterrizaje duro (recibirán LVars dedicados en Layer 2).
+            _ => {
+                let hard = if f.landing_fpm.map(|v| v < -600).unwrap_or(false) {
+                    spec.hard_extra
+                } else {
+                    0.0
+                };
+                spec.per_flight + spec.per_hour * hours + hard
+            }
+        };
+    }
+    wear.clamp(0.0, 100.0)
+}
+
+/// Agrega la telemetría real de una matrícula para mostrarla en el panel EFB
+/// (la prueba de que el desgaste viene de datos del sim).
+fn real_telemetry(
+    reg_flights: &[&FlightLogEntry],
+    telemetry: &HashMap<i64, FlightStress>,
+) -> RealTelemetry {
+    let mut tel = RealTelemetry {
+        cycles: reg_flights.len() as i64,
+        ..Default::default()
+    };
+    let mut peak_egt = 0.0_f64;
+    let mut peak_oil = 0.0_f64;
+    let mut peak_brake = 0.0_f64;
+    let mut peak_tire = 0.0_f64;
+    let mut worst_fpm = 0_i64;
+    for f in reg_flights {
+        if let Some(s) = f.flight_time_s {
+            tel.hours += (s as f64 / 3600.0).max(0.0);
+        }
         if let Some(fpm) = f.landing_fpm {
-            if fpm < -600 {
-                hard_since += 1.0;
+            if fpm < worst_fpm {
+                worst_fpm = fpm;
             }
         }
-        if let Some(s) = f.flight_time_s {
-            hours_since += (s as f64 / 3600.0).max(0.0);
+        if let Some(bt) = f.max_brake_temp_c {
+            if bt > peak_brake {
+                peak_brake = bt;
+            }
+        }
+        if let Some(tw) = f.max_tire_wear_pct {
+            if tw > peak_tire {
+                peak_tire = tw;
+            }
+        }
+        if let Some(st) = telemetry.get(&f.id) {
+            if st.peak_egt_c > 0.0 || st.peak_oil_temp_c > 0.0 {
+                tel.flights_with_data += 1;
+            }
+            peak_egt = peak_egt.max(st.peak_egt_c);
+            peak_oil = peak_oil.max(st.peak_oil_temp_c);
         }
     }
-    (spec.per_flight * flights_since + spec.hard_extra * hard_since + spec.per_hour * hours_since)
-        .clamp(0.0, 100.0)
+    if peak_egt > 0.0 {
+        tel.peak_egt_c = Some(peak_egt);
+    }
+    if peak_oil > 0.0 {
+        tel.peak_oil_temp_c = Some(peak_oil);
+    }
+    if peak_brake > 0.0 {
+        tel.peak_brake_temp_c = Some(peak_brake);
+    }
+    if peak_tire > 0.0 {
+        tel.peak_tire_wear_pct = Some(peak_tire);
+    }
+    if worst_fpm < 0 {
+        tel.worst_landing_fpm = Some(worst_fpm);
+    }
+    tel
 }
 
 fn status_of(wear: f64) -> &'static str {
@@ -151,13 +352,14 @@ fn components_for(
     reg: &str,
     reg_flights: &[&FlightLogEntry],
     services: &HashMap<(String, String), DateTime<Utc>>,
+    telemetry: &HashMap<i64, FlightStress>,
     mult: f64,
 ) -> (Vec<MaintComponent>, f64) {
     let mut comps = Vec::with_capacity(COMPONENTS.len());
     let mut overall = 0.0_f64;
     for spec in COMPONENTS {
         let last = services.get(&(reg.to_string(), spec.id.to_string()));
-        let wear = wear_for(spec, reg_flights, last);
+        let wear = wear_for(spec, reg_flights, last, telemetry);
         overall = overall.max(wear);
         comps.push(MaintComponent {
             id: spec.id.to_string(),
@@ -175,6 +377,7 @@ pub async fn fleet_maintenance(pool: &SqlitePool, airline_key: &str) -> Result<V
     let flights = flight_log::list_entries(pool).await?;
     let learned = airline_economy::learn_airline_icaos(&flights);
     let services = last_services(pool).await?;
+    let telemetry = flight_stress(pool).await?;
     // El nivel de mantenimiento de la aerolínea escala el coste de servicio.
     let mult = level_cost_mult(
         airline_economy::get_policy(pool, airline_key)
@@ -220,13 +423,14 @@ pub async fn fleet_maintenance(pool: &SqlitePool, airline_key: &str) -> Result<V
 
     let mut out = Vec::with_capacity(by_reg.len());
     for (reg, reg_flights) in by_reg {
-        let (comps, overall) = components_for(&reg, &reg_flights, &services, mult);
+        let (comps, overall) = components_for(&reg, &reg_flights, &services, &telemetry, mult);
         out.push(AircraftMaint {
             registration: orig_of.get(&reg).cloned().unwrap_or_else(|| reg.clone()),
             model: model_of.get(&reg).cloned().flatten(),
             flights: reg_flights.len() as i64,
             overall_wear: overall,
             components: comps,
+            telemetry: real_telemetry(&reg_flights, &telemetry),
         });
     }
     // Peor desgaste primero (los que necesitan atención arriba).
@@ -246,6 +450,7 @@ pub async fn single_aircraft_maintenance(
     }
     let flights = flight_log::list_entries(pool).await?;
     let services = last_services(pool).await?;
+    let telemetry = flight_stress(pool).await?;
     let reg_flights: Vec<&FlightLogEntry> = flights
         .iter()
         .filter(|f| {
@@ -265,7 +470,8 @@ pub async fn single_aircraft_maintenance(
         .map(flight_log::normalize_model);
     // Coste a tarifa estándar (el Hangar sólo muestra desgaste; servir es en
     // Finanzas, donde se aplica el multiplicador del nivel).
-    let (comps, overall) = components_for(&target, &reg_flights, &services, 1.0);
+    let (comps, overall) = components_for(&target, &reg_flights, &services, &telemetry, 1.0);
+    let telemetry_summary = real_telemetry(&reg_flights, &telemetry);
     let display_reg = reg_flights[0]
         .aircraft_registration
         .as_deref()
@@ -277,6 +483,7 @@ pub async fn single_aircraft_maintenance(
         flights: reg_flights.len() as i64,
         overall_wear: overall,
         components: comps,
+        telemetry: telemetry_summary,
     }))
 }
 

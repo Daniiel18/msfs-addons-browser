@@ -179,20 +179,74 @@ const DEFAULT_FPS: i64 = 30;
 /// ("Error receiving video sample: Disconnected"). Este flag las serializa.
 static RECORDING_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Intenta reservar la grabación. `false` si ya hay una en curso.
+/// Lock-file CROSS-PROCESO de la grabación. El `AtomicBool` de arriba solo
+/// serializa dentro de UN proceso; si el usuario corre DOS instancias de
+/// SimFleet (p.ej. dev:safe + la build instalada), cada una tiene su propio
+/// flag y ambas intentan capturar MSFS → la 2ª falla al armar ("file in use")
+/// o la 1ª guarda "No video frames" por contención de Desktop Duplication.
+/// Un handle de archivo abierto en modo EXCLUSIVO (share_mode 0) actúa de
+/// mutex entre procesos: mientras una instancia lo tiene, las demás no pueden
+/// abrirlo. Es crash-safe: el SO cierra el handle al terminar el proceso, así
+/// que un cierre abrupto no deja el lock colgado.
+static RECORDING_LOCK_FILE: std::sync::Mutex<Option<std::fs::File>> =
+    std::sync::Mutex::new(None);
+
+/// Intenta tomar el lock entre procesos. `true` si lo conseguimos.
+fn acquire_cross_process_lock() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let path = std::env::temp_dir().join("simfleet_recorder.lock");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .share_mode(0) // 0 = sin compartir → exclusivo entre procesos
+            .open(&path)
+        {
+            Ok(f) => {
+                *RECORDING_LOCK_FILE.lock().unwrap() = Some(f);
+                true
+            }
+            Err(_) => false, // otra instancia de SimFleet ya está grabando
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+/// Suelta el lock entre procesos (cierra el handle).
+fn release_cross_process_lock() {
+    *RECORDING_LOCK_FILE.lock().unwrap() = None;
+}
+
+/// Intenta reservar la grabación. `false` si ya hay una en curso — en ESTE
+/// proceso (flag) o en OTRA instancia de SimFleet (lock-file).
 pub fn try_acquire_recording() -> bool {
-    RECORDING_BUSY
+    if RECORDING_BUSY
         .compare_exchange(
             false,
             true,
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
         )
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+    // Captura de MSFS = una sola por máquina. Si otra instancia la tiene, no
+    // armamos (evita el conflicto de doble-instancia: "file in use" / 0 frames).
+    if !acquire_cross_process_lock() {
+        RECORDING_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+        return false;
+    }
+    true
 }
 
-/// Libera la reserva de grabación.
+/// Libera la reserva de grabación (flag + lock entre procesos).
 pub fn release_recording() {
+    release_cross_process_lock();
     RECORDING_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 

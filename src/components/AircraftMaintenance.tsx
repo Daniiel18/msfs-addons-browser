@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { X, Wrench, Plane, CheckCircle2 } from "lucide-react";
-import type { AircraftMaint, AirlineLedger, AirlinePolicy } from "../lib/types";
+import { X, Wrench, Plane, CheckCircle2, Activity } from "lucide-react";
+import type {
+  AircraftMaint,
+  AirlineLedger,
+  AirlinePolicy,
+  RealTelemetry,
+} from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { AirlineLogo } from "./AirlineLogo";
@@ -176,6 +181,60 @@ const COMP_ORDER = [
   "fire_bottles", "oxygen", "egt", "idg",
 ];
 
+/** (v6.1 datos reales) Tira con la telemetría REAL del sim que respalda el
+ *  desgaste: ciclos, horas y picos capturados por SimConnect. El badge "live"
+ *  confirma cuántos vuelos aportaron datos reales de motor. */
+function TelemetryStrip({ tel }: { tel: RealTelemetry }) {
+  const chips: { label: string; value: string; warn?: boolean }[] = [
+    { label: t("economy.tel.cycles"), value: String(tel.cycles) },
+    { label: t("economy.tel.hours"), value: `${tel.hours.toFixed(1)} h` },
+  ];
+  if (tel.peakEgtC != null)
+    chips.push({ label: t("economy.tel.egt"), value: `${Math.round(tel.peakEgtC)}°C`, warn: tel.peakEgtC > 850 });
+  if (tel.peakOilTempC != null)
+    chips.push({ label: t("economy.tel.oil"), value: `${Math.round(tel.peakOilTempC)}°C`, warn: tel.peakOilTempC > 140 });
+  if (tel.peakBrakeTempC != null)
+    chips.push({ label: t("economy.tel.brake"), value: `${Math.round(tel.peakBrakeTempC)}°C`, warn: tel.peakBrakeTempC > 400 });
+  if (tel.peakTireWearPct != null)
+    chips.push({ label: t("economy.tel.tire"), value: `${Math.round(tel.peakTireWearPct)}%`, warn: tel.peakTireWearPct > 70 });
+  if (tel.worstLandingFpm != null)
+    chips.push({ label: t("economy.tel.land"), value: `${tel.worstLandingFpm} fpm`, warn: tel.worstLandingFpm < -600 });
+  const hasReal = tel.flightsWithData > 0;
+
+  return (
+    <div className="mb-2 rounded-lg border border-slate-800 bg-slate-950/40 p-2">
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <Activity className="h-3.5 w-3.5 text-emerald-400" />
+        <span className="text-[11px] font-semibold text-slate-300">
+          {t("economy.tel.heading")}
+        </span>
+        {hasReal ? (
+          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+            {t("economy.tel.live", { n: tel.flightsWithData })}
+          </span>
+        ) : (
+          <span className="rounded-full bg-slate-700/40 px-1.5 py-0.5 text-[9px] font-medium text-slate-400">
+            {t("economy.tel.nodata")}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map((c) => (
+          <span
+            key={c.label}
+            className="flex items-center gap-1 rounded-md bg-slate-900/70 px-2 py-1 text-[10px]"
+          >
+            <span className="text-slate-500">{c.label}</span>
+            <span className={`font-semibold ${c.warn ? "text-amber-300" : "text-slate-200"}`}>
+              {c.value}
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function MaintenanceModal({
   led,
   initialReg,
@@ -348,6 +407,7 @@ export function MaintenanceModal({
                         {t("economy.maint.flights", { n: current.flights })}
                       </span>
                     </div>
+                    {current.telemetry && <TelemetryStrip tel={current.telemetry} />}
                     <div className="space-y-1.5">
                       {[...current.components]
                         .sort((a, b) => COMP_ORDER.indexOf(a.id) - COMP_ORDER.indexOf(b.id))

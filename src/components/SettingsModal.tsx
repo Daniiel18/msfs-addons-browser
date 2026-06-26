@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
@@ -39,7 +39,6 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
-import { LiveVsSettings } from "./LiveVsSettings";
 
 /**
  * Modal de configuración.
@@ -50,6 +49,24 @@ import { LiveVsSettings } from "./LiveVsSettings";
  *
  * Vive globalmente en `App.tsx` para flotar sobre cualquier vista.
  */
+/** (v6.1) Menú lateral de Ajustes: una entrada por sección. El orden define el
+ *  orden del menú; la `key` coincide con el `navKey` de cada `<Section>`. */
+const SETTINGS_NAV: Array<{ key: string; labelKey: string; icon: React.ReactNode }> = [
+  { key: "general", labelKey: "settings.section.general", icon: <Power className="h-3.5 w-3.5" /> },
+  { key: "flights", labelKey: "settings.section.flights", icon: <Plane className="h-3.5 w-3.5" /> },
+  { key: "map_display", labelKey: "settings.section.map_display", icon: <Bell className="h-3.5 w-3.5" /> },
+  { key: "folders", labelKey: "settings.section.folders", icon: <FolderOpen className="h-3.5 w-3.5" /> },
+  { key: "gsx", labelKey: "settings.section.gsx", icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
+  { key: "cloud", labelKey: "settings.section.cloud", icon: <Cloud className="h-3.5 w-3.5" /> },
+  { key: "msfs_logbook", labelKey: "settings.section.msfs_logbook", icon: <FileText className="h-3.5 w-3.5" /> },
+  { key: "backup", labelKey: "settings.section.backup", icon: <Archive className="h-3.5 w-3.5" /> },
+  { key: "import", labelKey: "settings.section.import", icon: <Upload className="h-3.5 w-3.5" /> },
+  { key: "export", labelKey: "settings.section.export", icon: <Download className="h-3.5 w-3.5" /> },
+  { key: "storage", labelKey: "settings.section.storage", icon: <HardDrive className="h-3.5 w-3.5" /> },
+  { key: "tour", labelKey: "settings.section.tour", icon: <Compass className="h-3.5 w-3.5" /> },
+  { key: "about", labelKey: "settings.section.about", icon: <Info className="h-3.5 w-3.5" /> },
+];
+
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useSettingsStore((s) => s.settings);
   const lastError = useSettingsStore((s) => s.lastError);
@@ -81,6 +98,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   // (v3.1.0) Modal de aviso de reinicio tras cambio de idioma.
   const [showRestartHint, setShowRestartHint] = useState(false);
   const [simReload, setSimReload] = useState(false);
+  // (v6.1) Sección activa del menú lateral (una a la vez, navegable).
+  const [nav, setNav] = useState<string>("general");
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const setSimVersion = useSettingsStore((s) => s.setSimVersion);
 
@@ -236,7 +255,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           onClick={onClose}
         >
           <motion.div
-            className="relative w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
+            className="relative w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
             initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
@@ -258,7 +277,27 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </button>
             </header>
 
-            <div className="space-y-5 p-5">
+            <div className="flex max-h-[72vh]">
+              {/* (v6.1) Menú lateral: una sección a la vez, navegable. */}
+              <nav className="w-44 shrink-0 space-y-0.5 overflow-y-auto border-r border-slate-800 p-2">
+                {SETTINGS_NAV.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setNav(s.key)}
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium transition-colors ${
+                      nav === s.key
+                        ? "bg-brand-500/15 text-brand-200"
+                        : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                    }`}
+                  >
+                    {s.icon}
+                    <span className="truncate">{t(s.labelKey)}</span>
+                  </button>
+                ))}
+              </nav>
+              <SettingsNavContext.Provider value={nav}>
+                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
               {(lastError || feedback) && (
                 <div
                   className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
@@ -272,7 +311,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               )}
 
-              <Section title={t("settings.section.general")} icon={<Power className="h-3.5 w-3.5" />} tourId="settings-general">
+              <Section navKey="general" title={t("settings.section.general")} icon={<Power className="h-3.5 w-3.5" />} tourId="settings-general">
                 <ThemeRow
                   current={settings.theme}
                   onChange={(t) => void api.setAppSetting("pref_theme", t).then(() => useSettingsStore.getState().bootstrap())}
@@ -304,8 +343,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
                 {/* (v6 #2b) Best Landings — config de grabación. */}
                 <RecordingSettings />
-                {/* (v6 #3) Live VS — credenciales de Supabase. */}
-                <LiveVsSettings />
+                {/* (v6.1) Live VS quitado de Ajustes — no se usa. */}
                 {/* (v4.14.1 #1) Unidades POR CATEGORÍA — TODOS los selectores
                     (botones segmentados) anidados dentro de la MISMA casilla
                     "Units", para elegir cada opción directo sin desplegar nada.
@@ -438,7 +476,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title={t("settings.section.flights")} icon={<Plane className="h-3.5 w-3.5" />}>
+              <Section navKey="flights" title={t("settings.section.flights")} icon={<Plane className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="text-xs text-slate-200">{t("settings.simbrief.pilot_id_title")}</div>
                   <p className="mt-0.5 text-[11px] text-slate-500">
@@ -475,7 +513,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </Section>
 
-              <Section title={t("settings.section.map_display")} icon={<Bell className="h-3.5 w-3.5" />}>
+              <Section navKey="map_display" title={t("settings.section.map_display")} icon={<Bell className="h-3.5 w-3.5" />}>
                 <Toggle
                   label={t("settings.map.simconnect_lines")}
                   hint={t("settings.map.simconnect_lines.hint")}
@@ -484,7 +522,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />} tourId="settings-folders">
+              <Section navKey="folders" title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />} tourId="settings-folders">
                 <PathRow
                   label={t("settings.folders.community")}
                   hint={t("settings.folders.community.hint")}
@@ -499,7 +537,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title={t("settings.section.backup")} icon={<Archive className="h-3.5 w-3.5" />}>
+              <Section navKey="backup" title={t("settings.section.backup")} icon={<Archive className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="flex items-center gap-1.5 text-xs text-slate-200">
                     <Archive className="h-3 w-3 text-slate-500" />
@@ -525,11 +563,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </Section>
 
-              <Section title={t("settings.section.gsx")} icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
+              <Section navKey="gsx" title={t("settings.section.gsx")} icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
                 <GsxProfilesPanel onFeedback={setFeedback} />
               </Section>
 
               <Section
+                navKey="cloud"
                 title={t("settings.section.cloud")}
                 icon={<Cloud className="h-3.5 w-3.5" />}
                 tourId="settings-cloud"
@@ -537,15 +576,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <CloudSyncPanel onFeedback={setFeedback} />
               </Section>
 
-              <Section title={t("settings.section.msfs_logbook")} icon={<FileText className="h-3.5 w-3.5" />}>
+              <Section navKey="msfs_logbook" title={t("settings.section.msfs_logbook")} icon={<FileText className="h-3.5 w-3.5" />}>
                 <MsfsLogbookRow onFeedback={setFeedback} />
               </Section>
 
-              <Section title={t("settings.section.import")} icon={<Upload className="h-3.5 w-3.5" />}>
+              <Section navKey="import" title={t("settings.section.import")} icon={<Upload className="h-3.5 w-3.5" />}>
                 <ImportInventoryRow onFeedback={setFeedback} />
               </Section>
 
-              <Section title={t("settings.section.export")} icon={<Download className="h-3.5 w-3.5" />}>
+              <Section navKey="export" title={t("settings.section.export")} icon={<Download className="h-3.5 w-3.5" />}>
                 <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
                   <div className="text-xs text-slate-200">
                     {t("settings.export.title")}
@@ -576,7 +615,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </Section>
 
-              <Section title={t("settings.section.storage")} icon={<HardDrive className="h-3.5 w-3.5" />}>
+              <Section navKey="storage" title={t("settings.section.storage")} icon={<HardDrive className="h-3.5 w-3.5" />}>
                 <ActionRow
                   icon={<Database className="h-3 w-3 text-slate-500" />}
                   label={t("settings.storage.clear_caches.label")}
@@ -599,7 +638,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title={t("settings.section.tour")} icon={<Compass className="h-3.5 w-3.5" />}>
+              <Section navKey="tour" title={t("settings.section.tour")} icon={<Compass className="h-3.5 w-3.5" />}>
                 <ActionRow
                   icon={<Compass className="h-3 w-3 text-slate-500" />}
                   label={t("settings.tour.label")}
@@ -628,7 +667,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               </Section>
 
-              <Section title={t("settings.section.about")} icon={<Info className="h-3.5 w-3.5" />}>
+              <Section navKey="about" title={t("settings.section.about")} icon={<Info className="h-3.5 w-3.5" />}>
                 <div className="space-y-1 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5 text-[11px] text-slate-400">
                   <div>
                     <span className="text-slate-500">{t("settings.about.version")}:</span>{" "}
@@ -655,6 +694,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </div>
                 </div>
               </Section>
+                </div>
+              </SettingsNavContext.Provider>
             </div>
           </motion.div>
         </motion.div>
@@ -663,10 +704,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <RestartHintModal onClose={() => setShowRestartHint(false)} />
       )}
       {simReload && (
-        <SimReloadModal
-          onConfirm={() => window.location.reload()}
-          onLater={() => setSimReload(false)}
-        />
+        <SimReloadModal onConfirm={() => window.location.reload()} />
       )}
     </AnimatePresence>
   );
@@ -905,36 +943,21 @@ function SimVersionRow({
   );
 }
 
-/** (v5.1.0) Confirmación de reinicio tras cambiar la versión de MSFS. */
-function SimReloadModal({
-  onConfirm,
-  onLater,
-}: {
-  onConfirm: () => void;
-  onLater: () => void;
-}) {
+/** (v5.1.0) Confirmación de reinicio tras cambiar la versión de MSFS.
+ *  (v6.1) BLOQUEANTE: cambiar de versión exige recargar para reaplicar la
+ *  carpeta Community + el filtro del catálogo. No se puede posponer ni cerrar
+ *  (sin backdrop-dismiss, sin "más tarde") — la única salida es recargar. */
+function SimReloadModal({ onConfirm }: { onConfirm: () => void }) {
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm"
-      onClick={onLater}
-    >
-      <div
-        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
         <h3 className="text-sm font-semibold text-slate-100">
           {t("simver.reload.title")}
         </h3>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
           {t("simver.reload.body")}
         </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onLater}
-            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-          >
-            {t("simver.reload.later")}
-          </button>
+        <div className="mt-4 flex justify-end">
           <button
             onClick={onConfirm}
             className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-400"
@@ -947,18 +970,30 @@ function SimReloadModal({
   );
 }
 
+/** (v6.1) Sección activa del menú lateral de Ajustes. Las `<Section>` con
+ *  `navKey` se ocultan si no son la activa — así el modal muestra UNA sección a
+ *  la vez (menú navegable) en vez de un scroll largo y desordenado. */
+const SettingsNavContext = createContext<string | null>(null);
+
 function Section({
   title,
   icon,
   children,
   tourId,
+  navKey,
 }: {
   title: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
   /** Ancla opcional para el tour guiado (`[data-tour-id="X"]`). */
   tourId?: string;
+  /** (v6.1) Clave del menú; si no es la sección activa, no se renderiza. */
+  navKey?: string;
 }) {
+  const active = useContext(SettingsNavContext);
+  // Solo gateamos las secciones de primer nivel (las que traen navKey). Las
+  // sub-secciones anidadas (unidades, etc.) no lo traen y se renderizan dentro.
+  if (navKey && active && navKey !== active) return null;
   return (
     <div data-tour-id={tourId}>
       <h3 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">

@@ -206,6 +206,39 @@ fn find_all_user_cfgs() -> Vec<(PathBuf, MsfsVariant)> {
     out
 }
 
+/// (v6.1) Carpeta RAÍZ del PERFIL de estado de MSFS donde viven los `work/` de
+/// los addons (iFly, PMDG…). OJO: NO es la carpeta Community
+/// (`InstalledPackagesPath`); es el perfil de usuario de MSFS. La estructura
+/// difiere por versión — verificado en disco:
+///   · 2020 → `<perfil>\Packages\<pkg>\work`
+///     (Steam: `%APPDATA%\Microsoft Flight Simulator\Packages`)
+///   · 2024 → `<perfil>\WASM\MSFS2020\<pkg>\work`
+///     (Steam: `%APPDATA%\Microsoft Flight Simulator 2024\WASM\MSFS2020`)
+/// `prefer_2024` viene de `pref_sim_version`. Devuelve la primera variante de esa
+/// versión cuyo directorio raíz exista, o `None` si no la encuentra.
+pub fn addon_work_root(prefer_2024: bool) -> Option<PathBuf> {
+    for (cfg, variant) in find_all_user_cfgs() {
+        let is_2024 = matches!(
+            variant,
+            MsfsVariant::MsStore2024 | MsfsVariant::Steam2024
+        );
+        if is_2024 != prefer_2024 {
+            continue;
+        }
+        // El padre de `UserCfg.opt` es la carpeta del perfil de esa variante.
+        let profile = cfg.parent()?;
+        let root = if is_2024 {
+            profile.join("WASM").join("MSFS2020")
+        } else {
+            profile.join("Packages")
+        };
+        if root.is_dir() {
+            return Some(root);
+        }
+    }
+    None
+}
+
 static PACKAGES_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)InstalledPackagesPath\s+"(.+?)""#).unwrap());
 

@@ -151,13 +151,18 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           // archivo que no se había instalado. Con esto, los drops de
           // perfiles GSX (.zip/.rar/.7z → %AppData%\Virtuali\GSX\MSFS)
           // disparan el confirm de borrado igual que los de Community.
-          if (r.installedGsx.length > 0 || r.installedPackages.length > 0) {
+          if (
+            r.installedGsx.length > 0 ||
+            r.installedPackages.length > 0 ||
+            (r.installedConfigs?.length ?? 0) > 0
+          ) {
             committed.push(insp.archivePath);
           }
         } catch (e) {
           reports.push({
             installedGsx: [],
             installedPackages: [],
+            installedConfigs: [],
             errors: [
               `${insp.archivePath.split(/[\\/]/).pop() ?? "archivo"}: ${String(e)}`,
             ],
@@ -210,8 +215,18 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
   const communityItems = inspection.items.filter(
     (i) => i.kind === "community_package",
   );
+  // (v6.1) Configs de avión (iFly/PMDG) — sección propia, NO mezclar con GSX.
+  const configItems = inspection.items.filter((i) =>
+    ["ifly_config", "pmdg_config"].includes(i.kind),
+  );
   const otherItems = inspection.items.filter(
-    (i) => !["gsx_profile", "community_package"].includes(i.kind),
+    (i) =>
+      ![
+        "gsx_profile",
+        "community_package",
+        "ifly_config",
+        "pmdg_config",
+      ].includes(i.kind),
   );
 
   return (
@@ -364,6 +379,16 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
                     destinationHint="MSFS Community"
                   />
                 )}
+                {configItems.length > 0 && (
+                  <Section
+                    title={t("drop.tab.config")}
+                    icon={<Plane className="h-3 w-3 text-sky-300" />}
+                    items={configItems}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint={t("drop.config.dest")}
+                  />
+                )}
                 {otherItems.length > 0 && (
                   <Section
                     title={t("drop.tab.other")}
@@ -422,7 +447,11 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
  *  feedback claro de que la instalación SÍ ocurrió. */
 function InstalledSuccess({ reports }: { reports: DropCommitReport[] }) {
   const count = reports.reduce(
-    (n, r) => n + r.installedPackages.length + r.installedGsx.length,
+    (n, r) =>
+      n +
+      r.installedPackages.length +
+      r.installedGsx.length +
+      (r.installedConfigs?.length ?? 0),
     0,
   );
   return (

@@ -24,6 +24,19 @@ pub async fn get_installed_sims() -> Result<InstalledSims, String> {
     Ok(InstalledSims { has2020, has2024 })
 }
 
+/// (v6.1) Lista las liveries de un pack (parsea sus aircraft.cfg). La usa el
+/// modal de liverypack en Addons y Link Map.
+#[tauri::command]
+pub async fn pack_liveries(
+    install_path: String,
+) -> Result<Vec<community_scanner::PackLivery>, String> {
+    Ok(
+        tokio::task::spawn_blocking(move || community_scanner::list_pack_liveries(&install_path))
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+}
+
 /// (v6) `true` si la app corre en MODO SEGURO (`SIMFLEET_SAFE_MODE`): 2ª
 /// instancia de pruebas sin SimConnect ni auto-sync. El frontend muestra un
 /// banner para no confundirla con la instancia principal.

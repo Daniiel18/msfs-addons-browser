@@ -87,14 +87,52 @@ const MOBIFLIGHT_LVAR_AREA_SIZE: sc::DWORD = 4096;
 /// LVars de temperatura de frenos que registramos, **en orden**. El
 /// offset de cada uno en el área de LVars = índice × 4 bytes.
 ///
-/// FBW A32NX expone `A32NX_REPORTED_BRAKE_TEMPERATURE_{1..4}` en °C
-/// (lo que muestra el ECAM). Para añadir otro avión: agregar su(s)
-/// expresión(es) RPN aquí; los offsets se recalculan solos.
+/// (v6.1 — datos reales, Layer 2) La temperatura de frenos es el único dato
+/// de mantenimiento que NO es un SimVar estándar (motores/aceite/EGT ya los
+/// captura el Layer 1 universal). Por eso aquí ampliamos las FUENTES a varios
+/// addons: solo el avión cargado publica sus LVars; los demás leen 0 y
+/// `parse_max_brake_temp` los ignora (tomamos el máximo válido). Todos caen en
+/// el mismo `flight_log.max_brake_temp_c`, así que el desgaste de frenos del
+/// Layer 1 se beneficia sin cambios.
+///
+/// Nombres EXTRAÍDOS de los binarios de los addons instalados (no inventados):
+///   · FBW A32NX: `A32NX_REPORTED_BRAKE_TEMPERATURE_{1..4}` — °C por rueda.
+///   · iFly 737 MAX: `VC_GEAR_LIGHT_BRAKE_TEMP_VAL` — índice/luz del monitor de
+///     frenos (no °C por rueda). `parse_max_brake_temp` ignora valores ≤1, así
+///     que si es una luz 0/1 no contamina; si resultara ser °C, lo aprovecha.
+/// Fenix (binarios cifrados) e iniBuilds (solo el evento `INI_RESET_BRAKE_TEMPS`,
+/// sin LVar de valor) NO exponen un °C por rueda legible → su desgaste de frenos
+/// sigue derivándose de la telemetría universal del Layer 1. Para iniBuilds, en
+/// cambio, leemos el DESGASTE DE NEUMÁTICO real (ver `TIRE_WEAR_LVARS`).
 pub const BRAKE_TEMP_LVARS: &[&str] = &[
     "(L:A32NX_REPORTED_BRAKE_TEMPERATURE_1)",
     "(L:A32NX_REPORTED_BRAKE_TEMPERATURE_2)",
     "(L:A32NX_REPORTED_BRAKE_TEMPERATURE_3)",
     "(L:A32NX_REPORTED_BRAKE_TEMPERATURE_4)",
+    "(L:VC_GEAR_LIGHT_BRAKE_TEMP_VAL)",
+];
+
+/// (v6.1 Layer 2) Desgaste de neumático REAL — el propio modelo del addon, 0-100.
+/// Extraído del binario de iniBuilds A350: `INI_TIRE0_WEAR`..`INI_TIRE11_WEAR`
+/// (12 ruedas del tren principal) + `INI_TIRE0_NG_WEAR`/`INI_TIRE1_NG_WEAR`
+/// (tren de morro). Tomamos el MÁXIMO como desgaste del set de neumáticos del
+/// avión. Solo iniBuilds lo publica hoy; otros addons leen 0 y se ignoran. Para
+/// añadir otro addon con su propio wear de neumático: agregar aquí su(s) LVar(s).
+pub const TIRE_WEAR_LVARS: &[&str] = &[
+    "(L:INI_TIRE0_WEAR)",
+    "(L:INI_TIRE1_WEAR)",
+    "(L:INI_TIRE2_WEAR)",
+    "(L:INI_TIRE3_WEAR)",
+    "(L:INI_TIRE4_WEAR)",
+    "(L:INI_TIRE5_WEAR)",
+    "(L:INI_TIRE6_WEAR)",
+    "(L:INI_TIRE7_WEAR)",
+    "(L:INI_TIRE8_WEAR)",
+    "(L:INI_TIRE9_WEAR)",
+    "(L:INI_TIRE10_WEAR)",
+    "(L:INI_TIRE11_WEAR)",
+    "(L:INI_TIRE0_NG_WEAR)",
+    "(L:INI_TIRE1_NG_WEAR)",
 ];
 
 /// Nº de chunks `_Bk` del slot de subtítulo de GSX que registramos. GSX
@@ -112,7 +150,7 @@ const B64_STD: &[u8; 64] =
 /// interpretar los dispatches de Client Data.
 pub struct LvarBridge {
     pub request_id: sc::DWORD,
-    /// Total de floats registrados (brake temps + LEN + chunks).
+    /// Total de floats registrados (brake temps + LEN + chunks + tire wear).
     pub var_count: usize,
     /// Los primeros `brake_count` floats son brake temps (°C).
     pub brake_count: usize,
@@ -120,6 +158,10 @@ pub struct LvarBridge {
     pub subtitle_len_index: usize,
     /// Nº de floats chunk `_Bk` que siguen al `_LEN`.
     pub subtitle_chunk_count: usize,
+    /// (v6.1 Layer 2) Índice del primer float de desgaste de neumático.
+    pub tire_wear_start_index: usize,
+    /// Nº de floats de desgaste de neumático (0 si no se registraron).
+    pub tire_wear_count: usize,
 }
 
 /// Configura el puente sobre una conexión SimConnect ya abierta.
@@ -145,7 +187,11 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridg
 
     let brake_count = BRAKE_TEMP_LVARS.len();
     let subtitle_len_index = brake_count;
-    let var_count = brake_count + 1 + GSX_SUBTITLE_CHUNKS;
+    // El desgaste de neumático va DESPUÉS del slot de subtítulo de GSX para no
+    // mover los offsets ya existentes (brake temps + GSX).
+    let tire_wear_start_index = brake_count + 1 + GSX_SUBTITLE_CHUNKS;
+    let tire_wear_count = TIRE_WEAR_LVARS.len();
+    let var_count = tire_wear_start_index + tire_wear_count;
 
     // 1) Mapear + CREAR las 3 áreas de MobiFlight (LVars, Command,
     //    Response). Los clientes de referencia "raw" (vía SimConnect.dll,
@@ -184,6 +230,10 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridg
             handle,
             &format!("MF.SimVars.Add.(L:FSDT_GSX_MENU_SUBTITLE_B{i})"),
         );
+    }
+    // (v6.1 Layer 2) Desgaste de neumático real (iniBuilds A350, etc.).
+    for expr in TIRE_WEAR_LVARS {
+        send_command(set, handle, &format!("MF.SimVars.Add.{expr}"));
     }
 
     // 4) Definir el área de LVars: un FLOAT32 por variable, offsets 0,4,8…
@@ -224,6 +274,8 @@ pub unsafe fn setup(lib: &SimConnectLib, handle: sc::HANDLE) -> Option<LvarBridg
         brake_count,
         subtitle_len_index,
         subtitle_chunk_count: GSX_SUBTITLE_CHUNKS,
+        tire_wear_start_index,
+        tire_wear_count,
     })
 }
 
@@ -275,6 +327,29 @@ pub unsafe fn parse_max_brake_temp(
         // Ignoramos 0 (LVar ausente) y valores absurdos. Un freno real
         // ronda 20-40°C en frío y puede pasar de 300°C tras frenar.
         if f > 1.0 && f < 3000.0 {
+            max = Some(max.map_or(f, |m| m.max(f)));
+        }
+    }
+    max
+}
+
+/// (v6.1 Layer 2) Lee los floats de desgaste de neumático y devuelve el MÁXIMO
+/// válido (0-100, el peor neumático del set), o `None` si todos son 0 (LVar
+/// ausente / addon sin este dato). El addon publica su propio modelo de
+/// desgaste; nosotros tomamos el peor como desgaste del set.
+///
+/// # Safety
+/// `p_data` debe apuntar a un `SIMCONNECT_RECV_CLIENT_DATA` válido con al menos
+/// `start + count` floats.
+pub unsafe fn parse_max_tire_wear(
+    p_data: *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+    start: usize,
+    count: usize,
+) -> Option<f64> {
+    let mut max: Option<f64> = None;
+    for i in 0..count {
+        let f = read_float(p_data, start + i);
+        if f.is_finite() && f > 0.0 && f <= 100.0 {
             max = Some(max.map_or(f, |m| m.max(f)));
         }
     }

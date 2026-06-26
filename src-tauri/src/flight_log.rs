@@ -113,6 +113,12 @@ pub struct FlightLogEntry {
     /// mapeando sin error.
     #[sqlx(default)]
     pub max_brake_temp_c: Option<f64>,
+    /// (v6.1 Layer 2) Desgaste de neumático máximo (%) leído del addon
+    /// (iniBuilds A350 vía `INI_TIREx_WEAR`). `None` si el addon no lo publica
+    /// o no hay módulo WASM de MobiFlight. Lo usa el desgaste de neumáticos del
+    /// panel de mantenimiento como fuente REAL cuando existe.
+    #[sqlx(default)]
+    pub max_tire_wear_pct: Option<f64>,
     /// (v4.16.1 #5b) METAR REAL de salida/llegada (vida real) capturado del
     /// OFP de SimBrief al finalizar el vuelo, para consulta histórica en el
     /// FlightBook. `#[sqlx(default)]` → SELECTs que no incluyan la columna
@@ -675,6 +681,28 @@ pub async fn touch_max_brake_temp(
     Ok(())
 }
 
+/// (v6.1 Layer 2) Actualiza `max_tire_wear_pct` con el máximo histórico del
+/// vuelo. Lo llama el watcher cuando el puente LVar reporta el desgaste de
+/// neumático real del addon (iniBuilds, etc.). Espejo de `touch_max_brake_temp`.
+pub async fn touch_max_tire_wear(
+    pool: &SqlitePool,
+    id: i64,
+    tire_wear_pct: f64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET max_tire_wear_pct = MAX(COALESCE(max_tire_wear_pct, 0), ?1)
+        WHERE id = ?2
+        "#,
+    )
+    .bind(tire_wear_pct)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// **ACARS-like persistent tracking**: cada tick el watcher escribe
 /// la posición + altitud + groundspeed actuales en la fila del
 /// vuelo abierto. Sirve dos propósitos:
@@ -837,7 +865,7 @@ pub async fn list_unacked_partial(pool: &SqlitePool) -> anyhow::Result<Vec<Fligh
                flight_number, callsign, airline_icao, status,
                score_total, score_max, score_grade,
                COALESCE(bounced, 0) AS bounced,
-               max_brake_temp_c,
+               max_brake_temp_c, max_tire_wear_pct,
                metar_origin, metar_dest
         FROM flight_log
         WHERE status = 'partial'
@@ -1303,7 +1331,7 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
                flight_number, callsign, airline_icao, status,
                score_total, score_max, score_grade,
                COALESCE(bounced, 0) AS bounced,
-               max_brake_temp_c,
+               max_brake_temp_c, max_tire_wear_pct,
                metar_origin, metar_dest
         FROM flight_log
         WHERE status = 'completed'

@@ -92,6 +92,9 @@ pub struct DropInspection {
 pub struct DropCommitReport {
     pub installed_gsx: Vec<String>,
     pub installed_packages: Vec<String>,
+    /// (v6.1) Configs de avión (iFly/PMDG) instaladas en su carpeta `work`.
+    #[serde(default)]
+    pub installed_configs: Vec<String>,
     pub errors: Vec<String>,
 }
 
@@ -270,6 +273,9 @@ pub fn commit(
     session_id: &str,
     selected_paths: &[String],
     community_path: &Path,
+    // (v6.1) Versión de MSFS activa del usuario (`pref_sim_version` contiene
+    // "2024"). Decide la carpeta de estado `work` de los configs iFly/PMDG.
+    prefer_2024: bool,
     sessions: &DropSessions,
 ) -> anyhow::Result<DropCommitReport> {
     tracing::info!(
@@ -292,6 +298,7 @@ pub fn commit(
     let mut report = DropCommitReport {
         installed_gsx: Vec::new(),
         installed_packages: Vec::new(),
+        installed_configs: Vec::new(),
         errors: Vec::new(),
     };
 
@@ -318,6 +325,26 @@ pub fn commit(
                     report.errors.push(format!("{}: {}", item.label, e));
                 }
             },
+            "ifly_config" | "pmdg_config" => {
+                match install_addon_config(
+                    &PathBuf::from(&item.source_path),
+                    &item.kind,
+                    prefer_2024,
+                ) {
+                    Ok(dest) => {
+                        tracing::info!(
+                            target: "drop",
+                            "config de avión instalada: {} → {}",
+                            item.label, dest
+                        );
+                        report.installed_configs.push(dest);
+                    }
+                    Err(e) => {
+                        tracing::error!(target: "drop", "config falló ({}): {}", item.label, e);
+                        report.errors.push(format!("{}: {}", item.label, e));
+                    }
+                }
+            }
             "community_package" => {
                 let src_dir = PathBuf::from(&item.source_path);
                 match install_community_package(&src_dir, community_path) {
@@ -514,6 +541,16 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
             continue;
         }
         if community_dirs.iter().any(|d| entry.path().starts_with(d)) {
+            // (v6.1) Las .ini DENTRO de un paquete normalmente van con él a
+            // Community. EXCEPCIÓN: configs de avión iFly/PMDG (por firma de
+            // contenido) — esas SÍ las separamos y enrutamos a la carpeta `work`
+            // del addon. Es el caso de los livery packs que traen el .ini de
+            // iFly dentro: el texturizado va a Community y el config a `work`.
+            if ext == "ini" && detect_ini_owner(entry.path()) != "gsx_profile" {
+                if let Ok(item) = classify_gsx_file(entry.path(), root) {
+                    items.push(item);
+                }
+            }
             continue;
         }
         if let Ok(item) = classify_gsx_file(entry.path(), root) {
@@ -533,6 +570,55 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
 ///   1. Filename suffixes (`-vdgs`, `_novdgs`, `_handler`, `-es`, etc.)
 ///   2. Subcarpeta (`novdgs/EDDF.ini` → variant "noVDGS folder")
 ///   3. Comentarios al inicio del .ini (`; Variant: VDGS`, etc.)
+/// (v6.1) Dueño real de un `.ini`/`.py` suelto. Antes la app asumía que TODO
+/// `.ini` era un perfil de GSX y lo metía en `%APPDATA%\Virtuali\GSX\MSFS` —
+/// pero a veces son CONFIGS de aviones (iFly, PMDG) que van a la carpeta `work`
+/// del paquete. Detectamos el dueño por la FIRMA de contenido (claves/secciones
+/// propias de cada addon), no por el nombre.
+///
+///   · iFly: `[CabinAnno]`, `JoystickSensitivity`, `IRU_Alignment`,
+///     `IntelligentCruise…`, `Engine_Type=` → `<pkg ifly>/work/`.
+///   · PMDG: `[Displays]` + `PFD_…`/`Glass_…`, `LastPosValid` → per-matrícula
+///     a `<pkg pmdg>/work/Aircraft/`.
+///   · Resto → perfil de GSX (comportamiento original).
+fn detect_ini_owner(file_path: &Path) -> &'static str {
+    // .py siempre es script de GSX.
+    if file_path.extension().and_then(|s| s.to_str()).map(|e| e.eq_ignore_ascii_case("py")).unwrap_or(false) {
+        return "gsx_profile";
+    }
+    let content = match std::fs::read_to_string(file_path) {
+        Ok(s) => s,
+        // Algunos .ini de PMDG/iFly traen bytes no-UTF8: leemos lossy.
+        Err(_) => match std::fs::read(file_path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => return "gsx_profile",
+        },
+    };
+    let c = content.to_ascii_lowercase();
+    // iFly — secciones/claves inconfundibles.
+    if c.contains("[cabinanno")
+        || c.contains("joysticksensitivity")
+        || c.contains("iru_alignment")
+        || c.contains("intelligentcruise")
+        || c.contains("engine_type=")
+        || c.contains("acarsweather")
+        || c.contains("soundvolumecockpit")
+    {
+        return "ifly_config";
+    }
+    // PMDG — displays/opciones del FMC.
+    if c.contains("pfd_")
+        || c.contains("glass_pfd")
+        || c.contains("lastposvalid")
+        || c.contains("[displays]")
+        || c.contains("[wxr]")
+        || c.contains("[cdu]")
+    {
+        return "pmdg_config";
+    }
+    "gsx_profile"
+}
+
 fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<DropItem> {
     let file_name = file_path
         .file_name()
@@ -657,10 +743,21 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
     // Deduplicate.
     variants.dedup();
 
+    // (v6.1) Detecta el dueño real del .ini (GSX / iFly / PMDG).
+    let kind = detect_ini_owner(file_path);
+
     // ─── Build label ─────────────────────────────────────────────────
-    let base_label = match &icao {
-        Some(i) => format!("{} · {}", i, file_name),
-        None => file_name.clone(),
+    // Para configs de avión la matrícula/ICAO de aeropuerto no aplica; el
+    // prefijo deja claro que NO es un perfil de GSX.
+    let prefix = match kind {
+        "ifly_config" => Some("iFly"),
+        "pmdg_config" => Some("PMDG"),
+        _ => None,
+    };
+    let base_label = match (prefix, &icao) {
+        (Some(p), _) => format!("{} · {}", p, file_name),
+        (None, Some(i)) => format!("{} · {}", i, file_name),
+        (None, None) => file_name.clone(),
     };
     let label = if variants.is_empty() {
         base_label
@@ -669,9 +766,10 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
     };
 
     Ok(DropItem {
-        kind: "gsx_profile".to_string(),
+        kind: kind.to_string(),
         label,
-        icao,
+        // El ICAO de aeropuerto solo aplica a perfiles GSX.
+        icao: if kind == "gsx_profile" { icao } else { None },
         variants,
         source_path: file_path.to_string_lossy().into_owned(),
         relative_path: rel,
@@ -762,6 +860,97 @@ fn install_gsx(src: &Path) -> anyhow::Result<String> {
     tracing::info!(
         target: "drop",
         "copiando GSX {} → {}",
+        src.display(), dest.display()
+    );
+    std::fs::copy(src, &dest)?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// (v6.1) Instala una config de avión (iFly/PMDG) en la carpeta `work` de su
+/// paquete, dentro del PERFIL DE ESTADO de MSFS (NO en Community). La raíz la
+/// resuelve `community::addon_work_root` según la versión (2020/2024) — rutas
+/// verificadas en disco:
+///   · iFly  → `<work_root>/ifly-aircraft-*/work/<archivo>`
+///   · PMDG  → `<work_root>/pmdg-aircraft-*/work/Aircraft/<archivo>` (los
+///     configs por matrícula de PMDG viven ahí). Con varias variantes PMDG,
+///     preferimos la que YA contiene esa matrícula; si ninguna, la primera.
+///
+/// `prefer_2024` = versión de MSFS activa del usuario. OJO (verificado en disco):
+/// la carpeta de estado depende del ADDON, no solo de la versión:
+///   · iFly  → SÍ cambia: 2024 va a `…2024\WASM\MSFS2020`, 2020 a `…\Packages`.
+///   · PMDG  → SIEMPRE en el perfil 2020 (`…\Microsoft Flight Simulator\Packages`),
+///     incluso usándolo en MSFS 2024 (PMDG no escribe en el sandbox WASM).
+fn install_addon_config(
+    src: &Path,
+    kind: &str,
+    prefer_2024: bool,
+) -> anyhow::Result<String> {
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("archivo sin nombre"))?;
+
+    let (prefix, sub): (&str, &[&str]) = match kind {
+        "ifly_config" => ("ifly-aircraft", &["work"]),
+        "pmdg_config" => ("pmdg-aircraft", &["work", "Aircraft"]),
+        other => anyhow::bail!("kind de config desconocido: {other}"),
+    };
+
+    // PMDG ignora la versión: siempre el perfil 2020. iFly sí la respeta.
+    let root_2024 = if kind == "pmdg_config" {
+        false
+    } else {
+        prefer_2024
+    };
+    let work_root = crate::community::addon_work_root(root_2024).ok_or_else(|| {
+        anyhow::anyhow!("No pude resolver la carpeta de estado (work) de MSFS")
+    })?;
+    let work_root = work_root.as_path();
+
+    // Paquetes candidatos: dirs del work_root que empiezan por el prefijo
+    // (ahí es donde cada addon crea su carpeta `work`).
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(work_root)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .and_then(|s| s.to_str())
+                            .map(|n| n.to_ascii_lowercase().starts_with(prefix))
+                            .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if candidates.is_empty() {
+        anyhow::bail!(
+            "No encuentro ningún paquete {prefix}-* en el perfil de MSFS ({})",
+            work_root.display()
+        );
+    }
+
+    // PMDG: si varias variantes, preferir la que ya tiene esta matrícula.
+    if kind == "pmdg_config" && candidates.len() > 1 {
+        if let Some(owner) = candidates.iter().find(|p| {
+            let mut t = (*p).clone();
+            for s in sub {
+                t = t.join(s);
+            }
+            t.join(file_name).exists()
+        }) {
+            candidates = vec![owner.clone()];
+        }
+    }
+
+    let pkg = &candidates[0];
+    let mut dest_dir = pkg.clone();
+    for s in sub {
+        dest_dir = dest_dir.join(s);
+    }
+    std::fs::create_dir_all(&dest_dir)?;
+    let dest = dest_dir.join(file_name);
+    tracing::info!(
+        target: "drop",
+        "copiando config {} → {}",
         src.display(), dest.display()
     );
     std::fs::copy(src, &dest)?;

@@ -48,6 +48,7 @@ import { FindSearch } from "./FindSearch";
 import { RegionBadge } from "./RegionBadge";
 import { PerfBadge } from "./PerfBadge";
 import { PerformanceModal } from "./PerformanceModal";
+import { PackageDetailModal } from "./PackageDetailModal";
 import { usePerfStore } from "../stores/usePerfStore";
 import { airportRegion, continentLabel, type Continent } from "../lib/oaciRegion";
 import { expandVendorQuery } from "../lib/vendorSynonyms";
@@ -261,6 +262,8 @@ export function LinkMapView({
   // (v5.0.0) Aeropuerto cuyo modal de rendimiento (FPS) está abierto —
   // exclusivo del Link Map: se abre al hacer clic en su card.
   const [perfPkg, setPerfPkg] = useState<CommunityPackage | null>(null);
+  // (v6.1) Detalle del paquete (con sus liveries) al clicar un nodo addon.
+  const [detailPkg, setDetailPkg] = useState<CommunityPackage | null>(null);
   const flowRef = useRef<ReactFlowInstance<FlowNode, Edge> | null>(null);
 
   const byFolder = useMemo(() => {
@@ -484,6 +487,12 @@ export function LinkMapView({
   // stopPropagation, así que tocarlo NO abre el modal. Sólo se abre si el
   // aeropuerto es OPTIMIZABLE (tiene config); si no, queda bloqueado.
   const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
+    // (v6.1) Click en un addon (avión/livery pack) → abre su detalle, que
+    // lista las liveries del pack con su matrícula.
+    if (node.type === "addon") {
+      setDetailPkg(node.data.pkg);
+      return;
+    }
     if (node.type !== "airport") return;
     if (!usePerfStore.getState().optimizable.has(node.data.pkg.folderName)) {
       return;
@@ -538,6 +547,23 @@ export function LinkMapView({
     );
     pushToast({ kind: "success", title: t("linkmap.arranged"), ttlMs: 2500 });
   };
+
+  // (v6.1) Auto-organizar al ABRIR si no hay ningún layout guardado: antes el
+  // mapa salía desordenado y el usuario tenía que pulsar "Auto-arrange" cada
+  // vez. Ahora la primera vez se ordena y se PERSISTE; las posiciones que el
+  // usuario mueva después se guardan (UPSERT) y ya no se vuelve a reordenar
+  // (todos los miembros tendrán posición), así su layout manual se respeta.
+  const didInitialArrange = useRef(false);
+  useEffect(() => {
+    if (!loaded || didInitialArrange.current) return;
+    if (members.length > 0 && positions.size === 0) {
+      didInitialArrange.current = true;
+      void autoArrange();
+    }
+    // autoArrange usa members/links/byFolder del scope actual; deps mínimas
+    // para no re-disparar en bucle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, members, positions]);
 
   // (v4.33.0) Find-in-page del lienzo: lista de nodos que matchean +
   // navegación prev/next que centra la cámara en cada uno.
@@ -863,6 +889,13 @@ export function LinkMapView({
           al hacer clic en una card de aeropuerto. */}
       {perfPkg && (
         <PerformanceModal pkg={perfPkg} onClose={() => setPerfPkg(null)} />
+      )}
+      {detailPkg && (
+        <PackageDetailModal
+          pkg={detailPkg}
+          update={null}
+          onClose={() => setDetailPkg(null)}
+        />
       )}
     </div>
   );

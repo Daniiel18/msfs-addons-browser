@@ -1725,6 +1725,11 @@ mod windows_simconnect {
         // `touch_max_brake_temp` cuando sube y hay un vuelo abierto.
         let mut max_brake_temp_c: Option<f64> = None;
 
+        // (v6.1 Layer 2) Máximo desgaste de neumático (%) visto en este vuelo
+        // vía el puente LVar (iniBuilds, etc.). Se persiste con
+        // `touch_max_tire_wear` cuando sube y hay un vuelo abierto.
+        let mut max_tire_wear_pct: Option<f64> = None;
+
         // (v3.5.0) Cache de meta strings de la aeronave — actualizado
         // cuando llega un dispatch de REQUEST_ID_AIRCRAFT_META.
         // Lo usamos al disparar `start_flight` (OUT/OFF) para
@@ -2867,6 +2872,45 @@ mod windows_simconnect {
                                     bridge.subtitle_chunk_count,
                                 )
                             };
+                            // (v6.1 Layer 2) Desgaste de neumático real del addon
+                            // (iniBuilds). Se persiste cuando sube y hay vuelo
+                            // abierto — mismo patrón que la temperatura de frenos.
+                            if bridge.tire_wear_count > 0 {
+                                if let Some(w) = unsafe {
+                                    crate::mobiflight_lvars::parse_max_tire_wear(
+                                        p_data as *const sc::SIMCONNECT_RECV_CLIENT_DATA,
+                                        bridge.tire_wear_start_index,
+                                        bridge.tire_wear_count,
+                                    )
+                                } {
+                                    let grew = max_tire_wear_pct.map_or(true, |m| w > m + 0.1);
+                                    if max_tire_wear_pct.map_or(true, |m| w > m) {
+                                        max_tire_wear_pct = Some(w);
+                                    }
+                                    if grew {
+                                        let fid =
+                                            current_flight_id.lock().ok().and_then(|g| *g);
+                                        if let Some(fid) = fid {
+                                            let pool2 = pool.clone();
+                                            tokio::runtime::Handle::current().spawn(
+                                                async move {
+                                                    if let Err(e) =
+                                                        crate::flight_log::touch_max_tire_wear(
+                                                            &pool2, fid, w,
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::warn!(
+                                                            target: "lvar_bridge",
+                                                            "touch_max_tire_wear falló: {e:#}"
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             continue;
                         }
                     }

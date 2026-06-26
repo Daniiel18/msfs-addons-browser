@@ -85,6 +85,24 @@ export default function App() {
   const bootstrapFlightLog = useFlightLogStore((s) => s.bootstrap);
   const flightStatus = useFlightLogStore((s) => s.status);
   const simRunning = !!flightStatus?.simRunning;
+
+  // (v6.1) Bloquear F5 / Ctrl+R: recargar el webview reinicia toda la app
+  // (pierde estado, re-bootstrapea). No es un navegador — la recarga manual
+  // no debe existir. Captura en fase de captura para ganarle al webview.
+  useEffect(() => {
+    const blockReload = (e: KeyboardEvent) => {
+      const isReload =
+        e.key === "F5" ||
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r");
+      if (isReload) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("keydown", blockReload, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", blockReload, { capture: true });
+  }, []);
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);

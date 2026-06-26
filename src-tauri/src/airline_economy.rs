@@ -843,6 +843,52 @@ impl AirlinePolicy {
     }
 }
 
+/// (v6.1) Servicios a bordo AUTOMÁTICOS por tipo de aerolínea. Ya no se gestionan
+/// a mano: cada aerolínea ofrece lo que tiene sentido para su modelo de negocio,
+/// y la economía (ingresos ancillary, satisfacción, nickel-and-diming) lo refleja.
+/// Las 3 categorías difieren de verdad:
+///   · Carga      → sin servicios de pasaje (vuela flete).
+///   · Low-cost   → TODO à la carte de pago: snacks, asiento, prioridad, equipaje,
+///     wifi. Ancillary fuerte pero penaliza la percepción ("nickel-and-diming").
+///   · Legacy     → confort incluido: snacks, comida (largo radio), wifi, selección
+///     de asiento. Sin cobrar prioridad/equipaje (van en la tarifa).
+/// El `maintenance_level` NO se toca aquí — ese lo sigue eligiendo el usuario en
+/// el panel de mantenimiento (premium/estándar/básico).
+fn auto_services(lowcost: bool, cargo: bool) -> AirlinePolicy {
+    if cargo {
+        return AirlinePolicy {
+            maintenance_level: 1,
+            snacks: false,
+            meals: false,
+            wifi: false,
+            seat_upgrades: false,
+            priority_boarding: false,
+            extra_baggage: false,
+        };
+    }
+    if lowcost {
+        return AirlinePolicy {
+            maintenance_level: 1,
+            snacks: true,
+            meals: false,
+            wifi: true,
+            seat_upgrades: true,
+            priority_boarding: true,
+            extra_baggage: true,
+        };
+    }
+    // Legacy / tradicional.
+    AirlinePolicy {
+        maintenance_level: 1,
+        snacks: true,
+        meals: true,
+        wifi: true,
+        seat_upgrades: true,
+        priority_boarding: false,
+        extra_baggage: false,
+    }
+}
+
 // ─────────────────────────────── P&L por vuelo ───────────────────────────────
 
 struct Pnl {
@@ -1200,7 +1246,14 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         let Some(res) = resolve_airline(f, &learned) else {
             continue;
         };
-        let policy = policies.get(&res.key).cloned().unwrap_or_default();
+        // (v6.1) Servicios AUTOMÁTICOS por tipo; solo el nivel de mantenimiento
+        // se conserva de la política manual del usuario.
+        let stored_level = policies
+            .get(&res.key)
+            .map(|p| p.maintenance_level)
+            .unwrap_or(1);
+        let mut policy = auto_services(res.lowcost, res.cargo);
+        policy.maintenance_level = stored_level;
         if let Some(reg) = f.aircraft_registration.as_deref() {
             let reg = normalize_reg(reg);
             if !reg.is_empty() {
@@ -1312,7 +1365,11 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
     }
 
     for (key, acc) in &ledger {
-        let policy = policies.get(key).cloned().unwrap_or_default();
+        // (v6.1) Misma política automática usada en el P&L (servicios por tipo +
+        // nivel de mantenimiento manual) para que la satisfacción cuadre.
+        let stored_level = policies.get(key).map(|p| p.maintenance_level).unwrap_or(1);
+        let mut policy = auto_services(acc.lowcost, acc.cargo);
+        policy.maintenance_level = stored_level;
         let avg_fpm = if acc.fpm_count > 0 {
             Some(acc.fpm_sum / acc.fpm_count as f64)
         } else {
@@ -1449,6 +1506,149 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
             gsx_flights: r.get("gsx_flights"),
             fleet_size: r.get("fleet_size"),
             fleet_value,
+        });
+    }
+    Ok(out)
+}
+
+/// Punto de la curva de saldo en el tiempo.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalancePoint {
+    /// Timestamp ISO-8601 del evento.
+    pub t: String,
+    /// Saldo ("banco") acumulado tras este evento.
+    pub balance: f64,
+    /// Variación del saldo en este evento.
+    pub delta: f64,
+    /// Etiqueta legible (ruta o servicio de mantenimiento).
+    pub label: String,
+    /// "start" | "flight" | "maint".
+    pub kind: String,
+}
+
+/// Serie temporal del saldo de una aerolínea, reconstruida vuelo a vuelo desde
+/// `flight_pnl` + `flight_log`: parte del valor base, suma el neto de cada vuelo
+/// en orden cronológico, descuenta la compra de cada avión la primera vez que
+/// aparece y los servicios de mantenimiento en su fecha real. El último punto
+/// coincide con el `balance` de `list_economy`.
+///
+/// Asume que `flight_pnl` está al día (lo deja `list_economy`, que corre al
+/// abrir la pantalla); no recalcula para que abrir el detalle sea instantáneo.
+pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<BalancePoint>> {
+    let valuation: f64 =
+        sqlx::query_scalar("SELECT start_valuation FROM airline_economy WHERE airline_key = ?")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0.0);
+
+    let rows = sqlx::query(
+        r#"SELECT fp.net AS net, fl.started_at AS started_at,
+                  fl.aircraft_registration AS reg, fl.aircraft_model AS model,
+                  fl.aircraft_atc_type AS atc,
+                  fl.origin_icao AS origin, fl.destination_icao AS dest
+             FROM flight_pnl fp
+             JOIN flight_log fl ON fl.id = fp.flight_id
+            WHERE fp.airline_key = ? AND fl.started_at IS NOT NULL
+            ORDER BY fl.started_at ASC"#,
+    )
+    .bind(key)
+    .fetch_all(pool)
+    .await?;
+
+    struct Ev {
+        t: String,
+        delta: f64,
+        label: String,
+        kind: &'static str,
+    }
+    let mut events: Vec<Ev> = Vec::with_capacity(rows.len());
+    let mut seen_regs: HashSet<String> = HashSet::new();
+    let mut airline_regs: HashSet<String> = HashSet::new();
+
+    for r in &rows {
+        let net: f64 = r.get("net");
+        let t: String = r.get("started_at");
+        let reg_raw: Option<String> = r.get("reg");
+        let model: Option<String> = r.get("model");
+        let atc: Option<String> = r.get("atc");
+        let origin: Option<String> = r.get("origin");
+        let dest: Option<String> = r.get("dest");
+
+        let mut delta = net;
+        let mut bought = false;
+        if let Some(rr) = reg_raw.as_deref() {
+            let nreg = normalize_reg(rr);
+            if !nreg.is_empty() {
+                airline_regs.insert(nreg.clone());
+                if seen_regs.insert(nreg) {
+                    let (size, _) = classify(model.as_deref().or(atc.as_deref()));
+                    delta -= purchase_price(size);
+                    bought = true;
+                }
+            }
+        }
+        let route = match (origin.as_deref(), dest.as_deref()) {
+            (Some(o), Some(d)) => format!("{o} → {d}"),
+            (Some(o), None) => o.to_string(),
+            (None, Some(d)) => d.to_string(),
+            _ => "Vuelo".to_string(),
+        };
+        let label = if bought {
+            format!("{route} · compra avión")
+        } else {
+            route
+        };
+        events.push(Ev {
+            t,
+            delta,
+            label,
+            kind: "flight",
+        });
+    }
+
+    // Servicios de mantenimiento de las matrículas de esta aerolínea, en su fecha.
+    let maint = sqlx::query("SELECT registration, component, cost, serviced_at FROM maintenance_log")
+        .fetch_all(pool)
+        .await?;
+    for m in &maint {
+        let reg: String = m.get("registration");
+        if !airline_regs.contains(&reg) {
+            continue;
+        }
+        let cost: f64 = m.get("cost");
+        let comp: String = m.get("component");
+        let t: String = m.get("serviced_at");
+        events.push(Ev {
+            t,
+            delta: -cost,
+            label: format!("Mantenimiento: {comp}"),
+            kind: "maint",
+        });
+    }
+
+    events.sort_by(|a, b| a.t.cmp(&b.t));
+
+    let mut out: Vec<BalancePoint> = Vec::with_capacity(events.len() + 1);
+    let mut bal = valuation;
+    if let Some(first) = events.first() {
+        out.push(BalancePoint {
+            t: first.t.clone(),
+            balance: bal,
+            delta: 0.0,
+            label: "Inicio".to_string(),
+            kind: "start".to_string(),
+        });
+    }
+    for ev in events {
+        bal += ev.delta;
+        out.push(BalancePoint {
+            t: ev.t,
+            balance: bal,
+            delta: ev.delta,
+            label: ev.label,
+            kind: ev.kind.to_string(),
         });
     }
     Ok(out)

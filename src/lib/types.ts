@@ -605,6 +605,20 @@ export interface AirlineLedger {
   fleetValue: number;
 }
 
+/** (v6.1) Punto de la curva de saldo en el tiempo (gráfica del detalle). */
+export interface BalancePoint {
+  /** Timestamp ISO-8601 del evento. */
+  t: string;
+  /** Saldo ("banco") acumulado tras este evento. */
+  balance: number;
+  /** Variación del saldo en este evento. */
+  delta: number;
+  /** Etiqueta legible (ruta o servicio de mantenimiento). */
+  label: string;
+  /** "start" | "flight" | "maint". */
+  kind: string;
+}
+
 /** (v6.1) Decisiones de gestión por aerolínea (el "ecosistema"). Alimentan el
  *  P&L: el nivel de mantenimiento mueve coste/satisfacción; cada servicio a
  *  bordo añade ingreso ancillary. */
@@ -634,6 +648,27 @@ export interface MaintComponent {
 }
 
 /** (v6.1) Estado de mantenimiento de una aeronave, derivado de sus vuelos. */
+/** (v6.1 datos reales) Telemetría real del sim agregada por aeronave. */
+export interface RealTelemetry {
+  /** Nº de vuelos que aportaron telemetría real de motor. */
+  flightsWithData: number;
+  /** Ciclos (≈ vuelos). */
+  cycles: number;
+  /** Horas de vuelo acumuladas. */
+  hours: number;
+  /** Pico de EGT (°C) registrado. */
+  peakEgtC: number | null;
+  /** Pico de temperatura de aceite (°C). */
+  peakOilTempC: number | null;
+  /** Pico de temperatura de frenos (°C) — sólo con LVar del addon. */
+  peakBrakeTempC: number | null;
+  /** (v6.1 Layer 2) Desgaste de neumático real máximo (%) — sólo si el addon
+   *  lo publica (iniBuilds). Fuente del desgaste de neumáticos cuando existe. */
+  peakTireWearPct: number | null;
+  /** Aterrizaje más duro (FPM, negativo). */
+  worstLandingFpm: number | null;
+}
+
 export interface AircraftMaint {
   registration: string;
   model: string | null;
@@ -641,6 +676,8 @@ export interface AircraftMaint {
   /** Peor componente (para ordenar y pintar la silueta). */
   overallWear: number;
   components: MaintComponent[];
+  /** (v6.1) Telemetría real del sim que respalda el desgaste. */
+  telemetry: RealTelemetry;
 }
 
 /** (v6.1) Servicio de mantenimiento realmente hecho (historial real). */
@@ -702,6 +739,15 @@ export interface AddonOnMap {
 /** Paquete real que vive en el folder Community, leído por el
  *  scanner. `latitude`/`longitude` se rellenan cuando el ICAO es
  *  resolvible contra la tabla de aeropuertos. */
+/** (v6.1) Una livery dentro de un pack (entrada `[FLTSIM.N]` del aircraft.cfg). */
+export interface PackLivery {
+  title: string;
+  registration: string | null;
+  airline: string | null;
+  texture: string | null;
+  container: string;
+}
+
 export interface CommunityPackage {
   folderName: string;
   installPath: string;
@@ -1141,6 +1187,8 @@ export interface DropInspection {
 export interface DropCommitReport {
   installedGsx: string[];
   installedPackages: string[];
+  /** (v6.1) Configs de avión (iFly/PMDG) instaladas en su carpeta work. */
+  installedConfigs?: string[];
   errors: string[];
 }
 

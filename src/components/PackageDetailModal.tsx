@@ -15,7 +15,9 @@ import type {
   AvailableUpdate,
   CommunityPackage,
   DownloadMethod,
+  PackLivery,
 } from "../lib/types";
+import { AirlineLogo } from "./AirlineLogo";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
@@ -321,6 +323,8 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               />
               <GsxProfileRow icao={pkg.icao} />
             </dl>
+
+            <PackLiveriesSection installPath={pkg.installPath} />
 
             {error && (
               <div className="mt-4 flex items-start gap-2 rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200 ring-1 ring-rose-500/30">
@@ -652,4 +656,55 @@ export function formatBytes(n: number): string {
     i++;
   }
   return `${v.toFixed(v < 10 ? 1 : 0)} ${k[i]}`;
+}
+
+/** (v6.1) Sección con las liveries del pack (título + matrícula + aerolínea).
+ *  Lazy-load: solo pide al backend al abrir el detalle. Si el pack no trae
+ *  liveries (aeropuerto, sonido…) no muestra nada. */
+function PackLiveriesSection({ installPath }: { installPath: string }) {
+  const [liveries, setLiveries] = useState<PackLivery[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .packLiveries(installPath)
+      .then((l) => alive && setLiveries(l))
+      .catch(() => alive && setLiveries([]));
+    return () => {
+      alive = false;
+    };
+  }, [installPath]);
+
+  if (!liveries || liveries.length === 0) return null;
+
+  return (
+    <div className="mt-4">
+      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {t("pkg.liveries.heading", { n: liveries.length })}
+      </h3>
+      <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+        {liveries.map((l, i) => (
+          <div
+            key={`${l.container}-${l.registration ?? l.title}-${i}`}
+            className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-900/40 px-2.5 py-1.5"
+          >
+            <AirlineLogo icao={null} name={l.airline ?? l.title} size={22} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs font-medium text-slate-200">
+                {l.airline ?? l.title}
+              </div>
+              {l.airline && (
+                <div className="truncate text-[10px] text-slate-500">{l.title}</div>
+              )}
+            </div>
+            {l.registration && (
+              <span className="shrink-0 rounded bg-slate-800 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-200">
+                {l.registration}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

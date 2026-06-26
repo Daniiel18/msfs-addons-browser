@@ -174,6 +174,10 @@ export const ICAO_TO_IATA: Record<string, string> = {
   CLX: "CV", // Cargolux
   NCA: "KZ", // Nippon Cargo
   CKS: "K4", // Kalitta Air
+  DHL: "D0", // DHL (callsign WORLD EXPRESS; avs.io no tiene cargo → daisycon sí)
+  BOX: "3S", // AeroLogic (DHL/Lufthansa)
+  GEC: "LH", // Lufthansa Cargo
+  ABW: "RU", // AirBridgeCargo
 };
 
 /** Devuelve el IATA para un ICAO conocido, o `null`. */

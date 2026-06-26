@@ -25,6 +25,13 @@ import { resolveIata } from "../lib/airlineCodes";
 const avsUrl = (iata: string, px: number) =>
   `https://pics.avs.io/al_square/${px}/${px}/${iata}.png`;
 
+// (v6.1) Respaldo: avs.io NO tiene logos de CARGA (DHL, FedEx, etc. dan 404).
+// daisycon sí los sirve por IATA. Lo usamos solo cuando avs.io falla y ya
+// tenemos un IATA mapeado (aerolínea conocida) — así no metemos su placeholder
+// genérico para códigos desconocidos (esos van directo al chip).
+const daisyconUrl = (iata: string, px: number) =>
+  `https://images.daisycon.io/airline/?width=${px}&height=${px}&color=ffffff&iata=${iata}`;
+
 export function AirlineLogo({
   icao,
   name,
@@ -40,9 +47,10 @@ export function AirlineLogo({
   // ICAO autoritativo primero; si no mapea, resolvemos por el nombre
   // (vuelos importados sin callsign solo traen el nombre/título).
   const iata = resolveIata(code, name);
-  const [failed, setFailed] = useState(false);
+  // Etapa de carga del logo: avs.io → daisycon (carga) → chip.
+  const [stage, setStage] = useState<"avs" | "daisycon" | "chip">("avs");
 
-  if (!iata || failed) {
+  if (!iata || stage === "chip") {
     const initials =
       code ||
       (name ?? "")
@@ -67,15 +75,18 @@ export function AirlineLogo({
 
   // 2× para nitidez en pantallas HiDPI.
   const px = Math.round(size * 2);
+  const src = stage === "avs" ? avsUrl(iata, px) : daisyconUrl(iata, px);
   return (
     <img
-      src={avsUrl(iata, px)}
+      // `key` fuerza recrear el <img> al cambiar de CDN (re-dispara la carga).
+      key={stage}
+      src={src}
       alt={name ?? code}
       title={name ?? code}
       width={size}
       height={size}
       loading="lazy"
-      onError={() => setFailed(true)}
+      onError={() => setStage((s) => (s === "avs" ? "daisycon" : "chip"))}
       style={{ width: size, height: size, objectFit: "contain" }}
       className={`inline-block shrink-0 rounded ${className}`}
     />

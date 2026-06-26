@@ -41,43 +41,26 @@ export interface WhatsNewSlide {
  *  Best Landings (grabación + OSD) y Crew VS. */
 const DEFAULT_SLIDES: WhatsNewSlide[] = [
   {
-    titleKey: "whatsnew.finance.title",
-    bodyKey: "whatsnew.finance.body",
-    image: "/whatsnew/finance.svg",
+    titleKey: "whatsnew.realdata.title",
+    bodyKey: "whatsnew.realdata.body",
+    image: "/whatsnew/realdata.svg",
   },
   {
-    titleKey: "whatsnew.crosslink.title",
-    bodyKey: "whatsnew.crosslink.body",
-    image: "/whatsnew/crosslink.svg",
+    titleKey: "whatsnew.finance2.title",
+    bodyKey: "whatsnew.finance2.body",
+    image: "/whatsnew/finance2.svg",
   },
   {
-    titleKey: "whatsnew.hangar.title",
-    bodyKey: "whatsnew.hangar.body",
-    image: "/whatsnew/hangar.svg",
-  },
-  {
-    titleKey: "whatsnew.recording.title",
-    bodyKey: "whatsnew.recording.body",
-    image: "/whatsnew/recording.svg",
-  },
-  {
-    titleKey: "whatsnew.crewvs.title",
-    bodyKey: "whatsnew.crewvs.body",
-    image: "/whatsnew/crewvs.svg",
+    titleKey: "whatsnew.settings2.title",
+    bodyKey: "whatsnew.settings2.body",
+    image: "/whatsnew/settings2.svg",
   },
 ];
 
-/** (v6.1) Construye los slides personalizando el de Crew VS según la identidad
- *  del piloto: si eres Héctor, el badge "TÚ" sale en SU tarjeta (izquierda);
- *  si eres Daniel (o desconocido), se queda en la de Daniel. */
-export function buildWhatsNewSlides(identity?: string | null): WhatsNewSlide[] {
-  const crewImg =
-    identity === "hector"
-      ? "/whatsnew/crewvs-hector.svg"
-      : "/whatsnew/crewvs.svg";
-  return DEFAULT_SLIDES.map((s) =>
-    s.image === "/whatsnew/crewvs.svg" ? { ...s, image: crewImg } : s,
-  );
+/** (v6.2) Slides del What's New. Antes se personalizaba el de Crew VS por
+ *  identidad; los slides de esta versión no lo necesitan. */
+export function buildWhatsNewSlides(_identity?: string | null): WhatsNewSlide[] {
+  return DEFAULT_SLIDES;
 }
 
 /** Versión de la app para la que ya se mostró el What's New (o null). */

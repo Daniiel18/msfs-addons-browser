@@ -4,7 +4,7 @@
 //! deja el contrato listo para cuando se construya la UI: recalcula el ledger
 //! consumiendo la data actual de `flight_log` (+ recibos GSX) y lo devuelve.
 
-use crate::airline_economy::{self, AirlineLedger, AirlinePolicy};
+use crate::airline_economy::{self, AirlineLedger, AirlinePolicy, BalancePoint};
 use crate::AppState;
 
 /// Devuelve el ledger económico por aerolínea (valor base, ingresos, costes,
@@ -14,6 +14,18 @@ pub async fn airline_economy(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<AirlineLedger>, String> {
     airline_economy::list_economy(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (v6.1) Serie temporal del saldo ("banco") de una aerolínea para la gráfica
+/// del detalle. Reconstruye la curva vuelo a vuelo desde el caché de P&L.
+#[tauri::command]
+pub async fn airline_balance_history(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<Vec<BalancePoint>, String> {
+    airline_economy::balance_history(&state.db, &key)
         .await
         .map_err(|e| e.to_string())
 }

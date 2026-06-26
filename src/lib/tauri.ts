@@ -21,6 +21,7 @@ import type {
   Changelog,
   CommunityInfo,
   CommunityPackage,
+  PackLivery,
   DashboardStats,
   DownloadJob,
   ExportFormat,
@@ -78,6 +79,7 @@ import type {
   AirlineTag,
   AirlineKpis,
   AirlineLedger,
+  BalancePoint,
   AirlinePolicy,
   AircraftMaint,
   MaintRecord,
@@ -293,6 +295,8 @@ interface Api {
   onCrossLinkOffer: (cb: (offer: CrossLinkOffer) => void) => Promise<UnlistenFn>;
   /** Lista todos los paquetes en Community (ya escaneados). */
   listCommunityPackages: () => Promise<CommunityPackage[]>;
+  /** (v6.1) Liveries dentro de un pack (parsea sus aircraft.cfg). */
+  packLiveries: (installPath: string) => Promise<PackLivery[]>;
   /** Devuelve las updates conocidas (compara cache vs instalado). */
   listAvailableUpdates: () => Promise<AvailableUpdate[]>;
   /** Hace barrido activo: queries por cada ICAO instalado. */
@@ -509,6 +513,8 @@ interface Api {
    *  Recalcula consumiendo los vuelos actuales (+ recibos GSX). Sin pantalla
    *  aún; el contrato queda listo para cuando se construya la UI. */
   airlineEconomy: () => Promise<AirlineLedger[]>;
+  /** (v6.1) Serie temporal del saldo de una aerolínea (gráfica del detalle). */
+  airlineBalanceHistory: (key: string) => Promise<BalancePoint[]>;
   /** (v6.1) Política de gestión de una aerolínea (mantenimiento + servicios). */
   airlinePolicy: (key: string) => Promise<AirlinePolicy>;
   /** (v6.1) Guarda la política y recalcula el ledger. */
@@ -695,6 +701,8 @@ const realApi: Api = {
     listen<CrossLinkOffer>("cross-link://offer", (e) => cb(e.payload)),
   listCommunityPackages: () =>
     invoke<CommunityPackage[]>("list_community_packages"),
+  packLiveries: (installPath) =>
+    invoke<PackLivery[]>("pack_liveries", { installPath }),
   listAvailableUpdates: () => invoke<AvailableUpdate[]>("list_available_updates"),
   refreshUpdatesForInstalled: () =>
     invoke<RefreshSummary>("refresh_updates_for_installed"),
@@ -805,6 +813,8 @@ const realApi: Api = {
     invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
   hangarAnalytics: () => invoke<HangarAnalytics>("hangar_analytics"),
   airlineEconomy: () => invoke<AirlineLedger[]>("airline_economy"),
+  airlineBalanceHistory: (key) =>
+    invoke<BalancePoint[]>("airline_balance_history", { key }),
   airlinePolicy: (key) => invoke<AirlinePolicy>("airline_policy", { key }),
   setAirlinePolicy: (key, policy) =>
     invoke<void>("set_airline_policy", { key, policy }),
@@ -1312,7 +1322,7 @@ const demoApi: Api = {
     };
   },
   async dropCommit() {
-    return { installedGsx: [], installedPackages: [], errors: [] };
+    return { installedGsx: [], installedPackages: [], installedConfigs: [], errors: [] };
   },
   async dropCancel() {
     /* no-op demo */
@@ -1436,6 +1446,14 @@ const demoApi: Api = {
   async listCommunityPackages() {
     await sleep(120);
     return demoCommunity;
+  },
+  async packLiveries() {
+    await sleep(80);
+    return [
+      { title: "PMDG 737-800 Delta N399DA", registration: "N399DA", airline: "DELTA", texture: "DAL", container: "PMDG 737-800" },
+      { title: "PMDG 737-800 United N17245", registration: "N17245", airline: "UNITED", texture: "UAL", container: "PMDG 737-800" },
+      { title: "PMDG 737-800 Ryanair EI-DWR", registration: "EI-DWR", airline: "RYANAIR", texture: "RYR", container: "PMDG 737-800" },
+    ] as PackLivery[];
   },
   async listAvailableUpdates() {
     await sleep(150);
@@ -1859,6 +1877,8 @@ const demoApi: Api = {
         25,
         Math.min(100, 100 - Math.max(0, Math.abs(avgFpm) - 150) * 0.09),
       );
+      const fleetSize = cargo ? 4 : 8;
+      const fleetValue = fleetSize * (lowcost ? 55e6 : 120e6);
       return {
         key,
         icao,
@@ -1869,7 +1889,7 @@ const demoApi: Api = {
         revenue,
         costs,
         net: revenue - costs,
-        balance: valuation + (revenue - costs),
+        balance: valuation + (revenue - costs) - fleetValue,
         flights,
         passengers,
         revenueTickets: tickets,
@@ -1882,8 +1902,8 @@ const demoApi: Api = {
         avgLandingFpm: avgFpm,
         satisfaction,
         gsxFlights: Math.round(flights * 0.6),
-        fleetSize: cargo ? 4 : 8,
-        fleetValue: (cargo ? 4 : 8) * (lowcost ? 55e6 : 120e6),
+        fleetSize,
+        fleetValue,
       };
     };
     return [
@@ -1892,6 +1912,59 @@ const demoApi: Api = {
       mk("RYR", "RYR", "Ryanair", true, 25e9, 980_000, 720_000, 8, 1450, -310),
       mk("FDX", "FDX", "FedEx Express", false, 60e9, 1_840_000, 1_520_000, 6, 0, -210, true),
     ];
+  },
+  async airlineBalanceHistory(key) {
+    const all = await this.airlineEconomy();
+    const led = all.find((a) => a.key === key) ?? all[0];
+    if (!led) return [];
+    const n = Math.max(led.flights, 1);
+    const purchase = led.lowcost ? 55e6 : 120e6;
+    // PRNG determinista por key → la curva es estable entre recargas.
+    let seed = 0;
+    for (const c of key) seed = (seed * 31 + c.charCodeAt(0)) >>> 0;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const avgNet = led.net / n;
+    const dayMs = 86_400_000;
+    const now = Date.now();
+    const routes = [
+      ["KSEA", "KLAX"],
+      ["KJFK", "EGLL"],
+      ["KATL", "KMIA"],
+      ["EHAM", "LEMD"],
+      ["KORD", "KDFW"],
+    ];
+    const pts: BalancePoint[] = [];
+    let bal = led.valuation;
+    pts.push({
+      t: new Date(now - (n + 1) * 3 * dayMs).toISOString(),
+      balance: bal,
+      delta: 0,
+      label: "Inicio",
+      kind: "start",
+    });
+    for (let i = 0; i < n; i++) {
+      let delta = avgNet * (0.6 + rnd() * 0.8);
+      const bought = i < led.fleetSize;
+      if (bought) delta -= purchase;
+      bal += delta;
+      const [o, d] = routes[i % routes.length];
+      pts.push({
+        t: new Date(now - (n - i) * 3 * dayMs).toISOString(),
+        balance: bal,
+        delta,
+        label: bought ? `${o} → ${d} · compra avión` : `${o} → ${d}`,
+        kind: "flight",
+      });
+    }
+    // Aterriza exacto en el balance de la tarjeta (absorbe el jitter).
+    const last = pts[pts.length - 1];
+    const adj = led.balance - last.balance;
+    last.balance += adj;
+    last.delta += adj;
+    return pts;
   },
   async airlinePolicy(key) {
     return (
@@ -1919,7 +1992,13 @@ const demoApi: Api = {
       hydraulics: "fuselage", fire_bottles: "engines", oxygen: "fuselage",
       egt: "engines", idg: "engines",
     };
-    const mk = (registration: string, model: string, flights: number, wears: Record<string, number>): AircraftMaint => {
+    const mk = (
+      registration: string,
+      model: string,
+      flights: number,
+      wears: Record<string, number>,
+      telemetry: AircraftMaint["telemetry"],
+    ): AircraftMaint => {
       const components = Object.keys(COSTS).map((id) => {
         const wearPct = wears[id] ?? 20;
         return {
@@ -1936,11 +2015,16 @@ const demoApi: Api = {
         flights,
         overallWear: Math.max(...components.map((c) => c.wearPct)),
         components,
+        telemetry,
       };
     };
     return [
-      mk("N827DN", "Boeing 737-900ER", 22, { tires: 88, brakes: 72, egt: 60, engine_oil: 40, hydraulics: 30, idg: 35, fire_bottles: 12, oxygen: 18 }),
-      mk("N374DA", "Airbus A320-200", 14, { tires: 54, brakes: 45, egt: 38, engine_oil: 25, hydraulics: 20, idg: 22, fire_bottles: 8, oxygen: 11 }),
+      mk("N827DN", "Boeing 737-900ER", 22,
+        { tires: 88, brakes: 72, egt: 60, engine_oil: 40, hydraulics: 30, idg: 35, fire_bottles: 12, oxygen: 18 },
+        { flightsWithData: 22, cycles: 22, hours: 78.4, peakEgtC: 912, peakOilTempC: 138, peakBrakeTempC: 486, peakTireWearPct: 64, worstLandingFpm: -742 }),
+      mk("N374DA", "Airbus A320-200", 14,
+        { tires: 54, brakes: 45, egt: 38, engine_oil: 25, hydraulics: 20, idg: 22, fire_bottles: 8, oxygen: 11 },
+        { flightsWithData: 14, cycles: 14, hours: 41.2, peakEgtC: 824, peakOilTempC: 121, peakBrakeTempC: 312, peakTireWearPct: 38, worstLandingFpm: -398 }),
     ];
   },
   async aircraftMaintenance(registration) {
