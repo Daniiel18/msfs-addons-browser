@@ -821,6 +821,39 @@ pub async fn close_stale_open_flights(
     Ok(r.rows_affected())
 }
 
+/// (v6.2.1) Cierra como **completed** los vuelos que quedaron ABIERTOS pero que
+/// YA ATERRIZARON (tienen `landing_fpm`). El cierre normal se dispara al APAGAR
+/// MOTORES; si el piloto sale del vuelo tras tocar pista sin apagar motores en
+/// puerta, el vuelo quedaba abierto e INVISIBLE en el FlightBook (aunque el FPM
+/// sí se capturó). Aquí lo finalizamos con la última posición como destino, para
+/// que aparezca con su aterrizaje. Corre al arrancar el watcher, ANTES de
+/// restaurar el state (así no se "reanuda" un vuelo que en realidad ya terminó).
+/// Sólo toca vuelos con `landing_fpm` — un vuelo realmente en el aire (sin
+/// touchdown) no se cierra aquí.
+pub async fn finalize_landed_open_flights(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let r = sqlx::query(
+        r#"
+        UPDATE flight_log
+        SET ended_at = COALESCE(last_position_at, datetime('now')),
+            status = 'completed',
+            destination_lat = COALESCE(destination_lat, last_position_lat),
+            destination_lon = COALESCE(destination_lon, last_position_lon),
+            flight_time_s = COALESCE(
+                flight_time_s,
+                CAST(
+                    strftime('%s', COALESCE(last_position_at, datetime('now')))
+                    - strftime('%s', started_at) AS INTEGER
+                )
+            )
+        WHERE ended_at IS NULL
+          AND landing_fpm IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// (v4.23.0) Cierra un vuelo restaurado que resultó ser HUÉRFANO (la PC
 /// se apagó / el sim murió a mitad de vuelo y al reconectar el avión
 /// apareció lejos del último punto). Se marca 'partial' + partial_ack=0

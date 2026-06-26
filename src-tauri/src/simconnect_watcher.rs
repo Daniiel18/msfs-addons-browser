@@ -1522,7 +1522,26 @@ mod windows_simconnect {
                     .enable_all()
                     .build()
                     .ok()?;
-                rt.block_on(crate::flight_log::latest_open_flight(pool)).ok()?
+                rt.block_on(async {
+                    // (v6.2.1) Antes de restaurar: si quedó un vuelo abierto que
+                    // YA aterrizó (tiene landing_fpm) pero no se cerró porque el
+                    // piloto salió sin apagar motores, lo finalizamos como
+                    // completed para que aparezca en el FlightBook con su
+                    // aterrizaje (no se "reanuda" un vuelo ya terminado).
+                    match crate::flight_log::finalize_landed_open_flights(pool).await {
+                        Ok(n) if n > 0 => tracing::info!(
+                            target: "simconnect",
+                            "finalizados {} vuelo(s) aterrizado(s) que habían quedado abiertos",
+                            n
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "simconnect",
+                            "finalize_landed_open_flights falló: {e:#}"
+                        ),
+                        _ => {}
+                    }
+                    crate::flight_log::latest_open_flight(pool).await.ok()?
+                })
             });
             handle.join().ok().flatten()
         });
