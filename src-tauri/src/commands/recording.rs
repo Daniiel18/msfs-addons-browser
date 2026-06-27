@@ -55,6 +55,53 @@ pub fn osd_debug(msg: String) {
     tracing::info!(target: "rec", "[osd-js] {msg}");
 }
 
+/// (v6.2.5) Muestra el OSD y lo FUERZA al tope absoluto del z-order sin robar
+/// el foco. `setAlwaysOnTop`/`show()` de Tauri no bastaban: si el sim ya estaba
+/// arriba (foco / borderless que se auto-pone topmost), el OSD quedaba detrás y
+/// "no salía". `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` reinserta el OSD por
+/// encima del sim manteniendo el foco en el sim. El frontend lo llama en cada
+/// touchdown (y un par de veces con retardo para ganar la carrera de z-order).
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn osd_show_topmost(app: tauri::AppHandle) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW,
+    };
+    let win = app
+        .get_webview_window("osd")
+        .ok_or_else(|| "ventana osd no encontrada".to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    // Reconstruimos el HWND con la versión de `windows` que linkeamos (robusto
+    // ante diferencias de versión con el HWND que devuelve Tauri).
+    let raw = win.hwnd().map_err(|e| e.to_string())?;
+    let hwnd = HWND(raw.0 as *mut core::ffi::c_void);
+    // SAFETY: API Win32; el HWND es válido (ventana viva) y corre en UI thread.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn osd_show_topmost(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("osd") {
+        win.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Graba un clip de PRUEBA de `duration_s` s. Targetea la ventana de la propia
 /// app ("SimFleet") para verificar vídeo+audio SIN necesitar el sim abierto.
 #[tauri::command]

@@ -546,6 +546,8 @@ interface Api {
   osdTest: () => Promise<void>;
   /** (v6 #2b) Log desde la ventana OSD (diagnóstico). */
   osdDebug: (msg: string) => Promise<void>;
+  /** (v6.2.5) Muestra el OSD y lo fuerza al tope del z-order (sobre el sim). */
+  osdShowTopmost: () => Promise<void>;
   /** (v6 #2b) Graba un clip de prueba de `durationS` segundos. */
   recordingTestClip: (durationS: number) => Promise<LandingClip>;
   /** (v6 #2b) Lista los clips de aterrizaje guardados. */
@@ -846,6 +848,7 @@ const realApi: Api = {
     invoke<EngineStatus>("recording_engine_status"),
   osdTest: () => invoke<void>("osd_test"),
   osdDebug: (msg) => invoke<void>("osd_debug", { msg }),
+  osdShowTopmost: () => invoke<void>("osd_show_topmost"),
   recordingTestClip: (durationS) =>
     invoke<LandingClip>("recording_test_clip", { durationS }),
   listLandingClips: () => invoke<LandingClip[]>("list_landing_clips"),
@@ -2099,6 +2102,7 @@ const demoApi: Api = {
   },
   async osdTest() {},
   async osdDebug() {},
+  async osdShowTopmost() {},
   async recordingTestClip() {
     throw new Error("La grabación solo funciona en la app de escritorio.");
   },

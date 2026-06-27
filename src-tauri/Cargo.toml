@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "6.2.3"
+version = "6.2.5"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -119,6 +119,9 @@ winreg = "0.55"
 # COM unifiquen.
 webview2-com = "=0.38.2"
 windows-core = "=0.61.2"
+# (v6.2.5) SetWindowPos para forzar el OSD al tope del z-order (HWND_TOPMOST +
+# SWP_NOACTIVATE) y que salga SIEMPRE sobre el sim sin robarle el foco.
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 # (v6 #2b) Motor de grabación de "Best Landings": Windows.Graphics /
 # Desktop Duplication + WASAPI loopback (audio del sistema nativo) + replay
 # buffer. Reemplaza a ffmpeg/gdigrab (que no captura audio del sistema ni

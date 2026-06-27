@@ -92,12 +92,18 @@ export function LandingOsd() {
         api.osdDebug(`error posicionando: ${String(err)}`).catch(() => {});
       }
 
-      // Reforzar always-on-top para aparecer sobre MSFS (en ventana/borderless).
+      // (v6.2.5) Forzamos el OSD al TOPE del z-order vía SetWindowPos
+      // (HWND_TOPMOST + SWP_NOACTIVATE) en Rust — `setAlwaysOnTop`+`show()` no
+      // bastaban: si el sim ya estaba arriba (foco / borderless topmost) el OSD
+      // quedaba detrás y "no salía". Lo reafirmamos un par de veces con retardo
+      // para ganar la carrera de z-order con el sim al tocar pista.
       await win.setAlwaysOnTop(true).catch(() => {});
-      await win.show().catch((err) =>
-        api.osdDebug(`error show: ${String(err)}`).catch(() => {}),
+      await api.osdShowTopmost().catch((err) =>
+        api.osdDebug(`error showTopmost: ${String(err)}`).catch(() => {}),
       );
-      api.osdDebug("show() llamado").catch(() => {});
+      window.setTimeout(() => void api.osdShowTopmost().catch(() => {}), 350);
+      window.setTimeout(() => void api.osdShowTopmost().catch(() => {}), 1200);
+      api.osdDebug("show() llamado (topmost forzado)").catch(() => {});
 
       window.clearTimeout(hideTimer);
       hideTimer = window.setTimeout(() => {
