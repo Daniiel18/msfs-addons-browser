@@ -50,12 +50,11 @@ export function NotificationsBell() {
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
 
   // (v6.2.4) Update de GSX (FSDreamTeam) — el chequeo horario vive en App.tsx;
-  // aquí sólo leemos el resultado compartido.
+  // aquí sólo leemos el resultado compartido. (v6.2.6) Persiste hasta actualizar
+  // (no descartable).
   const gsxInfo = useGsxUpdateStore((s) => s.info);
-  const gsxDismissedVersion = useGsxUpdateStore((s) => s.dismissedVersion);
   const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
-  const gsxDismiss = useGsxUpdateStore((s) => s.dismiss);
-  const showGsx = gsxUpdateVisible(gsxInfo, gsxDismissedVersion);
+  const showGsx = gsxUpdateVisible(gsxInfo);
 
   useEffect(() => {
     if (!open) return;
@@ -271,13 +270,6 @@ export function NotificationsBell() {
                       </button>
                     </div>
                   </div>
-                  <button
-                    onClick={gsxDismiss}
-                    title={t("notifications.dismiss_app_update")}
-                    className="shrink-0 rounded-md p-1 text-cyan-200/70 hover:bg-cyan-500/20 hover:text-cyan-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
                 </div>
               </div>
             )}

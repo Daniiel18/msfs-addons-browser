@@ -120,7 +120,14 @@ export default function App() {
     const check = useGsxUpdateStore.getState().check;
     void check();
     const id = window.setInterval(() => void check(), 60 * 60 * 1000);
-    return () => window.clearInterval(id);
+    // (v6.2.6) Re-chequea al recuperar el foco — detecta el update pronto sin
+    // esperar a la siguiente hora (p.ej. al volver de actualizar GSX).
+    const onFocus = () => void check();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);

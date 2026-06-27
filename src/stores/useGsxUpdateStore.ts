@@ -117,14 +117,16 @@ export const useGsxUpdateStore = create<GsxUpdateState>((set, get) => ({
   },
 }));
 
-/** Helper: ¿hay update de GSX que mostrar (no descartado)? */
+/**
+ * Helper: ¿hay update de GSX que mostrar? (v6.2.6) La notificación PERSISTE hasta
+ * que el usuario actualice GSX — no es descartable (su intención: "siempre que me
+ * salga, voy a actualizar"). Por eso ya NO se filtra por un flag de "descartado":
+ * se muestra puramente según `hasUpdate` (que el backend pone false cuando la
+ * versión instalada alcanza a la última). El parámetro queda por compatibilidad.
+ */
 export function gsxUpdateVisible(
   info: GsxUpdateInfo | null,
-  dismissedVersion: string | null,
+  _dismissedVersion?: string | null,
 ): boolean {
-  return (
-    !!info?.hasUpdate &&
-    info.latestVersion != null &&
-    info.latestVersion !== dismissedVersion
-  );
+  return !!info?.hasUpdate && info.latestVersion != null;
 }

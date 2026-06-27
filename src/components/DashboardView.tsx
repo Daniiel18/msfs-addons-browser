@@ -40,9 +40,8 @@ export function DashboardView() {
   // (v6.2.4) Aviso de update de GSX (FSDreamTeam) — el chequeo horario vive en
   // App.tsx; aquí leemos el resultado compartido.
   const gsxInfo = useGsxUpdateStore((s) => s.info);
-  const gsxDismissedVersion = useGsxUpdateStore((s) => s.dismissedVersion);
   const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
-  const showGsx = gsxUpdateVisible(gsxInfo, gsxDismissedVersion);
+  const showGsx = gsxUpdateVisible(gsxInfo);
 
   // Recalculamos automáticamente cuando termina un scan de Community
   // — el usuario no necesita pulsar "refrescar". `scanning` flipa
