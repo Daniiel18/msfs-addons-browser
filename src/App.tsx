@@ -40,6 +40,7 @@ import { UpdateWizard } from "./components/UpdateWizard";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
 import { LiveVsManager } from "./components/LiveVsManager";
+import { GsxUpdateGate } from "./components/GsxUpdateGate";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
@@ -1004,6 +1005,7 @@ export default function App() {
       <UpdateWizard />
       <Toaster />
       <LiveVsManager />
+      <GsxUpdateGate />
       <SimBriefConfirmModal />
       <IncompleteFlightModal />
       <ReplayBanner />

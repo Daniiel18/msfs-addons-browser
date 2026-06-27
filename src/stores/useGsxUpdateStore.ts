@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api } from "../lib/tauri";
 import type { GsxUpdateInfo } from "../lib/types";
+import { useFlightLogStore } from "./useFlightLogStore";
 
 /**
  * (v6.2.4) Estado de actualización de GSX (FSDreamTeam couatl). El backend
@@ -31,10 +32,21 @@ function loadDismissed(): string | null {
 interface GsxUpdateState {
   info: GsxUpdateInfo | null;
   dismissedVersion: string | null;
+  /** (v6.2.6) `true` mientras esperamos a que el usuario CIERRE el sim para
+   *  poder actualizar GSX. Mientras tanto el gate (warning) está visible y NO
+   *  se abre el instalador ni se borra la notificación. */
+  pendingInstall: boolean;
   /** Consulta el backend (llamado al arranque y cada hora). */
   check: () => Promise<void>;
-  /** Abre el FSDT Installer y marca la última versión como instalada. */
-  openInstaller: () => Promise<void>;
+  /** (v6.2.6) Intenta actualizar. Si el sim está ABIERTO → activa el gate
+   *  (warning) y espera; si está cerrado → abre el instalador directamente. */
+  requestInstall: () => void;
+  /** Abre el FSDT Installer, marca la versión como instalada y borra el aviso.
+   *  Lo llama el gate al detectar el sim cerrado (o `requestInstall` si no había
+   *  sim abierto). */
+  performInstall: () => Promise<void>;
+  /** Cancela el gate (mantiene la notificación para reintentar). */
+  cancelInstall: () => void;
   /** Oculta el aviso para la versión actual (no vuelve hasta una más nueva). */
   dismiss: () => void;
 }
@@ -42,6 +54,7 @@ interface GsxUpdateState {
 export const useGsxUpdateStore = create<GsxUpdateState>((set, get) => ({
   info: null,
   dismissedVersion: loadDismissed(),
+  pendingInstall: false,
 
   check: async () => {
     try {
@@ -52,30 +65,45 @@ export const useGsxUpdateStore = create<GsxUpdateState>((set, get) => ({
     }
   },
 
-  openInstaller: async () => {
+  requestInstall: () => {
+    // (v6.2.6) GSX NO se puede actualizar con el sim abierto (couatl está en
+    // uso). Si lo detectamos corriendo, abrimos el gate (warning) y esperamos a
+    // que el usuario lo cierre; el GsxUpdateGate dispara performInstall cuando
+    // `simRunning` pase a false.
+    const simRunning =
+      useFlightLogStore.getState().status?.simRunning ?? false;
+    if (simRunning) {
+      set({ pendingInstall: true });
+    } else {
+      void get().performInstall();
+    }
+  },
+
+  performInstall: async () => {
     const info = get().info;
+    set({ pendingInstall: false });
     try {
       await api.openLocalPath(FSDT_INSTALLER_LNK);
     } catch (e) {
       console.warn("no pude abrir FSDT Installer:", e);
     }
-    // El usuario va a actualizar GSX → marcamos la última como instalada para
-    // no re-avisar por la misma versión.
+    // El usuario va a actualizar GSX → marcamos la última como instalada y
+    // BORRAMOS el aviso (no re-avisar por la misma versión).
     if (info?.latestVersion) {
+      const v = info.latestVersion;
       try {
-        await api.gsxSetInstalledVersion(info.latestVersion);
+        await api.gsxSetInstalledVersion(v);
       } catch {
         /* ignore */
       }
-      set({
-        info: {
-          ...info,
-          installedVersion: info.latestVersion,
-          hasUpdate: false,
-        },
-      });
+      // El aviso se borra al poner hasUpdate=false; NO tocamos el flag de
+      // "descartado" (ese es sólo para la X) → así el próximo chequeo, ya con
+      // installed=última, tampoco avisa, y se puede re-testear sin bloqueos.
+      set({ info: { ...info, installedVersion: v, hasUpdate: false } });
     }
   },
+
+  cancelInstall: () => set({ pendingInstall: false }),
 
   dismiss: () => {
     const v = get().info?.latestVersion ?? null;

@@ -41,7 +41,7 @@ export function DashboardView() {
   // App.tsx; aquí leemos el resultado compartido.
   const gsxInfo = useGsxUpdateStore((s) => s.info);
   const gsxDismissedVersion = useGsxUpdateStore((s) => s.dismissedVersion);
-  const gsxOpenInstaller = useGsxUpdateStore((s) => s.openInstaller);
+  const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
   const showGsx = gsxUpdateVisible(gsxInfo, gsxDismissedVersion);
 
   // Recalculamos automáticamente cuando termina un scan de Community
@@ -98,7 +98,7 @@ export function DashboardView() {
       {/* (v6.2.4) Banner de update de GSX — clic abre el FSDT Installer. */}
       {showGsx && gsxInfo && (
         <button
-          onClick={() => void gsxOpenInstaller()}
+          onClick={() => gsxRequestInstall()}
           className="flex w-full items-center gap-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-left transition-colors hover:bg-cyan-500/15"
         >
           <Truck className="h-5 w-5 shrink-0 text-cyan-300" />

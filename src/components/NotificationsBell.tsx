@@ -53,7 +53,7 @@ export function NotificationsBell() {
   // aquí sólo leemos el resultado compartido.
   const gsxInfo = useGsxUpdateStore((s) => s.info);
   const gsxDismissedVersion = useGsxUpdateStore((s) => s.dismissedVersion);
-  const gsxOpenInstaller = useGsxUpdateStore((s) => s.openInstaller);
+  const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
   const gsxDismiss = useGsxUpdateStore((s) => s.dismiss);
   const showGsx = gsxUpdateVisible(gsxInfo, gsxDismissedVersion);
 
@@ -254,7 +254,7 @@ export function NotificationsBell() {
                     <div className="mt-2 flex items-center gap-1.5">
                       <button
                         onClick={() => {
-                          void gsxOpenInstaller();
+                          gsxRequestInstall();
                           setOpen(false);
                         }}
                         className="inline-flex items-center gap-1 rounded-md bg-cyan-500/30 px-2.5 py-1 text-[11px] font-medium text-cyan-100 hover:bg-cyan-500/40"
