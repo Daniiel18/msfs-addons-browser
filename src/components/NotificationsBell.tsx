@@ -8,10 +8,15 @@ import {
   Map as MapIcon,
   RefreshCw,
   Sparkles,
+  Truck,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAppStore } from "../stores/useAppStore";
+import {
+  useGsxUpdateStore,
+  gsxUpdateVisible,
+} from "../stores/useGsxUpdateStore";
 import type { AvailableUpdate, UpdateInfo } from "../lib/types";
 import { api } from "../lib/tauri";
 import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
@@ -44,6 +49,14 @@ export function NotificationsBell() {
   const [appUpdate, setAppUpdate] = useState<UpdateInfo | null>(null);
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
 
+  // (v6.2.4) Update de GSX (FSDreamTeam) — el chequeo horario vive en App.tsx;
+  // aquí sólo leemos el resultado compartido.
+  const gsxInfo = useGsxUpdateStore((s) => s.info);
+  const gsxDismissedVersion = useGsxUpdateStore((s) => s.dismissedVersion);
+  const gsxOpenInstaller = useGsxUpdateStore((s) => s.openInstaller);
+  const gsxDismiss = useGsxUpdateStore((s) => s.dismiss);
+  const showGsx = gsxUpdateVisible(gsxInfo, gsxDismissedVersion);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -74,7 +87,8 @@ export function NotificationsBell() {
 
   const showAppUpdate = appUpdate !== null && !appUpdateDismissed;
   const packageCount = updates.length;
-  const totalCount = packageCount + (showAppUpdate ? 1 : 0);
+  const totalCount =
+    packageCount + (showAppUpdate ? 1 : 0) + (showGsx ? 1 : 0);
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
@@ -215,6 +229,52 @@ export function NotificationsBell() {
                     onClick={dismissAppUpdate}
                     title={t("notifications.dismiss_app_update")}
                     className="shrink-0 rounded-md p-1 text-emerald-200/70 hover:bg-emerald-500/20 hover:text-emerald-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* (v6.2.4) Update de GSX — en cyan, distinto de app (verde) y
+                paquetes (ámbar). Al actualizar abre el FSDT Installer. */}
+            {showGsx && gsxInfo && (
+              <div className="border-b border-cyan-500/20 bg-cyan-500/10 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <Truck className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-cyan-100">
+                      {t("notifications.gsx_update")}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-cyan-200/80">
+                      {gsxInfo.installedVersion} →{" "}
+                      <strong>{gsxInfo.latestVersion}</strong>
+                      {gsxInfo.latestDate ? ` · ${gsxInfo.latestDate}` : ""}
+                    </div>
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          void gsxOpenInstaller();
+                          setOpen(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md bg-cyan-500/30 px-2.5 py-1 text-[11px] font-medium text-cyan-100 hover:bg-cyan-500/40"
+                      >
+                        <Download className="h-3 w-3" />{" "}
+                        {t("notifications.gsx_update_now")}
+                      </button>
+                      <button
+                        onClick={() => api.openExternal(gsxInfo.notesUrl)}
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-cyan-200/80 hover:bg-cyan-500/20 hover:text-cyan-100"
+                      >
+                        <ExternalLink className="h-3 w-3" />{" "}
+                        {t("notifications.gsx_notes")}
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={gsxDismiss}
+                    title={t("notifications.dismiss_app_update")}
+                    className="shrink-0 rounded-md p-1 text-cyan-200/70 hover:bg-cyan-500/20 hover:text-cyan-100"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

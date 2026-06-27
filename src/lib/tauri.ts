@@ -76,6 +76,7 @@ import type {
   UpdateDiagnostic,
   UpdateFlightInput,
   UpdateInfo,
+  GsxUpdateInfo,
   AirlineTag,
   AirlineKpis,
   AirlineLedger,
@@ -154,6 +155,10 @@ interface Api {
    *  desde Rust porque la API exige un User-Agent con contacto que el webview
    *  no puede fijar. Devuelve `null` si no hay foto. */
   aircraftPhoto: (registration: string) => Promise<string | null>;
+  /** (v6.2.4) Comprueba si hay update de GSX (FSDreamTeam couatl). */
+  gsxCheckUpdate: () => Promise<GsxUpdateInfo>;
+  /** (v6.2.4) Marca una versión de GSX como instalada (tras actualizar). */
+  gsxSetInstalledVersion: (version: string) => Promise<void>;
 
   // (v2.0.0) Sincronización con Google Drive
   /** Estado actual de la integración con Google. */
@@ -621,6 +626,9 @@ const realApi: Api = {
   readTextFile: (path) => invoke<string>("read_text_file", { path }),
   aircraftPhoto: (registration) =>
     invoke<string | null>("aircraft_photo", { registration }),
+  gsxCheckUpdate: () => invoke<GsxUpdateInfo>("gsx_check_update"),
+  gsxSetInstalledVersion: (version) =>
+    invoke<void>("gsx_set_installed_version", { version }),
   cloudGetConfig: () => invoke<CloudConfig>("cloud_get_config"),
   cloudSetCredentials: (clientId, clientSecret) =>
     invoke<void>("cloud_set_credentials", { clientId, clientSecret }),
@@ -2047,6 +2055,18 @@ const demoApi: Api = {
   },
   async aircraftPhoto() {
     return null; // sin red en modo demo
+  },
+  async gsxCheckUpdate() {
+    return {
+      installedVersion: "4.0.4",
+      latestVersion: "4.0.5",
+      latestDate: "June 20th, 2026",
+      hasUpdate: true,
+      notesUrl: "https://www.fsdreamteam.com/couatl_liveupdate_notes.html",
+    };
+  },
+  async gsxSetInstalledVersion() {
+    /* demo: no-op */
   },
   async pilotProfile() {
     return {

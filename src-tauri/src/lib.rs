@@ -15,6 +15,7 @@ pub mod flight_log;
 pub mod flight_report;
 pub mod livery_meta;
 pub mod gsx;
+pub mod gsx_update;
 // (v4.3.0) Lector del gate que GSX muestra en su menú in-sim (archivo en
 // disco). Cubre aeropuertos SIN perfil de GSX, donde el INI no da match y
 // la API de Facility Data del simulador no devuelve nada en MSFS 2020.
@@ -194,6 +195,8 @@ pub fn run() {
             commands::gsx::gsx_list_installed_icaos,
             commands::gsx::gsx_install_profile,
             commands::gsx::read_text_file,
+            gsx_update::gsx_check_update,
+            gsx_update::gsx_set_installed_version,
             planespotters::aircraft_photo,
             commands::updater::check_for_update,
             commands::updater::install_update,

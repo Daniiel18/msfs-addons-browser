@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  Download,
   HardDrive,
   Landmark,
   Loader2,
@@ -9,11 +10,16 @@ import {
   Rocket,
   Sparkles,
   Trophy,
+  Truck,
   Users,
 } from "lucide-react";
 import type { DashboardStats } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import {
+  useGsxUpdateStore,
+  gsxUpdateVisible,
+} from "../stores/useGsxUpdateStore";
 import { derivedType } from "../lib/packageType";
 import { t } from "../lib/i18n";
 
@@ -30,6 +36,13 @@ export function DashboardView() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // (v6.2.4) Aviso de update de GSX (FSDreamTeam) — el chequeo horario vive en
+  // App.tsx; aquí leemos el resultado compartido.
+  const gsxInfo = useGsxUpdateStore((s) => s.info);
+  const gsxDismissedVersion = useGsxUpdateStore((s) => s.dismissedVersion);
+  const gsxOpenInstaller = useGsxUpdateStore((s) => s.openInstaller);
+  const showGsx = gsxUpdateVisible(gsxInfo, gsxDismissedVersion);
 
   // Recalculamos automáticamente cuando termina un scan de Community
   // — el usuario no necesita pulsar "refrescar". `scanning` flipa
@@ -81,6 +94,29 @@ export function DashboardView() {
           {t("dashboard.title.community")}
         </h2>
       </header>
+
+      {/* (v6.2.4) Banner de update de GSX — clic abre el FSDT Installer. */}
+      {showGsx && gsxInfo && (
+        <button
+          onClick={() => void gsxOpenInstaller()}
+          className="flex w-full items-center gap-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-left transition-colors hover:bg-cyan-500/15"
+        >
+          <Truck className="h-5 w-5 shrink-0 text-cyan-300" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-cyan-100">
+              {t("notifications.gsx_update")}
+            </div>
+            <div className="text-xs text-cyan-200/80">
+              {gsxInfo.installedVersion} →{" "}
+              <strong>{gsxInfo.latestVersion}</strong>
+              {gsxInfo.latestDate ? ` · ${gsxInfo.latestDate}` : ""}
+            </div>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-cyan-500/30 px-2.5 py-1 text-[11px] font-medium text-cyan-100">
+            <Download className="h-3 w-3" /> {t("notifications.gsx_update_now")}
+          </span>
+        </button>
+      )}
 
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">

@@ -19,6 +19,7 @@ import { useCommunityStore } from "./stores/useCommunityStore";
 import { useSimBriefStore } from "./stores/useSimBriefStore";
 import { useFlightLogStore } from "./stores/useFlightLogStore";
 import { useSettingsStore } from "./stores/useSettingsStore";
+import { useGsxUpdateStore } from "./stores/useGsxUpdateStore";
 import { useGsxLocalStore } from "./stores/useGsxLocalStore";
 import { SourceToggle } from "./components/SourceToggle";
 import { SearchBar } from "./components/SearchBar";
@@ -111,6 +112,16 @@ export default function App() {
       });
     };
   }, []);
+
+  // (v6.2.4) Chequeo de updates de GSX: una vez al arrancar y luego cada hora.
+  // El resultado lo comparten Notificaciones y Dashboard vía el store.
+  useEffect(() => {
+    const check = useGsxUpdateStore.getState().check;
+    void check();
+    const id = window.setInterval(() => void check(), 60 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);

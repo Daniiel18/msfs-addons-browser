@@ -1136,6 +1136,17 @@ export interface UpdateInfo {
   publishedAt: string | null;
 }
 
+/** (v6.2.4) Estado de actualización de GSX/couatl (FSDreamTeam). El backend
+ *  parsea `couatl_liveupdate_notes.html` y compara con la versión instalada
+ *  persistida. */
+export interface GsxUpdateInfo {
+  installedVersion: string;
+  latestVersion: string | null;
+  latestDate: string | null;
+  hasUpdate: boolean;
+  notesUrl: string;
+}
+
 /** Perfil GSX Pro disponible en flightsim.to para un ICAO concreto.
  *  Espejo serializado de `gsx::GsxProfile` (Rust) — el comando
  *  `gsx_lookup` devuelve cero o varios. */
