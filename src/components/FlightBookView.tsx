@@ -1527,20 +1527,12 @@ async function fetchPlanespottersPhoto(reg: string): Promise<string | null> {
   }
   const inflight = (async () => {
     try {
-      const r = await fetch(
-        `https://api.planespotters.net/pub/photos/reg/${encodeURIComponent(reg)}`,
-        { headers: { Accept: "application/json" } },
-      );
-      if (!r.ok) return null;
-      const data: {
-        photos?: Array<{
-          thumbnail_large?: { src?: string };
-          thumbnail?: { src?: string };
-        }>;
-      } = await r.json();
-      const first = data.photos?.[0];
-      const url = first?.thumbnail_large?.src ?? first?.thumbnail?.src ?? null;
-      return url;
+      // (v6.2.3) Se pide desde Rust: planespotters ahora EXIGE un User-Agent
+      // con contacto, que el `fetch()` del webview no puede fijar (header
+      // prohibido) — por eso dejó de salir CUALQUIER foto. El backend manda el
+      // UA correcto y devuelve sólo la URL; el <img> la carga normal.
+      const { api } = await import("../lib/tauri");
+      return await api.aircraftPhoto(reg);
     } catch {
       return null;
     }

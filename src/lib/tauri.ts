@@ -150,6 +150,10 @@ interface Api {
   gsxInstallProfile: (sourcePath: string) => Promise<GsxInstallReport>;
   /** (v1.1.4) Lee un archivo de texto local. Cap interno 10MB. */
   readTextFile: (path: string) => Promise<string>;
+  /** (v6.2.3) URL de la foto del avión (planespotters, por matrícula). Se hace
+   *  desde Rust porque la API exige un User-Agent con contacto que el webview
+   *  no puede fijar. Devuelve `null` si no hay foto. */
+  aircraftPhoto: (registration: string) => Promise<string | null>;
 
   // (v2.0.0) Sincronización con Google Drive
   /** Estado actual de la integración con Google. */
@@ -615,6 +619,8 @@ const realApi: Api = {
   gsxInstallProfile: (sourcePath) =>
     invoke<GsxInstallReport>("gsx_install_profile", { sourcePath }),
   readTextFile: (path) => invoke<string>("read_text_file", { path }),
+  aircraftPhoto: (registration) =>
+    invoke<string | null>("aircraft_photo", { registration }),
   cloudGetConfig: () => invoke<CloudConfig>("cloud_get_config"),
   cloudSetCredentials: (clientId, clientSecret) =>
     invoke<void>("cloud_set_credentials", { clientId, clientSecret }),
@@ -2038,6 +2044,9 @@ const demoApi: Api = {
   },
   async serviceAircraft() {
     /* demo: no-op */
+  },
+  async aircraftPhoto() {
+    return null; // sin red en modo demo
   },
   async pilotProfile() {
     return {

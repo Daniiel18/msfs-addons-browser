@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import {
   ResponsiveContainer,
   PieChart,
@@ -101,6 +102,48 @@ type SortKey = "net" | "balance" | "satisfaction";
 
 // ──────────────────────────────── vista raíz ─────────────────────────────────
 
+/**
+ * (v6.2.3) Estado de carga de Finance — antes era un texto plano "Cargando…".
+ * Ahora una barra de progreso INDETERMINADA en color de marca + skeletons de las
+ * tarjetas de aerolínea, acorde al dashboard financiero (recompute-on-query
+ * puede tardar un instante con muchos vuelos).
+ */
+function EconomyLoading() {
+  return (
+    <div className="space-y-4">
+      {/* Barra indeterminada: un haz de marca recorriendo la pista. */}
+      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800/80">
+        <motion.div
+          className="absolute inset-y-0 w-1/3 rounded-full bg-gradient-to-r from-transparent via-brand-400 to-transparent"
+          animate={{ x: ["-120%", "360%"] }}
+          transition={{ duration: 1.15, repeat: Infinity, ease: "easeInOut" }}
+        />
+      </div>
+      <div className="flex items-center gap-2 text-sm text-slate-400">
+        <Wallet className="h-4 w-4 animate-pulse text-brand-400" />
+        {t("economy.loading")}
+      </div>
+      {/* Skeletons de las tarjetas de aerolínea. */}
+      <div className="space-y-2.5">
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4"
+            style={{ opacity: 1 - i * 0.18 }}
+          >
+            <div className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-slate-800" />
+            <div className="flex-1 space-y-2">
+              <div className="h-3 w-1/3 animate-pulse rounded bg-slate-800" />
+              <div className="h-2.5 w-1/5 animate-pulse rounded bg-slate-800/70" />
+            </div>
+            <div className="h-7 w-24 animate-pulse rounded-lg bg-slate-800" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function EconomyView() {
   const focus = useAppStore((s) => s.economyFocus);
   const openEconomy = useAppStore((s) => s.openEconomy);
@@ -149,11 +192,7 @@ export function EconomyView() {
         </div>
       )}
 
-      {!error && !list && (
-        <div className="py-20 text-center text-sm text-slate-500">
-          {t("economy.loading")}
-        </div>
-      )}
+      {!error && !list && <EconomyLoading />}
 
       {!error && list && list.length === 0 && (
         <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center">

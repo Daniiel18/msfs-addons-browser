@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "6.2.2"
+version = "6.2.3"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -113,6 +113,12 @@ libloading = "0.8"
 # aÃ±ade coste de compilaciÃ³n.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# (v6.2.3) Acceso COM al WebView2 para desactivar F5/Ctrl+R (teclas aceleradoras
+# que el host maneja a nivel nativo, fuera del alcance del JS) y el menú
+# contextual. Versiones fijadas a las que ya usa Tauri/wry para que los tipos
+# COM unifiquen.
+webview2-com = "=0.38.2"
+windows-core = "=0.61.2"
 # (v6 #2b) Motor de grabación de "Best Landings": Windows.Graphics /
 # Desktop Duplication + WASAPI loopback (audio del sistema nativo) + replay
 # buffer. Reemplaza a ffmpeg/gdigrab (que no captura audio del sistema ni

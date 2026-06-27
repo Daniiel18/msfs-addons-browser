@@ -140,6 +140,95 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     });
   };
 
+  // (v6.2.3) Persistencia COMPARTIDA en Supabase (tabla `vs_results`) para que el
+  // resultado del rival aparezca AUNQUE no coincidan online (#2/#3). El realtime
+  // sólo cubre "ambos conectados a la vez"; esto cubre "uno voló antes / tuvo que
+  // salir y volvió luego". Falla en silencio si la tabla no existe → la app sigue
+  // con realtime + localStorage. (SQL de creación en las notas del release.)
+  const upsertResult = () => {
+    const st = get();
+    const self = st.self;
+    if (!client || !currentChannelName || !self) return;
+    void client
+      .from("vs_results")
+      .upsert(
+        {
+          channel: currentChannelName,
+          identity: self.identity,
+          name: self.name,
+          callsign: self.ofp.callsign,
+          fpm: st.selfLanding?.fpm ?? null,
+          grade: st.selfLanding?.grade ?? null,
+          registration: st.selfAircraft?.registration ?? null,
+          aircraft_type: st.selfAircraft?.aircraftType ?? null,
+          airline: st.selfAircraft?.airlineName ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "channel,identity" },
+      )
+      .then(
+        () => {},
+        () => {},
+      ); // ignora errores (tabla ausente / RLS / red)
+  };
+
+  // Lee los resultados persistidos de ESTE vuelo y los fusiona. Si el rival no
+  // llegó por presence (offline), lo RECONSTRUYE desde su fila (misma ruta/día
+  // que el propio OFP) para que el botón/modal Crew VS salgan igual.
+  const fetchPersistedResults = (name: string, selfPilot: VsPilot) => {
+    if (!client) return;
+    void client
+      .from("vs_results")
+      .select("*")
+      .eq("channel", name)
+      .then(
+        ({ data }: { data: Array<Record<string, unknown>> | null }) => {
+          if (!data || currentChannelName !== name) return;
+          const patch: Partial<LiveVsState> = {};
+          for (const row of data) {
+            const fpm = (row.fpm as number | null) ?? null;
+            const landing: VsLanding | null =
+              fpm != null
+                ? { fpm, grade: (row.grade as string) ?? "acceptable" }
+                : null;
+            const reg = (row.registration as string | null) ?? null;
+            const acType = (row.aircraft_type as string | null) ?? null;
+            const airline = (row.airline as string | null) ?? null;
+            const aircraft: VsAircraft | null =
+              reg || acType || airline
+                ? { registration: reg, aircraftType: acType, airlineName: airline }
+                : null;
+            if (row.identity === selfPilot.identity) {
+              if (landing && !get().selfLanding) patch.selfLanding = landing;
+              if (aircraft && !get().selfAircraft) patch.selfAircraft = aircraft;
+            } else {
+              if (landing) patch.rivalLanding = landing;
+              if (aircraft) patch.rivalAircraft = aircraft;
+              if (!get().rival) {
+                patch.rival = {
+                  identity: row.identity as string,
+                  name: (row.name as string) ?? (row.identity as string),
+                  ofp: {
+                    ...selfPilot.ofp,
+                    registration: reg,
+                    aircraft: acType ?? selfPilot.ofp.aircraft,
+                    callsign: (row.callsign as string | null) ?? null,
+                    flightNumber: null,
+                  },
+                };
+                patch.matchReady = true;
+              }
+            }
+          }
+          if (Object.keys(patch).length) {
+            set(patch);
+            persist();
+          }
+        },
+        () => {}, // ignora errores
+      );
+  };
+
   return {
   connected: false,
   self: null,
@@ -246,12 +335,16 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
           name: self.name,
           ofp: self.ofp,
         });
+        // (v6.2.3) Refresca por si el rival voló mientras tanto.
+        fetchPersistedResults(name, self);
       } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
         set({ connected: false });
       }
     });
 
     channel = ch;
+    // (v6.2.3) Carga inmediata de resultados persistidos (rival offline incluido).
+    fetchPersistedResults(name, self);
   },
 
   broadcastPos: (pos) => {
@@ -278,12 +371,14 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     }
     set({ selfAircraft: a });
     persist(); // (v6.2.2) guarda el avión real propio para este vuelo
+    upsertResult(); // (v6.2.3) comparte el avión real con el rival (async)
   },
 
   broadcastLanding: (result) => {
     // Fija el aterrizaje propio (aunque no haya canal) y lo emite al rival.
     set({ selfLanding: result });
     persist(); // (v6.2.2) persiste el FPM propio para este vuelo (#1)
+    upsertResult(); // (v6.2.3) comparte el FPM con el rival aunque esté offline
     if (!channel || !get().connected) return;
     const self = get().self;
     void channel.send({

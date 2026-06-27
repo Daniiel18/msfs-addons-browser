@@ -5222,7 +5222,7 @@ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "simfleet"
-version = "6.2.2"
+version = "6.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5262,6 +5262,8 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "webview2-com",
+ "windows-core 0.61.2",
  "windows-record",
  "winreg 0.55.0",
  "zip",

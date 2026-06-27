@@ -1,12 +1,22 @@
+// (v6.2.3) Base AUTO-GENERADA desde OpenFlights (~1180 aerolíneas) — cobertura
+// amplia para que salga el logo de "todas" las aerolíneas, no sólo las del mapa
+// curado. Los mapas curados de este archivo SIEMPRE tienen prioridad.
+import {
+  OF_ICAO_TO_IATA,
+  OF_CALLSIGN_TO_IATA,
+  OF_NAME_TO_IATA,
+  OF_ICAO_TO_NAME,
+} from "./airlineCodesData";
+
 /**
  * (v4.9.0) Mapa ICAO (3 letras) → IATA (2 letras) de aerolíneas.
  *
  * Guardamos el código ICAO por vuelo (callsign/OFP), pero los CDN de
- * logos gratuitos (avs.io, daisycon) indexan por IATA. Este mapa cubre
- * las aerolíneas grandes del mundo; si un ICAO no está aquí, el
- * componente AirlineLogo cae a un chip con el código (no pide red, así
- * evitamos el placeholder genérico que devuelven los CDN para códigos
- * desconocidos).
+ * logos gratuitos (avs.io, daisycon) indexan por IATA. Este mapa CURADO
+ * cubre las aerolíneas grandes + carriers modernos que faltan en
+ * OpenFlights (p.ej. Arajet). Si un ICAO no está aquí, caemos a la base
+ * de OpenFlights (`OF_ICAO_TO_IATA`); si tampoco está, AirlineLogo cae a
+ * un chip con el código.
  *
  * Mantener en MAYÚSCULAS. Añadir entradas según haga falta.
  */
@@ -27,6 +37,7 @@ export const ICAO_TO_IATA: Record<string, string> = {
   AMX: "AM", // Aeroméxico
   VOI: "Y4", // Volaris
   VIV: "VB", // Viva Aerobus
+  DWI: "DM", // Arajet (Rep. Dominicana) — no está en OpenFlights
   // ─ Latinoamérica ─
   LAN: "LA", // LATAM
   LPE: "LA", // LATAM Perú
@@ -183,7 +194,9 @@ export const ICAO_TO_IATA: Record<string, string> = {
 /** Devuelve el IATA para un ICAO conocido, o `null`. */
 export function icaoToIata(icao?: string | null): string | null {
   if (!icao) return null;
-  return ICAO_TO_IATA[icao.toUpperCase().trim()] ?? null;
+  const k = icao.toUpperCase().trim();
+  // Curado primero (mejor calidad / modernos), luego la base OpenFlights.
+  return ICAO_TO_IATA[k] ?? OF_ICAO_TO_IATA[k] ?? null;
 }
 
 /**
@@ -416,6 +429,7 @@ const NAME_KEYWORD_TO_IATA: ReadonlyArray<readonly [string, string]> = [
  */
 export function nameToIata(name?: string | null): string | null {
   if (!name) return null;
+  const raw = name.toUpperCase().trim();
   const tokens = name
     .replace(/\([^)]*\)/g, " ") // (N827DN - C.E.Woolman), (2016), (178Seat)
     .split(/\s+/)
@@ -423,12 +437,25 @@ export function nameToIata(name?: string | null): string | null {
   const cleaned = tokens.join(" ");
   const hay = " " + cleaned.toLowerCase() + " ";
 
+  // 1) Palabras clave curadas (resuelven el texto de TÍTULO de livery, p.ej.
+  //    "iFly 737-MAX8 WestJet C-FEWJ" → WS).
   for (const [kw, iata] of NAME_KEYWORD_TO_IATA) {
     if (hay.includes(kw)) return iata;
   }
+  // 2) (v6.2.3) Callsign EXACTO de OpenFlights — el `ATC AIRLINE` del sim suele
+  //    SER el callsign ("COPA"→CM, "SOUTHWEST"→WN, "DOMINICANA"→DO).
+  if (OF_CALLSIGN_TO_IATA[raw]) return OF_CALLSIGN_TO_IATA[raw];
+  // 3) (v6.2.3) Nombre completo normalizado de OpenFlights ("Aerolane"→XL,
+  //    "Vietnam Airlines"→VN) — para valores que son el nombre, no el callsign.
+  const nm = raw.replace(/[^A-Z0-9]/g, "");
+  if (nm.length >= 4 && OF_NAME_TO_IATA[nm]) return OF_NAME_TO_IATA[nm];
+  // 4) Token ICAO de 3 letras embebido en el texto (curado o base OpenFlights).
   for (const tok of tokens) {
     const t = tok.toUpperCase().replace(/[^A-Z]/g, "");
-    if (t.length === 3 && ICAO_TO_IATA[t]) return ICAO_TO_IATA[t];
+    if (t.length === 3) {
+      const iata = ICAO_TO_IATA[t] ?? OF_ICAO_TO_IATA[t];
+      if (iata) return iata;
+    }
   }
   return null;
 }
@@ -510,10 +537,13 @@ const ICAO_TO_NAME: Record<string, string> = {
   GLO: "GOL",
   AZU: "Azul",
   AZA: "ITA Airways",
+  DWI: "Arajet", // no está en OpenFlights
 };
 
 /** Nombre legible de la aerolínea por ICAO; `null` si no está mapeada. */
 export function icaoToName(icao?: string | null): string | null {
   if (!icao) return null;
-  return ICAO_TO_NAME[icao.toUpperCase().trim()] ?? null;
+  const k = icao.toUpperCase().trim();
+  // Curado primero; luego la base de OpenFlights (~1180 nombres reales).
+  return ICAO_TO_NAME[k] ?? OF_ICAO_TO_NAME[k] ?? null;
 }

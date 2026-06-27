@@ -100,8 +100,16 @@ export default function App() {
       }
     };
     window.addEventListener("keydown", blockReload, { capture: true });
-    return () =>
+    // (v6.2.3) Bloquear el menú contextual (clic derecho): da impresión de
+    // navegador y deja a la vista "Recargar / Inspeccionar". No es una web.
+    const blockContextMenu = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener("contextmenu", blockContextMenu, { capture: true });
+    return () => {
       window.removeEventListener("keydown", blockReload, { capture: true });
+      window.removeEventListener("contextmenu", blockContextMenu, {
+        capture: true,
+      });
+    };
   }, []);
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
   const settingsLoaded = useSettingsStore((s) => s.loaded);

@@ -32,6 +32,7 @@ pub mod openmeteo;
 pub mod package_ops;
 pub mod parser;
 pub mod perf_config;
+pub mod planespotters;
 pub mod pmdg_liveries;
 pub mod scoring;
 pub mod sim;
@@ -132,6 +133,33 @@ pub fn run() {
             // como interruptor para mostrar/ocultar.
             init_tray(&handle_for_tray)?;
             app.manage(state);
+            // (v6.2.3) Windows: desactiva las teclas aceleradoras del WebView2
+            // (F5 / Ctrl+R recargan la app y el JS no puede frenarlas — son
+            // accelerators que el host procesa a nivel nativo) y el menú
+            // contextual por defecto. La app NO es un navegador.
+            #[cfg(target_os = "windows")]
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.with_webview(|webview| {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+                    use windows_core::Interface;
+                    // SAFETY: API COM de WebView2; corre en el hilo de UI.
+                    unsafe {
+                        let controller = webview.controller();
+                        if let Ok(core) = controller.CoreWebView2() {
+                            if let Ok(settings) = core.Settings() {
+                                let _ =
+                                    settings.SetAreDefaultContextMenusEnabled(false);
+                                if let Ok(s3) =
+                                    settings.cast::<ICoreWebView2Settings3>()
+                                {
+                                    let _ = s3
+                                        .SetAreBrowserAcceleratorKeysEnabled(false);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -166,6 +194,7 @@ pub fn run() {
             commands::gsx::gsx_list_installed_icaos,
             commands::gsx::gsx_install_profile,
             commands::gsx::read_text_file,
+            planespotters::aircraft_photo,
             commands::updater::check_for_update,
             commands::updater::install_update,
             commands::airports::list_addons_on_map,

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Loader2, Save, X } from "lucide-react";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { useUnits } from "../lib/units";
 import type { FlightLogEntry } from "../lib/types";
 
 interface Props {
@@ -28,6 +29,15 @@ interface Props {
  *     diferente (ej. fuel para reservas).
  */
 export function EditFlightModal({ entry, onClose, onSaved }: Props) {
+  // (v6.2.3) Unidad de peso del usuario (lb/kg). La DB SIEMPRE guarda kg;
+  // mostramos/editamos en la unidad elegida y convertimos al guardar. Antes
+  // el modal mostraba kg crudo aunque el usuario tuviera lbs.
+  const units = useUnits();
+  const wUnit = units.unit.weight; // "kg" | "lb"
+  const perKg = units.conv.weight(1); // factor display/kg (1 si kg, ~2.2046 si lb)
+  const kgToDisp = (kg: number) => Math.round(units.conv.weight(kg));
+  const dispToKg = (disp: number) => Math.round(disp / perKg);
+
   // Estado del form — todos como strings para input controlado.
   const [hours, setHours] = useState(() =>
     entry.flightTimeS != null
@@ -42,11 +52,13 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
   const [passengers, setPassengers] = useState(() =>
     entry.passengers != null ? entry.passengers.toString() : "",
   );
-  const [cargoKg, setCargoKg] = useState(() =>
-    entry.cargoKg != null ? entry.cargoKg.toString() : "",
+  // (v6.2.3) Cargo / fuel se MUESTRAN en la unidad del usuario (display),
+  // no en kg crudo. Se convierten de vuelta a kg en handleSave.
+  const [cargo, setCargo] = useState(() =>
+    entry.cargoKg != null ? kgToDisp(entry.cargoKg).toString() : "",
   );
-  const [fuelUsedKg, setFuelUsedKg] = useState(() =>
-    entry.fuelUsedKg != null ? entry.fuelUsedKg.toString() : "",
+  const [fuelUsed, setFuelUsed] = useState(() =>
+    entry.fuelUsedKg != null ? kgToDisp(entry.fuelUsedKg).toString() : "",
   );
   const [depGate, setDepGate] = useState(() => entry.departureGate ?? "");
   const [arrGate, setArrGate] = useState(() => entry.arrivalGate ?? "");
@@ -89,6 +101,13 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
         const n = parseInt(s, 10);
         return Number.isNaN(n) ? null : n;
       };
+      // (v6.2.3) Cargo/fuel vienen en la unidad del usuario → a kg para la DB.
+      const weightOrNull = (s: string): number | null => {
+        const n = numOrNull(s);
+        return n == null ? null : dispToKg(n);
+      };
+      const cargoKg = weightOrNull(cargo);
+      const fuelUsedKg = weightOrNull(fuelUsed);
 
       const input = {
         flightTimeS:
@@ -99,12 +118,8 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           numOrNull(passengers) !== entry.passengers
             ? numOrNull(passengers)
             : undefined,
-        cargoKg:
-          numOrNull(cargoKg) !== entry.cargoKg ? numOrNull(cargoKg) : undefined,
-        fuelUsedKg:
-          numOrNull(fuelUsedKg) !== entry.fuelUsedKg
-            ? numOrNull(fuelUsedKg)
-            : undefined,
+        cargoKg: cargoKg !== entry.cargoKg ? cargoKg : undefined,
+        fuelUsedKg: fuelUsedKg !== entry.fuelUsedKg ? fuelUsedKg : undefined,
         departureGate:
           depGate !== (entry.departureGate ?? "") ? depGate : undefined,
         arrivalGate:
@@ -250,24 +265,24 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   max={999}
                 />
               </Field>
-              <Field label={t("editflight.cargo")}>
+              <Field label={`${t("editflight.cargo")} · ${wUnit}`}>
                 <NumInput
-                  value={cargoKg}
-                  onChange={setCargoKg}
+                  value={cargo}
+                  onChange={setCargo}
                   placeholder="—"
                   min={0}
-                  max={500_000}
+                  max={1_000_000}
                 />
               </Field>
             </div>
 
-            <Field label={t("editflight.fuel")}>
+            <Field label={`${t("editflight.fuel")} · ${wUnit}`}>
               <NumInput
-                value={fuelUsedKg}
-                onChange={setFuelUsedKg}
+                value={fuelUsed}
+                onChange={setFuelUsed}
                 placeholder="—"
                 min={0}
-                max={500_000}
+                max={1_000_000}
               />
               <p className="mt-1 text-[10px] text-slate-500">
                 Si SimConnect estaba conectado al pushback, ya se capturó
