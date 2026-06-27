@@ -73,6 +73,9 @@ interface LiveVsState {
   /** (v6.2.2) Avión REAL en vuelo de cada piloto (del sim, no del OFP). */
   selfAircraft: VsAircraft | null;
   rivalAircraft: VsAircraft | null;
+  /** (v6.2.7) Canal del duelo EN VIVO actual (vacío si no hay). El FlightBook lo
+   *  compara con el del vuelo seleccionado para decidir live vs histórico. */
+  currentChannel: string;
 
   start: (url: string, key: string, self: VsPilot) => void;
   broadcastPos: (pos: VsPos) => void;
@@ -104,6 +107,11 @@ interface VsPersisted {
   rivalLanding: VsLanding | null;
   selfAircraft: VsAircraft | null;
   rivalAircraft: VsAircraft | null;
+  // (v6.2.7) Pilotos del duelo — guardados para poder REVISAR el Crew VS de un
+  // vuelo PASADO (al seleccionarlo en el FlightBook) aunque el rival no esté
+  // online ahora.
+  self?: VsPilot | null;
+  rival?: VsPilot | null;
 }
 
 const VS_STORE_PREFIX = "simfleet.vs.";
@@ -115,6 +123,22 @@ function loadPersisted(name: string): VsPersisted | null {
   } catch {
     return null;
   }
+}
+
+/** (v6.2.7) Nombre de canal/clave de duelo a partir de fecha+ruta. El FlightBook
+ *  lo usa para cargar el Crew VS del vuelo SELECCIONADO. Igual formato que
+ *  `channelName(ofp)`. */
+export function vsChannelKey(
+  date: string,
+  origin: string,
+  dest: string,
+): string {
+  return `simfleet-vs-${date}-${origin}-${dest}`.toLowerCase();
+}
+
+/** (v6.2.7) Carga el snapshot persistido (duelo) de un canal/clave. */
+export function loadVsSnapshot(channel: string): VsPersisted | null {
+  return loadPersisted(channel);
 }
 
 function savePersisted(name: string, data: VsPersisted) {
@@ -137,6 +161,8 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       rivalLanding: st.rivalLanding,
       selfAircraft: st.selfAircraft,
       rivalAircraft: st.rivalAircraft,
+      self: st.self,
+      rival: st.rival,
     });
   };
 
@@ -240,12 +266,13 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
   rivalLanding: null,
   selfAircraft: null,
   rivalAircraft: null,
+  currentChannel: "",
 
   start: (url, key, self) => {
     const name = channelName(self.ofp);
     // Ya conectados al mismo canal con la misma identidad → nada que hacer.
     if (channel && currentChannelName === name && get().self?.identity === self.identity) {
-      set({ self });
+      set({ self, currentChannel: name });
       return;
     }
     get().stop();
@@ -265,6 +292,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     const saved = loadPersisted(name);
     set({
       self,
+      currentChannel: name,
       connected: false,
       rival: null,
       rivalPos: null,
@@ -400,6 +428,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     currentChannelName = "";
     set({
       connected: false,
+      currentChannel: "",
       rival: null,
       rivalPos: null,
       matchReady: false,

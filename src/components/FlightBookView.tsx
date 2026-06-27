@@ -6,7 +6,6 @@ import {
   ArrowLeft,
   ClipboardCheck,
   Clock,
-  Cloud,
   Droplet,
   Globe,
   MapPin,
@@ -20,12 +19,15 @@ import {
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { useLiveVsStore } from "../stores/useLiveVsStore";
+import {
+  useLiveVsStore,
+  vsChannelKey,
+  loadVsSnapshot,
+} from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { EditFlightModal } from "./EditFlightModal";
-import { WeatherModal } from "./WeatherModal";
 import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
@@ -128,8 +130,6 @@ export function FlightBookView() {
   };
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
-  // (v4.0.0 — P7) Estado del Weather modal.
-  const [weatherOpen, setWeatherOpen] = useState(false);
   // (v6 #3) Estado del modal de combate Live VS.
   const [vsOpen, setVsOpen] = useState(false);
   // (v3.6.1 fix I6) Colapso del SelectedFlightPanel. Cuando true,
@@ -144,6 +144,19 @@ export function FlightBookView() {
         : null,
     [entries, selectedFlightId],
   );
+
+  // (v6.2.7) ¿El vuelo seleccionado tiene un Crew VS guardado? Habilita el tab
+  // para REVISAR el duelo de ese vuelo aunque el rival no esté online ahora.
+  const vsSnapshotExists = useMemo(() => {
+    const f = selectedFlight;
+    if (!f?.originIcao || !f?.destinationIcao || !f?.startedAt) return false;
+    const ch = vsChannelKey(
+      f.startedAt.slice(0, 10),
+      f.originIcao,
+      f.destinationIcao,
+    );
+    return loadVsSnapshot(ch)?.self != null;
+  }, [selectedFlight]);
 
   // Refresh al montar — el watcher emite eventos que actualizan
   // automáticamente, pero el primer mount necesita un pull.
@@ -170,16 +183,6 @@ export function FlightBookView() {
       setChecklistOpen(false);
     }
   }, [selectedFlightId, selectedFlight?.source, checklistOpen]);
-
-  // (v4.0.0 — P7) Cierra el Weather modal al volver al globo, o si
-  // se cambia a un vuelo VAS import (Weather no aplica para ellos).
-  useEffect(() => {
-    if (!weatherOpen) return;
-    const isSimflown = selectedFlight?.source === "simconnect";
-    if (selectedFlightId == null || !isSimflown) {
-      setWeatherOpen(false);
-    }
-  }, [selectedFlightId, selectedFlight?.source, weatherOpen]);
 
   // (v3.6.0 Phase H — Epic D) Tag de aerolínea activa (del store).
   // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
@@ -503,10 +506,9 @@ export function FlightBookView() {
               selectedFlightSource={selectedFlight?.source ?? null}
               onToggleChecklist={() => setChecklistOpen((v) => !v)}
               checklistOpen={checklistOpen && selectedFlightId != null}
-              onToggleWeather={() => setWeatherOpen((v) => !v)}
-              weatherOpen={weatherOpen && selectedFlightId != null}
               onToggleVs={() => setVsOpen((v) => !v)}
               vsOpen={vsOpen && selectedFlightId != null}
+              vsHasSnapshot={vsSnapshotExists}
             />
           )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
@@ -527,20 +529,14 @@ export function FlightBookView() {
               />
             )}
 
-            {/* (v4.0.0 — P7) Weather modal — flotante resizable con
-                mapa MapLibre + capas weather. Solo aparece para
-                vuelos SimConnect (no VAS imports). */}
-            {weatherOpen && selectedFlight != null && (
-              <WeatherModal
-                entry={selectedFlight}
-                onClose={() => setWeatherOpen(false)}
-              />
-            )}
 
             {/* (v6 #3) Modal de combate Live VS — comparativa Daniel vs
                 Héctor (avión, aerolínea, matrícula, foto, FPM en vivo). */}
             {vsOpen && selectedFlightId != null && (
-              <VsCombatModal onClose={() => setVsOpen(false)} />
+              <VsCombatModal
+                entry={selectedFlight}
+                onClose={() => setVsOpen(false)}
+              />
             )}
 
             {/* GLASS OVERLAY — card de detalle flotando sobre el mapa.
@@ -1755,19 +1751,17 @@ function DetailActionsBar({
   selectedFlightSource,
   onToggleChecklist,
   checklistOpen,
-  onToggleWeather,
-  weatherOpen,
   onToggleVs,
   vsOpen,
+  vsHasSnapshot,
 }: {
   selectedFlightId: number | null;
   selectedFlightSource: string | null;
   onToggleChecklist: () => void;
   checklistOpen: boolean;
-  onToggleWeather: () => void;
-  weatherOpen: boolean;
   onToggleVs: () => void;
   vsOpen: boolean;
+  vsHasSnapshot: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
   // (v6 #3) Live VS — el tab "Crew VS" solo se habilita cuando el rival
@@ -1794,24 +1788,14 @@ function DetailActionsBar({
       active: checklistOpen,
     },
     {
-      // (v4.0.0 — P7) Weather modal habilitado para vuelos SimConnect.
-      // Para VAS imports se filtra fuera del array de tabs.
-      key: "weather" as const,
-      icon: <Cloud className="h-3.5 w-3.5" />,
-      label: t("fb.tabs.weather"),
-      dot: "bg-amber-400",
-      enabled: !checklistDisabled,
-      onClick: onToggleWeather,
-      active: weatherOpen,
-    },
-    {
-      // (v6 #3) Crew VS — duelo en vivo Daniel vs Héctor. Habilitado solo
-      // cuando hay rival presente; sale del filtro si no es vuelo SimFleet.
+      // (v6 #3) Crew VS — duelo Daniel vs Héctor. (v6.2.7) Habilitado cuando hay
+      // rival EN VIVO o cuando el vuelo seleccionado tiene un duelo GUARDADO
+      // (para revisar el Crew VS de ese vuelo pasado).
       key: "vs" as const,
       icon: <Swords className="h-3.5 w-3.5" />,
       label: t("vs.tab"),
-      dot: vsMatchReady ? "bg-fuchsia-400" : "bg-slate-500",
-      enabled: vsMatchReady,
+      dot: vsMatchReady || vsHasSnapshot ? "bg-fuchsia-400" : "bg-slate-500",
+      enabled: vsMatchReady || vsHasSnapshot,
       onClick: onToggleVs,
       active: vsOpen,
     },
@@ -1819,7 +1803,6 @@ function DetailActionsBar({
     // me interesa ya"). NotamsModal borrado junto con sus i18n keys.
   ];
   const tabs = allTabs.filter((t) => {
-    if (t.key === "weather" && !isSimflownFlight) return false;
     if (t.key === "checklist" && !isSimflownFlight) return false;
     if (t.key === "vs" && !isSimflownFlight) return false;
     return true;

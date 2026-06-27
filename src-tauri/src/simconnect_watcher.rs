@@ -1786,6 +1786,11 @@ mod windows_simconnect {
         // dure (hasta que arranquen motores de nuevo), el badge/card muestran
         // "deboarding" en vez de "preflight" — el vuelo YA terminó.
         let mut flight_just_ended = false;
+        // (v6.2.7) Momento del cierre del vuelo. "deboarding" sólo se muestra
+        // ~10 min tras aterrizar; luego vuelve a "preflight" para no marcar
+        // "deboarding" durante el BOARDING del siguiente vuelo (motores aún
+        // apagados → el flag seguía pegado).
+        let mut flight_ended_at: Option<std::time::Instant> = None;
 
         // (v4.0.0 P7.4b) Máxima temperatura de frenos (°C) vista en este
         // vuelo vía el puente LVar de MobiFlight. Se persiste con
@@ -2431,6 +2436,7 @@ mod windows_simconnect {
                         &mut idle_ticks_in_landed,
                         &mut engines_off_ticks,
                         &mut flight_just_ended,
+                        &mut flight_ended_at,
                         &mut initial_fuel_lb,
                         &mut paused_seconds_total,
                         &mut passed_taxi_threshold,
@@ -3064,6 +3070,7 @@ mod windows_simconnect {
         idle_ticks_in_landed: &mut u32,
         engines_off_ticks: &mut u32,
         flight_just_ended: &mut bool,
+        flight_ended_at: &mut Option<std::time::Instant>,
         initial_fuel_lb: &mut Option<f64>,
         paused_seconds_total: &mut u64,
         passed_taxi_threshold: &mut bool,
@@ -3421,6 +3428,7 @@ mod windows_simconnect {
         // (v5.3.4) Si los motores vuelven a arrancar, ya no es "post-arribo".
         if any_engine_running {
             *flight_just_ended = false;
+            *flight_ended_at = None;
         }
 
         // (v4.0.0 P7.5) Post-touchdown observation window. La
@@ -3884,6 +3892,7 @@ mod windows_simconnect {
                     // mostrar "deboarding", NO "preflight" (que parecería un
                     // vuelo nuevo). Se limpia cuando arranquen motores otra vez.
                     *flight_just_ended = true;
+                    *flight_ended_at = Some(std::time::Instant::now());
                     // OOOI on-block — cierre real del vuelo. La lat/lon
                     // de aquí es la posición actual = gate / parking
                     // donde el usuario apagó los motores (o donde lleva
@@ -4175,23 +4184,10 @@ mod windows_simconnect {
                 // (v4.0.0 P7.9) Snapshot weather AMBIENT del sim. NaN
                 // guard: SimConnect ocasionalmente emite NaN durante
                 // carga; lo convertimos a None para no escribir basura.
-                let fin = |v: f64| if v.is_finite() { Some(v) } else { None };
-                let wind_dir_c = fin(data.ambient_wind_dir_deg).map(|v| v.round() as i64);
-                let wind_speed_c = fin(data.ambient_wind_vel_kt).map(|v| v.round() as i64);
-                let oat_c_c = fin(data.ambient_temp_c);
-                let baro_hpa_c = fin(data.ambient_pressure_mbar).map(|v| v.round() as i64);
-                let visibility_c = fin(data.ambient_visibility_m).map(|v| v.round() as i64);
-                let precip_c = fin(data.ambient_precip_state).map(|v| v as i64);
-                // (v3.19.0 P7.9c) Nubes de la VIDA REAL (Open-Meteo) en la
-                // posición actual. MSFS 2020 no las expone por SimConnect,
-                // así que tomamos el dato real cacheado (refresco en
-                // background cada ~3 min / 20 NM — no bloquea el watcher) y
-                // lo estampamos en este sample para mostrarlo como histórico.
-                let cloud = crate::openmeteo::cloud_for_position(lat, lon);
-                let cloud_cover_c = cloud.total_pct;
-                let cloud_low_c = cloud.low_pct;
-                let cloud_mid_c = cloud.mid_pct;
-                let cloud_high_c = cloud.high_pct;
+                // (v6.2.7) Weather/clouds RETIRADO: ya no se leen los simvars
+                // ambient ni se consulta Open-Meteo (cloud_for_position) — la
+                // feature de clima se quitó de la app. Los campos del sample van
+                // a None (abajo).
                 // (v3.21.0) Stall warning del sim (bool) para el scoring.
                 let stall_warning_c = data.stall_warning >= 0.5;
                 // (v3.26.0 P7.10) Warnings de daño/forzado (bool).
@@ -4300,16 +4296,18 @@ mod windows_simconnect {
                         eng_oil_temp: eng_oil_temp_c.map(Some),
                         eng_oil_press: eng_oil_press_c.map(Some),
                         scoring_phase: scoring_phase_c,
-                        wind_dir_deg: wind_dir_c,
-                        wind_speed_kt: wind_speed_c,
-                        oat_c: oat_c_c,
-                        baro_hpa: baro_hpa_c,
-                        visibility_m: visibility_c,
-                        precip_state: precip_c,
-                        cloud_cover_pct: cloud_cover_c,
-                        cloud_low_pct: cloud_low_c,
-                        cloud_mid_pct: cloud_mid_c,
-                        cloud_high_pct: cloud_high_c,
+                        // (v6.2.7) Weather/clouds RETIRADO — ya no se captura ni
+                        // se muestra (la feature de clima se quitó de la app).
+                        wind_dir_deg: None,
+                        wind_speed_kt: None,
+                        oat_c: None,
+                        baro_hpa: None,
+                        visibility_m: None,
+                        precip_state: None,
+                        cloud_cover_pct: None,
+                        cloud_low_pct: None,
+                        cloud_mid_pct: None,
+                        cloud_high_pct: None,
                         stall_warning: Some(stall_warning_c),
                         overspeed_warning: Some(overspeed_warning_c),
                         oil_press_warning: Some(oil_press_warning_c),
@@ -4442,6 +4440,13 @@ mod windows_simconnect {
         // (v0.1.25) Phase label granular para UI profesional.
         // Derivado del estado actual + simvars. El frontend lo mapea
         // a un string traducido para el badge "En vuelo ahora".
+        // (v6.2.7) "deboarding" sólo dentro de ~10 min del cierre; pasado eso
+        // se trata como preflight (evita "deboarding" durante el boarding del
+        // siguiente vuelo, con motores aún apagados).
+        let deboarding_recent = *flight_just_ended
+            && (*flight_ended_at)
+                .map(|t| t.elapsed() < std::time::Duration::from_secs(600))
+                .unwrap_or(false);
         let phase_label = derive_phase_label(
             *phase,
             on_ground,
@@ -4452,7 +4457,7 @@ mod windows_simconnect {
             any_engine_running,
             *passed_taxi_threshold,
             in_pushback,
-            *flight_just_ended,
+            deboarding_recent,
         );
 
         // (v1.1.4) Update shared state SIEMPRE (los lectores leen
@@ -5284,8 +5289,13 @@ mod windows_simconnect {
                     "landed_rollout".to_string()
                 } else if gs >= 3.0 {
                     "taxi_in".to_string()
-                } else {
+                } else if !any_engine_running {
+                    // (v6.2.7) Parado + motores APAGADOS = realmente en puerta.
                     "parking".to_string()
+                } else {
+                    // (v6.2.7) Parado con motores ENCENDIDOS = sólo detenido
+                    // (espera de tráfico, cruce, etc.) — NO es "at gate".
+                    "taxi_in".to_string()
                 }
             }
         }

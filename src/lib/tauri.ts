@@ -30,7 +30,6 @@ import type {
   FlightStatus,
   FlightTrackPoint,
   FlightTrackFullPoint,
-  WeatherSample,
   DamageReport,
   DownloadMethod,
   CloudConfig,
@@ -281,9 +280,6 @@ interface Api {
   lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
   /** (v4.12.0) Ruta planificada (navlog SimBrief) pegada a un vuelo. */
   flightRouteFixes: (flightId: number) => Promise<RouteFix[]>;
-  /** (v4.16.0 #5a) API key de OpenWeather embebida (tiles meteo del mapa).
-   *  `null` si no se configuró al compilar. */
-  getOpenweatherKey: () => Promise<string | null>;
 
   // Community
   /** Escanea el folder Community + sincroniza con DB. */
@@ -470,9 +466,6 @@ interface Api {
    *  Performance modal: ALT/GS/IAS/VS, attitude (pitch/bank/g),
    *  flaps/gear/spoilers y 6 métricas × 4 engine slots. */
   getFlightTrackFull: (flightId: number) => Promise<FlightTrackFullPoint[]>;
-  /** (v4.0.0 P7.9b) Weather samples (viento/temp/presión/precip) de un
-   *  vuelo, capturados por sample. Vacío si el vuelo no tiene weather. */
-  getFlightWeather: (flightId: number) => Promise<WeatherSample[]>;
   /** (v4.19.0) Persiste el METAR real de salida/llegada del vuelo si
    *  todavía no lo tiene (COALESCE — nunca pisa lo ya capturado). */
   saveFlightMetar: (
@@ -704,7 +697,6 @@ const realApi: Api = {
     invoke<AirportBrief[]>("lookup_airports", { icaos }),
   flightRouteFixes: (flightId: number) =>
     invoke<RouteFix[]>("flight_route_fixes", { flightId }),
-  getOpenweatherKey: () => invoke<string | null>("get_openweather_key"),
 
   scanCommunity: () => invoke<ScanReport>("scan_community", { communityPath: null }),
   getInstalledSims: () =>
@@ -801,8 +793,6 @@ const realApi: Api = {
     invoke<FlightTrackPoint[]>("get_flight_track", { flightId }),
   getFlightTrackFull: (flightId) =>
     invoke<FlightTrackFullPoint[]>("get_flight_track_full", { flightId }),
-  getFlightWeather: (flightId) =>
-    invoke<WeatherSample[]>("get_flight_weather", { flightId }),
   saveFlightMetar: (flightId, metarOrigin, metarDest) =>
     invoke<void>("save_flight_metar", { flightId, metarOrigin, metarDest }),
   listIncompleteFlights: () =>
@@ -1431,9 +1421,6 @@ const demoApi: Api = {
     await sleep(20);
     return [];
   },
-  async getOpenweatherKey() {
-    return null;
-  },
 
   async scanCommunity() {
     await sleep(250);
@@ -1676,9 +1663,6 @@ const demoApi: Api = {
     return [];
   },
   async getFlightTrackFull() {
-    return [];
-  },
-  async getFlightWeather() {
     return [];
   },
   async saveFlightMetar() {},

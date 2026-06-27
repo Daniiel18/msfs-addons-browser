@@ -1,13 +1,17 @@
+import { useMemo } from "react";
 import { motion } from "framer-motion";
 import { Swords, X, Plane, Gauge, ArrowUp, Flag, Trophy } from "lucide-react";
 import { t } from "../lib/i18n";
 import {
   useLiveVsStore,
+  vsChannelKey,
+  loadVsSnapshot,
   type VsPilot,
   type VsPos,
   type VsLanding,
   type VsAircraft,
 } from "../stores/useLiveVsStore";
+import type { FlightLogEntry } from "../lib/types";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { AirlineLogo } from "./AirlineLogo";
@@ -41,16 +45,61 @@ function airlineIcao(callsign: string | null | undefined): string | null {
  * barra de carrera de progreso sobre la ruta. El rival ya se dibuja en el
  * routemap existente — esto es la ficha del duelo.
  */
-export function VsCombatModal({ onClose }: { onClose: () => void }) {
-  const self = useLiveVsStore((s) => s.self);
-  const rival = useLiveVsStore((s) => s.rival);
-  const rivalPos = useLiveVsStore((s) => s.rivalPos);
-  const selfLanding = useLiveVsStore((s) => s.selfLanding);
-  const rivalLanding = useLiveVsStore((s) => s.rivalLanding);
-  const selfAircraft = useLiveVsStore((s) => s.selfAircraft);
-  const rivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
+export function VsCombatModal({
+  entry,
+  onClose,
+}: {
+  /** (v6.2.7) Vuelo SELECCIONADO en el FlightBook. Si es el duelo en vivo se
+   *  muestra en tiempo real; si es un vuelo pasado se carga su duelo guardado. */
+  entry?: FlightLogEntry | null;
+  onClose: () => void;
+}) {
+  const liveSelf = useLiveVsStore((s) => s.self);
+  const liveRival = useLiveVsStore((s) => s.rival);
+  const liveRivalPos = useLiveVsStore((s) => s.rivalPos);
+  const liveSelfLanding = useLiveVsStore((s) => s.selfLanding);
+  const liveRivalLanding = useLiveVsStore((s) => s.rivalLanding);
+  const liveSelfAircraft = useLiveVsStore((s) => s.selfAircraft);
+  const liveRivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
+  const currentChannel = useLiveVsStore((s) => s.currentChannel);
   const flightStatus = useFlightLogStore((s) => s.status);
   const ofp = useSimBriefStore((s) => s.flights)[0];
+
+  // (v6.2.7) Canal del vuelo seleccionado (fecha+ruta). Si coincide con el duelo
+  // EN VIVO, mostramos tiempo real; si no, cargamos el snapshot histórico de ESE
+  // vuelo — así cada vuelo enseña su propio Crew VS.
+  const entryChannel = useMemo(() => {
+    if (!entry?.originIcao || !entry?.destinationIcao || !entry?.startedAt) {
+      return null;
+    }
+    return vsChannelKey(
+      entry.startedAt.slice(0, 10),
+      entry.originIcao,
+      entry.destinationIcao,
+    );
+  }, [entry?.originIcao, entry?.destinationIcao, entry?.startedAt]);
+
+  const isLive =
+    entryChannel != null &&
+    entryChannel === currentChannel &&
+    liveSelf != null &&
+    liveRival != null;
+
+  const snapshot = useMemo(
+    () => (!isLive && entryChannel ? loadVsSnapshot(entryChannel) : null),
+    [isLive, entryChannel],
+  );
+
+  const self = isLive ? liveSelf : snapshot?.self ?? null;
+  const rival = isLive ? liveRival : snapshot?.rival ?? null;
+  const selfLanding = isLive ? liveSelfLanding : snapshot?.selfLanding ?? null;
+  const rivalLanding = isLive ? liveRivalLanding : snapshot?.rivalLanding ?? null;
+  const selfAircraft = isLive ? liveSelfAircraft : snapshot?.selfAircraft ?? null;
+  const rivalAircraft = isLive
+    ? liveRivalAircraft
+    : snapshot?.rivalAircraft ?? null;
+  // Posiciones en vivo SÓLO en modo live (un vuelo pasado ya no se mueve).
+  const rivalPos = isLive ? liveRivalPos : null;
 
   if (!self || !rival) return null;
 
@@ -62,9 +111,11 @@ export function VsCombatModal({ onClose }: { onClose: () => void }) {
   const total =
     oLat != null && dLat != null ? distNm(oLat, oLon!, dLat, dLon!) : null;
 
-  // Posición propia desde el watcher; la del rival por broadcast.
+  // Posición propia desde el watcher (sólo en vivo).
   const selfPos: VsPos | null =
-    flightStatus?.currentLat != null && flightStatus.currentLon != null
+    isLive &&
+    flightStatus?.currentLat != null &&
+    flightStatus.currentLon != null
       ? {
           lat: flightStatus.currentLat,
           lon: flightStatus.currentLon,
