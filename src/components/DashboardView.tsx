@@ -11,6 +11,7 @@ import {
   Sparkles,
   Trophy,
   Truck,
+  Navigation,
   Users,
 } from "lucide-react";
 import type { DashboardStats } from "../lib/types";
@@ -20,6 +21,10 @@ import {
   useGsxUpdateStore,
   gsxUpdateVisible,
 } from "../stores/useGsxUpdateStore";
+import {
+  useAiracUpdateStore,
+  airacUpdateVisible,
+} from "../stores/useAiracUpdateStore";
 import { derivedType } from "../lib/packageType";
 import { t } from "../lib/i18n";
 
@@ -42,6 +47,10 @@ export function DashboardView() {
   const gsxInfo = useGsxUpdateStore((s) => s.info);
   const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
   const showGsx = gsxUpdateVisible(gsxInfo);
+  // (v6.2.8) Aviso de update de AIRAC.
+  const airacInfo = useAiracUpdateStore((s) => s.info);
+  const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
+  const showAirac = airacUpdateVisible(airacInfo);
 
   // Recalculamos automáticamente cuando termina un scan de Community
   // — el usuario no necesita pulsar "refrescar". `scanning` flipa
@@ -113,6 +122,29 @@ export function DashboardView() {
           </div>
           <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-cyan-500/30 px-2.5 py-1 text-[11px] font-medium text-cyan-100">
             <Download className="h-3 w-3" /> {t("notifications.gsx_update_now")}
+          </span>
+        </button>
+      )}
+
+      {/* (v6.2.8) Banner de update de AIRAC — clic abre Navigraph Hub. */}
+      {showAirac && airacInfo && (
+        <button
+          onClick={() => void airacOpenUpdater()}
+          className="flex w-full items-center gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-left transition-colors hover:bg-indigo-500/15"
+        >
+          <Navigation className="h-5 w-5 shrink-0 text-indigo-300" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-indigo-100">
+              {t("notifications.airac_update")}
+            </div>
+            <div className="text-xs text-indigo-200/80">
+              {t("notifications.airac_cycle")} {airacInfo.installedCycle} →{" "}
+              <strong>{airacInfo.latestCycle}</strong>
+              {airacInfo.effectiveDate ? ` · ${airacInfo.effectiveDate}` : ""}
+            </div>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-indigo-500/30 px-2.5 py-1 text-[11px] font-medium text-indigo-100">
+            <Download className="h-3 w-3" /> {t("notifications.airac_update_now")}
           </span>
         </button>
       )}

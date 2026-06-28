@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Sparkles,
   Truck,
+  Navigation,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
@@ -17,6 +18,10 @@ import {
   useGsxUpdateStore,
   gsxUpdateVisible,
 } from "../stores/useGsxUpdateStore";
+import {
+  useAiracUpdateStore,
+  airacUpdateVisible,
+} from "../stores/useAiracUpdateStore";
 import type { AvailableUpdate, UpdateInfo } from "../lib/types";
 import { api } from "../lib/tauri";
 import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
@@ -56,6 +61,11 @@ export function NotificationsBell() {
   const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
   const showGsx = gsxUpdateVisible(gsxInfo);
 
+  // (v6.2.8) Update de AIRAC (datos de navegación). Persiste hasta actualizar.
+  const airacInfo = useAiracUpdateStore((s) => s.info);
+  const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
+  const showAirac = airacUpdateVisible(airacInfo);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -87,7 +97,10 @@ export function NotificationsBell() {
   const showAppUpdate = appUpdate !== null && !appUpdateDismissed;
   const packageCount = updates.length;
   const totalCount =
-    packageCount + (showAppUpdate ? 1 : 0) + (showGsx ? 1 : 0);
+    packageCount +
+    (showAppUpdate ? 1 : 0) +
+    (showGsx ? 1 : 0) +
+    (showAirac ? 1 : 0);
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
@@ -267,6 +280,39 @@ export function NotificationsBell() {
                       >
                         <ExternalLink className="h-3 w-3" />{" "}
                         {t("notifications.gsx_notes")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* (v6.2.8) Update de AIRAC — en índigo. Clic abre Navigraph Hub. */}
+            {showAirac && airacInfo && (
+              <div className="border-b border-indigo-500/20 bg-indigo-500/10 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <Navigation className="mt-0.5 h-4 w-4 shrink-0 text-indigo-300" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-indigo-100">
+                      {t("notifications.airac_update")}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-indigo-200/80">
+                      {t("notifications.airac_cycle")} {airacInfo.installedCycle}{" "}
+                      → <strong>{airacInfo.latestCycle}</strong>
+                      {airacInfo.effectiveDate
+                        ? ` · ${airacInfo.effectiveDate}`
+                        : ""}
+                    </div>
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          void airacOpenUpdater();
+                          setOpen(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md bg-indigo-500/30 px-2.5 py-1 text-[11px] font-medium text-indigo-100 hover:bg-indigo-500/40"
+                      >
+                        <Download className="h-3 w-3" />{" "}
+                        {t("notifications.airac_update_now")}
                       </button>
                     </div>
                   </div>

@@ -1,3 +1,4 @@
+pub mod airac;
 pub mod aircraft_maintenance;
 pub mod airline_economy;
 pub mod airport_thumbs;
@@ -197,6 +198,9 @@ pub fn run() {
             commands::gsx::read_text_file,
             gsx_update::gsx_check_update,
             gsx_update::gsx_set_installed_version,
+            airac::airac_check_update,
+            airac::airac_set_installed_cycle,
+            airac::airac_updater_path,
             planespotters::aircraft_photo,
             commands::updater::check_for_update,
             commands::updater::install_update,

@@ -20,6 +20,7 @@ import { useSimBriefStore } from "./stores/useSimBriefStore";
 import { useFlightLogStore } from "./stores/useFlightLogStore";
 import { useSettingsStore } from "./stores/useSettingsStore";
 import { useGsxUpdateStore } from "./stores/useGsxUpdateStore";
+import { useAiracUpdateStore } from "./stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "./stores/useGsxLocalStore";
 import { SourceToggle } from "./components/SourceToggle";
 import { SearchBar } from "./components/SearchBar";
@@ -118,11 +119,17 @@ export default function App() {
   // El resultado lo comparten Notificaciones y Dashboard vía el store.
   useEffect(() => {
     const check = useGsxUpdateStore.getState().check;
-    void check();
-    const id = window.setInterval(() => void check(), 60 * 60 * 1000);
+    // (v6.2.8) AIRAC: mismo cadence que GSX (calendario fijo de 28 días).
+    const checkAirac = useAiracUpdateStore.getState().check;
+    const runAll = () => {
+      void check();
+      void checkAirac();
+    };
+    runAll();
+    const id = window.setInterval(runAll, 60 * 60 * 1000);
     // (v6.2.6) Re-chequea al recuperar el foco — detecta el update pronto sin
-    // esperar a la siguiente hora (p.ej. al volver de actualizar GSX).
-    const onFocus = () => void check();
+    // esperar a la siguiente hora (p.ej. al volver de actualizar GSX/AIRAC).
+    const onFocus = () => runAll();
     window.addEventListener("focus", onFocus);
     return () => {
       window.clearInterval(id);

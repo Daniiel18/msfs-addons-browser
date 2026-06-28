@@ -1147,6 +1147,15 @@ export interface GsxUpdateInfo {
   notesUrl: string;
 }
 
+/** (v6.2.8) Estado de actualización del AIRAC (datos de navegación). El ciclo
+ *  vigente se calcula del calendario fijo de 28 días; no hay scraping. */
+export interface AiracUpdateInfo {
+  installedCycle: string;
+  latestCycle: string;
+  effectiveDate: string;
+  hasUpdate: boolean;
+}
+
 /** Perfil GSX Pro disponible en flightsim.to para un ICAO concreto.
  *  Espejo serializado de `gsx::GsxProfile` (Rust) — el comando
  *  `gsx_lookup` devuelve cero o varios. */

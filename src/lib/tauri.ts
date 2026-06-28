@@ -76,6 +76,7 @@ import type {
   UpdateFlightInput,
   UpdateInfo,
   GsxUpdateInfo,
+  AiracUpdateInfo,
   AirlineTag,
   AirlineKpis,
   AirlineLedger,
@@ -158,6 +159,12 @@ interface Api {
   gsxCheckUpdate: () => Promise<GsxUpdateInfo>;
   /** (v6.2.4) Marca una versión de GSX como instalada (tras actualizar). */
   gsxSetInstalledVersion: (version: string) => Promise<void>;
+  /** (v6.2.8) Comprueba el ciclo AIRAC vigente vs el instalado. */
+  airacCheckUpdate: () => Promise<AiracUpdateInfo>;
+  /** (v6.2.8) Marca un ciclo AIRAC como instalado (tras actualizar). */
+  airacSetInstalledCycle: (cycle: string) => Promise<void>;
+  /** (v6.2.8) Ruta del actualizador (Navigraph Hub) o null si no se halla. */
+  airacUpdaterPath: () => Promise<string | null>;
 
   // (v2.0.0) Sincronización con Google Drive
   /** Estado actual de la integración con Google. */
@@ -624,6 +631,10 @@ const realApi: Api = {
   gsxCheckUpdate: () => invoke<GsxUpdateInfo>("gsx_check_update"),
   gsxSetInstalledVersion: (version) =>
     invoke<void>("gsx_set_installed_version", { version }),
+  airacCheckUpdate: () => invoke<AiracUpdateInfo>("airac_check_update"),
+  airacSetInstalledCycle: (cycle) =>
+    invoke<void>("airac_set_installed_cycle", { cycle }),
+  airacUpdaterPath: () => invoke<string | null>("airac_updater_path"),
   cloudGetConfig: () => invoke<CloudConfig>("cloud_get_config"),
   cloudSetCredentials: (clientId, clientSecret) =>
     invoke<void>("cloud_set_credentials", { clientId, clientSecret }),
@@ -2054,6 +2065,20 @@ const demoApi: Api = {
   },
   async gsxSetInstalledVersion() {
     /* demo: no-op */
+  },
+  async airacCheckUpdate() {
+    return {
+      installedCycle: "2506",
+      latestCycle: "2507",
+      effectiveDate: "2026-07-10",
+      hasUpdate: true,
+    };
+  },
+  async airacSetInstalledCycle() {
+    /* demo: no-op */
+  },
+  async airacUpdaterPath() {
+    return null;
   },
   async pilotProfile() {
     return {
