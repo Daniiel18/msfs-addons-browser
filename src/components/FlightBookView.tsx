@@ -19,11 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
-import {
-  useLiveVsStore,
-  vsChannelKey,
-  loadVsSnapshot,
-} from "../stores/useLiveVsStore";
+import { vsChannelKey, loadVsSnapshot } from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
@@ -145,8 +141,9 @@ export function FlightBookView() {
     [entries, selectedFlightId],
   );
 
-  // (v6.2.7) ¿El vuelo seleccionado tiene un Crew VS guardado? Habilita el tab
-  // para REVISAR el duelo de ese vuelo aunque el rival no esté online ahora.
+  // (v6.2.7 · v6.2.11) ¿El vuelo seleccionado tiene un Crew VS guardado CON
+  // AMBOS pilotos? El botón sólo se habilita si Héctor también voló ese vuelo
+  // (el snapshot guarda self+rival). Es histórico por-vuelo, no el en vivo.
   const vsSnapshotExists = useMemo(() => {
     const f = selectedFlight;
     if (!f?.originIcao || !f?.destinationIcao || !f?.startedAt) return false;
@@ -155,7 +152,8 @@ export function FlightBookView() {
       f.originIcao,
       f.destinationIcao,
     );
-    return loadVsSnapshot(ch)?.self != null;
+    const snap = loadVsSnapshot(ch);
+    return snap?.self != null && snap?.rival != null;
   }, [selectedFlight]);
 
   // Refresh al montar — el watcher emite eventos que actualizan
@@ -1764,9 +1762,6 @@ function DetailActionsBar({
   vsHasSnapshot: boolean;
 }) {
   const checklistDisabled = selectedFlightId == null;
-  // (v6 #3) Live VS — el tab "Crew VS" solo se habilita cuando el rival
-  // (Daniel/Héctor) está presente en el mismo canal (misma ruta+día).
-  const vsMatchReady = useLiveVsStore((s) => s.matchReady);
   // (v4.0.0 — P3 + P3.2) Tabs gated por source del vuelo:
   //   · **Checklist** — solo vuelos hechos en SimFleet (`simconnect`).
   //     Para VAS imports el rubric depende de simvars que no existen
@@ -1788,14 +1783,14 @@ function DetailActionsBar({
       active: checklistOpen,
     },
     {
-      // (v6 #3) Crew VS — duelo Daniel vs Héctor. (v6.2.7) Habilitado cuando hay
-      // rival EN VIVO o cuando el vuelo seleccionado tiene un duelo GUARDADO
-      // (para revisar el Crew VS de ese vuelo pasado).
+      // (v6.2.11) Crew VS — HISTÓRICO por vuelo. Habilitado SÓLO si ese vuelo
+      // tiene un duelo guardado (Héctor también lo voló). Muestra el duelo de
+      // ESE vuelo, no el en vivo.
       key: "vs" as const,
       icon: <Swords className="h-3.5 w-3.5" />,
       label: t("vs.tab"),
-      dot: vsMatchReady || vsHasSnapshot ? "bg-fuchsia-400" : "bg-slate-500",
-      enabled: vsMatchReady || vsHasSnapshot,
+      dot: vsHasSnapshot ? "bg-fuchsia-400" : "bg-slate-500",
+      enabled: vsHasSnapshot,
       onClick: onToggleVs,
       active: vsOpen,
     },

@@ -3,7 +3,6 @@ import { motion } from "framer-motion";
 import { Swords, X, Plane, Gauge, ArrowUp, Flag, Trophy } from "lucide-react";
 import { t } from "../lib/i18n";
 import {
-  useLiveVsStore,
   vsChannelKey,
   loadVsSnapshot,
   type VsPilot,
@@ -12,23 +11,9 @@ import {
   type VsAircraft,
 } from "../stores/useLiveVsStore";
 import type { FlightLogEntry } from "../lib/types";
-import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { AirlineLogo } from "./AirlineLogo";
 import { icaoToName } from "../lib/airlineCodes";
 import { useAircraftPhoto } from "./FlightBookView";
-
-/** Distancia great-circle en millas náuticas (haversine). */
-function distNm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 3440.065; // radio terrestre en NM
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
-}
 
 /** ICAO de aerolínea desde el callsign (primeras 3 letras). */
 function airlineIcao(callsign: string | null | undefined): string | null {
@@ -54,19 +39,11 @@ export function VsCombatModal({
   entry?: FlightLogEntry | null;
   onClose: () => void;
 }) {
-  const liveSelf = useLiveVsStore((s) => s.self);
-  const liveRival = useLiveVsStore((s) => s.rival);
-  const liveRivalPos = useLiveVsStore((s) => s.rivalPos);
-  const liveSelfLanding = useLiveVsStore((s) => s.selfLanding);
-  const liveRivalLanding = useLiveVsStore((s) => s.rivalLanding);
-  const liveSelfAircraft = useLiveVsStore((s) => s.selfAircraft);
-  const liveRivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
-  const flightStatus = useFlightLogStore((s) => s.status);
-  const ofp = useSimBriefStore((s) => s.flights)[0];
-
-  // (v6.2.7) Canal del vuelo seleccionado (fecha+ruta). Si coincide con el duelo
-  // EN VIVO, mostramos tiempo real; si no, cargamos el snapshot histórico de ESE
-  // vuelo — así cada vuelo enseña su propio Crew VS.
+  // (v6.2.11) Crew VS = HISTÓRICO por vuelo. NO se muestra el duelo en vivo:
+  // cada vuelo enseña SU propio duelo guardado, cargado por el canal del vuelo
+  // seleccionado (fecha de inicio + ruta). El snapshot sólo existe si Héctor
+  // también voló ese vuelo (guarda a ambos pilotos), así que el modal sólo se
+  // abre para duelos reales y completos.
   const entryChannel = useMemo(() => {
     if (!entry?.originIcao || !entry?.destinationIcao || !entry?.startedAt) {
       return null;
@@ -78,64 +55,26 @@ export function VsCombatModal({
     );
   }, [entry?.originIcao, entry?.destinationIcao, entry?.startedAt]);
 
-  // (v6.2.9 fix) Si hay un duelo EN VIVO (ambos pilotos presentes) lo mostramos
-  // SIEMPRE — antes se exigía que el canal del vuelo seleccionado (por su fecha
-  // de inicio) coincidiera con el canal en vivo (por la fecha del OFP); cuando
-  // diferían, el modal no renderizaba nada ("clic y no pasa nada"). El snapshot
-  // por-vuelo se usa cuando NO hay duelo en vivo (revisar un vuelo pasado).
-  const isLive = liveSelf != null && liveRival != null;
-
   const snapshot = useMemo(
-    () => (!isLive && entryChannel ? loadVsSnapshot(entryChannel) : null),
-    [isLive, entryChannel],
+    () => (entryChannel ? loadVsSnapshot(entryChannel) : null),
+    [entryChannel],
   );
 
-  const self = isLive ? liveSelf : snapshot?.self ?? null;
-  const rival = isLive ? liveRival : snapshot?.rival ?? null;
-  const selfLanding = isLive ? liveSelfLanding : snapshot?.selfLanding ?? null;
-  const rivalLanding = isLive ? liveRivalLanding : snapshot?.rivalLanding ?? null;
-  const selfAircraft = isLive ? liveSelfAircraft : snapshot?.selfAircraft ?? null;
-  const rivalAircraft = isLive
-    ? liveRivalAircraft
-    : snapshot?.rivalAircraft ?? null;
-  // Posiciones en vivo SÓLO en modo live (un vuelo pasado ya no se mueve).
-  const rivalPos = isLive ? liveRivalPos : null;
+  const self = snapshot?.self ?? null;
+  const rival = snapshot?.rival ?? null;
+  const selfLanding = snapshot?.selfLanding ?? null;
+  const rivalLanding = snapshot?.rivalLanding ?? null;
+  const selfAircraft = snapshot?.selfAircraft ?? null;
+  const rivalAircraft = snapshot?.rivalAircraft ?? null;
+  // Histórico: no hay telemetría en vivo (el vuelo ya terminó). La barra de
+  // progreso se oculta al haber aterrizado, así que estas quedan nulas.
+  const selfPos: VsPos | null = null;
+  const rivalPos: VsPos | null = null;
+  const selfRem: number | null = null;
+  const rivalRem: number | null = null;
+  const leader: "self" | "rival" | null = null;
 
   if (!self || !rival) return null;
-
-  // Coords de la ruta (compartida — mismo OFP). Sirven para el progreso.
-  const oLat = ofp?.originLat ?? null;
-  const oLon = ofp?.originLon ?? null;
-  const dLat = ofp?.destinationLat ?? null;
-  const dLon = ofp?.destinationLon ?? null;
-  const total =
-    oLat != null && dLat != null ? distNm(oLat, oLon!, dLat, dLon!) : null;
-
-  // Posición propia desde el watcher (sólo en vivo).
-  const selfPos: VsPos | null =
-    isLive &&
-    flightStatus?.currentLat != null &&
-    flightStatus.currentLon != null
-      ? {
-          lat: flightStatus.currentLat,
-          lon: flightStatus.currentLon,
-          heading: flightStatus.currentHeadingDeg ?? 0,
-          alt: flightStatus.currentAltFt ?? 0,
-          gs: flightStatus.currentGroundSpeedKt ?? 0,
-        }
-      : null;
-
-  // Distancia restante a destino por piloto (menos = va ganando).
-  const remaining = (p: VsPos | null): number | null =>
-    p != null && dLat != null ? distNm(p.lat, p.lon, dLat, dLon!) : null;
-  const selfRem = remaining(selfPos);
-  const rivalRem = remaining(rivalPos);
-
-  // Líder: el que tenga MENOS distancia restante.
-  let leader: "self" | "rival" | null = null;
-  if (selfRem != null && rivalRem != null) {
-    leader = selfRem < rivalRem ? "self" : rivalRem < selfRem ? "rival" : null;
-  }
 
   return (
     <motion.div
@@ -194,35 +133,8 @@ export function VsCombatModal({
           />
         </div>
 
-        {/* Progreso del vuelo sobre la ruta. (v6.2.2) Se OCULTA cuando el vuelo
-            propio ya terminó (aterrizaste) — no es una carrera, es un vuelo. */}
-        {!selfLanding && (
-          <div className="space-y-2 border-t border-slate-800 px-4 py-3">
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500">
-              <span>{ofp?.originIcao ?? self.ofp.origin}</span>
-              <span>{t("vs.progress")}</span>
-              <span>{ofp?.destinationIcao ?? self.ofp.dest}</span>
-            </div>
-            <RaceBar
-              label={self.name}
-              remaining={selfRem}
-              total={total}
-              accent="sky"
-              isYou
-            />
-            <RaceBar
-              label={rival.name}
-              remaining={rivalRem}
-              total={total}
-              accent="rose"
-            />
-            {total == null && (
-              <p className="text-center text-[10px] text-slate-500">
-                {t("vs.no_route")}
-              </p>
-            )}
-          </div>
-        )}
+        {/* (v6.2.11) Crew VS histórico: sin barra de progreso en vivo (el vuelo
+            ya terminó). Sólo fichas + resultado de aterrizaje. */}
 
         {/* (v6.1 #34) Resultado del aterrizaje — aparece cuando alguno aterriza. */}
         {(selfLanding || rivalLanding) && (
@@ -438,41 +350,3 @@ function Stat({
   );
 }
 
-function RaceBar({
-  label,
-  remaining,
-  total,
-  accent,
-  isYou = false,
-}: {
-  label: string;
-  remaining: number | null;
-  total: number | null;
-  accent: "sky" | "rose";
-  isYou?: boolean;
-}) {
-  const pct =
-    remaining != null && total != null && total > 0
-      ? Math.max(0, Math.min(100, ((total - remaining) / total) * 100))
-      : 0;
-  const bar = accent === "sky" ? "bg-sky-400" : "bg-rose-400";
-  const dot = accent === "sky" ? "text-sky-300" : "text-rose-300";
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-[10px]">
-        <span className={`font-semibold ${dot}`}>
-          {label}
-          {isYou ? ` · ${t("vs.you")}` : ""}
-        </span>
-        <span className="text-slate-500">{Math.round(pct)}%</span>
-      </div>
-      <div className="relative h-2 overflow-hidden rounded-full bg-slate-800">
-        <motion.div
-          className={`absolute inset-y-0 left-0 ${bar}`}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.5 }}
-        />
-      </div>
-    </div>
-  );
-}

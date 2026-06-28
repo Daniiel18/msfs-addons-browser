@@ -10,6 +10,7 @@ import {
   Sparkles,
   Truck,
   Navigation,
+  Swords,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
@@ -22,6 +23,7 @@ import {
   useAiracUpdateStore,
   airacUpdateVisible,
 } from "../stores/useAiracUpdateStore";
+import { useLiveVsStore } from "../stores/useLiveVsStore";
 import type { AvailableUpdate, UpdateInfo } from "../lib/types";
 import { api } from "../lib/tauri";
 import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
@@ -66,6 +68,10 @@ export function NotificationsBell() {
   const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
   const showAirac = airacUpdateVisible(airacInfo);
 
+  // (v6.2.11) Avisos de "Crew VS listo" (duelos completados, ambos aterrizaron).
+  const duelNotices = useLiveVsStore((s) => s.duelNotices);
+  const dismissDuelNotice = useLiveVsStore((s) => s.dismissDuelNotice);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -100,7 +106,8 @@ export function NotificationsBell() {
     packageCount +
     (showAppUpdate ? 1 : 0) +
     (showGsx ? 1 : 0) +
-    (showAirac ? 1 : 0);
+    (showAirac ? 1 : 0) +
+    duelNotices.length;
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
@@ -319,6 +326,44 @@ export function NotificationsBell() {
                 </div>
               </div>
             )}
+
+            {/* (v6.2.11) Crew VS listo — duelos completados (ambos aterrizaron).
+                Clic abre el FlightBook para revisarlo; la X lo descarta. */}
+            {duelNotices.map((d) => (
+              <div
+                key={d.channel}
+                className="border-b border-fuchsia-500/20 bg-fuchsia-500/10 px-4 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Swords className="mt-0.5 h-4 w-4 shrink-0 text-fuchsia-300" />
+                  <button
+                    onClick={() => {
+                      setView("flightbook");
+                      setOpen(false);
+                    }}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="text-xs font-semibold text-fuchsia-100">
+                      {t("notifications.vs_ready")}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-fuchsia-200/80">
+                      {d.origin} → {d.dest}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-fuchsia-200/80">
+                      {t("vs.you")} {Math.round(d.selfFpm)} · {d.rivalName}{" "}
+                      {Math.round(d.rivalFpm)} fpm
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => dismissDuelNotice(d.channel)}
+                    title={t("notifications.dismiss_app_update")}
+                    className="shrink-0 rounded-md p-1 text-fuchsia-200/70 hover:bg-fuchsia-500/20 hover:text-fuchsia-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
 
             {packageCount > 0 && (
               <div className="border-b border-slate-800 bg-amber-500/5 px-4 py-2">

@@ -4,6 +4,7 @@ import {
   type SupabaseClient,
   type RealtimeChannel,
 } from "@supabase/supabase-js";
+import { useToastStore } from "./useToastStore";
 
 /**
  * (v6 #3) Live VS — estado del modo competitivo Daniel vs Héctor sobre
@@ -79,12 +80,17 @@ interface LiveVsState {
   /** (v6.2.7) Canal del duelo EN VIVO actual (vacío si no hay). El FlightBook lo
    *  compara con el del vuelo seleccionado para decidir live vs histórico. */
   currentChannel: string;
+  /** (v6.2.11) Avisos de "Crew VS listo" (duelos completados, ambos aterrizaron)
+   *  pendientes de ver — los muestra la campanita. */
+  duelNotices: VsDuelNotice[];
 
   start: (url: string, key: string, self: VsPilot) => void;
   broadcastPos: (pos: VsPos, phase?: string | null) => void;
   broadcastLanding: (result: VsLanding) => void;
   /** (v6.2.2) Fija el avión real propio (lo difunde el siguiente broadcastPos). */
   setSelfAircraft: (a: VsAircraft) => void;
+  /** (v6.2.11) Descarta un aviso de "Crew VS listo" de la campanita. */
+  dismissDuelNotice: (channel: string) => void;
   stop: () => void;
 }
 
@@ -144,6 +150,39 @@ export function loadVsSnapshot(channel: string): VsPersisted | null {
   return loadPersisted(channel);
 }
 
+/** (v6.2.11) Aviso de "Crew VS listo" — se genera al COMPLETARSE un duelo
+ *  (ambos pilotos aterrizaron). Se muestra en la campanita + toast y persiste
+ *  hasta que el usuario lo descarta. */
+export interface VsDuelNotice {
+  channel: string;
+  origin: string;
+  dest: string;
+  selfName: string;
+  rivalName: string;
+  selfFpm: number;
+  rivalFpm: number;
+  at: number;
+}
+
+const VS_NOTICES_KEY = "simfleet.vs.notices.v1";
+
+function loadDuelNotices(): VsDuelNotice[] {
+  try {
+    const raw = localStorage.getItem(VS_NOTICES_KEY);
+    return raw ? (JSON.parse(raw) as VsDuelNotice[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDuelNotices(list: VsDuelNotice[]) {
+  try {
+    localStorage.setItem(VS_NOTICES_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}
+
 function savePersisted(name: string, data: VsPersisted) {
   try {
     localStorage.setItem(VS_STORE_PREFIX + name, JSON.stringify(data));
@@ -167,6 +206,47 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       self: st.self,
       rival: st.rival,
     });
+  };
+
+  // (v6.2.11) Cuando AMBOS pilotos han aterrizado (duelo completo) y hay rival
+  // real, registra un aviso "Crew VS listo" (campanita + toast). Dedup por canal.
+  const recordDuelIfComplete = () => {
+    const st = get();
+    if (
+      !currentChannelName ||
+      !st.self ||
+      !st.rival ||
+      !st.selfLanding ||
+      !st.rivalLanding
+    ) {
+      return;
+    }
+    if (st.duelNotices.some((d) => d.channel === currentChannelName)) return;
+    const notice: VsDuelNotice = {
+      channel: currentChannelName,
+      origin: st.self.ofp.origin,
+      dest: st.self.ofp.dest,
+      selfName: st.self.name,
+      rivalName: st.rival.name,
+      selfFpm: st.selfLanding.fpm,
+      rivalFpm: st.rivalLanding.fpm,
+      at: Date.now(),
+    };
+    const next = [notice, ...st.duelNotices].slice(0, 30);
+    set({ duelNotices: next });
+    saveDuelNotices(next);
+    try {
+      useToastStore.getState().push({
+        kind: "success",
+        title: "Crew VS listo",
+        message: `${notice.origin}→${notice.dest}: tú ${Math.round(
+          notice.selfFpm,
+        )} vs ${notice.rivalName} ${Math.round(notice.rivalFpm)} fpm`,
+        ttlMs: 8000,
+      });
+    } catch {
+      /* ignore */
+    }
   };
 
   // (v6.2.3) Persistencia COMPARTIDA en Supabase (tabla `vs_results`) para que el
@@ -271,6 +351,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
   rivalAircraft: null,
   rivalPhase: null,
   currentChannel: "",
+  duelNotices: loadDuelNotices(),
 
   start: (url, key, self) => {
     const name = channelName(self.ofp);
@@ -363,6 +444,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       if (!p || p.identity === self.identity) return;
       set({ rivalLanding: { fpm: p.fpm, grade: p.grade } });
       persist(); // (v6.2.2) guarda el aterrizaje del rival para este vuelo
+      recordDuelIfComplete(); // (v6.2.11) aviso si el duelo ya está completo
     });
 
     ch.subscribe((status) => {
@@ -417,11 +499,18 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     upsertResult(); // (v6.2.3) comparte el avión real con el rival (async)
   },
 
+  dismissDuelNotice: (channel) => {
+    const next = get().duelNotices.filter((d) => d.channel !== channel);
+    set({ duelNotices: next });
+    saveDuelNotices(next);
+  },
+
   broadcastLanding: (result) => {
     // Fija el aterrizaje propio (aunque no haya canal) y lo emite al rival.
     set({ selfLanding: result });
     persist(); // (v6.2.2) persiste el FPM propio para este vuelo (#1)
     upsertResult(); // (v6.2.3) comparte el FPM con el rival aunque esté offline
+    recordDuelIfComplete(); // (v6.2.11) aviso si el duelo ya está completo
     if (!channel || !get().connected) return;
     const self = get().self;
     void channel.send({

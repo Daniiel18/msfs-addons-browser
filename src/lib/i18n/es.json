@@ -858,6 +858,7 @@
   "notifications.airac_update": "Nuevo AIRAC disponible",
   "notifications.airac_update_now": "Actualizar AIRAC",
   "notifications.airac_cycle": "Ciclo",
+  "notifications.vs_ready": "Crew VS listo",
   "gsx.gate.title": "Cierra MSFS para actualizar GSX",
   "gsx.gate.body": "GSX no se puede actualizar con el simulador abierto. Cierra Microsoft Flight Simulator y la actualización se abrirá automáticamente.",
   "gsx.gate.waiting": "Esperando a que cierres el simulador…",
