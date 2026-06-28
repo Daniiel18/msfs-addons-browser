@@ -3138,7 +3138,11 @@ mod windows_simconnect {
             *osd_emitted = false;
             *osd_touch_fpm = None;
             *osd_bounced = false;
-        } else if on_ground && !*osd_emitted {
+        } else if on_ground && !*osd_emitted && data.ground_velocity_kt >= 30.0 {
+            // (v6.2.9) Guarda anti-falso-positivo: un aterrizaje REAL toca pista
+            // rodando rápido (>=30 kt). En el MENÚ de MSFS 2024 (cambiar avión)
+            // el avión aparece PARADO (0 kt) y disparaba un OSD espurio
+            // "0 fpm / 1.00 G" sobre el menú — ahora se ignora.
             if let Some(td_fpm) = *osd_touch_fpm {
                 let g = data.g_force;
                 let pitch_rad = data.pitch_radians;

@@ -5,7 +5,7 @@ Desktop companion app for Microsoft Flight Simulator. It started as
 Community manager, update checker, installer, GSX helper, SimBrief/ACARS
 integration, and FlightBook telemetry.
 
-Current app version: `6.2.8`.
+Current app version: `6.2.9`.
 
 ## What It Does
 

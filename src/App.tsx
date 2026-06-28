@@ -118,18 +118,14 @@ export default function App() {
   // (v6.2.4) Chequeo de updates de GSX: una vez al arrancar y luego cada hora.
   // El resultado lo comparten Notificaciones y Dashboard vía el store.
   useEffect(() => {
-    const check = useGsxUpdateStore.getState().check;
-    // (v6.2.8) AIRAC: mismo cadence que GSX (calendario fijo de 28 días).
-    const checkAirac = useAiracUpdateStore.getState().check;
-    const runAll = () => {
-      void check();
-      void checkAirac();
-    };
-    runAll();
-    const id = window.setInterval(runAll, 60 * 60 * 1000);
-    // (v6.2.6) Re-chequea al recuperar el foco — detecta el update pronto sin
-    // esperar a la siguiente hora (p.ej. al volver de actualizar GSX/AIRAC).
-    const onFocus = () => runAll();
+    const checkGsx = useGsxUpdateStore.getState().check;
+    // (v6.2.8) AIRAC: el ciclo es de calendario fijo (28 días) → basta validarlo
+    // UNA vez al arrancar. (v6.2.9) Sin polling horario, pedido del usuario.
+    void useAiracUpdateStore.getState().check();
+    // GSX sí se re-chequea: su release no sigue calendario.
+    void checkGsx();
+    const id = window.setInterval(() => void checkGsx(), 60 * 60 * 1000);
+    const onFocus = () => void checkGsx();
     window.addEventListener("focus", onFocus);
     return () => {
       window.clearInterval(id);
