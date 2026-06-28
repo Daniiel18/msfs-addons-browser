@@ -61,7 +61,6 @@ export function VsCombatModal({
   const liveRivalLanding = useLiveVsStore((s) => s.rivalLanding);
   const liveSelfAircraft = useLiveVsStore((s) => s.selfAircraft);
   const liveRivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
-  const currentChannel = useLiveVsStore((s) => s.currentChannel);
   const flightStatus = useFlightLogStore((s) => s.status);
   const ofp = useSimBriefStore((s) => s.flights)[0];
 
@@ -79,11 +78,12 @@ export function VsCombatModal({
     );
   }, [entry?.originIcao, entry?.destinationIcao, entry?.startedAt]);
 
-  const isLive =
-    entryChannel != null &&
-    entryChannel === currentChannel &&
-    liveSelf != null &&
-    liveRival != null;
+  // (v6.2.9 fix) Si hay un duelo EN VIVO (ambos pilotos presentes) lo mostramos
+  // SIEMPRE — antes se exigía que el canal del vuelo seleccionado (por su fecha
+  // de inicio) coincidiera con el canal en vivo (por la fecha del OFP); cuando
+  // diferían, el modal no renderizaba nada ("clic y no pasa nada"). El snapshot
+  // por-vuelo se usa cuando NO hay duelo en vivo (revisar un vuelo pasado).
+  const isLive = liveSelf != null && liveRival != null;
 
   const snapshot = useMemo(
     () => (!isLive && entryChannel ? loadVsSnapshot(entryChannel) : null),

@@ -1392,14 +1392,17 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
 // un aterrizaje fino ronda -100..-300; bajo -600 es duro; bajo -1000 abusivo.
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Clasifica un aterrizaje por su FPM de touchdown (negativo = descenso):
-///   · butter:     fpm > -150  (mantequilla)
-///   · acceptable: -300 ≤ fpm ≤ -150
-///   · hard:       fpm < -300  (duro)
+/// Clasifica un aterrizaje por su FPM de touchdown (negativo = descenso).
+/// (v6.2.9) Umbrales ALINEADOS con los colores del FlightBook (touchdown):
+///   · butter:     fpm > -300       (verde: float / óptimo)
+///   · acceptable: -400 < fpm ≤ -300 (ámbar: duro / al límite)
+///   · hard:       fpm ≤ -400       (rojo: peligroso)
+/// Antes "hard" cortaba en < -300, así que -386 salía rojo/hard en el OSD
+/// mientras el FlightBook lo mostraba ámbar. Ahora coinciden.
 pub fn landing_grade(fpm: i64) -> &'static str {
-    if fpm > -150 {
+    if fpm > -300 {
         "butter"
-    } else if fpm >= -300 {
+    } else if fpm > -400 {
         "acceptable"
     } else {
         "hard"
