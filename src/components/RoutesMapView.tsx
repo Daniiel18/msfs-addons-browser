@@ -184,6 +184,15 @@ export function RoutesMapView({
     setLivePanelOpen(true);
     setLivePanelMin(false);
   };
+  // (v6.2.7) Panel "Flying now" del RIVAL — se abre al clicar su avión en el
+  // mapa. Cerrado por defecto; el clic lo muestra/reabre.
+  const [rivalPanelOpen, setRivalPanelOpen] = useState(false);
+  const [rivalPanelMin, setRivalPanelMin] = useState(false);
+  const rivalReopenRef = useRef<() => void>(() => {});
+  rivalReopenRef.current = () => {
+    setRivalPanelOpen(true);
+    setRivalPanelMin(false);
+  };
   const planeElementRef = useRef<HTMLDivElement | null>(null);
   // (v1.1.3) Flag para saber si los sources/layers ya están
   // inicializados en el mapa. Resuelve el bug intermitente del
@@ -203,6 +212,10 @@ export function RoutesMapView({
   const rivalPos = useLiveVsStore((s) => s.rivalPos);
   const rivalName = useLiveVsStore((s) => s.rival?.name ?? null);
   const rivalPosAt = useLiveVsStore((s) => s.rivalPosAt);
+  // (v6.2.7) Datos del rival para su panel "Flying now" (al clicar su avión).
+  const rival = useLiveVsStore((s) => s.rival);
+  const rivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
+  const rivalPhase = useLiveVsStore((s) => s.rivalPhase);
   // (v4.27.0) Seguimiento sticky del avión en vivo. Cuando el usuario
   // pulsa "Center on aircraft" lo activamos; cada nueva posición del
   // watcher re-centra el mapa automáticamente. Solo un DRAG del mapa
@@ -1206,6 +1219,12 @@ export function RoutesMapView({
       el.style.justifyContent = "center";
       el.style.filter = "drop-shadow(0 0 6px rgba(232, 121, 249, 0.6))";
       el.style.transition = "transform 250ms linear";
+      // (v6.2.7) Clic en el avión del rival → abre su panel "Flying now".
+      el.style.cursor = "pointer";
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        rivalReopenRef.current();
+      });
       el.innerHTML = RIVAL_PLANE_SVG;
       if (rivalName) el.title = rivalName;
       rivalElementRef.current = el;
@@ -1412,6 +1431,45 @@ export function RoutesMapView({
             }}
           />
         )}
+
+      {/* (v6.2.7) Panel "Flying now" del RIVAL (Live VS) — se abre al clicar su
+          avión en el mapa. Mismos datos que el propio pero del broadcast de
+          Héctor/Daniel. Abajo-izquierda + acento fucsia para diferenciarlo. */}
+      {rival && rivalPos && rivalPanelOpen && (
+        <LiveFlightPanel
+          pilotName={rival.name}
+          accent="fuchsia"
+          positionClass="bottom-3 left-3"
+          status={{
+            currentLat: rivalPos.lat,
+            currentLon: rivalPos.lon,
+            currentAltFt: rivalPos.alt,
+            currentGroundSpeedKt: rivalPos.gs,
+            currentHeadingDeg: rivalPos.heading,
+            phaseLabel: rivalPhase,
+            originIcao: rival.ofp.origin,
+            destinationIcao: rival.ofp.dest,
+            originName: null,
+            destinationName: null,
+            aircraftIcao:
+              rivalAircraft?.aircraftType ?? rival.ofp.aircraft ?? null,
+          }}
+          ofp={simbriefFlights.find((f) => f.originIcao === rival.ofp.origin)}
+          minimized={rivalPanelMin}
+          onToggleMin={() => setRivalPanelMin((v) => !v)}
+          onClose={() => setRivalPanelOpen(false)}
+          onCenter={() => {
+            const map = mapRef.current;
+            if (map) {
+              map.easeTo({
+                center: [rivalPos.lon, rivalPos.lat],
+                zoom: Math.max(map.getZoom(), 8),
+                duration: 600,
+              });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1432,6 +1490,23 @@ function gcNm(lat1: number, lon1: number, lat2: number, lon2: number): number {
  *  VATSIM-Radar: progreso origen→destino con NM recorridas/restantes y
  *  ETA en HORA LOCAL del PC (regla de la app: nunca UTC), más cards de
  *  GS / altitud / rumbo y los nombres de los aeropuertos. */
+/** (v6.2.7) Campos que el panel necesita — estructural para poder alimentarlo
+ *  con el vuelo PROPIO (FlightStatus) o con el del RIVAL (sintetizado del
+ *  broadcast de Live VS). */
+interface LivePanelStatus {
+  currentLat?: number | null;
+  currentLon?: number | null;
+  currentAltFt?: number | null;
+  currentGroundSpeedKt?: number | null;
+  currentHeadingDeg?: number | null;
+  phaseLabel?: string | null;
+  originIcao?: string | null;
+  destinationIcao?: string | null;
+  originName?: string | null;
+  destinationName?: string | null;
+  aircraftIcao?: string | null;
+}
+
 function LiveFlightPanel({
   status,
   ofp,
@@ -1439,13 +1514,22 @@ function LiveFlightPanel({
   onToggleMin,
   onClose,
   onCenter,
+  pilotName,
+  positionClass = "bottom-3 right-3",
+  accent = "sky",
 }: {
-  status: import("../lib/types").FlightStatus;
+  status: LivePanelStatus;
   ofp: import("../lib/types").SimBriefFlight | undefined;
   minimized: boolean;
   onToggleMin: () => void;
   onClose: () => void;
   onCenter: () => void;
+  /** (v6.2.7) Nombre del piloto (para el panel del rival: "Héctor"). */
+  pilotName?: string | null;
+  /** (v6.2.7) Posición del panel — el propio va abajo-derecha, el rival
+   *  abajo-izquierda para no solaparse. */
+  positionClass?: string;
+  accent?: "sky" | "fuchsia";
 }) {
   const lat = status.currentLat;
   const lon = status.currentLon;
@@ -1473,8 +1557,11 @@ function LiveFlightPanel({
   }
   const phase = (status.phaseLabel ?? "").replace(/_/g, " ");
 
+  const accentText = accent === "fuchsia" ? "text-fuchsia-300" : "text-sky-300";
   return (
-    <div className="absolute bottom-3 right-3 z-10 w-[300px] rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur">
+    <div
+      className={`absolute ${positionClass} z-10 w-[300px] rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur`}
+    >
       {/* Botonera ⌖ ^ X */}
       <div className="absolute right-2 top-2 flex items-center gap-1">
         <button
@@ -1507,10 +1594,15 @@ function LiveFlightPanel({
       {/* (v4.18.1) Header: ICAO - ICAO estado (feedback usuario; antes
           la fase iba en medio de los dos ICAO). */}
       <div className="flex items-center gap-2 pr-20">
+        {pilotName && (
+          <span className={`text-xs font-bold ${accentText}`}>{pilotName}</span>
+        )}
         <span className="font-mono text-sm font-bold text-slate-100">
           {status.originIcao ?? "—"} - {status.destinationIcao ?? "—"}
         </span>
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-300">
+        <span
+          className={`text-[10px] font-semibold uppercase tracking-wide ${accentText}`}
+        >
           {phase || "—"}
         </span>
       </div>

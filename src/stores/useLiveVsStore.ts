@@ -73,12 +73,15 @@ interface LiveVsState {
   /** (v6.2.2) Avión REAL en vuelo de cada piloto (del sim, no del OFP). */
   selfAircraft: VsAircraft | null;
   rivalAircraft: VsAircraft | null;
+  /** (v6.2.7) Fase del rival (climbing/cruise/…), difundida en el broadcast.
+   *  La usa el panel "Flying now" del rival al hacer clic en su avión. */
+  rivalPhase: string | null;
   /** (v6.2.7) Canal del duelo EN VIVO actual (vacío si no hay). El FlightBook lo
    *  compara con el del vuelo seleccionado para decidir live vs histórico. */
   currentChannel: string;
 
   start: (url: string, key: string, self: VsPilot) => void;
-  broadcastPos: (pos: VsPos) => void;
+  broadcastPos: (pos: VsPos, phase?: string | null) => void;
   broadcastLanding: (result: VsLanding) => void;
   /** (v6.2.2) Fija el avión real propio (lo difunde el siguiente broadcastPos). */
   setSelfAircraft: (a: VsAircraft) => void;
@@ -266,6 +269,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
   rivalLanding: null,
   selfAircraft: null,
   rivalAircraft: null,
+  rivalPhase: null,
   currentChannel: "",
 
   start: (url, key, self) => {
@@ -301,6 +305,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       rivalLanding: saved?.rivalLanding ?? null,
       selfAircraft: saved?.selfAircraft ?? null,
       rivalAircraft: saved?.rivalAircraft ?? null,
+      rivalPhase: null,
     });
 
     const ch = client.channel(name, {
@@ -328,7 +333,11 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     ch.on("presence", { event: "leave" }, syncRival);
     ch.on("broadcast", { event: "pos" }, ({ payload }) => {
       const p = payload as
-        | (VsPos & { identity?: string; aircraft?: VsAircraft | null })
+        | (VsPos & {
+            identity?: string;
+            aircraft?: VsAircraft | null;
+            phase?: string | null;
+          })
         | undefined;
       if (!p || p.identity === self.identity) return;
       // (v6.2.2) El avión del rival sólo cambia muy de vez en cuando — sólo
@@ -343,6 +352,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       set({
         rivalPos: { lat: p.lat, lon: p.lon, heading: p.heading, alt: p.alt, gs: p.gs },
         rivalPosAt: Date.now(),
+        rivalPhase: p.phase ?? null,
         ...(acChanged ? { rivalAircraft: p.aircraft } : {}),
       });
       if (acChanged) persist();
@@ -375,15 +385,20 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     fetchPersistedResults(name, self);
   },
 
-  broadcastPos: (pos) => {
+  broadcastPos: (pos, phase) => {
     if (!channel || !get().connected) return;
     const self = get().self;
     void channel.send({
       type: "broadcast",
       event: "pos",
       // (v6.2.2) Adjuntamos el avión REAL para que el rival muestre la foto
-      // correcta (su matrícula del sim, no la del OFP).
-      payload: { identity: self?.identity, aircraft: get().selfAircraft, ...pos },
+      // correcta. (v6.2.7) + la fase, para el panel "Flying now" del rival.
+      payload: {
+        identity: self?.identity,
+        aircraft: get().selfAircraft,
+        phase: phase ?? null,
+        ...pos,
+      },
     });
   },
 
@@ -435,6 +450,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       selfLanding: null,
       rivalLanding: null,
       rivalAircraft: null,
+      rivalPhase: null,
     });
   },
   };

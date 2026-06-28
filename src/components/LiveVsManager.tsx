@@ -91,13 +91,16 @@ export function LiveVsManager() {
         });
       }
       if (s?.currentLat != null && s.currentLon != null) {
-        broadcastPos({
-          lat: s.currentLat,
-          lon: s.currentLon,
-          heading: s.currentHeadingDeg ?? 0,
-          alt: s.currentAltFt ?? 0,
-          gs: s.currentGroundSpeedKt ?? 0,
-        });
+        broadcastPos(
+          {
+            lat: s.currentLat,
+            lon: s.currentLon,
+            heading: s.currentHeadingDeg ?? 0,
+            alt: s.currentAltFt ?? 0,
+            gs: s.currentGroundSpeedKt ?? 0,
+          },
+          s.phaseLabel ?? null,
+        );
       }
     }, 1500);
     return () => clearInterval(interval);
