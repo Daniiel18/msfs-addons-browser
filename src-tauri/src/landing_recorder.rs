@@ -613,6 +613,18 @@ async fn controller_loop(
     let mut armed = false;
     let mut prev_on_ground = true;
     let mut saved = false;
+    // (v6.2.14) Bug crítico de RAM: el fallback por altitud (`alt < 3000`) también
+    // se cumple en el ASCENSO tras despegar, así que el grabador se armaba al
+    // subir y corría TODO el vuelo (windows-record 0.1 filtra memoria → OOM →
+    // crashea el sim). Dos defensas:
+    //  · `reached_cruise`: solo permitimos el fallback por altitud DESPUÉS de
+    //    haber estado alto (>6000ft) en este vuelo — así el climb-out nunca lo
+    //    dispara, solo el descenso de vuelta.
+    //  · `armed_at`: tope de tiempo armado; si lleva demasiado (holding largo o
+    //    fase que no transiciona) lo paramos para acotar el leak nativo.
+    let mut reached_cruise = false;
+    let mut armed_at: Option<std::time::Instant> = None;
+    const MAX_ARMED: Duration = Duration::from_secs(12 * 60);
 
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -627,23 +639,36 @@ async fn controller_loop(
             if armed {
                 let _ = tx.send(RecCmd::Stop);
                 armed = false;
+                armed_at = None;
                 saved = false;
             }
             prev_on_ground = true;
+            reached_cruise = false;
             continue;
         }
 
         let phase = status.phase_label.clone().unwrap_or_default();
         let on_ground = status.on_ground.unwrap_or(true);
-        // (v6.1 perf) Armamos LO MÁS TARDE posible — solo en aproximación final
-        // — para minimizar la carga de GPU (FPS) durante el descenso en
-        // escenarios pesados. El replay buffer mantiene los últimos N s (cubren
-        // el aterrizaje de sobra), así que no hace falta armar antes. La fase
-        // "approach" del watcher es por ALTURA SOBRE EL TERRENO (sirve también
-        // en aeropuertos de gran altitud); el fallback por altitud MSL baja a
-        // 3000ft solo por si la fase no se derivara.
-        let approaching = matches!(phase.as_str(), "approach")
-            || (!on_ground && status.current_alt_ft.map_or(false, |a| a < 3_000));
+        // Marca que el avión ya subió de verdad (este vuelo) — distingue el
+        // descenso de vuelta del climb-out inicial. Se resetea al tocar tierra.
+        if status.current_alt_ft.map_or(false, |a| a > 6_000) {
+            reached_cruise = true;
+        }
+        if on_ground {
+            reached_cruise = false;
+        }
+        // (v6.1 perf · v6.2.14) Armamos LO MÁS TARDE posible — solo en aproximación
+        // real. La fase "approach"/"descent" del watcher es por ALTURA SOBRE EL
+        // TERRENO. El fallback por altitud MSL (<3000ft) SOLO vale si ya estuvimos
+        // en crucero (`reached_cruise`) y NO estamos en fase de ascenso — así el
+        // paso por 3000ft tras despegar nunca arma el grabador.
+        let descending_phase = matches!(phase.as_str(), "approach" | "descent");
+        let climb_phase = matches!(phase.as_str(), "takeoff" | "climbing" | "cruise");
+        let approaching = descending_phase
+            || (!on_ground
+                && reached_cruise
+                && !climb_phase
+                && status.current_alt_ft.map_or(false, |a| a < 3_000));
 
         // ── Grabación (solo si está activada) ──
         if cfg.enabled {
@@ -658,11 +683,25 @@ async fn controller_loop(
                     fps: cfg.fps.clamp(24, 120) as u32,
                 });
                 armed = true;
+                armed_at = Some(std::time::Instant::now());
                 saved = false;
+            }
+            // Tope de tiempo armado: si lleva demasiado sin aterrizar (holding,
+            // fase atascada), paramos para liberar memoria del grabador. Se
+            // rearmará en el siguiente tick si seguimos en aproximación.
+            if armed
+                && armed_at.map_or(false, |t| t.elapsed() > MAX_ARMED)
+            {
+                let _ = tx.send(RecCmd::Stop);
+                armed = false;
+                armed_at = None;
+                saved = false;
+                tracing::warn!(target: "rec", "replay buffer detenido por tope de tiempo armado (anti-leak)");
             }
         } else if armed {
             let _ = tx.send(RecCmd::Stop);
             armed = false;
+            armed_at = None;
             saved = false;
         }
 
@@ -689,6 +728,7 @@ async fn controller_loop(
         if armed && on_ground && matches!(phase.as_str(), "taxi_in" | "parking" | "deboarding") {
             let _ = tx.send(RecCmd::Stop);
             armed = false;
+            armed_at = None;
             saved = false;
         }
         prev_on_ground = on_ground;
