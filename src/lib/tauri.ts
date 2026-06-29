@@ -104,6 +104,21 @@ interface StartDownloadInput {
   addonSimulator?: string;
 }
 
+/** (v6.2.15) Diagnóstico de memoria — un proceso del árbol de SimFleet. */
+export interface DiagProcInfo {
+  pid: number;
+  parentPid: number | null;
+  name: string;
+  memoryBytes: number;
+  isMain: boolean;
+}
+
+export interface DiagProcReport {
+  totalBytes: number;
+  count: number;
+  processes: DiagProcInfo[];
+}
+
 interface Api {
   listSources: () => Promise<SourceDescriptor[]>;
   search: (query: string, sourceId: string) => Promise<Addon[]>;
@@ -297,6 +312,8 @@ interface Api {
   isSafeMode: () => Promise<boolean>;
   /** (v6) `true` si el watcher de SimConnect está activo (forzado en safe). */
   isWatcherActive: () => Promise<boolean>;
+  /** (v6.2.15) Árbol de procesos de SimFleet + RAM por proceso (diagnóstico). */
+  diagnosticsProcessTree: () => Promise<DiagProcReport>;
   /** (v6 #1) Crea junctions NTFS de `packages` en la Community de la otra
    *  versión de MSFS (cross-link 2020 ↔ 2024). */
   crossLinkCreate: (
@@ -714,6 +731,8 @@ const realApi: Api = {
     invoke<{ has2020: boolean; has2024: boolean }>("get_installed_sims"),
   isSafeMode: () => invoke<boolean>("is_safe_mode"),
   isWatcherActive: () => invoke<boolean>("is_watcher_active"),
+  diagnosticsProcessTree: () =>
+    invoke<DiagProcReport>("diagnostics_process_tree"),
   crossLinkCreate: (otherCommunity, packages) =>
     invoke<CrossLinkResult>("cross_link_create", { otherCommunity, packages }),
   onCrossLinkOffer: (cb) =>
@@ -1450,6 +1469,9 @@ const demoApi: Api = {
   },
   async isWatcherActive() {
     return true;
+  },
+  async diagnosticsProcessTree() {
+    return { totalBytes: 0, count: 0, processes: [] };
   },
   async crossLinkCreate(_otherCommunity: string, packages: CrossLinkPkg[]) {
     await sleep(200);

@@ -39,6 +39,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
+import { DiagnosticsSettings } from "./DiagnosticsSettings";
 
 /**
  * Modal de configuración.
@@ -65,6 +66,7 @@ const SETTINGS_NAV: Array<{ key: string; labelKey: string; icon: React.ReactNode
   { key: "storage", labelKey: "settings.section.storage", icon: <HardDrive className="h-3.5 w-3.5" /> },
   { key: "tour", labelKey: "settings.section.tour", icon: <Compass className="h-3.5 w-3.5" /> },
   { key: "about", labelKey: "settings.section.about", icon: <Info className="h-3.5 w-3.5" /> },
+  { key: "diagnostics", labelKey: "settings.section.diagnostics", icon: <Activity className="h-3.5 w-3.5" /> },
 ];
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -693,6 +695,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     </button>
                   </div>
                 </div>
+              </Section>
+
+              <Section navKey="diagnostics" title={t("settings.section.diagnostics")} icon={<Activity className="h-3.5 w-3.5" />}>
+                <DiagnosticsSettings />
               </Section>
                 </div>
               </SettingsNavContext.Provider>

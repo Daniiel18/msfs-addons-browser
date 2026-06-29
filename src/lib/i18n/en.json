@@ -146,6 +146,7 @@
   "settings.section.storage": "Storage",
   "settings.section.tour": "Welcome tour",
   "settings.section.about": "About",
+  "settings.section.diagnostics": "Diagnostics",
   "settings.section.appearance": "Appearance",
   "settings.section.behavior": "Behavior",
   "settings.section.language": "Language",

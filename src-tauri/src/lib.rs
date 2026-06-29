@@ -10,6 +10,7 @@ pub mod community_scanner;
 pub mod cross_link;
 pub mod damage;
 pub mod db;
+pub mod diagnostics;
 pub mod drop_install;
 pub mod download;
 pub mod flight_log;
@@ -212,6 +213,7 @@ pub fn run() {
             commands::community::pack_liveries,
             commands::community::is_safe_mode,
             commands::community::is_watcher_active,
+            diagnostics::diagnostics_process_tree,
             commands::community::cross_link_create,
             commands::community::list_community_packages,
             commands::community::list_available_updates,
