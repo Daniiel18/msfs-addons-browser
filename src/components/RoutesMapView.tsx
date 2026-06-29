@@ -238,6 +238,61 @@ export function RoutesMapView({
     if (!map || followLat == null || followLon == null) return;
     map.easeTo({ center: [followLon, followLat], duration: 400 });
   }, [followAircraft, followLat, followLon]);
+
+  // (v6.2.11) Seguimiento STICKY del avión del RIVAL — igual que el propio: al
+  // pulsar "focus" en su panel se activa y re-centra en CADA posición nueva
+  // (broadcast), no sólo una vez. El ref lo lee el handler 'dragstart'.
+  const followRivalRef = useRef(false);
+  const [followRival, setFollowRival] = useState(false);
+  useEffect(() => {
+    followRivalRef.current = followRival;
+  }, [followRival]);
+  useEffect(() => {
+    if (!followRival || rivalPos == null) return;
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ center: [rivalPos.lon, rivalPos.lat], duration: 400 });
+  }, [followRival, rivalPos]);
+
+  // (v6.2.11) Traza del rival acumulada desde los broadcasts de posición. Se
+  // reinicia ante un salto grande (teletransporte / nuevo vuelo).
+  const [rivalTrackPoints, setRivalTrackPoints] = useState<
+    { lat: number; lon: number }[]
+  >([]);
+  useEffect(() => {
+    if (rivalPos == null) return;
+    const { lat, lon } = rivalPos;
+    setRivalTrackPoints((prev) => {
+      const last = prev[prev.length - 1];
+      if (last) {
+        if (Math.abs(last.lat - lat) < 1e-6 && Math.abs(last.lon - lon) < 1e-6) {
+          return prev;
+        }
+        if (Math.abs(last.lat - lat) > 1.5 || Math.abs(last.lon - lon) > 1.5) {
+          return [{ lat, lon }];
+        }
+      }
+      return [...prev, { lat, lon }].slice(-3000);
+    });
+  }, [rivalPos]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const src = map.getSource("rt-rival-track") as GeoJSONSource | undefined;
+    if (!src) return;
+    const coords = rivalTrackPoints.map(
+      (p) => [p.lon, p.lat] as [number, number],
+    );
+    src.setData(
+      coords.length >= 2
+        ? {
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates: coords },
+          }
+        : { type: "FeatureCollection", features: [] },
+    );
+  }, [mapReady, rivalTrackPoints]);
   // Cache local de la traza real del vuelo seleccionado — la
   // pedimos al backend con `getFlightTrack` y la convertimos en
   // GeoJSON LineString. Cuando `selectedFlightId` es null/undefined,
@@ -460,6 +515,31 @@ export function RoutesMapView({
           "line-dasharray": [2, 1.5],
         },
       });
+      // (v6.2.11) Traza EN VIVO del RIVAL (Live VS) — fucsia, igual idea que la
+      // propia pero alimentada por las posiciones que llegan por broadcast.
+      map.addSource("rt-rival-track", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-rival-line-glow",
+        type: "line",
+        source: "rt-rival-track",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#e879f9",
+          "line-width": 6,
+          "line-opacity": 0.3,
+        },
+      });
+      map.addLayer({
+        id: "rt-rival-line",
+        type: "line",
+        source: "rt-rival-track",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#f0abfc",
+          "line-width": 2.4,
+          "line-dasharray": [2, 1.5],
+        },
+      });
       // (v4.13.0) Se eliminó la línea proyectada great-circle (rt-projection,
       // cyan): era redundante con la ruta real del navlog y confundía
       // (dos líneas a la vez). Ahora solo se dibuja la ruta planificada.
@@ -569,6 +649,10 @@ export function RoutesMapView({
     map.on("dragstart", (e) => {
       if (e.originalEvent && followAircraftRef.current) {
         setFollowAircraft(false);
+      }
+      // (v6.2.11) Un drag del usuario también suelta el seguimiento del rival.
+      if (e.originalEvent && followRivalRef.current) {
+        setFollowRival(false);
       }
     });
 
@@ -1427,6 +1511,8 @@ export function RoutesMapView({
                 // (v4.27.0) Activa el seguimiento sticky: las próximas
                 // posiciones re-centran solas; el zoom NO lo apaga.
                 setFollowAircraft(true);
+                // (v6.2.11) Sólo se sigue un avión a la vez.
+                setFollowRival(false);
               }
             }}
           />
@@ -1466,6 +1552,11 @@ export function RoutesMapView({
                 zoom: Math.max(map.getZoom(), 8),
                 duration: 600,
               });
+              // (v6.2.11) Igual que el propio: seguimiento sticky del rival
+              // — las próximas posiciones re-centran solas. Apagamos el del
+              // propio para no pelear por el centro del mapa.
+              setFollowRival(true);
+              setFollowAircraft(false);
             }
           }}
         />

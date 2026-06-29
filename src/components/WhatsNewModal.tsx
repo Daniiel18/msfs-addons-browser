@@ -36,24 +36,30 @@ export interface WhatsNewSlide {
   image: string;
 }
 
-/** Slides por defecto — novedades REALES de la v6 (5.5.0). Sustituyen al
- *  changelog viejo (5.1→5.4): cross-link 2020/2024, Hangar con analíticas,
- *  Best Landings (grabación + OSD) y Crew VS. */
+/** Slides por defecto — novedades REALES desde la versión del GSX (6.2.4)
+ *  hasta hoy (6.2.11): avisos de actualización de GSX, avisos de ciclo AIRAC,
+ *  el OSD de aterrizaje siempre encima del sim, y el Crew VS rehecho
+ *  (histórico por vuelo + estela y seguimiento del rival en el mapa). */
 const DEFAULT_SLIDES: WhatsNewSlide[] = [
   {
-    titleKey: "whatsnew.realdata.title",
-    bodyKey: "whatsnew.realdata.body",
-    image: "/whatsnew/realdata.svg",
+    titleKey: "whatsnew.gsxupd.title",
+    bodyKey: "whatsnew.gsxupd.body",
+    image: "/whatsnew/gsx-update.svg",
   },
   {
-    titleKey: "whatsnew.finance2.title",
-    bodyKey: "whatsnew.finance2.body",
-    image: "/whatsnew/finance2.svg",
+    titleKey: "whatsnew.airac.title",
+    bodyKey: "whatsnew.airac.body",
+    image: "/whatsnew/airac-update.svg",
   },
   {
-    titleKey: "whatsnew.settings2.title",
-    bodyKey: "whatsnew.settings2.body",
-    image: "/whatsnew/settings2.svg",
+    titleKey: "whatsnew.osd.title",
+    bodyKey: "whatsnew.osd.body",
+    image: "/whatsnew/osd-landing.svg",
+  },
+  {
+    titleKey: "whatsnew.crewvs2.title",
+    bodyKey: "whatsnew.crewvs2.body",
+    image: "/whatsnew/crewvs-history.svg",
   },
 ];
 
