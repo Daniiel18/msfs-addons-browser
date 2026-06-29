@@ -4,7 +4,11 @@ import { api, isTauri } from "../lib/tauri";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { useLiveVsStore, type VsOfp } from "../stores/useLiveVsStore";
+import {
+  useLiveVsStore,
+  vsCallsignOwner,
+  type VsOfp,
+} from "../stores/useLiveVsStore";
 import {
   DEFAULT_VS_SUPABASE_URL,
   DEFAULT_VS_SUPABASE_KEY,
@@ -43,7 +47,19 @@ export function LiveVsManager() {
   // embebidas por defecto. La URL se normaliza (quita /rest/v1).
   const u = normalizeSupabaseUrl((url ?? "").trim() || DEFAULT_VS_SUPABASE_URL);
   const k = (key ?? "").trim() || DEFAULT_VS_SUPABASE_KEY;
-  const ofp = flights[0]; // OFP más reciente (ya filtrado por propiedad/correo)
+
+  // (v6.2.13) Cuenta SimBrief COMPARTIDA: la lista trae los OFP de los dos
+  // pilotos. Elegimos el que ME corresponde por la regla de callsign (Héctor =
+  // "357", el resto = Daniel) en vez del más reciente — así nunca reclamo el
+  // vuelo del otro ni se cruzan los números en la base de datos. Si todavía no
+  // sé mi identidad, no arranco (para no subir un OFP equivocado).
+  const ofp =
+    identity != null
+      ? (flights.find((f) => vsCallsignOwner(f.callsign) === identity.identity) ??
+        ((identity.identity !== "hector" && identity.identity !== "daniel"
+          ? flights[0]
+          : undefined)))
+      : undefined;
 
   // Arrancar / detener el canal cuando cambian credenciales, identidad u OFP.
   useEffect(() => {
@@ -51,7 +67,12 @@ export function LiveVsManager() {
       stop();
       return;
     }
-    const date = (ofp.generatedAt ?? ofp.fetchedAt ?? "").slice(0, 10);
+    // (v6.2.13) Canal por DÍA de calendario (UTC) + ruta — NO por el timestamp
+    // del OFP. Así los OFP distintos de cada piloto se encuentran en el mismo
+    // duelo y el nombre coincide con el que usa el histórico del FlightBook
+    // (que arma el canal con la fecha del vuelo). Antes usaba el epoch del OFP
+    // → nunca cuadraba y el botón de Crew VS quedaba apagado.
+    const date = new Date().toISOString().slice(0, 10);
     if (!ofp.originIcao || !ofp.destinationIcao || !date) {
       stop();
       return;

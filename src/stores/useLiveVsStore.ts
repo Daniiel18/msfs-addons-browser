@@ -150,6 +150,41 @@ export function loadVsSnapshot(channel: string): VsPersisted | null {
   return loadPersisted(channel);
 }
 
+/** (v6.2.13) Carga el snapshot del duelo de un vuelo TOLERANTE a la fecha: prueba
+ *  el día exacto y ±1 día. El canal en vivo se nombra con la fecha de calendario
+ *  (UTC) del día del vuelo, y el histórico con `startedAt`; cerca de medianoche /
+ *  husos horarios pueden diferir por un día. Devuelve el primer snapshot con
+ *  datos (self o rival). */
+export function findVsSnapshot(
+  dateYmd: string,
+  origin: string,
+  dest: string,
+): VsPersisted | null {
+  const base = dateYmd.slice(0, 10);
+  const candidates = [base];
+  const ms = Date.parse(base + "T00:00:00Z");
+  if (!Number.isNaN(ms)) {
+    candidates.push(new Date(ms - 86400000).toISOString().slice(0, 10));
+    candidates.push(new Date(ms + 86400000).toISOString().slice(0, 10));
+  }
+  for (const d of candidates) {
+    const snap = loadPersisted(vsChannelKey(d, origin, dest));
+    if (snap && (snap.self != null || snap.rival != null)) return snap;
+  }
+  return null;
+}
+
+/** (v6.2.13) Regla de propiedad de callsign para la cuenta SimBrief COMPARTIDA:
+ *  los callsign de Héctor contienen "357"; todo lo demás es de Daniel. Cada PC
+ *  usa esto para elegir SU propio OFP de la lista (y no el del otro) y así no
+ *  cruzar números de vuelo entre pilotos. Si las reglas cambian, se edita aquí. */
+const HECTOR_CALLSIGN_PATTERN = /357/;
+export function vsCallsignOwner(
+  callsign: string | null | undefined,
+): "hector" | "daniel" {
+  return callsign && HECTOR_CALLSIGN_PATTERN.test(callsign) ? "hector" : "daniel";
+}
+
 /** (v6.2.11) Aviso de "Crew VS listo" — se genera al COMPLETARSE un duelo
  *  (ambos pilotos aterrizaron). Se muestra en la campanita + toast y persiste
  *  hasta que el usuario lo descarta. */

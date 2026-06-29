@@ -19,7 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
-import { vsChannelKey, loadVsSnapshot } from "../stores/useLiveVsStore";
+import { findVsSnapshot } from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
@@ -141,19 +141,19 @@ export function FlightBookView() {
     [entries, selectedFlightId],
   );
 
-  // (v6.2.7 · v6.2.11) ¿El vuelo seleccionado tiene un Crew VS guardado CON
-  // AMBOS pilotos? El botón sólo se habilita si Héctor también voló ese vuelo
-  // (el snapshot guarda self+rival). Es histórico por-vuelo, no el en vivo.
+  // (v6.2.13) ¿El vuelo seleccionado tiene un Crew VS guardado? El botón se
+  // habilita si hay CUALQUIER dato del duelo (tú o el rival) — ya no exige que
+  // Héctor estuviese conectado. El snapshot se busca tolerante a la fecha
+  // (día ±1) porque el canal en vivo y el histórico pueden diferir por un día.
   const vsSnapshotExists = useMemo(() => {
     const f = selectedFlight;
     if (!f?.originIcao || !f?.destinationIcao || !f?.startedAt) return false;
-    const ch = vsChannelKey(
+    const snap = findVsSnapshot(
       f.startedAt.slice(0, 10),
       f.originIcao,
       f.destinationIcao,
     );
-    const snap = loadVsSnapshot(ch);
-    return snap?.self != null && snap?.rival != null;
+    return snap != null && (snap.self != null || snap.rival != null);
   }, [selectedFlight]);
 
   // Refresh al montar — el watcher emite eventos que actualizan

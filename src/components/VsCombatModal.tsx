@@ -3,8 +3,7 @@ import { motion } from "framer-motion";
 import { Swords, X, Plane, Gauge, ArrowUp, Flag, Trophy } from "lucide-react";
 import { t } from "../lib/i18n";
 import {
-  vsChannelKey,
-  loadVsSnapshot,
+  findVsSnapshot,
   type VsPilot,
   type VsPos,
   type VsLanding,
@@ -44,21 +43,16 @@ export function VsCombatModal({
   // seleccionado (fecha de inicio + ruta). El snapshot sólo existe si Héctor
   // también voló ese vuelo (guarda a ambos pilotos), así que el modal sólo se
   // abre para duelos reales y completos.
-  const entryChannel = useMemo(() => {
+  const snapshot = useMemo(() => {
     if (!entry?.originIcao || !entry?.destinationIcao || !entry?.startedAt) {
       return null;
     }
-    return vsChannelKey(
+    return findVsSnapshot(
       entry.startedAt.slice(0, 10),
       entry.originIcao,
       entry.destinationIcao,
     );
   }, [entry?.originIcao, entry?.destinationIcao, entry?.startedAt]);
-
-  const snapshot = useMemo(
-    () => (entryChannel ? loadVsSnapshot(entryChannel) : null),
-    [entryChannel],
-  );
 
   const self = snapshot?.self ?? null;
   const rival = snapshot?.rival ?? null;
@@ -74,7 +68,9 @@ export function VsCombatModal({
   const rivalRem: number | null = null;
   const leader: "self" | "rival" | null = null;
 
-  if (!self || !rival) return null;
+  // (v6.2.13) Basta con que haya datos de UN lado para mostrar el duelo: si el
+  // rival no voló (o aún no llegó su resultado), su ficha sale como "esperando".
+  if (!self && !rival) return null;
 
   return (
     <motion.div
@@ -139,8 +135,8 @@ export function VsCombatModal({
         {/* (v6.1 #34) Resultado del aterrizaje — aparece cuando alguno aterriza. */}
         {(selfLanding || rivalLanding) && (
           <LandingResult
-            selfName={self.name}
-            rivalName={rival.name}
+            selfName={self?.name ?? t("vs.you")}
+            rivalName={rival?.name ?? "—"}
             self={selfLanding}
             rival={rivalLanding}
           />
@@ -241,7 +237,7 @@ function PilotCard({
   isYou = false,
   accent,
 }: {
-  pilot: VsPilot;
+  pilot: VsPilot | null;
   pos: VsPos | null;
   remaining: number | null;
   isLeader: boolean;
@@ -252,13 +248,32 @@ function PilotCard({
 }) {
   // (v6.2.2) Preferimos el avión REAL que vuela el piloto (matrícula del sim)
   // sobre el del OFP de SimBrief, que puede no coincidir.
-  const reg = live?.registration || pilot.ofp.registration || null;
-  const acType = live?.aircraftType || pilot.ofp.aircraft || null;
+  const reg = live?.registration || pilot?.ofp.registration || null;
+  const acType = live?.aircraftType || pilot?.ofp.aircraft || null;
   const photo = useAircraftPhoto(reg);
-  const alIcao = airlineIcao(pilot.ofp.callsign);
+  const alIcao = airlineIcao(pilot?.ofp.callsign);
   const alName = live?.airlineName || icaoToName(alIcao);
   const ring = accent === "sky" ? "ring-sky-500/30" : "ring-rose-500/30";
   const text = accent === "sky" ? "text-sky-300" : "text-rose-300";
+
+  // (v6.2.13) Sin datos de este piloto (no voló / aún no llega su resultado).
+  if (!pilot) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
+        <div
+          className={`flex aspect-[3/2] w-full items-center justify-center rounded-xl border border-dashed border-slate-800 bg-slate-950/40 ring-1 ${ring}`}
+        >
+          <Plane className="h-10 w-10 text-slate-700" />
+        </div>
+        <span className={`text-sm font-bold ${text}`}>
+          {isYou ? t("vs.you") : "—"}
+        </span>
+        <span className="text-[11px] text-slate-500">
+          {t("vs.waiting_landing")}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2 p-4">
