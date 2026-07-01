@@ -625,6 +625,13 @@ async fn controller_loop(
     let mut reached_cruise = false;
     let mut armed_at: Option<std::time::Instant> = None;
     const MAX_ARMED: Duration = Duration::from_secs(12 * 60);
+    // (v6.2.16) Fix "save_replay falló: recorder no armado" (visto en los logs
+    // EN CADA aterrizaje): `schedule_save` duerme ~12s tras el touchdown para
+    // que el rollout entre en el buffer, pero la fase pasaba a taxi_in antes y
+    // el Stop llegaba PRIMERO → el Save encontraba el recorder apagado y el
+    // clip se perdía. Mientras haya un guardado pendiente NO se desarma.
+    let mut save_pending_until: Option<std::time::Instant> = None;
+    const SAVE_GRACE: Duration = Duration::from_secs(16);
 
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -635,12 +642,19 @@ async fn controller_loop(
             Some(s) => s.lock().await.status.clone(),
             None => continue,
         };
+        // ¿Hay un guardado de clip en vuelo? (bloquea cualquier desarme)
+        let save_pending =
+            save_pending_until.map_or(false, |t| std::time::Instant::now() < t);
+        if !save_pending {
+            save_pending_until = None;
+        }
         if !status.sim_running {
-            if armed {
+            if armed && !save_pending {
                 let _ = tx.send(RecCmd::Stop);
                 armed = false;
                 armed_at = None;
                 saved = false;
+                crate::diagnostics::note_recorder_armed(false);
             }
             prev_on_ground = true;
             reached_cruise = false;
@@ -680,29 +694,38 @@ async fn controller_loop(
                     clip_seconds: cfg.clip_seconds,
                     width: w,
                     height: h,
-                    fps: cfg.fps.clamp(24, 120) as u32,
+                    // (v6.2.16) TOPE 30 FPS. Confirmado en campo: a 60fps el
+                    // encoder de windows-record 0.1 acumula frames sin control
+                    // (20 GB de RAM → OOM → crashea el sim); a 30fps se mantiene
+                    // estable. Hasta migrar/actualizar la librería, 30 es el
+                    // máximo seguro aunque el setting diga más.
+                    fps: cfg.fps.clamp(24, 30) as u32,
                 });
                 armed = true;
                 armed_at = Some(std::time::Instant::now());
                 saved = false;
+                crate::diagnostics::note_recorder_armed(true);
             }
             // Tope de tiempo armado: si lleva demasiado sin aterrizar (holding,
             // fase atascada), paramos para liberar memoria del grabador. Se
             // rearmará en el siguiente tick si seguimos en aproximación.
             if armed
+                && !save_pending
                 && armed_at.map_or(false, |t| t.elapsed() > MAX_ARMED)
             {
                 let _ = tx.send(RecCmd::Stop);
                 armed = false;
                 armed_at = None;
                 saved = false;
+                crate::diagnostics::note_recorder_armed(false);
                 tracing::warn!(target: "rec", "replay buffer detenido por tope de tiempo armado (anti-leak)");
             }
-        } else if armed {
+        } else if armed && !save_pending {
             let _ = tx.send(RecCmd::Stop);
             armed = false;
             armed_at = None;
             saved = false;
+            crate::diagnostics::note_recorder_armed(false);
         }
 
         // ── Touchdown: transición airborne → on_ground ──
@@ -711,6 +734,9 @@ async fn controller_loop(
             // Guardar el clip si el replay buffer está armado.
             if armed && !saved {
                 saved = true;
+                // El Save real corre ~12s después (rollout) — protegemos el
+                // buffer de cualquier Stop hasta que termine (SAVE_GRACE).
+                save_pending_until = Some(std::time::Instant::now() + SAVE_GRACE);
                 schedule_save(
                     &pool,
                     &tx,
@@ -724,12 +750,18 @@ async fn controller_loop(
             }
         }
 
-        // Desarmar la grabación tras llegar a tierra (taxi/parking).
-        if armed && on_ground && matches!(phase.as_str(), "taxi_in" | "parking" | "deboarding") {
+        // Desarmar la grabación tras llegar a tierra (taxi/parking) — pero
+        // NUNCA mientras el guardado del clip siga pendiente (v6.2.16).
+        if armed
+            && !save_pending
+            && on_ground
+            && matches!(phase.as_str(), "taxi_in" | "parking" | "deboarding")
+        {
             let _ = tx.send(RecCmd::Stop);
             armed = false;
             armed_at = None;
             saved = false;
+            crate::diagnostics::note_recorder_armed(false);
         }
         prev_on_ground = on_ground;
     }

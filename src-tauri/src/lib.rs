@@ -214,6 +214,7 @@ pub fn run() {
             commands::community::is_safe_mode,
             commands::community::is_watcher_active,
             diagnostics::diagnostics_process_tree,
+            diagnostics::diagnostics_app_metrics,
             commands::community::cross_link_create,
             commands::community::list_community_packages,
             commands::community::list_available_updates,

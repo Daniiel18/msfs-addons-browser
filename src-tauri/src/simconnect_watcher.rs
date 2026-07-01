@@ -179,6 +179,7 @@ pub fn spawn(pool: SqlitePool, app: AppHandle) -> SharedState {
                 if let Err(e) = app.emit("flight://current", &status) {
                     tracing::warn!(target: "simconnect", "emit flight://current falló: {e:#}");
                 }
+                crate::diagnostics::note_simconnect_emit(status.simconnect_connected);
                 last_emitted = status.clone();
                 polls_since_emit = 0;
             } else {
@@ -4526,6 +4527,7 @@ mod windows_simconnect {
                     }
                 }
                 let _ = app.emit("flight://current", &snapshot);
+                crate::diagnostics::note_simconnect_emit(snapshot.simconnect_connected);
                 *ticks_since_emit = 0;
             }
         }

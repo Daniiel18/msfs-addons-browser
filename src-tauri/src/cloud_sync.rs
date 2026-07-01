@@ -779,6 +779,7 @@ async fn create_sync_file(
     // (v4.14.1 #2) Un único evento final con el TAMAÑO real subido — el
     // frontend deriva MB/s = bytes / duración y anima la barra ~1.5s.
     emit_transfer_progress(app, "upload", total, total, true);
+    crate::diagnostics::note_cloud_upload(total);
     let file: DriveFile = resp.json().await?;
     crate::success!(
         target: "cloud_sync",
@@ -817,6 +818,7 @@ async fn update_sync_file(
     }
     // (v4.14.1 #2) Evento final con el tamaño subido (gz) para MB/s real.
     emit_transfer_progress(app, "upload", total, total, true);
+    crate::diagnostics::note_cloud_upload(total);
     crate::success!(
         target: "cloud_sync",
         "Snapshot actualizado en Drive (file {})",
@@ -1775,6 +1777,17 @@ pub async fn upload_all(
 ) -> anyhow::Result<UploadReport> {
     use std::collections::{HashMap, HashSet};
     tracing::info!(target: "cloud", "upload_all: merge incremental local → nube…");
+    // (v6.2.16) Marca el subsistema "cloud" como ocupado mientras dura la
+    // subida — el panel de Diagnóstico lo muestra en vivo. El guard garantiza
+    // el reset aunque salgamos por error (`?`).
+    crate::diagnostics::note_cloud_busy(true);
+    struct BusyGuard;
+    impl Drop for BusyGuard {
+        fn drop(&mut self) {
+            crate::diagnostics::note_cloud_busy(false);
+        }
+    }
+    let _busy = BusyGuard;
     let access_token = fresh_access_token(pool, http).await?;
 
     // 1. Snapshot local (todo lo que hay en este PC).

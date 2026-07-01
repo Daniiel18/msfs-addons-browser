@@ -119,6 +119,20 @@ export interface DiagProcReport {
   processes: DiagProcInfo[];
 }
 
+/** (v6.2.16) Actividad de los subsistemas internos (backend). */
+export interface DiagAppMetrics {
+  simconnectConnected: boolean;
+  simconnectEmits: number;
+  simconnectLastEmitMs: number;
+  trackRowsWritten: number;
+  cloudBusy: boolean;
+  cloudUploads: number;
+  cloudLastBytes: number;
+  cloudLastMs: number;
+  recorderArmed: boolean;
+  nowMs: number;
+}
+
 interface Api {
   listSources: () => Promise<SourceDescriptor[]>;
   search: (query: string, sourceId: string) => Promise<Addon[]>;
@@ -314,6 +328,8 @@ interface Api {
   isWatcherActive: () => Promise<boolean>;
   /** (v6.2.15) Árbol de procesos de SimFleet + RAM por proceso (diagnóstico). */
   diagnosticsProcessTree: () => Promise<DiagProcReport>;
+  /** (v6.2.16) Actividad de los subsistemas internos (SimConnect, tracking…). */
+  diagnosticsAppMetrics: () => Promise<DiagAppMetrics>;
   /** (v6 #1) Crea junctions NTFS de `packages` en la Community de la otra
    *  versión de MSFS (cross-link 2020 ↔ 2024). */
   crossLinkCreate: (
@@ -733,6 +749,8 @@ const realApi: Api = {
   isWatcherActive: () => invoke<boolean>("is_watcher_active"),
   diagnosticsProcessTree: () =>
     invoke<DiagProcReport>("diagnostics_process_tree"),
+  diagnosticsAppMetrics: () =>
+    invoke<DiagAppMetrics>("diagnostics_app_metrics"),
   crossLinkCreate: (otherCommunity, packages) =>
     invoke<CrossLinkResult>("cross_link_create", { otherCommunity, packages }),
   onCrossLinkOffer: (cb) =>
@@ -1472,6 +1490,20 @@ const demoApi: Api = {
   },
   async diagnosticsProcessTree() {
     return { totalBytes: 0, count: 0, processes: [] };
+  },
+  async diagnosticsAppMetrics() {
+    return {
+      simconnectConnected: false,
+      simconnectEmits: 0,
+      simconnectLastEmitMs: 0,
+      trackRowsWritten: 0,
+      cloudBusy: false,
+      cloudUploads: 0,
+      cloudLastBytes: 0,
+      cloudLastMs: 0,
+      recorderArmed: false,
+      nowMs: Date.now(),
+    };
   },
   async crossLinkCreate(_otherCommunity: string, packages: CrossLinkPkg[]) {
     await sleep(200);

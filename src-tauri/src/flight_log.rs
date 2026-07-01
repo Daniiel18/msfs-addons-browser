@@ -1184,6 +1184,7 @@ pub async fn insert_track_point_full_at(
     .bind(b(pt.oil_press_warning))
     .execute(pool)
     .await?;
+    crate::diagnostics::note_track_rows(1);
     Ok(())
 }
 
