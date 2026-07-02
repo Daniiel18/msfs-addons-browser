@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "6.2.16"
+version = "6.2.17"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -121,12 +121,18 @@ webview2-com = "=0.38.2"
 windows-core = "=0.61.2"
 # (v6.2.5) SetWindowPos para forzar el OSD al tope del z-order (HWND_TOPMOST +
 # SWP_NOACTIVATE) y que salga SIEMPRE sobre el sim sin robarle el foco.
-windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
-# (v6 #2b) Motor de grabación de "Best Landings": Windows.Graphics /
-# Desktop Duplication + WASAPI loopback (audio del sistema nativo) + replay
-# buffer. Reemplaza a ffmpeg/gdigrab (que no captura audio del sistema ni
-# fullscreen DX). Rust puro, compilado dentro de la app — sin descargas.
-windows-record = "0.1"
+# (v6.2.17) + Win32_Media_Audio / Win32_System_Com para la captura WASAPI
+# loopback (audio del sistema) que alimenta al encoder del grabador nuevo.
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com"] }
+# (v6.2.17) Motor de grabación de "Best Landings": Windows Graphics Capture +
+# encoder H.264 por HARDWARE (Media Foundation) — el mismo stack que usa
+# ScreenRecorderLib (LandingToast). Reemplaza a windows-record 0.1, cuyo replay
+# buffer en RAM acumulaba memoria sin control a 60fps (hasta 20 GB → OOM →
+# crasheaba el sim). Aquí el encoder drena directo a disco: RAM plana a
+# cualquier fps y calidad configurable. El audio del sistema lo capturamos
+# nosotros vía WASAPI loopback (features Win32_Media_Audio/Win32_System_Com
+# del crate `windows`) y se lo empujamos al encoder.
+windows-capture = "2"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

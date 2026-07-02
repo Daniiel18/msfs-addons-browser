@@ -1,19 +1,25 @@
-//! (v6 #2b) Grabación nativa de "Best Landings".
+//! (v6 #2b · v6.2.17) Grabación nativa de "Best Landings".
 //!
-//! Motor: **windows-record** (Windows.Graphics / Desktop Duplication + WASAPI
-//! loopback). Reemplaza a ffmpeg/gdigrab porque:
-//!   · captura el **audio del sistema** de forma nativa (sin Stereo Mix ni
-//!     dispositivos virtuales),
-//!   · captura ventanas **DirectX / fullscreen** (MSFS) sin negro,
-//!   · trae **replay buffer** (guardar los últimos N s al tocar pista),
-//!   · es Rust puro compilado en la app → **sin descargas**.
+//! Motor: **windows-capture 2.x** (Windows Graphics Capture + encoder
+//! H.264 por HARDWARE vía Media Foundation) + captura WASAPI **loopback**
+//! propia para el audio del sistema. Es el MISMO stack que usa
+//! ScreenRecorderLib (la librería de LandingToast).
+//!
+//! Historia: el motor anterior (windows-record 0.1) tenía un replay buffer
+//! en RAM que a 60fps acumulaba memoria sin control (hasta 20 GB → OOM →
+//! crasheaba el sim). Con este motor el encoder **drena directo a disco**:
+//! RAM plana a cualquier fps y calidad alta configurable.
+//!
+//! Semántica nueva: al armar (aproximación) se graba EN DISCO de forma
+//! continua a un archivo temporal; al touchdown (+~12 s de rollout) el
+//! archivo se finaliza y se renombra como clip → el clip cubre TODA la
+//! aproximación final + el aterrizaje. Sin buffer en RAM que recortar.
 //!
 //! El objetivo de captura es una **ventana por título** (substring): MSFS para
 //! los aterrizajes reales, y la ventana de la propia app ("SimFleet") para la
-//! grabación de PRUEBA (testeable sin el sim).
+//! grabación de PRUEBA (testeable sin el sim). Fallback: monitor primario.
 //!
 //! Este módulo NO toca el `simconnect_watcher` (que procesa el vuelo en vivo).
-//! El disparo automático al touchdown + el OSD en vivo se cablearán después.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -27,6 +33,500 @@ const MANIFEST: &str = "simfleet_landings.json";
 pub const MSFS_WINDOW: &str = "Microsoft Flight Simulator";
 /// Título de la ventana de la propia app — objetivo de la grabación de prueba.
 pub const SELF_WINDOW: &str = "SimFleet";
+
+// ─────────────────────────────────────────────────────────────────────────
+// (v6.2.17) Motor de captura: WGC + Media Foundation (hardware) + WASAPI
+// loopback. Ver el doc del módulo. Toda la sesión vive detrás de
+// `CaptureSession` con tres operaciones: start / finish_and_save / abort.
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(windows)]
+mod capture_engine {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, Instant};
+
+    use anyhow::anyhow;
+    use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
+    use windows_capture::graphics_capture_api::InternalCaptureControl;
+    use windows_capture::encoder::{
+        AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
+        VideoSettingsSubType,
+    };
+    use windows_capture::frame::Frame;
+    use windows_capture::monitor::Monitor;
+    use windows_capture::settings::{
+        ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+        MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+    };
+    use windows_capture::window::Window;
+
+    type HandlerError = Box<dyn std::error::Error + Send + Sync>;
+
+    /// Estado compartido entre el hilo de captura (frames), el hilo de audio
+    /// (WASAPI loopback) y quien controla la sesión.
+    struct Shared {
+        fps: u32,
+        bitrate: u32,
+        temp_path: PathBuf,
+        /// (sample_rate, canales) que el hilo de audio negoció con WASAPI —
+        /// el encoder se configura con esto al crearse (primer frame).
+        audio_fmt: Mutex<Option<(u32, u32)>>,
+        /// El encoder se crea PEREZOSAMENTE en el primer frame (ahí sabemos
+        /// las dimensiones reales de la ventana del sim).
+        encoder: Mutex<Option<VideoEncoder>>,
+        first_frame: AtomicBool,
+        /// Señal de "finaliza el contenedor y para" — la procesa el handler
+        /// en el siguiente frame (el encoder vive en su hilo).
+        finish: AtomicBool,
+        done_tx: Mutex<Option<mpsc::Sender<Result<(), String>>>>,
+    }
+
+    impl Shared {
+        /// Finaliza el encoder (si existe) y notifica el resultado.
+        fn finalize_encoder(&self) {
+            if let Some(enc) = self.encoder.lock().unwrap().take() {
+                let res = enc.finish().map_err(|e| format!("{e:?}"));
+                if let Some(tx) = self.done_tx.lock().unwrap().take() {
+                    let _ = tx.send(res);
+                }
+            }
+        }
+    }
+
+    struct Handler {
+        shared: Arc<Shared>,
+    }
+
+    impl GraphicsCaptureApiHandler for Handler {
+        type Flags = Arc<Shared>;
+        type Error = HandlerError;
+
+        fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+            Ok(Self { shared: ctx.flags })
+        }
+
+        fn on_frame_arrived(
+            &mut self,
+            frame: &mut Frame,
+            capture_control: InternalCaptureControl,
+        ) -> Result<(), Self::Error> {
+            let sh = &self.shared;
+            if sh.finish.load(Ordering::Relaxed) {
+                sh.finalize_encoder();
+                capture_control.stop();
+                return Ok(());
+            }
+            let mut guard = sh.encoder.lock().unwrap();
+            if guard.is_none() {
+                // Dimensiones PARES (requisito típico de H.264/NV12).
+                let w = frame.width() & !1;
+                let h = frame.height() & !1;
+                let video = VideoSettingsBuilder::new(w, h)
+                    .frame_rate(sh.fps)
+                    .bitrate(sh.bitrate)
+                    .sub_type(VideoSettingsSubType::H264);
+                let audio = match *sh.audio_fmt.lock().unwrap() {
+                    Some((rate, ch)) => AudioSettingsBuilder::new()
+                        .sample_rate(rate)
+                        .channel_count(ch)
+                        .bit_per_sample(16),
+                    None => AudioSettingsBuilder::new().disabled(true),
+                };
+                let enc = VideoEncoder::new(
+                    video,
+                    audio,
+                    ContainerSettingsBuilder::new(),
+                    &sh.temp_path,
+                )?;
+                *guard = Some(enc);
+                sh.first_frame.store(true, Ordering::Release);
+                tracing::info!(
+                    target: "rec",
+                    "encoder creado {w}x{h} @{}fps {} kbps (hardware MF)",
+                    sh.fps,
+                    sh.bitrate / 1000
+                );
+            }
+            if let Some(enc) = guard.as_mut() {
+                enc.send_frame(frame)?;
+            }
+            Ok(())
+        }
+
+        fn on_closed(&mut self) -> Result<(), Self::Error> {
+            // La ventana capturada se cerró — finalizamos para no corromper
+            // el mp4 (quien espere el Save recibirá el resultado).
+            self.shared.finalize_encoder();
+            Ok(())
+        }
+    }
+
+    /// Sesión de grabación activa (captura + audio + encoder).
+    pub struct CaptureSession {
+        shared: Arc<Shared>,
+        control: Option<CaptureControl<Handler, HandlerError>>,
+        audio_stop: Arc<AtomicBool>,
+        audio_join: Option<JoinHandle<()>>,
+        done_rx: mpsc::Receiver<Result<(), String>>,
+    }
+
+    impl CaptureSession {
+        /// Arranca la captura de la ventana cuyo título contiene
+        /// `target_title` (fallback: monitor primario), grabando a
+        /// `temp_path`. No bloquea.
+        pub fn start(
+            target_title: &str,
+            fps: u32,
+            bitrate: u32,
+            temp_path: PathBuf,
+            capture_audio: bool,
+        ) -> anyhow::Result<Self> {
+            let _ = std::fs::remove_file(&temp_path);
+            let (done_tx, done_rx) = mpsc::channel();
+            let shared = Arc::new(Shared {
+                fps: fps.max(1),
+                bitrate,
+                temp_path,
+                audio_fmt: Mutex::new(None),
+                encoder: Mutex::new(None),
+                first_frame: AtomicBool::new(false),
+                finish: AtomicBool::new(false),
+                done_tx: Mutex::new(Some(done_tx)),
+            });
+
+            // ── Audio (WASAPI loopback) ── se inicializa en SU hilo (COM) y
+            // nos manda el formato negociado antes de arrancar la captura.
+            let audio_stop = Arc::new(AtomicBool::new(false));
+            let mut audio_join = None;
+            if capture_audio {
+                let (fmt_tx, fmt_rx) = mpsc::channel();
+                let sh = shared.clone();
+                let stop = audio_stop.clone();
+                audio_join = Some(std::thread::spawn(move || {
+                    audio_thread_main(sh, stop, fmt_tx);
+                }));
+                match fmt_rx.recv_timeout(Duration::from_secs(3)) {
+                    Ok(Some(fmt)) => {
+                        *shared.audio_fmt.lock().unwrap() = Some(fmt);
+                    }
+                    _ => tracing::warn!(
+                        target: "rec",
+                        "audio loopback no disponible — el clip irá sin audio"
+                    ),
+                }
+            }
+
+            // ── Captura ── throttle de frames al fps pedido (menos GPU/encoder).
+            let interval = Duration::from_micros(1_000_000u64 / shared.fps as u64);
+            let control = match Window::from_contains_name(target_title) {
+                Ok(win) => Handler::start_free_threaded(Settings::new(
+                    win,
+                    CursorCaptureSettings::WithoutCursor,
+                    DrawBorderSettings::WithoutBorder,
+                    SecondaryWindowSettings::Default,
+                    MinimumUpdateIntervalSettings::Custom(interval),
+                    DirtyRegionSettings::Default,
+                    ColorFormat::Bgra8,
+                    shared.clone(),
+                ))
+                .map_err(|e| anyhow!("no se pudo iniciar la captura de «{target_title}»: {e:?}"))?,
+                Err(_) => {
+                    let mon = Monitor::primary()
+                        .map_err(|e| anyhow!("sin ventana «{target_title}» ni monitor primario: {e:?}"))?;
+                    tracing::warn!(
+                        target: "rec",
+                        "ventana «{target_title}» no encontrada — capturando el monitor primario"
+                    );
+                    Handler::start_free_threaded(Settings::new(
+                        mon,
+                        CursorCaptureSettings::WithoutCursor,
+                        DrawBorderSettings::WithoutBorder,
+                        SecondaryWindowSettings::Default,
+                        MinimumUpdateIntervalSettings::Custom(interval),
+                        DirtyRegionSettings::Default,
+                        ColorFormat::Bgra8,
+                        shared.clone(),
+                    ))
+                    .map_err(|e| anyhow!("no se pudo iniciar la captura del monitor: {e:?}"))?
+                }
+            };
+
+            Ok(Self {
+                shared,
+                control: Some(control),
+                audio_stop,
+                audio_join,
+                done_rx,
+            })
+        }
+
+        /// Finaliza el contenedor y mueve el temporal a `final_path`.
+        pub fn finish_and_save(mut self, final_path: &Path) -> anyhow::Result<()> {
+            self.shared.finish.store(true, Ordering::Relaxed);
+            // El handler finaliza en el siguiente frame; si no llegan frames
+            // (ventana minimizada / cerrada), caemos al plan B tras timeout.
+            let res = self.done_rx.recv_timeout(Duration::from_secs(10));
+            self.audio_stop.store(true, Ordering::Relaxed);
+            if let Some(j) = self.audio_join.take() {
+                let _ = j.join();
+            }
+            if let Some(c) = self.control.take() {
+                let _ = c.stop();
+            }
+            match res {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(anyhow!("encoder: {e}")),
+                Err(_) => {
+                    // Plan B: finalizamos directamente (ya no hay hilos tocando
+                    // el encoder — audio parado y captura detenida).
+                    match self.shared.encoder.lock().unwrap().take() {
+                        Some(enc) => enc
+                            .finish()
+                            .map_err(|e| anyhow!("finish (plan B): {e:?}"))?,
+                        None => {
+                            return Err(anyhow!(
+                                "la captura no recibió ningún frame (¿ventana visible?)"
+                            ))
+                        }
+                    }
+                }
+            }
+            // Margen para que Media Foundation suelte el archivo.
+            std::thread::sleep(Duration::from_millis(300));
+            let tmp = &self.shared.temp_path;
+            if std::fs::rename(tmp, final_path).is_err() {
+                std::fs::copy(tmp, final_path)
+                    .map_err(|e| anyhow!("no se pudo mover el clip: {e}"))?;
+                let _ = std::fs::remove_file(tmp);
+            }
+            Ok(())
+        }
+
+        /// Descarta la grabación (sin clip) y borra el temporal.
+        pub fn abort(mut self) {
+            self.shared.finish.store(true, Ordering::Relaxed);
+            self.audio_stop.store(true, Ordering::Relaxed);
+            if let Some(j) = self.audio_join.take() {
+                let _ = j.join();
+            }
+            if let Some(c) = self.control.take() {
+                let _ = c.stop();
+            }
+            drop(self.shared.encoder.lock().unwrap().take());
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = std::fs::remove_file(&self.shared.temp_path);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // WASAPI loopback (audio del sistema). Corre en su propio hilo con COM
+    // MTA. Convierte el mix format del dispositivo (típicamente float32
+    // 48 kHz N canales) a PCM16 ESTÉREO y lo empuja al encoder, rellenando
+    // con silencio los huecos para mantener el A/V sync (el encoder usa un
+    // reloj de audio monotónico por muestras).
+    // ─────────────────────────────────────────────────────────────────────
+
+    struct Loopback {
+        client: windows::Win32::Media::Audio::IAudioClient,
+        capture: windows::Win32::Media::Audio::IAudioCaptureClient,
+        rate: u32,
+        channels: usize,
+        is_float: bool,
+    }
+
+    unsafe fn loopback_new() -> anyhow::Result<Loopback> {
+        use windows::Win32::Media::Audio::{
+            eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
+            MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+            WAVEFORMATEXTENSIBLE,
+        };
+        use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL};
+
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| anyhow!("MMDeviceEnumerator: {e}"))?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| anyhow!("GetDefaultAudioEndpoint: {e}"))?;
+        let client: IAudioClient = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| anyhow!("IAudioClient::Activate: {e}"))?;
+        let fmt_ptr = client
+            .GetMixFormat()
+            .map_err(|e| anyhow!("GetMixFormat: {e}"))?;
+        let fmt = *fmt_ptr;
+        let rate = fmt.nSamplesPerSec;
+        let channels = fmt.nChannels as usize;
+        let bits = fmt.wBitsPerSample;
+        // wFormatTag: 1 = PCM · 3 = IEEE float · 0xFFFE = EXTENSIBLE (mirar
+        // el SubFormat: data1 == 3 → float, == 1 → PCM).
+        let tag = fmt.wFormatTag as u32;
+        let is_float = match tag {
+            3 => true,
+            0xFFFE => {
+                let ext = &*(fmt_ptr as *const WAVEFORMATEXTENSIBLE);
+                ext.SubFormat.data1 == 3
+            }
+            _ => false,
+        };
+        if !(is_float && bits == 32) && !(!is_float && bits == 16) {
+            CoTaskMemFree(Some(fmt_ptr as *const _));
+            return Err(anyhow!(
+                "formato de mezcla no soportado (tag={tag} bits={bits})"
+            ));
+        }
+        // Buffer de 200 ms (unidades de 100 ns).
+        client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                2_000_000,
+                0,
+                fmt_ptr,
+                None,
+            )
+            .map_err(|e| anyhow!("IAudioClient::Initialize(loopback): {e}"))?;
+        CoTaskMemFree(Some(fmt_ptr as *const _));
+        let capture: IAudioCaptureClient = client
+            .GetService()
+            .map_err(|e| anyhow!("IAudioCaptureClient: {e}"))?;
+        Ok(Loopback {
+            client,
+            capture,
+            rate,
+            channels,
+            is_float,
+        })
+    }
+
+    impl Loopback {
+        /// Convierte `frames` muestras intercaladas del mix format a PCM16
+        /// ESTÉREO little-endian (toma los 2 primeros canales).
+        unsafe fn to_stereo_i16(&self, data: *const u8, frames: usize) -> Vec<u8> {
+            let ch = self.channels.max(1);
+            let mut out = Vec::with_capacity(frames * 4);
+            if self.is_float {
+                let src = std::slice::from_raw_parts(data as *const f32, frames * ch);
+                for f in 0..frames {
+                    let l = src[f * ch];
+                    let r = if ch > 1 { src[f * ch + 1] } else { l };
+                    out.extend_from_slice(
+                        &((l.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes(),
+                    );
+                    out.extend_from_slice(
+                        &((r.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes(),
+                    );
+                }
+            } else {
+                let src = std::slice::from_raw_parts(data as *const i16, frames * ch);
+                for f in 0..frames {
+                    let l = src[f * ch];
+                    let r = if ch > 1 { src[f * ch + 1] } else { l };
+                    out.extend_from_slice(&l.to_le_bytes());
+                    out.extend_from_slice(&r.to_le_bytes());
+                }
+            }
+            out
+        }
+    }
+
+    fn push_audio(shared: &Shared, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(enc) = shared.encoder.lock().unwrap().as_mut() {
+            // El timestamp se ignora (reloj monotónico interno del encoder).
+            let _ = enc.send_audio_buffer(bytes, 0);
+        }
+    }
+
+    fn audio_thread_main(
+        shared: Arc<Shared>,
+        stop: Arc<AtomicBool>,
+        fmt_tx: mpsc::Sender<Option<(u32, u32)>>,
+    ) {
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        let lb = match unsafe { loopback_new() } {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(target: "rec", "WASAPI loopback falló: {e:#}");
+                let _ = fmt_tx.send(None);
+                unsafe { CoUninitialize() };
+                return;
+            }
+        };
+        // El encoder SIEMPRE recibe estéreo PCM16 al sample rate del mix.
+        let _ = fmt_tx.send(Some((lb.rate, 2)));
+
+        // Espera al primer frame de vídeo — el reloj de audio del encoder
+        // empieza en la primera muestra, así que arrancar antes desincroniza.
+        while !stop.load(Ordering::Relaxed) && !shared.first_frame.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if stop.load(Ordering::Relaxed) {
+            unsafe { CoUninitialize() };
+            return;
+        }
+        if unsafe { lb.client.Start() }.is_err() {
+            tracing::warn!(target: "rec", "IAudioClient::Start falló — clip sin audio");
+            unsafe { CoUninitialize() };
+            return;
+        }
+
+        let started = Instant::now();
+        let mut sent: u64 = 0; // muestras (frames de audio) enviadas
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(10));
+            // Drenar todos los paquetes pendientes.
+            loop {
+                let pkt = unsafe { lb.capture.GetNextPacketSize() }.unwrap_or(0);
+                if pkt == 0 {
+                    break;
+                }
+                let mut data: *mut u8 = std::ptr::null_mut();
+                let mut frames: u32 = 0;
+                let mut flags: u32 = 0;
+                if unsafe {
+                    lb.capture
+                        .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+                }
+                .is_err()
+                {
+                    break;
+                }
+                if frames > 0 {
+                    // AUDCLNT_BUFFERFLAGS_SILENT = 0x2 → el paquete es silencio.
+                    let bytes = if flags & 0x2 != 0 {
+                        vec![0u8; frames as usize * 4]
+                    } else {
+                        unsafe { lb.to_stereo_i16(data, frames as usize) }
+                    };
+                    push_audio(&shared, &bytes);
+                    sent += frames as u64;
+                }
+                let _ = unsafe { lb.capture.ReleaseBuffer(frames) };
+            }
+            // Relleno de silencio si WASAPI no entregó nada (sin sesiones de
+            // audio activas) — mantiene el A/V sync del reloj monotónico.
+            let expected = (started.elapsed().as_secs_f64() * f64::from(lb.rate)) as u64;
+            if expected > sent + u64::from(lb.rate) / 5 {
+                let deficit = (expected - sent).min(u64::from(lb.rate));
+                push_audio(&shared, &vec![0u8; deficit as usize * 4]);
+                sent += deficit;
+            }
+        }
+        unsafe {
+            let _ = lb.client.Stop();
+        }
+        drop(lb);
+        unsafe { CoUninitialize() };
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Config
@@ -256,8 +756,12 @@ pub fn release_recording() {
 /// compensamos con un bitrate ALTO para que las escenas con mucho movimiento
 /// no pierdan detalle. Ej.: 1080p60 ≈ 37 Mbps, 1440p60 ≈ 66 Mbps.
 fn compute_bitrate(width: u32, height: u32, fps: u32) -> u32 {
-    let raw = (width as u64) * (height as u64) * (fps as u64) * 30 / 100;
-    raw.clamp(25_000_000, 80_000_000) as u32
+    // (v6.2.17) ~0.12 bits/píxel/frame — calidad alta para H.264 por hardware:
+    // 1080p30 ≈ 8 Mbps · 1080p60 ≈ 15 Mbps · 1440p60 ≈ 26 Mbps · 4K60 → tope 45.
+    // El valor anterior (0.30 bpp, mín 25 Mbps) era desproporcionado y ayudaba
+    // a inflar la cola del encoder del motor viejo.
+    let raw = (width as u64) * (height as u64) * (fps as u64) * 12 / 100;
+    raw.clamp(8_000_000, 45_000_000) as u32
 }
 
 /// Resolución del monitor objetivo, para igualar la salida a la NATIVA y NO
@@ -290,6 +794,10 @@ pub fn target_monitor_size(_app: &tauri::AppHandle, _prefer_current: bool) -> (u
 /// Graba `duration_s` s de la ventana cuyo título contiene `target_title`
 /// (substring, case-insensitive), con audio del sistema. Bloqueante
 /// (~duration_s) — llamar desde `spawn_blocking`.
+///
+/// (v6.2.17) Motor nuevo (WGC + MF hardware): `width`/`height` solo se usan
+/// para calcular el bitrate — el tamaño real sale del primer frame. El
+/// micrófono no está soportado por el motor nuevo (solo audio del sistema).
 #[cfg(windows)]
 pub fn record_window_clip(
     target_title: &str,
@@ -301,33 +809,25 @@ pub fn record_window_clip(
     fps: u32,
 ) -> anyhow::Result<()> {
     use std::time::Duration;
-    use windows_record::{AudioSource, Recorder};
 
-    let config = Recorder::builder()
-        .fps(fps, 1)
-        .output_dimensions(width, height)
-        .video_bitrate(compute_bitrate(width, height, fps))
-        .capture_audio(true)
-        .capture_microphone(capture_microphone)
-        .audio_source(AudioSource::Desktop)
-        .output_path(out.to_path_buf())
-        .build();
-
-    let recorder = Recorder::new(config)
-        .map_err(|e| anyhow::anyhow!("no se pudo crear el grabador: {e:?}"))?
-        .with_process_name(target_title);
-
-    recorder.start_recording().map_err(|e| {
-        anyhow::anyhow!(
-            "no se pudo iniciar la grabación (¿está abierta la ventana «{target_title}»?): {e:?}"
-        )
-    })?;
+    if capture_microphone {
+        tracing::warn!(
+            target: "rec",
+            "micrófono aún no soportado por el motor nuevo — se graba solo el audio del sistema"
+        );
+    }
+    let temp = out.with_extension("part.mp4");
+    let session = capture_engine::CaptureSession::start(
+        target_title,
+        fps,
+        compute_bitrate(width, height, fps),
+        temp,
+        true,
+    )?;
 
     std::thread::sleep(Duration::from_secs(duration_s.clamp(2, 600) as u64));
 
-    recorder
-        .stop_recording()
-        .map_err(|e| anyhow::anyhow!("fallo al finalizar la grabación: {e:?}"))?;
+    session.finish_and_save(out)?;
 
     if !out.is_file() {
         anyhow::bail!("la grabación no produjo ningún archivo");
@@ -496,7 +996,6 @@ fn update_clip_meta(
 enum RecCmd {
     Arm {
         output_path: String,
-        clip_seconds: i64,
         width: u32,
         height: u32,
         fps: u32,
@@ -508,83 +1007,68 @@ enum RecCmd {
     Stop,
 }
 
-/// Hilo dedicado dueño del `Recorder` (replay buffer). Recibe comandos por un
-/// canal sync. Aislar el `Recorder` aquí evita líos de `Send`/COM con tokio.
+/// Hilo dedicado dueño de la sesión de captura. Recibe comandos por un canal
+/// sync — aislar la sesión aquí evita líos de `Send`/COM con tokio.
+///
+/// (v6.2.17) Con el motor nuevo NO hay replay buffer en RAM: `Arm` empieza a
+/// grabar EN DISCO a un temporal; `Save` finaliza el contenedor y lo renombra
+/// como clip (cubre toda la aproximación final); `Stop` descarta y borra.
 #[cfg(windows)]
 fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
-    use windows_record::{AudioSource, Recorder};
-    let mut rec: Option<Recorder> = None;
-    // Ruta del archivo base del replay buffer — se borra al parar (solo nos
-    // interesa el clip del aterrizaje, no el buffer continuo).
-    let mut buffer_path: Option<PathBuf> = None;
+    let mut session: Option<capture_engine::CaptureSession> = None;
     while let Ok(cmd) = rx.recv() {
         match cmd {
             RecCmd::Arm {
                 output_path,
-                clip_seconds,
                 width,
                 height,
                 fps,
             } => {
-                if rec.is_some() {
+                if session.is_some() {
+                    continue;
+                }
+                // Solo armamos si no hay otra grabación (p.ej. una prueba).
+                if !try_acquire_recording() {
+                    tracing::warn!(target: "rec", "ya hay una grabación activa; no se arma la captura");
                     continue;
                 }
                 let base = Path::new(&output_path).join("simfleet_buffer.mp4");
-                buffer_path = Some(base.clone());
-                let config = Recorder::builder()
-                    .fps(fps, 1)
-                    .output_dimensions(width, height)
-                    .video_bitrate(compute_bitrate(width, height, fps))
-                    .capture_audio(true)
-                    .capture_microphone(false)
-                    .audio_source(AudioSource::Desktop)
-                    .output_path(base)
-                    .enable_replay_buffer(true)
-                    .replay_buffer_seconds(clip_seconds.clamp(15, 120) as u32)
-                    .build();
-                // Solo armamos si no hay otra grabación (p.ej. una prueba).
-                if !try_acquire_recording() {
-                    tracing::warn!(target: "rec", "ya hay una grabación activa; no se arma el replay buffer");
-                    continue;
-                }
-                match Recorder::new(config) {
-                    Ok(r) => {
-                        let r = r.with_process_name(MSFS_WINDOW);
-                        match r.start_recording() {
-                            Ok(_) => {
-                                tracing::info!(target: "rec", "replay buffer armado (MSFS)");
-                                rec = Some(r);
-                            }
-                            Err(e) => {
-                                release_recording();
-                                tracing::warn!(target: "rec", "no se pudo armar replay buffer: {e:?}")
-                            }
-                        }
+                match capture_engine::CaptureSession::start(
+                    MSFS_WINDOW,
+                    fps,
+                    compute_bitrate(width, height, fps),
+                    base,
+                    true,
+                ) {
+                    Ok(s) => {
+                        tracing::info!(target: "rec", "captura armada (MSFS, {fps} fps, disco)");
+                        session = Some(s);
                     }
                     Err(e) => {
                         release_recording();
-                        tracing::warn!(target: "rec", "Recorder::new falló: {e:?}");
+                        tracing::warn!(target: "rec", "no se pudo armar la captura: {e:#}");
                     }
                 }
             }
             RecCmd::Save { path, reply } => {
-                let res = match &rec {
-                    Some(r) => r.save_replay(path.as_str()).map_err(|e| format!("{e:?}")),
+                let res = match session.take() {
+                    Some(s) => {
+                        let r = s
+                            .finish_and_save(Path::new(&path))
+                            .map_err(|e| format!("{e:#}"));
+                        release_recording();
+                        tracing::info!(target: "rec", "clip guardado: {path}");
+                        r
+                    }
                     None => Err("recorder no armado".to_string()),
                 };
                 let _ = reply.send(res);
             }
             RecCmd::Stop => {
-                if let Some(r) = rec.take() {
-                    let _ = r.stop_recording();
+                if let Some(s) = session.take() {
+                    s.abort();
                     release_recording();
-                    // Borrar el buffer continuo — solo guardamos el clip.
-                    if let Some(bp) = buffer_path.take() {
-                        // Pequeña espera para que windows-record cierre el archivo.
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        let _ = std::fs::remove_file(&bp);
-                    }
-                    tracing::info!(target: "rec", "replay buffer detenido");
+                    tracing::info!(target: "rec", "captura detenida (sin clip)");
                 }
             }
         }
@@ -691,15 +1175,12 @@ async fn controller_loop(
                 let (w, h) = target_monitor_size(&app, false);
                 let _ = tx.send(RecCmd::Arm {
                     output_path: cfg.output_path.clone(),
-                    clip_seconds: cfg.clip_seconds,
                     width: w,
                     height: h,
-                    // (v6.2.16) TOPE 30 FPS. Confirmado en campo: a 60fps el
-                    // encoder de windows-record 0.1 acumula frames sin control
-                    // (20 GB de RAM → OOM → crashea el sim); a 30fps se mantiene
-                    // estable. Hasta migrar/actualizar la librería, 30 es el
-                    // máximo seguro aunque el setting diga más.
-                    fps: cfg.fps.clamp(24, 30) as u32,
+                    // (v6.2.17) 60 fps de vuelta: el motor nuevo (WGC + encoder
+                    // por hardware) drena a disco — sin buffer en RAM que
+                    // acumular. El tope de 30 era del motor viejo (windows-record).
+                    fps: cfg.fps.clamp(24, 60) as u32,
                 });
                 armed = true;
                 armed_at = Some(std::time::Instant::now());

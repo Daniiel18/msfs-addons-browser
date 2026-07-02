@@ -102,24 +102,23 @@ export function RecordingSettings() {
           </Field>
 
           {/* Calidad / rendimiento: FPS.
-              (v6.2.16) Se retiró la opción de 60fps: el encoder nativo acumula
-              memoria sin control a 60 (hasta 20 GB → crashea el sim) y a 30 se
-              mantiene estable. El backend además fuerza el tope aunque el
-              setting viejo dijera 60. */}
+              (v6.2.17) 60fps de vuelta: el motor nuevo (WGC + encoder por
+              hardware) drena directo a disco — sin el buffer en RAM que
+              explotaba con el motor anterior. */}
           <Field label={t("rec.fps")}>
             <Segmented
               options={[
-                { value: 24, label: "24 fps" },
                 { value: 30, label: t("rec.fps_30") },
+                { value: 60, label: t("rec.fps_60") },
               ]}
-              value={cfg.fps <= 24 ? 24 : 30}
+              value={cfg.fps >= 60 ? 60 : 30}
               onChange={(v) => {
                 patch({ fps: v });
                 void setKey("rec_fps", String(v));
               }}
             />
-            <p className="mt-1 text-[10px] leading-relaxed text-amber-500/80">
-              {t("rec.fps_60_removed")}
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+              {t("rec.fps_hint")}
             </p>
           </Field>
 
