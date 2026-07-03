@@ -110,7 +110,7 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
     use std::collections::HashMap;
 
     let candidates = repo::catalog_versions_for_community(pool).await?;
-    let dismissed = repo::list_dismissed_folder_names(pool).await?;
+    let dismissed = repo::list_dismissed_versions(pool).await?;
     tracing::info!(
         "compute_available: {} filas del JOIN community↔addons↔airports, {} dismissed",
         candidates.len(),
@@ -196,10 +196,18 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
 
     let mut out = Vec::new();
     for (_, c) in by_folder {
-        if dismissed.contains(&c.folder_name) {
+        // (v6.2.22) El descarte es POR VERSIÓN: solo se oculta mientras el
+        // catálogo siga en la versión que el usuario descartó. Si salió una
+        // más nueva, el aviso REAPARECE (bug reportado: descartó KJFK en
+        // v1.0.2 y el aviso de v1.0.3 nunca llegó a campanita/dashboard/mapa).
+        if dismissed
+            .get(&c.folder_name)
+            .is_some_and(|v| v == &c.catalog_version)
+        {
             tracing::debug!(
-                "compute_available: skip {} (dismissed por usuario)",
-                c.folder_name
+                "compute_available: skip {} (dismissed por usuario en v{})",
+                c.folder_name,
+                c.catalog_version
             );
             continue;
         }

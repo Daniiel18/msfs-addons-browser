@@ -475,7 +475,9 @@ interface Api {
   ) => Promise<LinkOutcome>;
 
   // Dismiss de updates
-  dismissUpdate: (folderName: string) => Promise<void>;
+  /** (v6.2.22) `latestVersion` acota el descarte a ESA versión — si sale
+   *  una más nueva el aviso reaparece. */
+  dismissUpdate: (folderName: string, latestVersion?: string) => Promise<void>;
   dismissAllUpdates: () => Promise<void>;
   clearDismissedUpdates: () => Promise<void>;
 
@@ -845,7 +847,8 @@ const realApi: Api = {
       force: force ?? false,
     }),
 
-  dismissUpdate: (folderName) => invoke<void>("dismiss_update", { folderName }),
+  dismissUpdate: (folderName, latestVersion) =>
+    invoke<void>("dismiss_update", { folderName, latestVersion }),
   dismissAllUpdates: () => invoke<void>("dismiss_all_updates"),
   clearDismissedUpdates: () => invoke<void>("clear_dismissed_updates"),
 

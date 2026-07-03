@@ -143,6 +143,7 @@
   "settings.search.placeholder": "Buscar ajuste…",
   "settings.search.results": "{n} secciones encontradas",
   "settings.search.none": "Sin resultados — prueba otro nombre.",
+  "settings.search.filtering": "Mostrando solo las opciones que casan (todos los grupos).",
   "settings.restart.label": "Reiniciar SimFleet",
   "settings.restart.hint": "Recarga la app (splash) sin volver a preguntar la versión del sim.",
   "settings.restart.button": "Reiniciar",

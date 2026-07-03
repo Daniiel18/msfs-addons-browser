@@ -58,31 +58,11 @@ import { DiagnosticsSettings } from "./DiagnosticsSettings";
  *
  * Vive globalmente en `App.tsx` para flotar sobre cualquier vista.
  */
-/** (v6.2.20) Metadatos de cada sección. `keywordKeys` = claves i18n de los
- *  CONTROLES que viven dentro — el buscador casa contra el título de la
- *  sección Y contra estas etiquetas (así "MSFS version", "tema" o "unidades"
- *  encuentran General aunque no se llamen así). */
-const SECTION_META: Array<{
-  key: string;
-  labelKey: string;
-  keywordKeys?: string[];
-}> = [
-  {
-    key: "general",
-    labelKey: "settings.section.general",
-    keywordKeys: [
-      "settings.theme.title",
-      "settings.language.title",
-      "simver.settings.title",
-      "settings.units.title",
-      "settings.autostart.title",
-      "settings.updates.title",
-      "settings.tray.title",
-      "settings.restart.label",
-      "rec.title",
-      "rec.fps",
-    ],
-  },
+/** (v6.2.22) Metadatos de cada sección. Con búsqueda activa se renderizan
+ *  TODAS y el filtro por fila (DOM) muestra solo las opciones que casan —
+ *  no hace falta mantener listas de keywords por sección. */
+const SECTION_META: Array<{ key: string; labelKey: string }> = [
+  { key: "general", labelKey: "settings.section.general" },
   { key: "flights", labelKey: "settings.section.flights" },
   { key: "map_display", labelKey: "settings.section.map_display" },
   { key: "folders", labelKey: "settings.section.folders" },
@@ -92,15 +72,7 @@ const SECTION_META: Array<{
   { key: "backup", labelKey: "settings.section.backup" },
   { key: "import", labelKey: "settings.section.import" },
   { key: "export", labelKey: "settings.section.export" },
-  {
-    key: "storage",
-    labelKey: "settings.section.storage",
-    keywordKeys: [
-      "settings.storage.clear_caches.label",
-      "settings.storage.reset.label",
-      "settings.temp.title",
-    ],
-  },
+  { key: "storage", labelKey: "settings.section.storage" },
   { key: "tour", labelKey: "settings.section.tour" },
   { key: "about", labelKey: "settings.section.about" },
   { key: "diagnostics", labelKey: "settings.section.diagnostics" },
@@ -187,16 +159,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const visibleSections = useMemo(() => {
     const q = navQuery.trim().toLowerCase();
     if (q) {
-      // (v6.2.20) Casa contra el título de la sección Y contra las etiquetas
-      // de sus controles (keywordKeys) — "msfs version" encuentra General.
-      return new Set(
-        SECTION_META.filter((s) => {
-          if (t(s.labelKey).toLowerCase().includes(q)) return true;
-          return (s.keywordKeys ?? []).some((k) =>
-            t(k).toLowerCase().includes(q),
-          );
-        }).map((s) => s.key),
-      );
+      // (v6.2.22) Con búsqueda activa se RENDERIZAN TODAS las secciones y el
+      // filtro por fila (effect de abajo) decide qué opciones se ven — así
+      // cualquier opción de cualquier grupo es encontrable, no solo las de
+      // secciones cuyo título casa.
+      return new Set(SECTION_META.map((s) => s.key));
     }
     return new Set(
       SETTINGS_GROUPS.find((g) => g.id === group)?.sections ?? [],
@@ -218,10 +185,19 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     for (const w of wrappers) {
       const body = w.querySelector(":scope > .space-y-2");
       if (!body) continue; // banner de error u otros — no tocar
+      // (v6.2.22) Si el TÍTULO de la sección casa ("GSX", "Backup"…), se
+      // muestra la sección completa con todas sus opciones.
+      const title = (
+        w.querySelector(":scope > h3")?.textContent ?? ""
+      ).toLowerCase();
+      const titleMatch = q !== "" && title.includes(q);
       const rows = Array.from(body.children) as HTMLElement[];
       let visible = 0;
       for (const row of rows) {
-        const match = !q || (row.textContent ?? "").toLowerCase().includes(q);
+        const match =
+          !q ||
+          titleMatch ||
+          (row.textContent ?? "").toLowerCase().includes(q);
         row.style.display = match ? "" : "none";
         if (match) visible += 1;
       }
@@ -432,11 +408,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
                 {navQuery.trim() ? (
                   <p className="px-1 pt-1 text-[10px] text-slate-500">
-                    {visibleSections.size > 0
-                      ? t("settings.search.results", {
-                          n: String(visibleSections.size),
-                        })
-                      : t("settings.search.none")}
+                    {t("settings.search.filtering")}
                   </p>
                 ) : (
                   SETTINGS_GROUPS.map((g) => {

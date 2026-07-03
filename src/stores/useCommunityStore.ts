@@ -199,10 +199,15 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
   },
 
   async dismissUpdate(folderName) {
+    // (v6.2.22) El descarte se acota a la versión ACTUAL del aviso — si el
+    // developer publica una más nueva, el aviso reaparece solo.
+    const latest = get().updates.find(
+      (u) => u.folderName === folderName,
+    )?.latestVersion;
     // Optimista: lo quitamos de la lista en memoria al instante.
     set((s) => ({ updates: s.updates.filter((u) => u.folderName !== folderName) }));
     try {
-      await api.dismissUpdate(folderName);
+      await api.dismissUpdate(folderName, latest);
     } catch (e) {
       console.warn("dismissUpdate falló:", e);
       // Recargar listado — si la persistencia falló queremos que

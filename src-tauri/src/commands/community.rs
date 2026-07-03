@@ -350,14 +350,30 @@ pub async fn diagnose_update_for_package(
         .map_err(|e| e.to_string())
 }
 
-/// Marca una update como vista — desaparece del panel hasta que
-/// el usuario pulse "Recargar" o instale el paquete.
+/// Marca una update como vista — desaparece del panel hasta que el usuario
+/// pulse "Recargar", instale el paquete, o salga una versión MÁS NUEVA que
+/// la descartada (v6.2.22).
 #[tauri::command]
 pub async fn dismiss_update(
     folder_name: String,
+    latest_version: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    repo::dismiss_update(&state.db, &folder_name)
+    // Si el frontend no manda la versión (llamadas viejas), la resolvemos
+    // del cómputo actual para no volver al descarte "eterno".
+    let version = match latest_version {
+        Some(v) if !v.is_empty() => v,
+        _ => updates::compute_available(&state.db)
+            .await
+            .ok()
+            .and_then(|list| {
+                list.into_iter()
+                    .find(|u| u.folder_name == folder_name)
+                    .map(|u| u.latest_version)
+            })
+            .unwrap_or_default(),
+    };
+    repo::dismiss_update(&state.db, &folder_name, &version)
         .await
         .map_err(|e| e.to_string())
 }
@@ -373,7 +389,9 @@ pub async fn dismiss_all_updates(
         .await
         .map_err(|e| e.to_string())?;
     for u in updates {
-        if let Err(e) = repo::dismiss_update(&state.db, &u.folder_name).await {
+        if let Err(e) =
+            repo::dismiss_update(&state.db, &u.folder_name, &u.latest_version).await
+        {
             tracing::warn!("dismiss_all_updates: falló para {}: {e:#}", u.folder_name);
         }
     }

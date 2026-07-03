@@ -805,16 +805,25 @@ pub mod repo {
     // -----------------------------------------------------------------
 
     /// Inserta o reemplaza una entrada — una update queda oculta
-    /// hasta que el usuario pulse "Recargar" o la instale.
-    pub async fn dismiss_update(pool: &SqlitePool, folder_name: &str) -> anyhow::Result<()> {
+    /// hasta que el usuario pulse "Recargar", la instale, o salga una
+    /// VERSIÓN MÁS NUEVA que la descartada (v6.2.22: el descarte guarda
+    /// la versión del catálogo; descartar v1.0.2 no silencia v1.0.3).
+    pub async fn dismiss_update(
+        pool: &SqlitePool,
+        folder_name: &str,
+        latest_version: &str,
+    ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO dismissed_updates (folder_name, dismissed_at)
-            VALUES (?1, datetime('now'))
-            ON CONFLICT(folder_name) DO UPDATE SET dismissed_at = excluded.dismissed_at
+            INSERT INTO dismissed_updates (folder_name, latest_version, dismissed_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(folder_name) DO UPDATE
+                SET dismissed_at = excluded.dismissed_at,
+                    latest_version = excluded.latest_version
             "#,
         )
         .bind(folder_name)
+        .bind(latest_version)
         .execute(pool)
         .await?;
         Ok(())
@@ -830,16 +839,17 @@ pub mod repo {
         Ok(())
     }
 
-    /// Devuelve el set de folder_names dismissed. Lo cargamos una
+    /// Devuelve folder_name → versión descartada. Lo cargamos una
     /// vez en `compute_available` y filtramos en memoria — más
     /// barato que JOIN cuando hay sólo decenas de filas.
-    pub async fn list_dismissed_folder_names(
+    pub async fn list_dismissed_versions(
         pool: &SqlitePool,
-    ) -> anyhow::Result<std::collections::HashSet<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT folder_name FROM dismissed_updates")
-            .fetch_all(pool)
-            .await?;
-        Ok(rows.into_iter().map(|(s,)| s).collect())
+    ) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT folder_name, latest_version FROM dismissed_updates")
+                .fetch_all(pool)
+                .await?;
+        Ok(rows.into_iter().collect())
     }
 
     // -----------------------------------------------------------------
