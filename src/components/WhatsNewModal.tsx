@@ -36,30 +36,25 @@ export interface WhatsNewSlide {
   image: string;
 }
 
-/** Slides por defecto — novedades REALES desde la versión del GSX (6.2.4)
- *  hasta hoy (6.2.11): avisos de actualización de GSX, avisos de ciclo AIRAC,
- *  el OSD de aterrizaje siempre encima del sim, y el Crew VS rehecho
- *  (histórico por vuelo + estela y seguimiento del rival en el mapa). */
+/** Slides por defecto — novedades de ESTE update (6.2.19/6.2.20): avisos de
+ *  mantenimiento en la campanita + economía autosostenible, Ajustes
+ *  rediseñados (grupos + buscador + reinicio rápido) y aviso de FPS
+ *  Optimization al instalar escenarios. */
 const DEFAULT_SLIDES: WhatsNewSlide[] = [
   {
-    titleKey: "whatsnew.gsxupd.title",
-    bodyKey: "whatsnew.gsxupd.body",
-    image: "/whatsnew/gsx-update.svg",
+    titleKey: "whatsnew.maint.title",
+    bodyKey: "whatsnew.maint.body",
+    image: "/whatsnew/maint-alerts.svg",
   },
   {
-    titleKey: "whatsnew.airac.title",
-    bodyKey: "whatsnew.airac.body",
-    image: "/whatsnew/airac-update.svg",
+    titleKey: "whatsnew.settings3.title",
+    bodyKey: "whatsnew.settings3.body",
+    image: "/whatsnew/settings-groups.svg",
   },
   {
-    titleKey: "whatsnew.osd.title",
-    bodyKey: "whatsnew.osd.body",
-    image: "/whatsnew/osd-landing.svg",
-  },
-  {
-    titleKey: "whatsnew.crewvs2.title",
-    bodyKey: "whatsnew.crewvs2.body",
-    image: "/whatsnew/crewvs-history.svg",
+    titleKey: "whatsnew.fpsnotice.title",
+    bodyKey: "whatsnew.fpsnotice.body",
+    image: "/whatsnew/fps-notice.svg",
   },
 ];
 

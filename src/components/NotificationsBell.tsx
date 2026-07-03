@@ -12,6 +12,7 @@ import {
   Navigation,
   Swords,
   Wrench,
+  Gauge,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
@@ -26,7 +27,13 @@ import {
 } from "../stores/useAiracUpdateStore";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
-import type { AvailableUpdate, UpdateInfo } from "../lib/types";
+import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
+import { PerformanceModal } from "./PerformanceModal";
+import type {
+  AvailableUpdate,
+  CommunityPackage,
+  UpdateInfo,
+} from "../lib/types";
 import { api } from "../lib/tauri";
 import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
 import { t } from "../lib/i18n";
@@ -90,6 +97,17 @@ export function NotificationsBell() {
     return at == null || a.wearPct >= at + 5;
   });
 
+  // (v6.2.20) Escenario recién instalado con "FPS Optimization" disponible.
+  // Clic abre el modal de rendimiento (igual que la tuerca del Link Map).
+  const fpsStart = useFpsNoticesStore((s) => s.start);
+  const fpsNotices = useFpsNoticesStore((s) => s.notices);
+  const fpsDismiss = useFpsNoticesStore((s) => s.dismiss);
+  const communityPackages = useCommunityStore((s) => s.packages);
+  const [perfPkg, setPerfPkg] = useState<CommunityPackage | null>(null);
+  useEffect(() => {
+    fpsStart();
+  }, [fpsStart]);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -126,7 +144,8 @@ export function NotificationsBell() {
     (showGsx ? 1 : 0) +
     (showAirac ? 1 : 0) +
     duelNotices.length +
-    maintAlerts.length;
+    maintAlerts.length +
+    fpsNotices.length;
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
@@ -443,6 +462,51 @@ export function NotificationsBell() {
               );
             })}
 
+            {/* (v6.2.20) FPS Optimization disponible en escenario recién
+                instalado — clic abre el modal de rendimiento. */}
+            {fpsNotices.map((n) => (
+              <div
+                key={n.folderName}
+                className="border-b border-emerald-500/20 bg-emerald-500/10 px-4 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
+                  <button
+                    onClick={() => {
+                      const pkg = communityPackages.find(
+                        (p) => p.folderName === n.folderName,
+                      );
+                      if (pkg) {
+                        setPerfPkg(pkg);
+                        setOpen(false);
+                      } else {
+                        // Ya no está instalado — el aviso sobra.
+                        fpsDismiss(n.folderName);
+                      }
+                    }}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="text-xs font-semibold text-emerald-100">
+                      {t("notifications.fps_available")}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-emerald-200/80">
+                      {n.title}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      {t("notifications.fps_hint")}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => fpsDismiss(n.folderName)}
+                    title={t("notifications.dismiss_app_update")}
+                    className="shrink-0 rounded-md p-1 text-emerald-200/70 hover:bg-emerald-500/20 hover:text-emerald-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+
             {packageCount > 0 && (
               <div className="border-b border-slate-800 bg-amber-500/5 px-4 py-2">
                 <button
@@ -524,6 +588,12 @@ export function NotificationsBell() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* (v6.2.20) Modal de rendimiento abierto desde un aviso de FPS —
+          mismo componente que usa la tuerca del Link Map. */}
+      {perfPkg && (
+        <PerformanceModal pkg={perfPkg} onClose={() => setPerfPkg(null)} />
+      )}
     </div>
   );
 }

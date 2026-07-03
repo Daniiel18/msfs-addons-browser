@@ -58,10 +58,31 @@ import { DiagnosticsSettings } from "./DiagnosticsSettings";
  *
  * Vive globalmente en `App.tsx` para flotar sobre cualquier vista.
  */
-/** (v6.2.19) Metadatos de cada sección (título para el buscador). La `key`
- *  coincide con el `navKey` de cada `<Section>`. */
-const SECTION_META: Array<{ key: string; labelKey: string }> = [
-  { key: "general", labelKey: "settings.section.general" },
+/** (v6.2.20) Metadatos de cada sección. `keywordKeys` = claves i18n de los
+ *  CONTROLES que viven dentro — el buscador casa contra el título de la
+ *  sección Y contra estas etiquetas (así "MSFS version", "tema" o "unidades"
+ *  encuentran General aunque no se llamen así). */
+const SECTION_META: Array<{
+  key: string;
+  labelKey: string;
+  keywordKeys?: string[];
+}> = [
+  {
+    key: "general",
+    labelKey: "settings.section.general",
+    keywordKeys: [
+      "settings.theme.title",
+      "settings.language.title",
+      "simver.settings.title",
+      "settings.units.title",
+      "settings.autostart.title",
+      "settings.updates.title",
+      "settings.tray.title",
+      "settings.restart.label",
+      "rec.title",
+      "rec.fps",
+    ],
+  },
   { key: "flights", labelKey: "settings.section.flights" },
   { key: "map_display", labelKey: "settings.section.map_display" },
   { key: "folders", labelKey: "settings.section.folders" },
@@ -71,7 +92,15 @@ const SECTION_META: Array<{ key: string; labelKey: string }> = [
   { key: "backup", labelKey: "settings.section.backup" },
   { key: "import", labelKey: "settings.section.import" },
   { key: "export", labelKey: "settings.section.export" },
-  { key: "storage", labelKey: "settings.section.storage" },
+  {
+    key: "storage",
+    labelKey: "settings.section.storage",
+    keywordKeys: [
+      "settings.storage.clear_caches.label",
+      "settings.storage.reset.label",
+      "settings.temp.title",
+    ],
+  },
   { key: "tour", labelKey: "settings.section.tour" },
   { key: "about", labelKey: "settings.section.about" },
   { key: "diagnostics", labelKey: "settings.section.diagnostics" },
@@ -157,10 +186,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const visibleSections = useMemo(() => {
     const q = navQuery.trim().toLowerCase();
     if (q) {
+      // (v6.2.20) Casa contra el título de la sección Y contra las etiquetas
+      // de sus controles (keywordKeys) — "msfs version" encuentra General.
       return new Set(
-        SECTION_META.filter((s) => t(s.labelKey).toLowerCase().includes(q)).map(
-          (s) => s.key,
-        ),
+        SECTION_META.filter((s) => {
+          if (t(s.labelKey).toLowerCase().includes(q)) return true;
+          return (s.keywordKeys ?? []).some((k) =>
+            t(k).toLowerCase().includes(q),
+          );
+        }).map((s) => s.key),
       );
     }
     return new Set(
@@ -451,6 +485,37 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     setSimReload(true);
                   }}
                 />
+                {/* (v6.2.20) Reinicio rápido: recarga la app (splash) SIN
+                    volver a preguntar la versión del sim — usa el mismo flag
+                    de un solo uso que el cambio de versión. */}
+                <div className="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+                  <div className="min-w-0 pr-3">
+                    <div className="text-xs font-medium text-slate-200">
+                      {t("settings.restart.label")}
+                    </div>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
+                      {t("settings.restart.hint")}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        localStorage.setItem(
+                          "simfleet:skip-version-prompt-once",
+                          "1",
+                        );
+                      } catch {
+                        /* ignore */
+                      }
+                      window.location.reload();
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-brand-500/50 hover:text-brand-200"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {t("settings.restart.button")}
+                  </button>
+                </div>
                 {/* (v6 #2b) Best Landings — config de grabación. */}
                 <RecordingSettings />
                 {/* (v6.1) Live VS quitado de Ajustes — no se usa. */}
