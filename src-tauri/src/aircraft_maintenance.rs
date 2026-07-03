@@ -487,6 +487,202 @@ pub async fn single_aircraft_maintenance(
     }))
 }
 
+/// (v6.2.19) Alerta de mantenimiento para la campanita: matrícula con algún
+/// componente cerca del servicio (>=75%) o vencido (>=80%).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintAlert {
+    pub registration: String,
+    pub model: Option<String>,
+    /// Aerolínea a la que se imputa (para el deep-link a Finanzas).
+    pub airline_key: Option<String>,
+    pub airline_name: Option<String>,
+    /// Peor componente y su desgaste — lo que se muestra en la tarjeta.
+    pub component: String,
+    pub wear_pct: f64,
+    /// "due" (>=80) o "soon" (75-80).
+    pub severity: String,
+    /// Nº de componentes en estado "due" de esta matrícula.
+    pub due_count: i64,
+}
+
+/// (v6.2.19) Escanea TODAS las matrículas voladas y devuelve las que tienen
+/// componentes próximos a mantenimiento (>=75%). Una alerta por matrícula,
+/// con su peor componente. Alimenta la campanita de notificaciones.
+pub async fn maintenance_alerts(pool: &SqlitePool) -> Result<Vec<MaintAlert>> {
+    const SOON_AT: f64 = 75.0;
+    let flights = flight_log::list_entries(pool).await?;
+    let learned = airline_economy::learn_airline_icaos(&flights);
+    let services = last_services(pool).await?;
+    let telemetry = flight_stress(pool).await?;
+
+    // Agrupa por matrícula (todas las aerolíneas) y recuerda la aerolínea
+    // más reciente que voló cada avión (para el deep-link).
+    let mut by_reg: HashMap<String, Vec<&FlightLogEntry>> = HashMap::new();
+    let mut orig_of: HashMap<String, String> = HashMap::new();
+    let mut model_of: HashMap<String, Option<String>> = HashMap::new();
+    let mut airline_of: HashMap<String, (String, String)> = HashMap::new();
+    for f in &flights {
+        let Some(reg_raw) = f.aircraft_registration.as_deref() else {
+            continue;
+        };
+        let reg = normalize_reg(reg_raw);
+        if reg.is_empty() {
+            continue;
+        }
+        by_reg.entry(reg.clone()).or_default().push(f);
+        orig_of
+            .entry(reg.clone())
+            .or_insert_with(|| reg_raw.trim().to_string());
+        model_of.entry(reg.clone()).or_insert_with(|| {
+            f.aircraft_model
+                .as_deref()
+                .or(f.aircraft_atc_type.as_deref())
+                .map(flight_log::normalize_model)
+        });
+        // list_entries viene DESC por fecha → el primero es el más reciente.
+        if !airline_of.contains_key(&reg) {
+            if let Some(canon) = airline_economy::canonical_airline(
+                f.airline_icao.as_deref(),
+                f.callsign.as_deref(),
+                f.aircraft_airline.as_deref(),
+                f.aircraft_title.as_deref(),
+                &learned,
+            ) {
+                airline_of.insert(reg.clone(), (canon.key.clone(), canon.name.clone()));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (reg, reg_flights) in by_reg {
+        let (comps, _) = components_for(&reg, &reg_flights, &services, &telemetry, 1.0);
+        let mut worst: Option<&MaintComponent> = None;
+        let mut due_count = 0i64;
+        for c in &comps {
+            if c.wear_pct >= 80.0 {
+                due_count += 1;
+            }
+            if c.wear_pct >= SOON_AT
+                && worst.map_or(true, |w| c.wear_pct > w.wear_pct)
+            {
+                worst = Some(c);
+            }
+        }
+        if let Some(w) = worst {
+            let (akey, aname) = airline_of
+                .get(&reg)
+                .cloned()
+                .map(|(k, n)| (Some(k), Some(n)))
+                .unwrap_or((None, None));
+            let model = model_of.get(&reg).cloned().flatten();
+            out.push(MaintAlert {
+                registration: orig_of.get(&reg).cloned().unwrap_or(reg),
+                model,
+                airline_key: akey,
+                airline_name: aname,
+                component: w.id.clone(),
+                wear_pct: w.wear_pct,
+                severity: if w.wear_pct >= 80.0 { "due" } else { "soon" }.to_string(),
+                due_count,
+            });
+        }
+    }
+    // Peor primero.
+    out.sort_by(|a, b| {
+        b.wear_pct
+            .partial_cmp(&a.wear_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(out)
+}
+
+/// (v6.2.19) AUTO-MANTENIMIENTO — economía autosostenible: como en la vida
+/// real, un componente al 100% no puede seguir volando. Cuando el desgaste
+/// llega a 100, la aerolínea hace el servicio AUTOMÁTICAMENTE: se inserta en
+/// `maintenance_log` (resetea el desgaste) y su coste — a la tarifa del nivel
+/// de mantenimiento de esa aerolínea — entra en las cuentas de Finanzas.
+/// Corre al inicio de cada `recompute()` (cada vez que se abre Finanzas).
+pub async fn auto_service_worn(pool: &SqlitePool) -> Result<u64> {
+    let flights = flight_log::list_entries(pool).await?;
+    let learned = airline_economy::learn_airline_icaos(&flights);
+    let services = last_services(pool).await?;
+    let telemetry = flight_stress(pool).await?;
+
+    let mut by_reg: HashMap<String, Vec<&FlightLogEntry>> = HashMap::new();
+    let mut airline_of: HashMap<String, String> = HashMap::new();
+    for f in &flights {
+        let Some(reg_raw) = f.aircraft_registration.as_deref() else {
+            continue;
+        };
+        let reg = normalize_reg(reg_raw);
+        if reg.is_empty() {
+            continue;
+        }
+        by_reg.entry(reg.clone()).or_default().push(f);
+        if !airline_of.contains_key(&reg) {
+            if let Some(canon) = airline_economy::canonical_airline(
+                f.airline_icao.as_deref(),
+                f.callsign.as_deref(),
+                f.aircraft_airline.as_deref(),
+                f.aircraft_title.as_deref(),
+                &learned,
+            ) {
+                airline_of.insert(reg.clone(), canon.key);
+            }
+        }
+    }
+
+    // Multiplicador de coste por aerolínea (cacheado — una query por aerolínea).
+    let mut mult_of: HashMap<String, f64> = HashMap::new();
+    let mut count = 0u64;
+    let now = Utc::now().to_rfc3339();
+    for (reg, reg_flights) in by_reg {
+        let (comps, _) = components_for(&reg, &reg_flights, &services, &telemetry, 1.0);
+        for c in comps.iter().filter(|c| c.wear_pct >= 100.0) {
+            let mult = match airline_of.get(&reg) {
+                Some(key) => {
+                    if let Some(m) = mult_of.get(key) {
+                        *m
+                    } else {
+                        let m = level_cost_mult(
+                            airline_economy::get_policy(pool, key)
+                                .await
+                                .map(|p| p.maintenance_level)
+                                .unwrap_or(1),
+                        );
+                        mult_of.insert(key.clone(), m);
+                        m
+                    }
+                }
+                None => 1.0,
+            };
+            let cost = COMPONENTS
+                .iter()
+                .find(|s| s.id == c.id)
+                .map(|s| s.cost * mult)
+                .unwrap_or(0.0);
+            sqlx::query(
+                r#"INSERT INTO maintenance_log (registration, component, cost, serviced_at)
+                   VALUES (?,?,?,?)"#,
+            )
+            .bind(&reg)
+            .bind(&c.id)
+            .bind(cost)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+            count += 1;
+            tracing::info!(
+                target: "economy",
+                "auto-mantenimiento: {reg} {} al {:.0}% → servicio automático ({} USD)",
+                c.id, c.wear_pct, cost as i64
+            );
+        }
+    }
+    Ok(count)
+}
+
 /// Registra un servicio: resetea el componente (cuenta desgaste sólo de los
 /// vuelos posteriores) y su coste (según el NIVEL de la aerolínea) entra en la
 /// economía. `airline_key` permite cobrar el precio premium/standard/básico.

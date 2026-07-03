@@ -99,3 +99,14 @@ pub async fn aircraft_maintenance_history(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// (v6.2.19) Aviones próximos a mantenimiento (>=75% de desgaste en algún
+/// componente) — alimenta la campanita de notificaciones.
+#[tauri::command]
+pub async fn maintenance_alerts(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::aircraft_maintenance::MaintAlert>, String> {
+    crate::aircraft_maintenance::maintenance_alerts(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}

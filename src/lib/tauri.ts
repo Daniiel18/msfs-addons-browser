@@ -119,6 +119,18 @@ export interface DiagProcReport {
   processes: DiagProcInfo[];
 }
 
+/** (v6.2.19) Avión próximo a mantenimiento (campanita). */
+export interface MaintAlert {
+  registration: string;
+  model: string | null;
+  airlineKey: string | null;
+  airlineName: string | null;
+  component: string;
+  wearPct: number;
+  severity: "due" | "soon";
+  dueCount: number;
+}
+
 /** (v6.2.16) Actividad de los subsistemas internos (backend). */
 export interface DiagAppMetrics {
   simconnectConnected: boolean;
@@ -330,6 +342,8 @@ interface Api {
   diagnosticsProcessTree: () => Promise<DiagProcReport>;
   /** (v6.2.16) Actividad de los subsistemas internos (SimConnect, tracking…). */
   diagnosticsAppMetrics: () => Promise<DiagAppMetrics>;
+  /** (v6.2.19) Aviones próximos a mantenimiento (>=75% en algún componente). */
+  maintenanceAlerts: () => Promise<MaintAlert[]>;
   /** (v6 #1) Crea junctions NTFS de `packages` en la Community de la otra
    *  versión de MSFS (cross-link 2020 ↔ 2024). */
   crossLinkCreate: (
@@ -751,6 +765,7 @@ const realApi: Api = {
     invoke<DiagProcReport>("diagnostics_process_tree"),
   diagnosticsAppMetrics: () =>
     invoke<DiagAppMetrics>("diagnostics_app_metrics"),
+  maintenanceAlerts: () => invoke<MaintAlert[]>("maintenance_alerts"),
   crossLinkCreate: (otherCommunity, packages) =>
     invoke<CrossLinkResult>("cross_link_create", { otherCommunity, packages }),
   onCrossLinkOffer: (cb) =>
@@ -1490,6 +1505,9 @@ const demoApi: Api = {
   },
   async diagnosticsProcessTree() {
     return { totalBytes: 0, count: 0, processes: [] };
+  },
+  async maintenanceAlerts() {
+    return [];
   },
   async diagnosticsAppMetrics() {
     return {

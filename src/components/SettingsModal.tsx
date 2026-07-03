@@ -1,4 +1,11 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
@@ -25,6 +32,7 @@ import {
   Plane,
   Power,
   RotateCcw,
+  Search,
   Settings as SettingsIcon,
   Trash2,
   Unlink,
@@ -50,24 +58,65 @@ import { DiagnosticsSettings } from "./DiagnosticsSettings";
  *
  * Vive globalmente en `App.tsx` para flotar sobre cualquier vista.
  */
-/** (v6.1) Menú lateral de Ajustes: una entrada por sección. El orden define el
- *  orden del menú; la `key` coincide con el `navKey` de cada `<Section>`. */
-const SETTINGS_NAV: Array<{ key: string; labelKey: string; icon: React.ReactNode }> = [
-  { key: "general", labelKey: "settings.section.general", icon: <Power className="h-3.5 w-3.5" /> },
-  { key: "flights", labelKey: "settings.section.flights", icon: <Plane className="h-3.5 w-3.5" /> },
-  { key: "map_display", labelKey: "settings.section.map_display", icon: <Bell className="h-3.5 w-3.5" /> },
-  { key: "folders", labelKey: "settings.section.folders", icon: <FolderOpen className="h-3.5 w-3.5" /> },
-  { key: "gsx", labelKey: "settings.section.gsx", icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
-  { key: "cloud", labelKey: "settings.section.cloud", icon: <Cloud className="h-3.5 w-3.5" /> },
-  { key: "msfs_logbook", labelKey: "settings.section.msfs_logbook", icon: <FileText className="h-3.5 w-3.5" /> },
-  { key: "backup", labelKey: "settings.section.backup", icon: <Archive className="h-3.5 w-3.5" /> },
-  { key: "import", labelKey: "settings.section.import", icon: <Upload className="h-3.5 w-3.5" /> },
-  { key: "export", labelKey: "settings.section.export", icon: <Download className="h-3.5 w-3.5" /> },
-  { key: "storage", labelKey: "settings.section.storage", icon: <HardDrive className="h-3.5 w-3.5" /> },
-  { key: "tour", labelKey: "settings.section.tour", icon: <Compass className="h-3.5 w-3.5" /> },
-  { key: "about", labelKey: "settings.section.about", icon: <Info className="h-3.5 w-3.5" /> },
-  { key: "diagnostics", labelKey: "settings.section.diagnostics", icon: <Activity className="h-3.5 w-3.5" /> },
+/** (v6.2.19) Metadatos de cada sección (título para el buscador). La `key`
+ *  coincide con el `navKey` de cada `<Section>`. */
+const SECTION_META: Array<{ key: string; labelKey: string }> = [
+  { key: "general", labelKey: "settings.section.general" },
+  { key: "flights", labelKey: "settings.section.flights" },
+  { key: "map_display", labelKey: "settings.section.map_display" },
+  { key: "folders", labelKey: "settings.section.folders" },
+  { key: "gsx", labelKey: "settings.section.gsx" },
+  { key: "cloud", labelKey: "settings.section.cloud" },
+  { key: "msfs_logbook", labelKey: "settings.section.msfs_logbook" },
+  { key: "backup", labelKey: "settings.section.backup" },
+  { key: "import", labelKey: "settings.section.import" },
+  { key: "export", labelKey: "settings.section.export" },
+  { key: "storage", labelKey: "settings.section.storage" },
+  { key: "tour", labelKey: "settings.section.tour" },
+  { key: "about", labelKey: "settings.section.about" },
+  { key: "diagnostics", labelKey: "settings.section.diagnostics" },
 ];
+
+/** (v6.2.19) REDISEÑO: 4 grupos claros en vez de 14 entradas planas. Cada
+ *  grupo muestra sus secciones APILADAS (scroll), y bajo su nombre lista qué
+ *  contiene — el usuario ubica cualquier opción de un vistazo. El buscador de
+ *  arriba filtra secciones por nombre en cualquier grupo. */
+const SETTINGS_GROUPS: Array<{
+  id: string;
+  labelKey: string;
+  icon: React.ReactNode;
+  sections: string[];
+}> = [
+  {
+    id: "general",
+    labelKey: "settings.group.general",
+    icon: <Power className="h-4 w-4" />,
+    sections: ["general", "tour", "about", "diagnostics"],
+  },
+  {
+    id: "flight",
+    labelKey: "settings.group.flight",
+    icon: <Plane className="h-4 w-4" />,
+    sections: ["flights", "map_display", "gsx"],
+  },
+  {
+    id: "data",
+    labelKey: "settings.group.data",
+    icon: <Cloud className="h-4 w-4" />,
+    sections: ["cloud", "msfs_logbook", "import", "export"],
+  },
+  {
+    id: "storage",
+    labelKey: "settings.group.storage",
+    icon: <HardDrive className="h-4 w-4" />,
+    sections: ["folders", "backup", "storage"],
+  },
+];
+
+function sectionTitle(key: string): string {
+  const meta = SECTION_META.find((s) => s.key === key);
+  return meta ? t(meta.labelKey) : key;
+}
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useSettingsStore((s) => s.settings);
@@ -101,7 +150,23 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [showRestartHint, setShowRestartHint] = useState(false);
   const [simReload, setSimReload] = useState(false);
   // (v6.1) Sección activa del menú lateral (una a la vez, navegable).
-  const [nav, setNav] = useState<string>("general");
+  // (v6.2.19) Grupo activo + búsqueda de secciones. Con búsqueda activa se
+  // muestran las secciones que casan por nombre, de CUALQUIER grupo.
+  const [group, setGroup] = useState<string>("general");
+  const [navQuery, setNavQuery] = useState("");
+  const visibleSections = useMemo(() => {
+    const q = navQuery.trim().toLowerCase();
+    if (q) {
+      return new Set(
+        SECTION_META.filter((s) => t(s.labelKey).toLowerCase().includes(q)).map(
+          (s) => s.key,
+        ),
+      );
+    }
+    return new Set(
+      SETTINGS_GROUPS.find((g) => g.id === group)?.sections ?? [],
+    );
+  }, [group, navQuery]);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const setSimVersion = useSettingsStore((s) => s.setSimVersion);
 
@@ -280,25 +345,68 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             </header>
 
             <div className="flex max-h-[72vh]">
-              {/* (v6.1) Menú lateral: una sección a la vez, navegable. */}
-              <nav className="w-44 shrink-0 space-y-0.5 overflow-y-auto border-r border-slate-800 p-2">
-                {SETTINGS_NAV.map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    onClick={() => setNav(s.key)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium transition-colors ${
-                      nav === s.key
-                        ? "bg-brand-500/15 text-brand-200"
-                        : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
-                    }`}
-                  >
-                    {s.icon}
-                    <span className="truncate">{t(s.labelKey)}</span>
-                  </button>
-                ))}
+              {/* (v6.2.19) Menú lateral REDISEÑADO: buscador + 4 grupos con la
+                  lista de lo que contiene cada uno — todo se ubica de un
+                  vistazo. Las secciones del grupo se muestran apiladas. */}
+              <nav className="w-52 shrink-0 space-y-1.5 overflow-y-auto border-r border-slate-800 p-2.5">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    value={navQuery}
+                    onChange={(e) => setNavQuery(e.target.value)}
+                    placeholder={t("settings.search.placeholder")}
+                    className="w-full rounded-md border border-slate-800 bg-slate-900/60 py-1.5 pl-7 pr-6 text-xs text-slate-200 placeholder:text-slate-600 focus:border-brand-500/50 focus:outline-none"
+                  />
+                  {navQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setNavQuery("")}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-500 hover:text-slate-200"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+                {navQuery.trim() ? (
+                  <p className="px-1 pt-1 text-[10px] text-slate-500">
+                    {visibleSections.size > 0
+                      ? t("settings.search.results", {
+                          n: String(visibleSections.size),
+                        })
+                      : t("settings.search.none")}
+                  </p>
+                ) : (
+                  SETTINGS_GROUPS.map((g) => {
+                    const active = group === g.id;
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => setGroup(g.id)}
+                        className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                          active
+                            ? "border-brand-500/40 bg-brand-500/10"
+                            : "border-transparent hover:border-slate-800 hover:bg-slate-800/40"
+                        }`}
+                      >
+                        <span
+                          className={`flex items-center gap-2 text-xs font-semibold ${
+                            active ? "text-brand-200" : "text-slate-200"
+                          }`}
+                        >
+                          {g.icon}
+                          {t(g.labelKey)}
+                        </span>
+                        <span className="mt-1 block text-[10px] leading-snug text-slate-500">
+                          {g.sections.map(sectionTitle).join(" · ")}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
               </nav>
-              <SettingsNavContext.Provider value={nav}>
+              <SettingsNavContext.Provider value={visibleSections}>
                 <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
               {(lastError || feedback) && (
                 <div
@@ -976,10 +1084,10 @@ function SimReloadModal({ onConfirm }: { onConfirm: () => void }) {
   );
 }
 
-/** (v6.1) Sección activa del menú lateral de Ajustes. Las `<Section>` con
- *  `navKey` se ocultan si no son la activa — así el modal muestra UNA sección a
- *  la vez (menú navegable) en vez de un scroll largo y desordenado. */
-const SettingsNavContext = createContext<string | null>(null);
+/** (v6.2.19) Secciones VISIBLES del modal de Ajustes: las del grupo activo (o
+ *  las que casan con la búsqueda). Las `<Section>` con `navKey` fuera del set
+ *  no se renderizan. */
+const SettingsNavContext = createContext<Set<string> | null>(null);
 
 function Section({
   title,
@@ -996,10 +1104,10 @@ function Section({
   /** (v6.1) Clave del menú; si no es la sección activa, no se renderiza. */
   navKey?: string;
 }) {
-  const active = useContext(SettingsNavContext);
+  const visible = useContext(SettingsNavContext);
   // Solo gateamos las secciones de primer nivel (las que traen navKey). Las
   // sub-secciones anidadas (unidades, etc.) no lo traen y se renderizan dentro.
-  if (navKey && active && navKey !== active) return null;
+  if (navKey && visible && !visible.has(navKey)) return null;
   return (
     <div data-tour-id={tourId}>
       <h3 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">

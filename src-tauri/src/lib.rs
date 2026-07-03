@@ -258,6 +258,7 @@ pub fn run() {
             commands::economy::service_aircraft,
             commands::economy::aircraft_maintenance,
             commands::economy::aircraft_maintenance_history,
+            commands::economy::maintenance_alerts,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
             commands::recording::osd_test,

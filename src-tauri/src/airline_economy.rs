@@ -1221,6 +1221,12 @@ fn holistic_satisfaction(acc: &LedgerAcc, policy: &AirlinePolicy) -> f64 {
 /// reconstruye `flight_pnl` y `airline_economy`, de modo que cada llamada
 /// refleja exactamente los vuelos actuales — "consume la data actual".
 pub async fn recompute(pool: &SqlitePool) -> Result<()> {
+    // (v6.2.19) Auto-mantenimiento ANTES de leer costes: los componentes al
+    // 100% se sirven solos (como en la vida real) y su coste entra en esta
+    // misma pasada. Hace la economía autosostenible sin intervención manual.
+    if let Err(e) = crate::aircraft_maintenance::auto_service_worn(pool).await {
+        tracing::warn!(target: "economy", "auto-mantenimiento falló: {e:#}");
+    }
     let receipts = scan_receipts();
     let flights = flight_log::list_entries(pool).await?;
     let policies = load_policies(pool).await?;
