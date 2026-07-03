@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
@@ -589,11 +590,15 @@ export function NotificationsBell() {
         )}
       </AnimatePresence>
 
-      {/* (v6.2.20) Modal de rendimiento abierto desde un aviso de FPS —
-          mismo componente que usa la tuerca del Link Map. */}
-      {perfPkg && (
-        <PerformanceModal pkg={perfPkg} onClose={() => setPerfPkg(null)} />
-      )}
+      {/* (v6.2.21) Modal de rendimiento abierto desde un aviso de FPS — mismo
+          componente que la tuerca del Link Map, pero por PORTAL a <body>: el
+          header tiene backdrop-blur/transform y atrapaba el `fixed` del modal
+          (salía arriba, recortado e incerrable — reportado). */}
+      {perfPkg &&
+        createPortal(
+          <PerformanceModal pkg={perfPkg} onClose={() => setPerfPkg(null)} />,
+          document.body,
+        )}
     </div>
   );
 }

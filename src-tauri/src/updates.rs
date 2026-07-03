@@ -117,6 +117,17 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
         dismissed.len()
     );
 
+    // (v6.2.21) Nº de paquetes INSTALADOS distintos por ICAO — para el
+    // fallback "Camino D" de abajo (igual que la tarjeta de Search).
+    let mut folders_per_icao: HashMap<String, std::collections::HashSet<String>> =
+        HashMap::new();
+    for c in &candidates {
+        folders_per_icao
+            .entry(c.icao.to_ascii_uppercase())
+            .or_default()
+            .insert(c.folder_name.clone());
+    }
+
     // Por folder, quedarse con el match cuyo catalog_version sea
     // mayor (semver lenient). En empate, preserva el primero visto.
     // Usamos `Entry` para no chocar con el borrow checker al
@@ -130,14 +141,41 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
         // Dashboard/Map. Aquí ambos colapsan a "mkstudios" → match.
         // Sigue evitando falsos positivos cross-developer (mismo ICAO, dev
         // distinto), que era el motivo original del filtro.
+        //
+        // (v6.2.21) PARIDAD con la tarjeta de Search ("Camino D"): si el
+        // catálogo o el manifest NO traen developer/creator parseable, la
+        // tarjeta igual marcaba "Update" cuando ese ICAO tiene UN ÚNICO
+        // paquete instalado — pero aquí se saltaba y la campanita no avisaba
+        // (reportado con KJFK iniBuilds v1.0.2→v1.0.3). Regla espejo:
+        //   · ambos con developer y DISTINTO → skip (conflicto real);
+        //   · alguno vacío → solo pasa si es el único instalado de ese ICAO.
         let cn = canon_dev(&c.creator);
         let dn = canon_dev(&c.developer);
-        if cn.is_empty() || dn.is_empty() || !(cn.contains(&dn) || dn.contains(&cn)) {
+        let dev_match =
+            !cn.is_empty() && !dn.is_empty() && (cn.contains(&dn) || dn.contains(&cn));
+        let dev_conflict = !cn.is_empty() && !dn.is_empty() && !dev_match;
+        if dev_conflict {
             tracing::debug!(
                 "compute_available: skip {} — creator '{}' ≠ developer '{}'",
                 c.folder_name, c.creator, c.developer
             );
             continue;
+        }
+        if !dev_match {
+            let unique = folders_per_icao
+                .get(&c.icao.to_ascii_uppercase())
+                .map_or(false, |s| s.len() == 1);
+            if !unique {
+                tracing::debug!(
+                    "compute_available: skip {} — sin developer fiable y {} instalados con ICAO {}",
+                    c.folder_name,
+                    folders_per_icao
+                        .get(&c.icao.to_ascii_uppercase())
+                        .map_or(0, |s| s.len()),
+                    c.icao
+                );
+                continue;
+            }
         }
         use std::collections::hash_map::Entry;
         match by_folder.entry(c.folder_name.clone()) {

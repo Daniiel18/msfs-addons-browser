@@ -1184,12 +1184,35 @@ pub fn list_pack_liveries(install_path: &str) -> Vec<PackLivery> {
                 .unwrap_or("")
                 .to_string();
             let cfg = dir.join("aircraft.cfg");
-            let Ok(raw) = std::fs::read_to_string(&cfg).or_else(|_| {
+            if let Ok(raw) = std::fs::read_to_string(&cfg).or_else(|_| {
                 std::fs::read(&cfg).map(|b| String::from_utf8_lossy(&b).into_owned())
-            }) else {
-                continue;
-            };
-            parse_fltsim_blocks(&raw, &container, &mut out);
+            }) {
+                parse_fltsim_blocks(&raw, &container, &mut out);
+            }
+            // (v6.2.21) Formato FENIX: sus packs de liveries no traen
+            // aircraft.cfg con [FLTSIM.N] — cada livery vive en
+            // `<container>/liveries/**/livery.cfg` con `[GENERAL] name` +
+            // `[FLTSIM] atc_id/atc_airline`. Sin esto el modal salía VACÍO
+            // para packs Fenix (reportado con fnx-aircraft-321-liveries).
+            let liveries_dir = dir.join("liveries");
+            if liveries_dir.is_dir() {
+                for e in walkdir::WalkDir::new(&liveries_dir)
+                    .max_depth(4)
+                    .into_iter()
+                    .flatten()
+                {
+                    if e.file_type().is_file()
+                        && e.file_name().eq_ignore_ascii_case("livery.cfg")
+                    {
+                        if let Ok(raw) = std::fs::read_to_string(e.path()).or_else(|_| {
+                            std::fs::read(e.path())
+                                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                        }) {
+                            parse_fenix_livery_cfg(&raw, &container, &mut out);
+                        }
+                    }
+                }
+            }
         }
     }
     // Ordena por aerolínea y luego matrícula para una lista legible.
@@ -1200,6 +1223,53 @@ pub fn list_pack_liveries(install_path: &str) -> Vec<PackLivery> {
             .then(a.title.cmp(&b.title))
     });
     out
+}
+
+/// (v6.2.21) Parsea un `livery.cfg` de FENIX: `[GENERAL] name = "..."` +
+/// `[FLTSIM] atc_id = / atc_airline =`. Un archivo = una livery.
+fn parse_fenix_livery_cfg(raw: &str, container: &str, out: &mut Vec<PackLivery>) {
+    let unquote = |v: &str| -> Option<String> {
+        let s = v.trim().trim_matches('"').trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+    let mut title = String::new();
+    let mut registration: Option<String> = None;
+    let mut airline: Option<String> = None;
+    let mut section = String::new();
+    for line in raw.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            section = t.to_ascii_lowercase();
+            continue;
+        }
+        let Some((k, v)) = t.split_once('=') else {
+            continue;
+        };
+        let key = k.trim().to_ascii_lowercase();
+        match (section.as_str(), key.as_str()) {
+            ("[general]", "name") => {
+                if let Some(s) = unquote(v) {
+                    title = s;
+                }
+            }
+            ("[fltsim]", "atc_id") => registration = unquote(v),
+            ("[fltsim]", "atc_airline") => airline = unquote(v),
+            _ => {}
+        }
+    }
+    if !title.is_empty() {
+        out.push(PackLivery {
+            title,
+            registration,
+            airline,
+            texture: None,
+            container: container.to_string(),
+        });
+    }
 }
 
 /// Parsea los bloques `[FLTSIM.N]` de un aircraft.cfg y empuja una `PackLivery`

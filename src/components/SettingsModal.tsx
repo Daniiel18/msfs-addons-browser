@@ -183,6 +183,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   // muestran las secciones que casan por nombre, de CUALQUIER grupo.
   const [group, setGroup] = useState<string>("general");
   const [navQuery, setNavQuery] = useState("");
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const visibleSections = useMemo(() => {
     const q = navQuery.trim().toLowerCase();
     if (q) {
@@ -201,6 +202,33 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       SETTINGS_GROUPS.find((g) => g.id === group)?.sections ?? [],
     );
   }, [group, navQuery]);
+
+  // (v6.2.21) Búsqueda a nivel de FILA: al escribir se OCULTAN las opciones
+  // que no casan con el texto (título + hint de cada control) y las secciones
+  // que quedan vacías — así "msfs" muestra SOLO «MSFS version», no toda
+  // General. Trabaja sobre el DOM (las filas son los hijos directos del
+  // cuerpo de cada <Section>), sin tocar cada control.
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root) return;
+    const q = navQuery.trim().toLowerCase();
+    // Los wrappers de sección son los hijos directos del contenedor (los
+    // <Section> renderizan <div data-tour-id?><h3/><div.space-y-2>filas</div></div>).
+    const wrappers = Array.from(root.children) as HTMLElement[];
+    for (const w of wrappers) {
+      const body = w.querySelector(":scope > .space-y-2");
+      if (!body) continue; // banner de error u otros — no tocar
+      const rows = Array.from(body.children) as HTMLElement[];
+      let visible = 0;
+      for (const row of rows) {
+        const match = !q || (row.textContent ?? "").toLowerCase().includes(q);
+        row.style.display = match ? "" : "none";
+        if (match) visible += 1;
+      }
+      // Sección sin filas visibles → se oculta entera (título incluido).
+      w.style.display = q && visible === 0 ? "none" : "";
+    }
+  }, [navQuery, visibleSections]);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const setSimVersion = useSettingsStore((s) => s.setSimVersion);
 
@@ -441,7 +469,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 )}
               </nav>
               <SettingsNavContext.Provider value={visibleSections}>
-                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+                <div
+                  ref={contentRef}
+                  className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5"
+                >
               {(lastError || feedback) && (
                 <div
                   className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
