@@ -34,7 +34,7 @@ import {
   Percent,
 } from "lucide-react";
 import type { AirlineLedger, BalancePoint } from "../lib/types";
-import { api } from "../lib/tauri";
+import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useAppStore } from "../stores/useAppStore";
 import { AirlineLogo } from "./AirlineLogo";
@@ -164,6 +164,21 @@ export function EconomyView() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // (v6.2.18) Si el flight log cambia (p.ej. borras un vuelo, que ahora
+  // borra también sus cargos), recargamos el ledger sin salir de la vista.
+  useEffect(() => {
+    if (!isTauri) return;
+    let un: (() => void) | null = null;
+    void import("@tauri-apps/api/event").then(({ listen }) =>
+      listen("flightlog://changed", () => void load()).then((f) => {
+        un = f;
+      }),
+    );
+    return () => {
+      if (un) un();
+    };
   }, [load]);
 
   const focused = useMemo(() => {

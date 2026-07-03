@@ -122,40 +122,9 @@ export function RecordingSettings() {
             </p>
           </Field>
 
-          {/* Duración + Ilimitado */}
-          <Field label={t("rec.duration")}>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={5}
-                max={600}
-                disabled={cfg.unlimited}
-                value={cfg.clipSeconds}
-                onChange={(e) => patch({ clipSeconds: Number(e.target.value) })}
-                onBlur={() => {
-                  const n = Math.min(600, Math.max(5, cfg.clipSeconds || 45));
-                  patch({ clipSeconds: n });
-                  void setKey("rec_clip_seconds", String(n));
-                }}
-                className="w-20 rounded-md border border-slate-800 bg-slate-950/40 px-2 py-1.5 text-xs text-slate-200 focus:border-brand-500/50 focus:outline-none disabled:opacity-40"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !cfg.unlimited;
-                  patch({ unlimited: next });
-                  void setKey("rec_unlimited", next ? "1" : "0");
-                }}
-                className={`rounded-md border px-2.5 py-1.5 text-[11px] ${
-                  cfg.unlimited
-                    ? "border-brand-500/50 bg-brand-500/15 text-brand-200"
-                    : "border-slate-800 bg-slate-900/60 text-slate-400"
-                }`}
-              >
-                {t("rec.unlimited")}
-              </button>
-            </div>
-          </Field>
+          {/* (v6.2.18) Los controles «Duración» e «Ilimitado» se retiraron:
+              el motor nuevo graba a disco TODA la aproximación final (no hay
+              buffer que recortar) y el clip cubre hasta el rollout. */}
 
           {/* Carpeta */}
           <Field label={t("rec.folder")}>

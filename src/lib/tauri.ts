@@ -2152,8 +2152,6 @@ const demoApi: Api = {
       enabled: false,
       osdPosition: 0,
       outputPath: "C:/Users/demo/Videos/SimFleet Landings",
-      clipSeconds: 45,
-      unlimited: true,
       captureMicrophone: false,
       maxClips: 20,
       osdEnabled: true,

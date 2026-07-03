@@ -187,15 +187,15 @@ export interface HangarAnalytics {
   bestLandings: HangarLanding[];
 }
 
-/** (v6 #2b) Config de grabación de Best Landings (motor: windows-record). */
+/** (v6.2.17) Config de grabación de Best Landings (motor: windows-capture,
+ *  WGC + encoder por hardware). `clipSeconds`/`unlimited` se retiraron en
+ *  v6.2.18: el clip cubre toda la aproximación final, sin recorte. */
 export interface RecordingConfig {
   enabled: boolean;
   /** 0 = Arriba · 1 = Abajo (OSD) */
   osdPosition: number;
   outputPath: string;
-  clipSeconds: number;
-  unlimited: boolean;
-  /** Capturar también el micrófono (además del audio del sistema). */
+  /** Capturar también el micrófono (no soportado por el motor nuevo). */
   captureMicrophone: boolean;
   maxClips: number;
   /** Mostrar el OSD de aterrizaje (toast con el FPM) al tocar pista. */

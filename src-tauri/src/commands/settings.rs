@@ -285,16 +285,13 @@ fn is_valid_key(key: &str) -> bool {
             | "pref_sim_version"
             // (v6 #2b) Best Landings — config de grabación (heredada de
             // LandingToast, sin AutoLaunch que lo controlamos nosotros).
+            // (v6.2.18) Se retiraron rec_clip_seconds / rec_unlimited /
+            // rec_monitor_index / rec_source_type / rec_ffmpeg_path /
+            // rec_audio_device — settings de motores viejos que nada lee ya.
             | "rec_enabled"
             | "rec_osd_position"
             | "rec_output_path"
-            | "rec_clip_seconds"
-            | "rec_monitor_index"
-            | "rec_source_type"
             | "rec_max_clips"
-            | "rec_ffmpeg_path"
-            | "rec_unlimited"
-            | "rec_audio_device"
             | "rec_microphone"
             | "rec_osd_enabled"
             | "rec_fps"

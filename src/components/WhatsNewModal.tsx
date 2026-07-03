@@ -32,7 +32,7 @@ const SLIDE_LOCK_MS = 2000;
 export interface WhatsNewSlide {
   titleKey: string;
   bodyKey: string;
-  /** Ruta bajo /public (ej. "/whatsnew/simbrief.svg"). Obligatoria. */
+  /** Ruta bajo /public (ej. "/whatsnew/gsx-update.svg"). Obligatoria. */
   image: string;
 }
 

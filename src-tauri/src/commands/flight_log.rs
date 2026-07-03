@@ -129,89 +129,10 @@ pub async fn save_flight_metar(
     Ok(())
 }
 
-/// (v4.0.0 P7.9b) Weather samples de un vuelo — viento/temp/presión/
-/// precipitación capturados por sample durante el vuelo.
-///
-/// (v3.25.0) **Fallback Open-Meteo Archive**: si el vuelo NO capturó
-/// weather AMBIENT (vuelos viejos pre-captura / imports VAS), reconstruimos
-/// el clima REAL del día del vuelo desde Open-Meteo Archive usando el track
-/// real. Así TODAS las capas (viento, temperatura, nubes, precipitación,
-/// visibilidad) funcionan para cualquier vuelo, con datos de la vida real
-/// —no del simulador— que es justo lo que pidió el usuario. Si el archivo
-/// falla (sin internet, etc.) devolvemos lo que haya capturado.
-#[tauri::command]
-pub async fn get_flight_weather(
-    flight_id: i64,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<flight_log::WeatherSample>, String> {
-    let captured = flight_log::list_weather_for_flight(&state.db, flight_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // ¿Tiene weather AMBIENT real (viento/temp), no sólo nubes? Si sí, ese
-    // es el dato del propio vuelo y lo preferimos.
-    let has_ambient = captured
-        .iter()
-        .any(|w| w.wind_speed_kt.is_some() || w.oat_c.is_some());
-    if has_ambient {
-        return Ok(captured);
-    }
-
-    // Fallback: reconstruir el clima real del día desde Open-Meteo Archive
-    // con el track del vuelo.
-    let track = match flight_log::list_track_for_flight(&state.db, flight_id).await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(target: "weather", "fallback: no se pudo leer track de {flight_id}: {e:#}");
-            return Ok(captured);
-        }
-    };
-    let pts: Vec<(f64, f64, String)> = track
-        .iter()
-        .map(|p| (p.lat, p.lon, p.ts.clone()))
-        .collect();
-    if pts.is_empty() {
-        return Ok(captured);
-    }
-
-    match crate::openmeteo::reconstruct_weather_from_archive(&pts).await {
-        Ok(arch) => {
-            let mapped: Vec<flight_log::WeatherSample> = arch
-                .into_iter()
-                .map(|a| flight_log::WeatherSample {
-                    ts: a.ts,
-                    lat: a.lat,
-                    lon: a.lon,
-                    alt_ft: a.alt_ft,
-                    wind_dir_deg: a.wind_dir_deg,
-                    wind_speed_kt: a.wind_speed_kt,
-                    oat_c: a.oat_c,
-                    baro_hpa: a.baro_hpa,
-                    visibility_m: a.visibility_m,
-                    precip_state: a.precip_state,
-                    cloud_cover_pct: a.cloud_cover_pct,
-                    cloud_low_pct: a.cloud_low_pct,
-                    cloud_mid_pct: a.cloud_mid_pct,
-                    cloud_high_pct: a.cloud_high_pct,
-                })
-                .collect();
-            tracing::info!(
-                target: "weather",
-                "vuelo {} sin AMBIENT — clima real reconstruido del archivo: {} samples",
-                flight_id,
-                mapped.len()
-            );
-            Ok(mapped)
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "weather",
-                "fallback archive falló para vuelo {flight_id}: {e:#}"
-            );
-            Ok(captured)
-        }
-    }
-}
+// (v6.2.18) `get_flight_weather` ELIMINADO: el botón/modal de Weather del
+// FlightBook se quitó en v6.2.7 y el frontend nunca volvió a llamarlo. Con él
+// se van `flight_log::WeatherSample`, `list_weather_for_flight` y el módulo
+// `openmeteo` (reconstrucción del clima histórico), que quedaron muertos.
 
 /// (v3.26.0 — P7.10) Analiza la traza del vuelo y devuelve el veredicto
 /// de daños (LIMPIO / FORZADO / DAÑADO) según sobrevelocidad, pérdida,
@@ -230,11 +151,17 @@ pub async fn analyze_flight_damage(
 #[tauri::command]
 pub async fn delete_flight_log_entry(
     id: i64,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     flight_log::delete_entry(&state.db, id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // (v6.2.18) Notifica a las vistas (FlightBook, dashboard) — antes solo
+    // force_close emitía el evento y el resto quedaba desactualizado.
+    use tauri::Emitter;
+    let _ = app.emit("flightlog://changed", ());
+    Ok(())
 }
 
 /// (v2.0.3) Cierre forzado de un vuelo abierto. Usado por el botón

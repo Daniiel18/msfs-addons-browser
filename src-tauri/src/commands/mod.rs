@@ -18,4 +18,3 @@ pub mod settings;
 pub mod simbrief;
 pub mod stats;
 pub mod updater;
-pub mod weather;

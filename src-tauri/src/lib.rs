@@ -31,7 +31,6 @@ pub mod logger;
 // SO el módulo queda vacío.
 pub mod mobiflight_lvars;
 pub mod msfs_logbook;
-pub mod openmeteo;
 pub mod package_ops;
 pub mod parser;
 pub mod perf_config;
@@ -247,7 +246,6 @@ pub fn run() {
             commands::simbrief::delete_simbrief_flight,
             commands::simbrief::link_simbrief_ofp,
             commands::simbrief::flight_route_fixes,
-            commands::weather::get_openweather_key,
             commands::stats::get_dashboard_stats,
             commands::flight_log::list_flight_log,
             commands::flight_log::hangar_analytics,
@@ -277,7 +275,6 @@ pub fn run() {
             commands::flight_log::get_flight_status,
             commands::flight_log::get_flight_track,
             commands::flight_log::get_flight_track_full,
-            commands::flight_log::get_flight_weather,
             commands::flight_log::save_flight_metar,
             commands::flight_log::analyze_flight_damage,
             commands::flight_log::update_flight_log_entry,

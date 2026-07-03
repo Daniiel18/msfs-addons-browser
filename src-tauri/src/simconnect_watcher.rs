@@ -4962,11 +4962,31 @@ mod windows_simconnect {
                     "confirm: AUTO-LINK más reciente de los míos ({:?}) ofp_id={} → flight {} ({} candidatos)",
                     ofp.callsign, ofp.ofp_id, flight_id, ordered.len()
                 ),
-                Err(e) => tracing::warn!(
-                    target: "simbrief",
-                    "confirm: auto-link falló ofp_id={} flight {}: {e:#}",
-                    ofp.ofp_id, flight_id
-                ),
+                Err(e) => {
+                    // (v6.2.18) Duplicado del índice de dedup → enlace mínimo
+                    // (sin flight_number/airline) en vez de perder el link.
+                    let msg = format!("{e:#}");
+                    if msg.contains("uq_flight_log_va_dedup_completed") {
+                        match link_ofp_minimal(pool, ofp, flight_id).await {
+                            Ok(()) => tracing::info!(
+                                target: "simbrief",
+                                "confirm: dedup duplicado (mismo nº de vuelo ya completado hoy) — enlace mínimo ofp_id={} flight {}",
+                                ofp.ofp_id, flight_id
+                            ),
+                            Err(e2) => tracing::warn!(
+                                target: "simbrief",
+                                "confirm: enlace mínimo también falló ofp_id={} flight {}: {e2:#}",
+                                ofp.ofp_id, flight_id
+                            ),
+                        }
+                    } else {
+                        tracing::warn!(
+                            target: "simbrief",
+                            "confirm: auto-link falló ofp_id={} flight {}: {e:#}",
+                            ofp.ofp_id, flight_id
+                        );
+                    }
+                }
             }
             let _ = app.emit("flightlog://changed", ());
             return;
@@ -5014,11 +5034,33 @@ mod windows_simconnect {
                         );
                         let _ = app.emit("flightlog://changed", ());
                     }
-                    Err(e) => tracing::warn!(
-                        target: "simbrief",
-                        "AUTO-LINK UPDATE falló para ofp_id={} flight_id={}: {e:#}",
-                        ofp.ofp_id, flight_id
-                    ),
+                    Err(e) => {
+                        // (v6.2.18) Mismo fallback de dedup que en confirm.
+                        let msg = format!("{e:#}");
+                        if msg.contains("uq_flight_log_va_dedup_completed") {
+                            match link_ofp_minimal(pool, &ofp, flight_id).await {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        target: "simbrief",
+                                        "AUTO-LINK: dedup duplicado — enlace mínimo ofp_id={} flight_id={}",
+                                        ofp.ofp_id, flight_id
+                                    );
+                                    let _ = app.emit("flightlog://changed", ());
+                                }
+                                Err(e2) => tracing::warn!(
+                                    target: "simbrief",
+                                    "AUTO-LINK: enlace mínimo también falló ofp_id={} flight_id={}: {e2:#}",
+                                    ofp.ofp_id, flight_id
+                                ),
+                            }
+                        } else {
+                            tracing::warn!(
+                                target: "simbrief",
+                                "AUTO-LINK UPDATE falló para ofp_id={} flight_id={}: {e:#}",
+                                ofp.ofp_id, flight_id
+                            );
+                        }
+                    }
                 }
             }
             crate::simbrief::MatchResult::Ambiguous { candidates } => {
@@ -5041,6 +5083,40 @@ mod windows_simconnect {
                 );
             }
         }
+    }
+
+    /// (v6.2.18) Fallback del auto-link cuando el UPDATE completo choca con el
+    /// índice de dedup `uq_flight_log_va_dedup_completed` (ya existe OTRO vuelo
+    /// completed con la misma aerolínea+número+día — típico al repetir un plan
+    /// o con la cuenta SimBrief compartida). Enlaza el OFP SIN tocar los campos
+    /// del índice (flight_number/airline_icao) para no perder pax/fuel/ruta.
+    async fn link_ofp_minimal(
+        pool: &SqlitePool,
+        ofp: &crate::simbrief::SimBriefFlight,
+        flight_id: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE flight_log
+            SET simbrief_ofp_id = ?1,
+                callsign        = COALESCE(callsign, ?2),
+                passengers      = COALESCE(passengers, ?3),
+                cargo_kg        = COALESCE(cargo_kg, ?4),
+                fuel_used_kg    = COALESCE(fuel_used_kg, ?5),
+                route_fixes     = COALESCE(NULLIF(route_fixes, '[]'), ?7)
+            WHERE id = ?6
+            "#,
+        )
+        .bind(&ofp.ofp_id)
+        .bind(ofp.callsign.as_deref())
+        .bind(ofp.pax_count)
+        .bind(ofp.cargo_kg)
+        .bind(ofp.fuel_burn_kg)
+        .bind(flight_id)
+        .bind(serde_json::to_string(&ofp.route_fixes).unwrap_or_else(|_| "[]".to_string()))
+        .execute(pool)
+        .await
+        .map(|_| ())
     }
 
     fn process_pending_gate(

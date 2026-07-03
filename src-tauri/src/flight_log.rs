@@ -564,6 +564,8 @@ pub async fn delete_by_source(
         .bind(source)
         .execute(pool)
         .await?;
+    // (v6.2.18) Los cargos de Finanzas de esos vuelos también se van.
+    let _ = purge_orphan_pnl(pool).await;
     Ok((result.rows_affected(), track_count as u64))
 }
 
@@ -1216,55 +1218,10 @@ pub async fn list_track_for_flight(
     Ok(rows)
 }
 
-/// (v4.0.0 P7.9b) Sample de weather para el Weather modal. Sólo las
-/// posiciones que tienen AL MENOS un campo de clima poblado — el
-/// frontend dibuja barbas de viento + colorea por temp/precip.
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WeatherSample {
-    pub ts: String,
-    pub lat: f64,
-    pub lon: f64,
-    pub alt_ft: Option<i64>,
-    pub wind_dir_deg: Option<i64>,
-    pub wind_speed_kt: Option<i64>,
-    pub oat_c: Option<f64>,
-    pub baro_hpa: Option<i64>,
-    pub visibility_m: Option<i64>,
-    pub precip_state: Option<i64>,
-    /// (v3.19.0 P7.9c) Cobertura de nubes REAL (Open-Meteo) %, 0..100.
-    pub cloud_cover_pct: Option<i64>,
-    pub cloud_low_pct: Option<i64>,
-    pub cloud_mid_pct: Option<i64>,
-    pub cloud_high_pct: Option<i64>,
-}
-
-/// (v4.0.0 P7.9b) Lee los samples con weather de un vuelo. Devuelve
-/// vacío si el vuelo no capturó weather (vuelos pre-v3.16.0 / VAS
-/// imports). Incluye filas con SÓLO nubes (cloud_cover_pct) aunque no
-/// haya AMBIENT del sim — clave para que la capa de nubes reales se vea.
-pub async fn list_weather_for_flight(
-    pool: &SqlitePool,
-    flight_id: i64,
-) -> anyhow::Result<Vec<WeatherSample>> {
-    let rows = sqlx::query_as::<_, WeatherSample>(
-        r#"
-        SELECT ts, lat, lon, alt_ft,
-               wind_dir_deg, wind_speed_kt, oat_c, baro_hpa,
-               visibility_m, precip_state,
-               cloud_cover_pct, cloud_low_pct, cloud_mid_pct, cloud_high_pct
-        FROM flight_log_track
-        WHERE flight_id = ?1
-          AND (wind_speed_kt IS NOT NULL OR oat_c IS NOT NULL
-               OR cloud_cover_pct IS NOT NULL)
-        ORDER BY ts ASC, id ASC
-        "#,
-    )
-    .bind(flight_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
-}
+// (v6.2.18) `WeatherSample` + `list_weather_for_flight` ELIMINADOS — solo los
+// usaba el comando get_flight_weather del Weather modal, quitado en v6.2.7.
+// Los datos de clima siguen capturándose en flight_log_track (los usa el
+// scoring y los picos del Hangar); lo que muere es la lectura para aquel modal.
 
 /// (v4.0.0 — P5) Sample completo del track para el Performance modal.
 /// Lee todos los campos que el modal puede graficar: posición,
@@ -1378,11 +1335,37 @@ pub async fn list_entries(pool: &SqlitePool) -> anyhow::Result<Vec<FlightLogEntr
 }
 
 pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
+    // (v6.2.18) Borrar un vuelo borra TAMBIÉN sus cargos de Finanzas
+    // (flight_pnl no tiene FK, a diferencia de track/phase/score que caen
+    // por CASCADE). Sin esto el P&L quedaba huérfano hasta el siguiente
+    // recompute y el usuario veía cargos de vuelos eliminados.
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM flight_pnl WHERE flight_id = ?1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM flight_log WHERE id = ?1")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(())
+}
+
+/// (v6.2.18) Barrido de P&L huérfanos — cargos de vuelos que ya no existen
+/// (borrados por otras vías: por source, por avión, imports…). Llamar tras
+/// cualquier borrado masivo de flight_log.
+pub async fn purge_orphan_pnl(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let res = sqlx::query(
+        "DELETE FROM flight_pnl WHERE flight_id NOT IN (SELECT id FROM flight_log)",
+    )
+    .execute(pool)
+    .await?;
+    let n = res.rows_affected();
+    if n > 0 {
+        tracing::info!(target: "economy", "purga de P&L huérfanos: {n} cargos de vuelos borrados");
+    }
+    Ok(n)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

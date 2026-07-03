@@ -539,10 +539,10 @@ pub struct RecordingConfig {
     /// Posición del OSD: 0 = Arriba · 1 = Abajo (igual que LandingToast).
     pub osd_position: i64,
     pub output_path: String,
-    pub clip_seconds: i64,
-    /// Si true, graba todo el aterrizaje sin recortar a `clip_seconds`.
-    pub unlimited: bool,
-    /// Capturar también el micrófono (comentario), además del audio del sistema.
+    // (v6.2.18) `clip_seconds` y `unlimited` ELIMINADOS: el motor nuevo graba
+    // a disco toda la aproximación final (no hay buffer que recortar) y
+    // `unlimited` jamás se llegó a usar en ningún motor.
+    /// Capturar también el micrófono (no soportado por el motor nuevo).
     pub capture_microphone: bool,
     pub max_clips: i64,
     /// Mostrar el OSD de aterrizaje (toast con el FPM) al tocar pista.
@@ -608,13 +608,6 @@ fn lt_i64(lt: &Option<serde_json::Value>, key: &str, fallback: i64) -> i64 {
         .unwrap_or(fallback)
 }
 
-fn lt_bool(lt: &Option<serde_json::Value>, key: &str, fallback: bool) -> bool {
-    lt.as_ref()
-        .and_then(|j| j.get(key))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(fallback)
-}
-
 pub async fn load_config(pool: &SqlitePool, fallback_data: &Path) -> RecordingConfig {
     let lt = landingtoast_config();
     RecordingConfig {
@@ -629,14 +622,6 @@ pub async fn load_config(pool: &SqlitePool, fallback_data: &Path) -> RecordingCo
         output_path: kv(pool, "rec_output_path")
             .await
             .unwrap_or_else(|| default_output_path(fallback_data)),
-        clip_seconds: match kv(pool, "rec_clip_seconds").await {
-            Some(s) => s.parse().unwrap_or(45),
-            None => lt_i64(&lt, "ToastDuration", 45),
-        },
-        unlimited: match kv(pool, "rec_unlimited").await {
-            Some(s) => matches!(s.as_str(), "1" | "true" | "yes"),
-            None => lt_bool(&lt, "UnlimitedDuration", true),
-        },
         capture_microphone: kv(pool, "rec_microphone")
             .await
             .map(|s| matches!(s.as_str(), "1" | "true" | "yes"))
@@ -1218,11 +1203,17 @@ async fn controller_loop(
                 // El Save real corre ~12s después (rollout) — protegemos el
                 // buffer de cualquier Stop hasta que termine (SAVE_GRACE).
                 save_pending_until = Some(std::time::Instant::now() + SAVE_GRACE);
+                // (v6.2.18) Duración REAL del clip: desde que se armó (inicio
+                // de la grabación a disco) + ~12s de rollout. Antes se escribía
+                // el `clip_seconds` configurado, que ya no recorta nada.
+                let duration_s = armed_at
+                    .map(|t| t.elapsed().as_secs() as i64 + 12)
+                    .unwrap_or(60);
                 schedule_save(
                     &pool,
                     &tx,
                     &cfg.output_path,
-                    cfg.clip_seconds,
+                    duration_s,
                     cfg.max_clips,
                     status.destination_icao.clone(),
                     status.destination_name.clone(),
@@ -1254,6 +1245,7 @@ fn schedule_save(
     pool: &SqlitePool,
     tx: &std::sync::mpsc::Sender<RecCmd>,
     output_path: &str,
+    // Duración estimada del clip (armado→touchdown + rollout) para el manifest.
     clip_seconds: i64,
     max_clips: i64,
     dest_icao: Option<String>,
