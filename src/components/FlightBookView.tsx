@@ -26,6 +26,8 @@ import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { ShareCardModal } from "./ShareCardModal";
 import { buildFlightCardSvg } from "../lib/shareCards";
+import { buildFlightBookHtml, saveFlightBookHtml } from "../lib/flightbookExport";
+import { useToastStore } from "../stores/useToastStore";
 import { EditFlightModal } from "./EditFlightModal";
 import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
@@ -137,6 +139,55 @@ export function FlightBookView() {
   // del vuelo seleccionado.
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [showShare, setShowShare] = useState(false);
+  const [exportingWeb, setExportingWeb] = useState(false);
+  const pushExportToast = useToastStore((s) => s.push);
+
+  // (v6.2.31 / R8) Exporta el FlightBook a un HTML autocontenido de
+  // solo lectura para compartir.
+  const exportWeb = async () => {
+    if (exportingWeb) return;
+    setExportingWeb(true);
+    try {
+      const { api } = await import("../lib/tauri");
+      const pilot = await api.pilotProfile().catch(() => null);
+      const locale = getActiveLocale() === "es" ? "es-ES" : "en-US";
+      const html = buildFlightBookHtml(
+        entries,
+        pilot?.name ?? "",
+        {
+          title: t("fbexport.title"),
+          subtitle: t("fbexport.subtitle"),
+          flights: t("wrapped.flights"),
+          hours: t("wrapped.hours"),
+          distance: t("wrapped.distance"),
+          airports: t("wrapped.airports"),
+          colDate: t("fbexport.col_date"),
+          colRoute: t("fbexport.col_route"),
+          colAircraft: t("fbexport.col_aircraft"),
+          colDistance: t("fbexport.col_distance"),
+          colDuration: t("fbexport.col_duration"),
+          colLanding: t("fbexport.col_landing"),
+          footer: t("fbexport.footer"),
+          routeMap: t("fbexport.route_map"),
+        },
+        locale,
+      );
+      const path = await saveFlightBookHtml(html, "simfleet-flightbook.html");
+      if (path) {
+        pushExportToast({
+          kind: "success",
+          title: t("fbexport.saved"),
+          message: path,
+          ttlMs: 3000,
+        });
+      }
+    } catch (e) {
+      pushExportToast({ kind: "error", title: t("fbexport.error"), message: String(e) });
+    } finally {
+      setExportingWeb(false);
+    }
+  };
+
   const selectedFlight = useMemo(
     () =>
       selectedFlightId != null
@@ -385,6 +436,17 @@ export function FlightBookView() {
           <AirlineTagFilter />
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {!selectedFlight && entries.length > 0 ? (
+            <button
+              onClick={() => void exportWeb()}
+              disabled={exportingWeb}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/60 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-50"
+              title={t("fbexport.tooltip")}
+            >
+              <Share2 className="h-3 w-3" />
+              {t("fbexport.button")}
+            </button>
+          ) : null}
           {selectedFlight ? (
             <button
               onClick={() => setShowShare(true)}
