@@ -32,6 +32,11 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { computePreflight } from "../lib/preflight";
 import { PreflightModal } from "./PreflightModal";
 import { DiskCleanupModal } from "./DiskCleanupModal";
+import { ShareCardModal } from "./ShareCardModal";
+import { computeWrapped } from "../lib/wrapped";
+import { buildWrappedSvg } from "../lib/shareCards";
+import { getActiveLocale } from "../lib/i18n";
+import type { PilotProfile } from "../lib/types";
 import { derivedType } from "../lib/packageType";
 import { t } from "../lib/i18n";
 
@@ -74,9 +79,12 @@ export function DashboardView() {
   // revisar) para el badge del botón; el detalle vive en el modal.
   const [showPreflight, setShowPreflight] = useState(false);
   const [showCleanup, setShowCleanup] = useState(false);
+  const [showWrapped, setShowWrapped] = useState(false);
+  const [pilot, setPilot] = useState<PilotProfile | null>(null);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);
   const flights = useSimBriefStore((s) => s.flights);
   const flightStatus = useFlightLogStore((s) => s.status);
+  const logEntries = useFlightLogStore((s) => s.entries);
   const communityUpdates = useCommunityStore((s) => s.updates);
   const freshScenery = useNewSceneryStore((s) => s.fresh);
   const radarCheck = useNewSceneryStore((s) => s.check);
@@ -108,6 +116,37 @@ export function DashboardView() {
   }, [flights, flightStatus, packages, airacInfo, communityUpdates]);
 
   const preflightBadge = preflightIssues + freshScenery.length;
+
+  // (v6.2.30 / R7) Wrapped anual — perfil del piloto para personalizar
+  // la tarjeta + tarjeta SVG lista para compartir.
+  useEffect(() => {
+    api.pilotProfile().then(setPilot).catch(() => {});
+  }, []);
+  const wrappedYear = new Date().getFullYear();
+  const wrappedCard = useMemo(() => {
+    const stats = computeWrapped(logEntries, wrappedYear);
+    const locale = getActiveLocale() === "es" ? "es-ES" : "en-US";
+    return buildWrappedSvg(
+      stats,
+      {
+        title: `Wrapped ${wrappedYear}`,
+        pilot: pilot?.name ?? "",
+        flights: t("wrapped.flights"),
+        hours: t("wrapped.hours"),
+        distance: t("wrapped.distance"),
+        airports: t("wrapped.airports"),
+        topDestinations: t("wrapped.top_destinations"),
+        topAircraft: t("wrapped.top_aircraft"),
+        bestLanding: t("wrapped.best_landing"),
+        tagline: t("wrapped.tagline"),
+      },
+      locale,
+    );
+  }, [logEntries, wrappedYear, pilot]);
+  const wrappedFlights = useMemo(
+    () => computeWrapped(logEntries, wrappedYear).flights,
+    [logEntries, wrappedYear],
+  );
 
   // (v6 hotfix) Conteo de aviones/liveries con el MISMO clasificador
   // (`derivedType`) que usan Addons y el Mapa. El backend de `stats` los
@@ -177,11 +216,36 @@ export function DashboardView() {
         )}
       </button>
 
+      {/* (v6.2.30 / R7) Wrapped anual — sólo si hay vuelos este año. */}
+      {wrappedFlights > 0 && (
+        <button
+          onClick={() => setShowWrapped(true)}
+          className="flex w-full items-center gap-3 rounded-xl border border-fuchsia-500/30 bg-gradient-to-r from-fuchsia-500/10 to-violet-500/10 px-4 py-3 text-left transition-colors hover:from-fuchsia-500/15 hover:to-violet-500/15"
+        >
+          <Sparkles className="h-5 w-5 shrink-0 text-fuchsia-300" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-fuchsia-100">
+              {t("wrapped.cta.title", { year: String(wrappedYear) })}
+            </div>
+            <div className="text-xs text-fuchsia-200/70">
+              {t("wrapped.cta.hint", { n: String(wrappedFlights) })}
+            </div>
+          </div>
+        </button>
+      )}
+
       {showPreflight && (
         <PreflightModal onClose={() => setShowPreflight(false)} />
       )}
       {showCleanup && (
         <DiskCleanupModal onClose={() => setShowCleanup(false)} />
+      )}
+      {showWrapped && (
+        <ShareCardModal
+          title={t("wrapped.cta.title", { year: String(wrappedYear) })}
+          card={wrappedCard}
+          onClose={() => setShowWrapped(false)}
+        />
       )}
 
       {/* (v6.2.4) Banner de update de GSX — clic abre el FSDT Installer. */}

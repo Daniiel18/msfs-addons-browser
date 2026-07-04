@@ -14,6 +14,7 @@ import {
   PlaneLanding,
   Ruler,
   Search,
+  Share2,
   Swords,
   Trash2,
   Users,
@@ -23,6 +24,8 @@ import { findVsSnapshot } from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
+import { ShareCardModal } from "./ShareCardModal";
+import { buildFlightCardSvg } from "../lib/shareCards";
 import { EditFlightModal } from "./EditFlightModal";
 import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
@@ -133,6 +136,7 @@ export function FlightBookView() {
   // mapa queda visible para que el usuario pueda ver la trayectoria
   // del vuelo seleccionado.
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   const selectedFlight = useMemo(
     () =>
       selectedFlightId != null
@@ -383,6 +387,16 @@ export function FlightBookView() {
         <div className="flex shrink-0 items-center gap-2">
           {selectedFlight ? (
             <button
+              onClick={() => setShowShare(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-brand-500/40 bg-brand-500/10 px-2.5 py-1.5 text-xs font-medium text-brand-200 hover:border-brand-400 hover:bg-brand-500/20"
+              title={t("share.flight.tooltip")}
+            >
+              <Share2 className="h-3 w-3" />
+              {t("share.flight.button")}
+            </button>
+          ) : null}
+          {selectedFlight ? (
+            <button
               onClick={() => setSelectedFlightId(null)}
               className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-medium text-amber-200 hover:border-amber-400 hover:bg-amber-500/20"
               title={t("fb.back_to_globe.tooltip")}
@@ -394,6 +408,26 @@ export function FlightBookView() {
           ) : null}
         </div>
       </header>
+
+      {showShare && selectedFlight && (
+        <ShareCardModal
+          title={t("share.flight.title")}
+          card={buildFlightCardSvg(
+            selectedFlight,
+            {
+              brand: "SimFleet",
+              distance: t("share.flight.distance"),
+              duration: t("share.flight.duration"),
+              ceiling: t("share.flight.ceiling"),
+              landing: t("share.flight.landing"),
+              aircraft: t("share.flight.aircraft"),
+              tagline: t("share.flight.tagline"),
+            },
+            getActiveLocale() === "es" ? "es-ES" : "en-US",
+          )}
+          onClose={() => setShowShare(false)}
+        />
+      )}
 
       {lastError && (
         <div className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">

@@ -80,6 +80,30 @@ pub async fn backup_community(
     })
 }
 
+/// (v6.2.30 / R7) Escribe bytes (base64) a `path`. Lo usa el export de
+/// las tarjetas compartibles y el Wrapped: el frontend rasteriza el SVG
+/// a PNG en un canvas y nos manda el data-URL en base64. Genérico y
+/// reutilizable para cualquier "guardar imagen/binario a disco".
+#[tauri::command]
+pub async fn save_binary_file(path: String, base64: String) -> Result<(), String> {
+    use base64::Engine;
+    // Aceptamos tanto un data-URL completo (`data:image/png;base64,AAAA`)
+    // como el base64 pelado.
+    let payload = base64
+        .split_once("base64,")
+        .map(|(_, b)| b)
+        .unwrap_or(&base64);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("base64 inválido: {e}"))?;
+    let p = PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Comprime recursivamente `src` en `dest`. Devuelve los bytes
 /// totales escritos. Usa `zip` con compresión Deflate.
 fn zip_directory(src: &Path, dest: &Path) -> anyhow::Result<u64> {

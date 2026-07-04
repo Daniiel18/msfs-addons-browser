@@ -499,6 +499,9 @@ interface Api {
   /** Diálogo nativo «save as» — devuelve la ruta elegida o null si
    *  el usuario canceló. */
   pickSavePath: (defaultName: string, filters?: { name: string; extensions: string[] }[]) => Promise<string | null>;
+  /** (v6.2.30 / R7) Escribe un data-URL/base64 a disco. Usado por las
+   *  tarjetas compartibles y el Wrapped para guardar el PNG rasterizado. */
+  saveBinaryFile: (path: string, base64: string) => Promise<void>;
   /** Diálogo nativo «select folder». */
   pickFolderPath: () => Promise<string | null>;
   /** (v1.1.4) Abre el file picker nativo. Devuelve la ruta o null si
@@ -936,6 +939,8 @@ const realApi: Api = {
     const path = await save({ defaultPath: defaultName, filters });
     return typeof path === "string" ? path : null;
   },
+  saveBinaryFile: (path, base64) =>
+    invoke<void>("save_binary_file", { path, base64 }),
   async pickFolderPath() {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const result = await open({ multiple: false, directory: true });
@@ -1733,6 +1738,7 @@ const demoApi: Api = {
   async pickSavePath() {
     return null;
   },
+  async saveBinaryFile() {},
   async pickFolderPath() {
     return null;
   },

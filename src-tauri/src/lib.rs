@@ -291,6 +291,7 @@ pub fn run() {
             commands::settings::reset_settings,
             commands::backup::backup_community,
             commands::backup::export_addons,
+            commands::backup::save_binary_file,
             commands::cloud::cloud_get_config,
             commands::cloud::cloud_set_credentials,
             commands::cloud::cloud_start_oauth,
