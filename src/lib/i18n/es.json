@@ -774,6 +774,8 @@
   "notifications.maint_more": "componentes más",
   "notifications.fps_available": "FPS Optimization disponible",
   "notifications.fps_hint": "Este escenario tiene objetos opcionales desactivables — clic para optimizar.",
+  "notifications.fps_after_update": "Re-optimiza tras el update",
+  "notifications.fps_after_update_hint": "La actualización reinstaló el escenario y borró tus optimizaciones — clic para volver a aplicarlas.",
   "gsx.gate.title": "Cierra MSFS para actualizar GSX",
   "gsx.gate.body": "GSX no se puede actualizar con el simulador abierto. Cierra Microsoft Flight Simulator y la actualización se abrirá automáticamente.",
   "gsx.gate.waiting": "Esperando a que cierres el simulador…",

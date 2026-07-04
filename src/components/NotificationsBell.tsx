@@ -488,13 +488,17 @@ export function NotificationsBell() {
                     className="min-w-0 flex-1 text-left"
                   >
                     <div className="text-xs font-semibold text-emerald-100">
-                      {t("notifications.fps_available")}
+                      {n.reason === "updated"
+                        ? t("notifications.fps_after_update")
+                        : t("notifications.fps_available")}
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-emerald-200/80">
                       {n.title}
                     </div>
                     <div className="mt-0.5 text-[11px] text-slate-400">
-                      {t("notifications.fps_hint")}
+                      {n.reason === "updated"
+                        ? t("notifications.fps_after_update_hint")
+                        : t("notifications.fps_hint")}
                     </div>
                   </button>
                   <button

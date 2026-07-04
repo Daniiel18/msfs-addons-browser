@@ -774,6 +774,8 @@
   "notifications.maint_more": "more components",
   "notifications.fps_available": "FPS Optimization available",
   "notifications.fps_hint": "This scenery has optional objects you can disable — click to optimize.",
+  "notifications.fps_after_update": "Re-optimize after update",
+  "notifications.fps_after_update_hint": "The update reinstalled the scenery and wiped your optimizations — click to re-apply them.",
   "gsx.gate.title": "Close MSFS to update GSX",
   "gsx.gate.body": "GSX can't be updated while the simulator is open. Close Microsoft Flight Simulator and the updater will open automatically.",
   "gsx.gate.waiting": "Waiting for the simulator to close…",
