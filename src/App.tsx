@@ -6,6 +6,7 @@ import {
   Globe2,
   ListChecks,
   Plane,
+  Search,
   Settings,
   Wallet,
   Warehouse,
@@ -47,6 +48,7 @@ import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsModal } from "./components/SettingsModal";
+import { CommandPalette } from "./components/CommandPalette";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
 import type { UpdateInfo } from "./lib/types";
 import { FlyingNowBadge } from "./components/FlyingNowBadge";
@@ -851,6 +853,16 @@ export default function App() {
               />
             )}
             <button
+              onClick={() => window.dispatchEvent(new Event("simfleet:palette"))}
+              title={t("palette.tooltip")}
+              className="hidden items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-2 text-slate-400 hover:border-brand-500/40 hover:text-slate-100 sm:inline-flex"
+            >
+              <Search className="h-4 w-4" />
+              <kbd className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-[9px] font-medium text-slate-500">
+                Ctrl K
+              </kbd>
+            </button>
+            <button
               data-tour-id="header-settings"
               onClick={() => setSettingsOpen(true)}
               title={t("header.settings.tooltip")}
@@ -999,6 +1011,8 @@ export default function App() {
       </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {/* (v6.2.27 / R4) Paleta de comandos global — Ctrl/Cmd+K. */}
+      <CommandPalette onOpenSettings={() => setSettingsOpen(true)} />
       {tourOpen && (
         <OnboardingTour
           onClose={() => setTourOpen(false)}

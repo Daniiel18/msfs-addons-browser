@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { CommunityPackage, PmdgLivery } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
 import { PackageDetailModal } from "./PackageDetailModal";
 import { LinkMapView } from "./LinkMapView";
@@ -120,6 +121,21 @@ export function AddonsView() {
       // localStorage lleno — el estado vive en memoria igualmente.
     }
   }, [view]);
+
+  // (v6.2.27 / R4) La paleta Ctrl+K puede saltar aquí con un filtro
+  // pre-cargado (nombre/ICAO de un paquete instalado). Lo consumimos
+  // una vez: forzamos vista grid (donde vive el buscador), fijamos el
+  // filtro y limpiamos la semilla para no re-aplicarla.
+  const addonsSeed = useAppStore((s) => s.addonsSeedFilter);
+  const clearAddonsSeed = useAppStore((s) => s.clearAddonsSeed);
+  useEffect(() => {
+    if (addonsSeed == null) return;
+    setView("grid");
+    setFilter(addonsSeed);
+    setTypeFilter("ALL");
+    setSearchActive(1);
+    clearAddonsSeed();
+  }, [addonsSeed, clearAddonsSeed]);
   // (v4.25.0) Confirmación pendiente de un batch (null = ninguna).
   const [confirmBatch, setConfirmBatch] = useState<"enable" | "disable" | null>(
     null,

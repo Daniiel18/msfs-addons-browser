@@ -72,6 +72,15 @@ interface AppState {
   triggerSearch: (query: string, sourceId?: string) => Promise<void>;
   /** Carga la página `n` (1-based) del catálogo de la fuente activa. */
   loadBrowsePage: (page: number) => Promise<void>;
+
+  /** (v6.2.27 / R4) Semilla de filtro para la pestaña Addons — la fija
+   *  la paleta Ctrl+K al saltar a un paquete instalado. AddonsView la
+   *  consume una vez (setFilter) y la limpia. `null` = sin semilla. */
+  addonsSeedFilter: string | null;
+  /** Salta a la pestaña Addons con un filtro pre-cargado. */
+  jumpToAddon: (filter: string) => void;
+  /** Limpia la semilla tras consumirla. */
+  clearAddonsSeed: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -156,6 +165,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   openEconomy: (airlineKey = null, maintReg = null) =>
     set({ view: "economy", economyFocus: airlineKey, economyMaintReg: maintReg }),
   clearEconomyMaintReg: () => set({ economyMaintReg: null }),
+
+  addonsSeedFilter: null,
+  jumpToAddon: (filter) => set({ view: "addons", addonsSeedFilter: filter }),
+  clearAddonsSeed: () => set({ addonsSeedFilter: null }),
 
   async triggerSearch(query, sourceId) {
     const targetSource = sourceId ?? get().activeSourceId;
