@@ -31,6 +31,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { computePreflight } from "../lib/preflight";
 import { PreflightModal } from "./PreflightModal";
+import { DiskCleanupModal } from "./DiskCleanupModal";
 import { derivedType } from "../lib/packageType";
 import { t } from "../lib/i18n";
 
@@ -72,6 +73,7 @@ export function DashboardView() {
   // escenarios nuevos. Calculamos aquí el resumen (nº de puntos a
   // revisar) para el badge del botón; el detalle vive en el modal.
   const [showPreflight, setShowPreflight] = useState(false);
+  const [showCleanup, setShowCleanup] = useState(false);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);
   const flights = useSimBriefStore((s) => s.flights);
   const flightStatus = useFlightLogStore((s) => s.status);
@@ -178,6 +180,9 @@ export function DashboardView() {
       {showPreflight && (
         <PreflightModal onClose={() => setShowPreflight(false)} />
       )}
+      {showCleanup && (
+        <DiskCleanupModal onClose={() => setShowCleanup(false)} />
+      )}
 
       {/* (v6.2.4) Banner de update de GSX — clic abre el FSDT Installer. */}
       {showGsx && gsxInfo && (
@@ -260,13 +265,19 @@ export function DashboardView() {
               hint={t("dashboard.kpi.total_packages.hint")}
               tone="brand"
             />
-            <KpiCard
-              icon={<HardDrive className="h-4 w-4" />}
-              label={t("dashboard.kpi.disk_space")}
-              value={formatBytes(stats.totalSizeBytes)}
-              hint={t("dashboard.kpi.disk_space.hint")}
-              tone="cyan"
-            />
+            <button
+              onClick={() => setShowCleanup(true)}
+              title={t("cleanup.cta")}
+              className="text-left transition-transform hover:-translate-y-0.5"
+            >
+              <KpiCard
+                icon={<HardDrive className="h-4 w-4" />}
+                label={t("dashboard.kpi.disk_space")}
+                value={formatBytes(stats.totalSizeBytes)}
+                hint={t("cleanup.cta")}
+                tone="cyan"
+              />
+            </button>
             <KpiCard
               icon={<Landmark className="h-4 w-4" />}
               label={t("dashboard.kpi.airports")}
