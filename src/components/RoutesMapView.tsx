@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
-import { Crosshair, ChevronUp, ChevronDown, X } from "lucide-react";
+import {
+  Crosshair,
+  ChevronUp,
+  ChevronDown,
+  Pause,
+  Play,
+  PlayCircle,
+  X,
+} from "lucide-react";
 
 const tracingLog = (msg: string) =>
   console.info(`[RoutesMapView] ${msg}`);
@@ -67,6 +75,36 @@ const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" w
  *  fucsia para distinguirlo del avión propio (ámbar). Se dibuja sobre el
  *  ROUTEMAP existente, no en un mapa nuevo. */
 const RIVAL_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#e879f9" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
+
+/** (v6.2.28 / R5) Avión del REPLAY — cian para distinguirlo del track
+ *  ámbar y del vuelo en vivo. Recorre el track grabado del vuelo. */
+const REPLAY_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#22d3ee" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
+
+/** Rumbo (0..360°) del segmento A→B para orientar el avión del replay. */
+function segBearing(aLat: number, aLon: number, bLat: number, bLon: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const φ1 = toRad(aLat);
+  const φ2 = toRad(bLat);
+  const Δλ = toRad(bLon - aLon);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) -
+    Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (Math.atan2(y, x) * 180) / Math.PI;
+}
+
+/** Velocidades de reproducción (× tiempo real). */
+const REPLAY_SPEEDS = [30, 120, 300] as const;
+
+/** ms → "M:SS" o "H:MM:SS" para la lectura del replay. */
+function fmtClock(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
 
 // (v4.33.0) Persistencia de la CÁMARA del routemap. FlightBook se
 // desmonta al cambiar de pestaña y MapLibre re-crea el mapa en la
@@ -299,6 +337,19 @@ export function RoutesMapView({
   // este state queda vacío y el mapa vuelve a las great-circles.
   const [trackPoints, setTrackPoints] = useState<FlightTrackPoint[]>([]);
   const [loadingTrack, setLoadingTrack] = useState(false);
+
+  // (v6.2.28 / R5) Estado del replay del vuelo seleccionado. El marcador
+  // y el trail se manejan imperativamente (rAF) para no re-renderizar el
+  // mapa a 60fps; `replayClock` (ms de tiempo-sim transcurrido) sólo se
+  // actualiza en React de forma throttleada para mover el slider/lectura.
+  const [replayOn, setReplayOn] = useState(false);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  const [replayClock, setReplayClock] = useState(0);
+  const [replaySpeed, setReplaySpeed] = useState<number>(120);
+  const replayMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const replayRafRef = useRef<number | null>(null);
+  const replayClockRef = useRef(0);
+  const replayUiRef = useRef(0);
   const showSimconnectLines = useSettingsStore(
     (s) => s.settings.showSimconnectLines,
   );
@@ -455,6 +506,24 @@ export function RoutesMapView({
         source: "rt-track",
         layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": "#fbbf24", "line-width": 2.8 },
+      });
+      // (v6.2.28 / R5) Trail del REPLAY — cian brillante que crece sobre
+      // el track ámbar según avanza la reproducción. Vacío cuando no se
+      // está reproduciendo.
+      map.addSource("rt-replay", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-replay-glow",
+        type: "line",
+        source: "rt-replay",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#22d3ee", "line-width": 7, "line-opacity": 0.4 },
+      });
+      map.addLayer({
+        id: "rt-replay-line",
+        type: "line",
+        source: "rt-replay",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#67e8f9", "line-width": 3 },
       });
       // (v3.5.0 F2) Great-circle del vuelo SELECCIONADO cuando NO hay
       // track real (típico de imports de VAS-ACARS / MSFS logbook que
@@ -1277,6 +1346,159 @@ export function RoutesMapView({
     flightStatus?.currentHeadingDeg,
   ]);
 
+  // ───────────────────────── (v6.2.28 / R5) Replay ─────────────────────
+  // Timestamps del track en ms + duración total (tiempo-sim).
+  const replayTsMs = useMemo(
+    () =>
+      trackPoints
+        .map((p) => Date.parse(p.ts))
+        .filter((n) => Number.isFinite(n)),
+    [trackPoints],
+  );
+  const replayTotalMs =
+    replayTsMs.length >= 2 ? replayTsMs[replayTsMs.length - 1] - replayTsMs[0] : 0;
+
+  // Índice actual (para la lectura de alt/GS) derivado del reloj.
+  const replayIdx = useMemo(() => {
+    if (replayTsMs.length < 2) return 0;
+    const target = replayTsMs[0] + replayClock;
+    let i = 0;
+    while (i < replayTsMs.length - 2 && replayTsMs[i + 1] <= target) i++;
+    return i;
+  }, [replayClock, replayTsMs]);
+
+  // Coloca el marcador + trail en un instante `clockMs` (imperativo).
+  const positionReplayAt = useCallback(
+    (clockMs: number) => {
+      const map = mapRef.current;
+      if (!map || trackPoints.length < 2 || replayTsMs.length < 2) return;
+      const t0 = replayTsMs[0];
+      const target = t0 + Math.max(0, Math.min(clockMs, replayTotalMs));
+      let idx = 0;
+      while (idx < replayTsMs.length - 2 && replayTsMs[idx + 1] <= target) idx++;
+      const a = trackPoints[idx];
+      const b = trackPoints[idx + 1] ?? a;
+      const span = replayTsMs[idx + 1] - replayTsMs[idx];
+      const frac =
+        span > 0 ? Math.max(0, Math.min(1, (target - replayTsMs[idx]) / span)) : 0;
+      const lon = a.lon + (b.lon - a.lon) * frac;
+      const lat = a.lat + (b.lat - a.lat) * frac;
+      const heading = segBearing(a.lat, a.lon, b.lat, b.lon);
+      const coords: [number, number][] = trackPoints
+        .slice(0, idx + 1)
+        .map((p) => [p.lon, p.lat]);
+      coords.push([lon, lat]);
+      const src = map.getSource("rt-replay") as GeoJSONSource | undefined;
+      src?.setData({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: coords },
+      });
+      if (!replayMarkerRef.current) {
+        const el = document.createElement("div");
+        el.style.cssText =
+          "width:34px;height:34px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 6px rgba(34,211,238,0.75));";
+        el.innerHTML = REPLAY_PLANE_SVG;
+        replayMarkerRef.current = new maplibregl.Marker({
+          element: el,
+          rotationAlignment: "map",
+          pitchAlignment: "map",
+        })
+          .setLngLat([lon, lat])
+          .addTo(map);
+      } else {
+        replayMarkerRef.current.setLngLat([lon, lat]);
+      }
+      replayMarkerRef.current.setRotation(heading);
+    },
+    [trackPoints, replayTsMs, replayTotalMs],
+  );
+
+  const clearReplayVisuals = useCallback(() => {
+    replayMarkerRef.current?.remove();
+    replayMarkerRef.current = null;
+    const src = mapRef.current?.getSource("rt-replay") as
+      | GeoJSONSource
+      | undefined;
+    src?.setData({ type: "FeatureCollection", features: [] });
+  }, []);
+
+  // Al cambiar de vuelo seleccionado, reseteamos el replay.
+  useEffect(() => {
+    setReplayOn(false);
+    setReplayPlaying(false);
+    setReplayClock(0);
+    replayClockRef.current = 0;
+  }, [selectedFlightId]);
+
+  // Encender/apagar el replay: dibuja o limpia el marcador + trail.
+  useEffect(() => {
+    if (!mapReady) return;
+    if (replayOn && trackPoints.length >= 2) {
+      positionReplayAt(replayClockRef.current);
+    } else {
+      clearReplayVisuals();
+    }
+  }, [replayOn, mapReady, trackPoints, positionReplayAt, clearReplayVisuals]);
+
+  // Bucle de reproducción (rAF). Avanza el reloj por dt_real × velocidad.
+  useEffect(() => {
+    if (!replayOn || !replayPlaying) return;
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = now - last;
+      last = now;
+      let clock = replayClockRef.current + dt * replaySpeed;
+      let ended = false;
+      if (clock >= replayTotalMs) {
+        clock = replayTotalMs;
+        ended = true;
+      }
+      replayClockRef.current = clock;
+      positionReplayAt(clock);
+      // React state throttleado (~8fps) para slider/lectura.
+      if (ended || now - replayUiRef.current > 120) {
+        replayUiRef.current = now;
+        setReplayClock(clock);
+      }
+      if (ended) {
+        setReplayPlaying(false);
+        return;
+      }
+      replayRafRef.current = requestAnimationFrame(step);
+    };
+    replayRafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (replayRafRef.current) cancelAnimationFrame(replayRafRef.current);
+    };
+  }, [replayOn, replayPlaying, replaySpeed, replayTotalMs, positionReplayAt]);
+
+  const toggleReplay = () => {
+    if (replayOn) {
+      setReplayOn(false);
+      setReplayPlaying(false);
+    } else {
+      replayClockRef.current = 0;
+      setReplayClock(0);
+      setReplayOn(true);
+      setReplayPlaying(true);
+    }
+  };
+  const toggleReplayPlay = () => {
+    // Si terminó, reiniciar desde el principio.
+    if (replayClockRef.current >= replayTotalMs) {
+      replayClockRef.current = 0;
+      setReplayClock(0);
+    }
+    setReplayPlaying((v) => !v);
+  };
+  const scrubReplay = (ms: number) => {
+    setReplayPlaying(false);
+    replayClockRef.current = ms;
+    setReplayClock(ms);
+    positionReplayAt(ms);
+  };
+
   // (v6 #3) Marker del avión RIVAL en Live VS. Misma mecánica que el
   // propio pero alimentado por `rivalPos` (broadcast Supabase). Se oculta
   // si la posición está "stale" (>15s sin update) — el rival cerró el sim
@@ -1473,6 +1695,87 @@ export function RoutesMapView({
           {t("fb.map.no_track")}
         </div>
       )}
+
+      {/* (v6.2.28 / R5) Controles de REPLAY del vuelo seleccionado. */}
+      {detailMode && !loadingTrack && trackPoints.length >= 2 && (
+        <div className="absolute inset-x-0 bottom-3 flex justify-center px-3">
+          {!replayOn ? (
+            <button
+              onClick={toggleReplay}
+              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-slate-950/80 px-4 py-2 text-xs font-semibold text-cyan-200 backdrop-blur hover:bg-cyan-500/15"
+            >
+              <PlayCircle className="h-4 w-4" />
+              {t("replay.start")}
+            </button>
+          ) : (
+            <div className="pointer-events-auto flex w-[min(560px,100%)] flex-col gap-2 rounded-xl border border-slate-700 bg-slate-950/90 px-3 py-2.5 backdrop-blur">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={toggleReplayPlay}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-500 text-slate-950 hover:bg-cyan-400"
+                >
+                  {replayPlaying ? (
+                    <Pause className="h-4 w-4" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(1, replayTotalMs)}
+                  value={Math.min(replayClock, replayTotalMs)}
+                  onChange={(e) => scrubReplay(Number(e.target.value))}
+                  className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-slate-700 accent-cyan-400"
+                />
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-300">
+                  {fmtClock(replayClock)} / {fmtClock(replayTotalMs)}
+                </span>
+                <button
+                  onClick={toggleReplay}
+                  title={t("replay.exit")}
+                  className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                  {trackPoints[replayIdx]?.altFt != null && (
+                    <span className="rounded bg-slate-800 px-1.5 py-0.5">
+                      {Math.round(trackPoints[replayIdx].altFt as number).toLocaleString()} ft
+                    </span>
+                  )}
+                  {trackPoints[replayIdx]?.gsKt != null && (
+                    <span className="rounded bg-slate-800 px-1.5 py-0.5">
+                      {Math.round(trackPoints[replayIdx].gsKt as number)} kt
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="mr-0.5 text-[10px] text-slate-500">
+                    {t("replay.speed")}
+                  </span>
+                  {REPLAY_SPEEDS.map((sp) => (
+                    <button
+                      key={sp}
+                      onClick={() => setReplaySpeed(sp)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                        replaySpeed === sp
+                          ? "bg-cyan-500/30 text-cyan-100"
+                          : "bg-slate-800 text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      {sp}×
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {empty && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-500">
           {t("fb.map.empty_title")}
