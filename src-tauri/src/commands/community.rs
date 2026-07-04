@@ -87,8 +87,13 @@ pub async fn scan_community(
     let path = resolve_path(community_path).await?;
     tracing::info!(target: "scan", "scan_community: usando path {}", path.display());
     let path_for_task = path.clone();
-    let report = tokio::task::spawn_blocking(move || community_scanner::scan(&path_for_task))
-        .await
+    // (v6.2.25) Arranque incremental: cargamos el cache de tamaños del
+    // scan anterior para saltarnos el walk recursivo de los folders
+    // que no cambiaron desde la última vez.
+    let size_cache = community_scanner::load_size_cache(&state.db).await;
+    let report =
+        tokio::task::spawn_blocking(move || community_scanner::scan(&path_for_task, &size_cache))
+            .await
         .map_err(|e| {
             tracing::error!(target: "scan", "scan_community: tarea panic: {e}");
             format!("la tarea de escaneo falló: {e}")

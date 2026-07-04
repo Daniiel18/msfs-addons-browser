@@ -117,7 +117,16 @@ pub struct ScanReport {
 /// Escanea Community recursivamente al primer nivel. No descendemos
 /// porque los paquetes de MSFS son siempre `Community/<paquete>/...`
 /// — `<paquete>/<sub>/manifest.json` no es válido.
-pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
+/// (v6.2.25) Cache de tamaños del scan anterior: folder_name →
+/// (firma_mtime, size_bytes). La firma es el mismo string que
+/// `folder_modified_at`; si no cambió desde el último scan, reusamos
+/// el `size_bytes` guardado y nos ahorramos el walk recursivo del
+/// árbol (lo caro cuando hay cientos de paquetes). El resto de datos
+/// derivados (manifest, SimObjects, thumbnail) son baratos y se
+/// recalculan siempre.
+pub type SizeCache = std::collections::HashMap<String, (String, u64)>;
+
+pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<ScanReport> {
     let mut packages = Vec::new();
     let mut skipped_no_manifest = 0usize;
     let mut skipped_invalid_manifest = 0usize;
@@ -175,6 +184,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                 thumbnail_path,
                 has_own_model,
                 false, // has_manifest
+                size_cache,
             ));
             continue;
         }
@@ -190,6 +200,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                     base_containers,
                     thumbnail_path.clone(),
                     has_own_model,
+                    size_cache,
                 ));
             }
             Err(e) => {
@@ -212,6 +223,7 @@ pub fn scan(community_path: &Path) -> anyhow::Result<ScanReport> {
                     thumbnail_path,
                     has_own_model,
                     true, // tiene manifest pero está corrupto
+                    size_cache,
                 ));
             }
         }
@@ -514,6 +526,7 @@ fn materialize(
     base_containers: Vec<String>,
     thumbnail_path: Option<String>,
     has_own_model: bool,
+    size_cache: &SizeCache,
 ) -> ScannedPackage {
     let title = raw
         .title
@@ -554,7 +567,7 @@ fn materialize(
         None
     };
 
-    let (size_bytes, folder_modified_at) = folder_metadata(path);
+    let (size_bytes, folder_modified_at) = folder_metadata(path, folder_name, size_cache);
 
     // (v4.25.0) Nombres de las dependencias del manifest. Cada entry
     // suele ser `{ "name": "fnx-aircraft-320", "package_version": … }`
@@ -602,8 +615,9 @@ fn materialize_fallback(
     thumbnail_path: Option<String>,
     has_own_model: bool,
     has_manifest: bool,
+    size_cache: &SizeCache,
 ) -> ScannedPackage {
-    let (size_bytes, folder_modified_at) = folder_metadata(path);
+    let (size_bytes, folder_modified_at) = folder_metadata(path, folder_name, size_cache);
     let title = pretty_folder_name(folder_name);
     // Sin manifest válido no podemos saber si es SCENERY. Conservador:
     // no extraemos ICAO para evitar falsos positivos cuando alguien
@@ -638,12 +652,15 @@ fn matches_scenery(content_type: &Option<String>) -> bool {
         .unwrap_or(false)
 }
 
-fn folder_metadata(path: &Path) -> (Option<u64>, Option<String>) {
+fn folder_metadata(
+    path: &Path,
+    folder_name: &str,
+    size_cache: &SizeCache,
+) -> (Option<u64>, Option<String>) {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(_) => return (None, None),
     };
-    let size = directory_size(path).ok();
     // (v3.1.0) "Recientemente añadido" — antes usábamos sólo
     // `modified()` que en Windows refleja la última escritura DENTRO
     // de la carpeta. Si el usuario instala manualmente un addon viejo
@@ -674,6 +691,20 @@ fn folder_metadata(path: &Path) -> (Option<u64>, Option<String>) {
     let modified = chosen
         .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());
+
+    // (v6.2.25) Arranque incremental: si la firma de mtime del folder
+    // no cambió desde el último scan, reutilizamos el tamaño cacheado
+    // y evitamos el walk recursivo del árbol (lo caro a gran escala).
+    // El mtime de un directorio en Windows/NTFS cambia al añadir,
+    // quitar o renombrar sus hijos directos — justo lo que hace un
+    // update/instalación —, así que un tamaño obsoleto sólo podría
+    // venir de ediciones profundas sin tocar ningún índice de carpeta,
+    // un caso marginal y meramente cosmético (el tamaño es un dato
+    // informativo, no afecta correctitud).
+    let size = match (&modified, size_cache.get(folder_name)) {
+        (Some(m), Some((prev_mtime, prev_size))) if m == prev_mtime => Some(*prev_size),
+        _ => directory_size(path).ok(),
+    };
     (size, modified)
 }
 
@@ -789,6 +820,30 @@ fn extract_icao(text: &str) -> Option<String> {
     // cuando ningún candidato tiene "airport-" delante — la mayoría
     // de folders fuera de la convención usan dev como prefijo opcional.
     Some(candidates.into_iter().next().unwrap().1)
+}
+
+/// (v6.2.25) Carga el cache de tamaños del scan anterior desde la DB
+/// (`folder_name → (folder_modified_at, size_bytes)`). Alimenta el
+/// arranque incremental: los folders cuya firma de mtime no cambió
+/// reutilizan su tamaño y se saltan el walk recursivo. Best-effort:
+/// si la query falla, se devuelve vacío y el scan recalcula todo.
+pub async fn load_size_cache(pool: &SqlitePool) -> SizeCache {
+    let rows: Vec<(String, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT folder_name, folder_modified_at, size_bytes FROM community_packages",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|(folder, mtime, size)| {
+            let mtime = mtime?;
+            let size = size?;
+            if size < 0 {
+                return None;
+            }
+            Some((folder, (mtime, size as u64)))
+        })
+        .collect()
 }
 
 /// Sincroniza los resultados del scan con la base de datos. Borra

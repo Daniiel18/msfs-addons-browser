@@ -16,6 +16,7 @@ import type { CommunityPackage, PerfConfig, PerfOption } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useToastStore } from "../stores/useToastStore";
 import { usePerfStore } from "../stores/usePerfStore";
+import { useFpsAppliedStore } from "../stores/useFpsAppliedStore";
 import { useThumbnail } from "../lib/thumbnails";
 import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { ToggleSwitch } from "./AddonToggle";
@@ -56,6 +57,18 @@ export function PerformanceModal({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
+  // (v6.2.25) Memoria de optimizaciones aplicadas por escenario — para
+  // ofrecer "restaurar" cuando un update reinstala y borra los renombrados.
+  const syncApplied = useFpsAppliedStore((s) => s.syncFromConfig);
+  const savedIds = useFpsAppliedStore((s) => s.get(pkg.folderName));
+  const remember = (cfg: PerfConfig | null) => {
+    if (cfg)
+      syncApplied(
+        pkg.folderName,
+        cfg.options.filter((o) => o.applied).map((o) => o.id),
+      );
+  };
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -68,6 +81,7 @@ export function PerformanceModal({
         );
         if (alive) {
           setConfig(cfg);
+          remember(cfg);
           // Badge sólo si viene de la página (no del escaneo local).
           if (cfg && cfg.options.length > 0 && cfg.source !== "local-scan")
             markOptimizable(pkg.folderName);
@@ -92,16 +106,15 @@ export function PerformanceModal({
     setBusyId(opt.id);
     try {
       const res = await api.perfToggleOption(pkg.installPath, opt.id, !opt.applied);
-      setConfig((prev) =>
-        prev
-          ? {
-              ...prev,
-              options: prev.options.map((o) =>
-                o.id === opt.id ? res.option : o,
-              ),
-            }
-          : prev,
-      );
+      setConfig((prev) => {
+        if (!prev) return prev;
+        const next = {
+          ...prev,
+          options: prev.options.map((o) => (o.id === opt.id ? res.option : o)),
+        };
+        remember(next);
+        return next;
+      });
       pushToast({
         kind: "success",
         title: res.option.applied
@@ -131,16 +144,15 @@ export function PerformanceModal({
         try {
           const res = await api.perfToggleOption(pkg.installPath, o.id, apply);
           renamed += res.renamed;
-          setConfig((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  options: prev.options.map((x) =>
-                    x.id === o.id ? res.option : x,
-                  ),
-                }
-              : prev,
-          );
+          setConfig((prev) => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              options: prev.options.map((x) => (x.id === o.id ? res.option : x)),
+            };
+            remember(next);
+            return next;
+          });
         } catch (e) {
           // p. ej. MSFS con el escenario abierto → paramos en seco.
           pushToast({ kind: "error", title: t("perf.toggle_error"), message: String(e) });
@@ -209,6 +221,51 @@ export function PerformanceModal({
   const options = config?.options ?? [];
   // Optimizaciones actualmente aplicadas (ahorrando FPS).
   const savedCount = options.filter((o) => o.applied).length;
+
+  // (v6.2.25) Optimizaciones que TENÍAS aplicadas y ahora no lo están —
+  // típico tras un update que reinstaló el escenario. Se ofrecen restaurar.
+  const restorable = options.filter(
+    (o) => !o.applied && savedIds.includes(o.id),
+  );
+  const restore = async () => {
+    if (bulkBusy || busyId || restorable.length === 0) return;
+    setBulkBusy(true);
+    let renamed = 0;
+    try {
+      for (const o of restorable) {
+        try {
+          const res = await api.perfToggleOption(pkg.installPath, o.id, true);
+          renamed += res.renamed;
+          setConfig((prev) => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              options: prev.options.map((x) =>
+                x.id === o.id ? res.option : x,
+              ),
+            };
+            remember(next);
+            return next;
+          });
+        } catch (e) {
+          pushToast({
+            kind: "error",
+            title: t("perf.toggle_error"),
+            message: String(e),
+          });
+          break;
+        }
+      }
+      pushToast({
+        kind: "success",
+        title: t("perf.restore.done"),
+        message: t("perf.renamed", { n: String(renamed) }),
+        ttlMs: 2600,
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   return (
     <div
@@ -321,7 +378,29 @@ export function PerformanceModal({
               </p>
             </div>
           ) : (
-            <ul className="space-y-2">
+            <>
+              {/* (v6.2.25) Restaurar optimizaciones que un update borró. */}
+              {restorable.length > 0 && (
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-amber-100">
+                      {t("perf.restore.title")}
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-snug text-amber-200/70">
+                      {t("perf.restore.body", { n: String(restorable.length) })}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void restore()}
+                    disabled={bulkBusy || !!busyId}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-bold text-amber-950 hover:bg-amber-400 disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {t("perf.restore.button")}
+                  </button>
+                </div>
+              )}
+              <ul className="space-y-2">
               {options.map((opt) => (
                 <li
                   key={opt.id}
@@ -369,7 +448,8 @@ export function PerformanceModal({
                   </div>
                 </li>
               ))}
-            </ul>
+              </ul>
+            </>
           )}
         </div>
 
