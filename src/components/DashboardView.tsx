@@ -25,8 +25,16 @@ import {
   useAiracUpdateStore,
   airacUpdateVisible,
 } from "../stores/useAiracUpdateStore";
+import { useNewSceneryStore } from "../stores/useNewSceneryStore";
+import { useSimBriefStore } from "../stores/useSimBriefStore";
+import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useSettingsStore } from "../stores/useSettingsStore";
+import { computePreflight } from "../lib/preflight";
+import { PreflightModal } from "./PreflightModal";
 import { derivedType } from "../lib/packageType";
 import { t } from "../lib/i18n";
+
+const RADAR_THROTTLE_MS = 30 * 60 * 1000;
 
 /**
  * Dashboard — totales agregados de Community.
@@ -59,6 +67,45 @@ export function DashboardView() {
   const scanning = useCommunityStore((s) => s.scanning);
   const packages = useCommunityStore((s) => s.packages);
   const packagesCount = packages.length;
+
+  // (v6.2.26 / R3) Chequeo pre-vuelo "¿Listo para volar?" + radar de
+  // escenarios nuevos. Calculamos aquí el resumen (nº de puntos a
+  // revisar) para el badge del botón; el detalle vive en el modal.
+  const [showPreflight, setShowPreflight] = useState(false);
+  const simVersion = useSettingsStore((s) => s.settings.simVersion);
+  const flights = useSimBriefStore((s) => s.flights);
+  const flightStatus = useFlightLogStore((s) => s.status);
+  const communityUpdates = useCommunityStore((s) => s.updates);
+  const freshScenery = useNewSceneryStore((s) => s.fresh);
+  const radarCheck = useNewSceneryStore((s) => s.check);
+  const radarLastChecked = useNewSceneryStore((s) => s.lastCheckedAt);
+
+  // Radar: navega el catálogo al montar el Dashboard, con throttle para
+  // no golpear la red al ir y volver de vista.
+  useEffect(() => {
+    if (radarLastChecked && Date.now() - radarLastChecked < RADAR_THROTTLE_MS) {
+      return;
+    }
+    void radarCheck(simVersion);
+  }, [radarCheck, simVersion, radarLastChecked]);
+
+  const preflightIssues = useMemo(() => {
+    const plan =
+      flights.length > 0
+        ? [...flights].sort((a, b) =>
+            (b.fetchedAt ?? "").localeCompare(a.fetchedAt ?? ""),
+          )[0]
+        : null;
+    return computePreflight({
+      plan,
+      status: flightStatus,
+      packages,
+      airac: airacInfo,
+      updates: communityUpdates,
+    }).issues;
+  }, [flights, flightStatus, packages, airacInfo, communityUpdates]);
+
+  const preflightBadge = preflightIssues + freshScenery.length;
 
   // (v6 hotfix) Conteo de aviones/liveries con el MISMO clasificador
   // (`derivedType`) que usan Addons y el Mapa. El backend de `stats` los
@@ -102,6 +149,35 @@ export function DashboardView() {
           {t("dashboard.title.community")}
         </h2>
       </header>
+
+      {/* (v6.2.26 / R3) Acceso al chequeo "¿Listo para volar?". */}
+      <button
+        onClick={() => setShowPreflight(true)}
+        className="flex w-full items-center gap-3 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-sky-500/10 px-4 py-3 text-left transition-colors hover:from-emerald-500/15 hover:to-sky-500/15"
+      >
+        <Rocket className="h-5 w-5 shrink-0 text-emerald-300" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-emerald-100">
+            {t("preflight.cta.title")}
+          </div>
+          <div className="text-xs text-emerald-200/70">
+            {preflightIssues > 0
+              ? t("preflight.cta.issues", { n: String(preflightIssues) })
+              : freshScenery.length > 0
+                ? t("preflight.cta.fresh", { n: String(freshScenery.length) })
+                : t("preflight.cta.ready")}
+          </div>
+        </div>
+        {preflightBadge > 0 && (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-emerald-500/30 px-2.5 py-1 text-[11px] font-bold text-emerald-100">
+            {preflightBadge}
+          </span>
+        )}
+      </button>
+
+      {showPreflight && (
+        <PreflightModal onClose={() => setShowPreflight(false)} />
+      )}
 
       {/* (v6.2.4) Banner de update de GSX — clic abre el FSDT Installer. */}
       {showGsx && gsxInfo && (
