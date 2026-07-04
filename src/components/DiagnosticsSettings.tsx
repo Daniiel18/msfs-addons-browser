@@ -16,6 +16,7 @@ import {
   type DiagAppMetrics,
 } from "../lib/tauri";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
+import { t } from "../lib/i18n";
 
 /**
  * (v6.2.15 · v6.2.16) Panel de diagnóstico — detrás de una clave de acceso.
@@ -38,8 +39,8 @@ function fmtMB(bytes: number): string {
 function fmtAgo(nowMs: number, thenMs: number): string {
   if (!thenMs) return "—";
   const s = Math.max(0, Math.round((nowMs - thenMs) / 1000));
-  if (s < 60) return `hace ${s}s`;
-  return `hace ${Math.round(s / 60)}min`;
+  if (s < 60) return t("diag.ago_s", { n: String(s) });
+  return t("diag.ago_min", { n: String(Math.round(s / 60)) });
 }
 
 export function DiagnosticsSettings() {
@@ -107,7 +108,7 @@ export function DiagnosticsSettings() {
       <div className="space-y-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-3">
         <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
           <Lock className="h-3.5 w-3.5" />
-          Introduce la clave para ver el diagnóstico. Se recuerda en este PC.
+          {t("diag.unlock.hint")}
         </div>
 
         {/* Display del PIN + entrada por teclado */}
@@ -148,7 +149,7 @@ export function DiagnosticsSettings() {
             }}
             className="rounded-lg border border-slate-800 bg-slate-950 py-2 text-[10px] font-medium text-slate-500 hover:text-slate-300"
           >
-            Borrar
+            {t("diag.unlock.clear")}
           </button>
           <button
             type="button"
@@ -171,7 +172,7 @@ export function DiagnosticsSettings() {
 
         {error && (
           <p className="text-center text-[11px] text-rose-400">
-            Clave incorrecta.
+            {t("diag.unlock.wrong")}
           </p>
         )}
       </div>
@@ -185,17 +186,17 @@ export function DiagnosticsSettings() {
     <div className="space-y-2">
       {/* ── Subsistemas internos ── */}
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-        Subsistemas internos
+        {t("diag.subsystems")}
       </p>
       <div className="grid grid-cols-2 gap-1.5">
         <SubsystemCard
           icon={<Plug className="h-3.5 w-3.5" />}
           title="SimConnect"
           ok={m?.simconnectConnected ?? false}
-          status={m?.simconnectConnected ? "conectado" : "desconectado"}
+          status={m?.simconnectConnected ? t("diag.status.connected") : t("diag.status.disconnected")}
           detail={
             m
-              ? `${m.simconnectEmits.toLocaleString()} emits · último ${fmtAgo(m.nowMs, m.simconnectLastEmitMs)}`
+              ? t("diag.detail.emits", { n: m.simconnectEmits.toLocaleString(), ago: fmtAgo(m.nowMs, m.simconnectLastEmitMs) })
               : "—"
           }
         />
@@ -203,33 +204,33 @@ export function DiagnosticsSettings() {
           icon={<MapPin className="h-3.5 w-3.5" />}
           title="Tracking"
           ok={(m?.trackRowsWritten ?? 0) > 0}
-          status={m && m.trackRowsWritten > 0 ? "grabando" : "inactivo"}
+          status={m && m.trackRowsWritten > 0 ? t("diag.status.recording") : t("diag.status.idle")}
           detail={
             m
-              ? `${m.trackRowsWritten.toLocaleString()} puntos escritos (sesión)`
+              ? t("diag.detail.points", { n: m.trackRowsWritten.toLocaleString() })
               : "—"
           }
         />
         <SubsystemCard
           icon={<Cloud className="h-3.5 w-3.5" />}
-          title="Subida a nube"
+          title={t("diag.card.cloud")}
           ok={m?.cloudBusy ?? false}
-          status={m?.cloudBusy ? "subiendo…" : "en reposo"}
+          status={m?.cloudBusy ? t("diag.status.uploading") : t("diag.status.resting")}
           detail={
             m && m.cloudUploads > 0
-              ? `${m.cloudUploads} subidas · última ${fmtMB(m.cloudLastBytes)} ${fmtAgo(m.nowMs, m.cloudLastMs)}`
-              : "sin subidas esta sesión"
+              ? t("diag.detail.uploads", { n: String(m.cloudUploads), mb: fmtMB(m.cloudLastBytes), ago: fmtAgo(m.nowMs, m.cloudLastMs) })
+              : t("diag.detail.no_uploads")
           }
         />
         <SubsystemCard
           icon={<Camera className="h-3.5 w-3.5" />}
-          title="Grabador"
+          title={t("diag.card.recorder")}
           ok={m?.recorderArmed ?? false}
-          status={m?.recorderArmed ? "ARMADO (capturando)" : "desarmado"}
+          status={m?.recorderArmed ? t("diag.status.armed") : t("diag.status.disarmed")}
           detail={
             m?.recorderArmed
-              ? "replay buffer activo — consume RAM/GPU"
-              : "sin captura de pantalla"
+              ? t("diag.detail.rec_on")
+              : t("diag.detail.rec_off")
           }
           warnWhenOk
         />
@@ -237,11 +238,11 @@ export function DiagnosticsSettings() {
           icon={<Swords className="h-3.5 w-3.5" />}
           title="Crew VS (Supabase)"
           ok={vsConnected}
-          status={vsConnected ? "conectado" : "sin canal"}
+          status={vsConnected ? t("diag.status.connected") : t("diag.status.no_channel")}
           detail={
             vsConnected
-              ? `${vsChannel || "—"}${vsRival ? ` · rival: ${vsRival.name}` : " · sin rival"}`
-              : "no hay vuelo enlazado"
+              ? `${vsChannel || "—"}${vsRival ? ` · ${t("diag.detail.rival")}: ${vsRival.name}` : ` · ${t("diag.detail.no_rival")}`}`
+              : t("diag.detail.vs_off")
           }
         />
       </div>
@@ -251,11 +252,11 @@ export function DiagnosticsSettings() {
         <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
           <Activity className="h-3.5 w-3.5 text-emerald-400" />
           <span>
-            Total SimFleet:{" "}
+            {t("diag.total")}{" "}
             <span className="font-mono font-semibold text-slate-100">
               {report ? fmtMB(report.totalBytes) : "—"}
             </span>{" "}
-            <span className="text-slate-500">({report?.count ?? 0} procesos)</span>
+            <span className="text-slate-500">({report?.count ?? 0} {t("diag.processes")})</span>
           </span>
         </div>
         <button
@@ -263,7 +264,7 @@ export function DiagnosticsSettings() {
           className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-          Refrescar
+          {t("diag.refresh")}
         </button>
       </div>
 
@@ -271,7 +272,7 @@ export function DiagnosticsSettings() {
         <table className="w-full text-[11px]">
           <thead>
             <tr className="bg-slate-900/60 text-slate-500">
-              <th className="px-2 py-1.5 text-left font-medium">Proceso</th>
+              <th className="px-2 py-1.5 text-left font-medium">{t("diag.table.process")}</th>
               <th className="px-2 py-1.5 text-right font-medium">PID</th>
               <th className="px-2 py-1.5 text-right font-medium">RAM</th>
             </tr>
@@ -304,7 +305,7 @@ export function DiagnosticsSettings() {
                   colSpan={3}
                   className="px-2 py-3 text-center text-[11px] text-slate-500"
                 >
-                  Sin datos todavía…
+                  {t("diag.table.empty")}
                 </td>
               </tr>
             )}
@@ -313,9 +314,7 @@ export function DiagnosticsSettings() {
       </div>
 
       <p className="text-[10px] text-slate-500">
-        Cada lectura se guarda también en el log de la app (etiqueta{" "}
-        <span className="font-mono">diag</span>). Comparte el log si quieres que
-        revise el proceso que más consume.
+        {t("diag.log_hint")}
       </p>
     </div>
   );

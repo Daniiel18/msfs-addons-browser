@@ -376,6 +376,13 @@ pub type FnSetClientData = unsafe extern "system" fn(
     pDataSet: *const c_void,
 ) -> HRESULT;
 
+/// (v6.2.24) `SimConnect_GetLastSentPacketID` — devuelve el `dwSendID` del
+/// último paquete enviado. Permite construir un mapa sendID→llamada y así
+/// resolver las `EXCEPTION ... sendID=N` del sim a la petición EXACTA que
+/// falló (antes el DATA_ERROR era anónimo).
+pub type FnGetLastSentPacketID =
+    unsafe extern "system" fn(hSimConnect: HANDLE, pdwSendID: *mut DWORD) -> HRESULT;
+
 // ----- Wrapper de carga ------------------------------------------------------
 
 #[cfg(target_os = "windows")]
@@ -397,6 +404,8 @@ pub struct SimConnectLib {
     pub AddToClientDataDefinition: Option<FnAddToClientDataDefinition>,
     pub RequestClientData: Option<FnRequestClientData>,
     pub SetClientData: Option<FnSetClientData>,
+    /// (v6.2.24) Para mapear sendID→llamada en las EXCEPTION.
+    pub GetLastSentPacketID: Option<FnGetLastSentPacketID>,
 }
 
 #[cfg(target_os = "windows")]
@@ -569,6 +578,10 @@ impl SimConnectLib {
             .get::<FnSetClientData>(b"SimConnect_SetClientData\0")
             .ok()
             .map(|s| *s);
+        let get_last_sent: Option<FnGetLastSentPacketID> = lib
+            .get::<FnGetLastSentPacketID>(b"SimConnect_GetLastSentPacketID\0")
+            .ok()
+            .map(|s| *s);
 
         Ok(Self {
             _lib: lib,
@@ -585,6 +598,7 @@ impl SimConnectLib {
             AddToClientDataDefinition: add_client_def,
             RequestClientData: req_client,
             SetClientData: set_client,
+            GetLastSentPacketID: get_last_sent,
         })
     }
 }

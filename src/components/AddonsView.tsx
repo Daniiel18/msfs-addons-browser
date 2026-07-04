@@ -966,7 +966,7 @@ function EmptyState({
     return (
       <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center">
         <Package className="mx-auto mb-3 h-8 w-8 text-slate-700" />
-        <p className="text-sm text-slate-400">No hay addons no-escenario instalados.</p>
+        <p className="text-sm text-slate-400">{t("addons.empty.non_scenery")}</p>
         <p className="mt-1 text-xs text-slate-600">
           Arrastra un .zip / .rar / .7z / .ptp para instalar uno, o usa
           la pestaña Buscar para descargar desde un catálogo.

@@ -33,6 +33,7 @@ const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_os = "windows")]
 const MSFS_PROCESS_NAMES: &[&str] = &["FlightSimulator.exe", "FlightSimulator2024.exe"];
 
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlightStatus {
@@ -348,6 +349,44 @@ mod windows_simconnect {
     use crate::simconnect_ffi::consts::*;
 
     use super::SharedState;
+
+    /// (v6.2.24) Mapa dwSendID → etiqueta de la llamada SimConnect que lo
+    /// envió. Resuelve las `EXCEPTION ... sendID=N` (p.ej. el DATA_ERROR
+    /// code=20 recurrente en los logs) a la petición EXACTA que el sim
+    /// rechazó — antes eran anónimas e indepurables.
+    static SEND_LABELS: once_cell::sync::Lazy<
+        std::sync::Mutex<std::collections::HashMap<u32, String>>,
+    > = once_cell::sync::Lazy::new(|| {
+        std::sync::Mutex::new(std::collections::HashMap::new())
+    });
+
+    /// Registra la etiqueta del ÚLTIMO paquete enviado (via
+    /// `SimConnect_GetLastSentPacketID`). Llamar inmediatamente después de
+    /// cada AddToDataDefinition / RequestDataOnSimObject a rastrear.
+    fn note_sent(lib: &sc::SimConnectLib, handle: sc::HANDLE, label: &str) {
+        let Some(f) = lib.GetLastSentPacketID else {
+            return;
+        };
+        let mut id: u32 = 0;
+        let hr = unsafe { f(handle, &mut id) };
+        if sc::succeeded(hr) && id != 0 {
+            if let Ok(mut m) = SEND_LABELS.lock() {
+                if m.len() > 1024 {
+                    m.clear();
+                }
+                m.insert(id, label.to_string());
+            }
+        }
+    }
+
+    /// Etiqueta registrada para un sendID (o "?" si no se rastreó).
+    fn sent_label(send_id: u32) -> String {
+        SEND_LABELS
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&send_id).cloned())
+            .unwrap_or_else(|| "?".to_string())
+    }
 
     /// Datos que pedimos al usuario aircraft. ORDEN IMPORTA — debe
     /// coincidir con el orden en que llamamos a `AddToDataDefinition`.
@@ -1188,6 +1227,7 @@ mod windows_simconnect {
                     u32::MAX, // SIMCONNECT_UNUSED — Datum ID auto
                 )
             };
+            note_sent(lib, handle, &format!("AddToDataDefinition[AIRCRAFT] '{name}'"));
             if !sc::succeeded(hr) {
                 anyhow::bail!("AddToDataDefinition '{}' falló (0x{:08x})", name, hr);
             }
@@ -1218,6 +1258,7 @@ mod windows_simconnect {
                 0,
             )
         };
+        note_sent(lib, handle, "RequestDataOnSimObject[AIRCRAFT]");
         if !sc::succeeded(hr) {
             anyhow::bail!("RequestDataOnSimObject falló (0x{:08x})", hr);
         }
@@ -1265,6 +1306,7 @@ mod windows_simconnect {
                     u32::MAX,
                 )
             };
+            note_sent(lib, handle, &format!("AddToDataDefinition[META] '{name}'"));
             if !sc::succeeded(hr) {
                 tracing::warn!(
                     target: "simconnect",
@@ -1297,6 +1339,7 @@ mod windows_simconnect {
                     0,
                 )
             };
+            note_sent(lib, handle, "RequestDataOnSimObject[META]");
             if !sc::succeeded(hr) {
                 tracing::warn!(
                     target: "simconnect",
@@ -1340,6 +1383,7 @@ mod windows_simconnect {
                     std::u32::MAX,
                 )
             };
+            note_sent(lib, handle, &format!("AddToDataDefinition[TOUCHDOWN] '{name}'"));
             if !sc::succeeded(hr) {
                 tracing::warn!(
                     target: "simconnect",
@@ -1367,6 +1411,7 @@ mod windows_simconnect {
                     0,
                 )
             };
+            note_sent(lib, handle, "RequestDataOnSimObject[TOUCHDOWN]");
             if !sc::succeeded(hr) {
                 tracing::warn!(
                     target: "simconnect",
@@ -1962,10 +2007,12 @@ mod windows_simconnect {
                         37 => "OBJECT_SCHEDULE",
                         _ => "OTHER",
                     };
+                    // (v6.2.24) Resuelve el sendID a la llamada exacta que lo
+                    // envió — antes el DATA_ERROR era anónimo e indepurable.
                     tracing::warn!(
                         target: "simconnect",
-                        "EXCEPTION code={} ({}) sendID={} index={}",
-                        exc_code, label, send_id, index
+                        "EXCEPTION code={} ({}) sendID={} [{}] index={}",
+                        exc_code, label, send_id, sent_label(send_id), index
                     );
                 }
                 SIMCONNECT_RECV_ID_EVENT => {

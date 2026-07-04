@@ -53,10 +53,38 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
         );
     }
 
+    // (v6.2.24) BACKUP automático de la DB antes de aplicar migraciones
+    // NUEVAS. El historial de vuelos es valioso (cientos de miles de puntos
+    // de track); si una migración saliera mal, `msfs-addons.db.bak` permite
+    // recuperar. Solo se copia cuando de verdad hay migraciones pendientes
+    // (no en cada arranque) y tras un checkpoint del WAL para que la copia
+    // sea consistente. Un solo .bak rotativo (el del último upgrade).
+    let migrator = sqlx::migrate!("./migrations");
+    let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    let total = migrator.iter().count() as i64;
+    if applied > 0 && applied < total {
+        let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&pool)
+            .await;
+        let backup = db_path.with_extension("db.bak");
+        match std::fs::copy(&db_path, &backup) {
+            Ok(bytes) => tracing::info!(
+                "db: backup pre-migración escrito ({:.1} MB) en {} — {} migraciones nuevas por aplicar",
+                bytes as f64 / 1_048_576.0,
+                backup.display(),
+                total - applied
+            ),
+            Err(e) => tracing::warn!("db: backup pre-migración falló (se continúa): {e:#}"),
+        }
+    }
+
     // (v3.7.1) Migración con logging explícito por si falla — sin
     // esto un fallo se propagaba silencioso (el `?` mata el setup de
     // Tauri sin que veamos qué pasó).
-    match sqlx::migrate!("./migrations").run(&pool).await {
+    match migrator.run(&pool).await {
         Ok(()) => tracing::info!("db: migraciones aplicadas OK"),
         Err(e) => {
             tracing::error!("db: sqlx migrate FALLÓ: {e:#}");

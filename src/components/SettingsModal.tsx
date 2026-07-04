@@ -1918,153 +1918,50 @@ function CloudSyncPanel({
         </button>
         {showHelp && (
           <ol className="mt-2 space-y-2 text-[11px] text-slate-400">
-            <li>
-              <span className="font-semibold text-slate-200">
-                1. Crea un proyecto en Google Cloud
-              </span>
-              <p className="mt-0.5">
-                Abre{" "}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void api.openExternal(
-                      "https://console.cloud.google.com/projectcreate",
-                    );
-                  }}
-                  className="text-brand-300 hover:underline"
-                >
-                  console.cloud.google.com/projectcreate
-                </a>{" "}
-                → nombre cualquiera (ej. "msfs-addons-sync") → Create.
-              </p>
-            </li>
-            <li>
-              <span className="font-semibold text-slate-200">
-                2. Activa la Google Drive API en ESE proyecto
-              </span>
-              <p className="mt-0.5">
-                Abre{" "}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void api.openExternal(
-                      "https://console.cloud.google.com/apis/library/drive.googleapis.com",
-                    );
-                  }}
-                  className="text-brand-300 hover:underline"
-                >
-                  apis/library/drive.googleapis.com
-                </a>
-                . VERIFICA que en el desplegable de arriba está
-                seleccionado TU proyecto (el del paso 1). Pulsa{" "}
-                <span className="font-mono">Enable</span>. Espera 30 s.
-              </p>
-            </li>
-            <li>
-              <span className="font-semibold text-slate-200">
-                3. Configura el OAuth Consent Screen
-              </span>
-              <p className="mt-0.5">
-                Abre{" "}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void api.openExternal(
-                      "https://console.cloud.google.com/auth/overview",
-                    );
-                  }}
-                  className="text-brand-300 hover:underline"
-                >
-                  auth/overview
-                </a>
-                . User Type:{" "}
-                <span className="font-mono">External</span>. Pon el
-                nombre de la app y tu email como soporte. En la pantalla
-                de <span className="font-mono">Test Users</span>, AÑADE
-                TU PROPIO EMAIL (sin esto, Google bloquea el consent en
-                modo Testing).
-              </p>
-            </li>
-            <li>
-              <span className="font-semibold text-slate-200">
-                4. Crea el OAuth Client tipo Desktop
-              </span>
-              <p className="mt-0.5">
-                Abre{" "}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void api.openExternal(
-                      "https://console.cloud.google.com/apis/credentials",
-                    );
-                  }}
-                  className="text-brand-300 hover:underline"
-                >
-                  apis/credentials
-                </a>{" "}
-                → Create Credentials → OAuth Client ID → Application
-                type:{" "}
-                <span className="font-mono font-semibold">
-                  Desktop app
-                </span>{" "}
-                (NO Web). Copia el{" "}
-                <span className="font-mono">Client ID</span> y{" "}
-                <span className="font-mono">Client Secret</span>.
-              </p>
-            </li>
-            <li>
-              <span className="font-semibold text-slate-200">
-                5. Pega las credenciales en esta app
-              </span>
-              <p className="mt-0.5">
-                Arriba en este mismo panel → "Configurar / Cambiar" →
-                pega los dos valores → Guardar.
-              </p>
-            </li>
-            <li>
-              <span className="font-semibold text-slate-200">
-                6. Conectar
-              </span>
-              <p className="mt-0.5">
-                Pulsa "Conectar con Google" → se abre tu navegador →
-                eliges tu cuenta → en la pantalla{" "}
-                <em>"Google no verificó esta app"</em> pulsa{" "}
-                <span className="font-mono">Advanced</span> →{" "}
-                <span className="font-mono">Go to {`<app>`} (unsafe)</span>{" "}
-                (normal porque la app está en Testing). Aprueba TODAS
-                las scopes (drive.appdata + userinfo.email).
-              </p>
-            </li>
-            <li>
-              <span className="font-semibold text-slate-200">
-                7. Probar conexión
-              </span>
-              <p className="mt-0.5">
-                Si conectaste pero "Sync ahora" falla, pulsa{" "}
-                <span className="font-mono">Probar conexión</span> — te
-                dice paso por paso dónde se rompe (credenciales,
-                refresh token, identidad, Drive API, scope, listado).
-              </p>
-            </li>
+            {/* (v6.2.24) Guía data-driven e i18n — antes estaba hardcodeada
+                en español y no respetaba el idioma seleccionado. */}
+            {[
+              { n: 1, url: "https://console.cloud.google.com/projectcreate", link: "console.cloud.google.com/projectcreate" },
+              { n: 2, url: "https://console.cloud.google.com/apis/library/drive.googleapis.com", link: "apis/library/drive.googleapis.com" },
+              { n: 3, url: "https://console.cloud.google.com/auth/overview", link: "auth/overview" },
+              { n: 4, url: "https://console.cloud.google.com/apis/credentials", link: "apis/credentials" },
+              { n: 5 },
+              { n: 6 },
+              { n: 7 },
+            ].map((st) => (
+              <li key={st.n}>
+                <span className="font-semibold text-slate-200">
+                  {st.n}. {t(`settings.cloud.guide.s${st.n}.title`)}
+                </span>
+                <p className="mt-0.5">
+                  {t(`settings.cloud.guide.s${st.n}.body`)}
+                  {st.url && (
+                    <>
+                      {" "}
+                      <a
+                        href="#"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          void api.openExternal(st.url!);
+                        }}
+                        className="text-brand-300 hover:underline"
+                      >
+                        {st.link}
+                      </a>
+                    </>
+                  )}
+                </p>
+              </li>
+            ))}
             <li className="rounded border border-rose-500/30 bg-rose-500/10 p-2">
               <span className="font-semibold text-rose-200">
-                Si sigues con 403 después de activar la Drive API:
+                {t("settings.cloud.guide.err403.title")}
               </span>
               <ul className="mt-1 list-disc pl-4 text-rose-100/80">
+                <li>{t("settings.cloud.guide.err403.b1")}</li>
+                <li>{t("settings.cloud.guide.err403.b2")}</li>
                 <li>
-                  Revisa que la Drive API esté activada en EL MISMO
-                  proyecto del paso 1.
-                </li>
-                <li>
-                  Pulsa Desconectar + Conectar de nuevo — el access
-                  token cacheado puede no tener las scopes nuevas.
-                </li>
-                <li>
-                  En{" "}
+                  {t("settings.cloud.guide.err403.b3")}{" "}
                   <a
                     href="#"
                     onClick={(e) => {
@@ -2076,8 +1973,7 @@ function CloudSyncPanel({
                     className="underline"
                   >
                     myaccount.google.com/permissions
-                  </a>{" "}
-                  revoca el acceso de tu app, después reconecta.
+                  </a>
                 </li>
               </ul>
             </li>
