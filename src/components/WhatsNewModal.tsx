@@ -36,25 +36,41 @@ export interface WhatsNewSlide {
   image: string;
 }
 
-/** Slides por defecto — novedades de ESTE update (6.2.19/6.2.20): avisos de
- *  mantenimiento en la campanita + economía autosostenible, Ajustes
- *  rediseñados (grupos + buscador + reinicio rápido) y aviso de FPS
- *  Optimization al instalar escenarios. */
+/** Slides por defecto — novedades del LOTE R2–R8 (v6.2.25–6.2.31):
+ *  restaurar optimizaciones FPS tras update, chequeo "¿Listo para
+ *  volar?" + radar de escenarios nuevos, búsqueda global Ctrl+K, replay
+ *  del vuelo en el mapa, limpieza inteligente de disco, y tarjeta
+ *  compartible + Wrapped anual + export web del FlightBook. */
 const DEFAULT_SLIDES: WhatsNewSlide[] = [
   {
-    titleKey: "whatsnew.maint.title",
-    bodyKey: "whatsnew.maint.body",
-    image: "/whatsnew/maint-alerts.svg",
+    titleKey: "whatsnew.r_preflight.title",
+    bodyKey: "whatsnew.r_preflight.body",
+    image: "/whatsnew/preflight.svg",
   },
   {
-    titleKey: "whatsnew.settings3.title",
-    bodyKey: "whatsnew.settings3.body",
-    image: "/whatsnew/settings-groups.svg",
+    titleKey: "whatsnew.r_palette.title",
+    bodyKey: "whatsnew.r_palette.body",
+    image: "/whatsnew/command-palette.svg",
   },
   {
-    titleKey: "whatsnew.fpsnotice.title",
-    bodyKey: "whatsnew.fpsnotice.body",
-    image: "/whatsnew/fps-notice.svg",
+    titleKey: "whatsnew.r_replay.title",
+    bodyKey: "whatsnew.r_replay.body",
+    image: "/whatsnew/replay.svg",
+  },
+  {
+    titleKey: "whatsnew.r_cleanup.title",
+    bodyKey: "whatsnew.r_cleanup.body",
+    image: "/whatsnew/disk-cleanup.svg",
+  },
+  {
+    titleKey: "whatsnew.r_share.title",
+    bodyKey: "whatsnew.r_share.body",
+    image: "/whatsnew/share-wrapped.svg",
+  },
+  {
+    titleKey: "whatsnew.r_fps.title",
+    bodyKey: "whatsnew.r_fps.body",
+    image: "/whatsnew/fps-restore.svg",
   },
 ];
 
