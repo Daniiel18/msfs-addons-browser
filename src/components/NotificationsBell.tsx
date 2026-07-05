@@ -251,6 +251,10 @@ export function NotificationsBell() {
               </div>
             </header>
 
+            {/* (v6.2.33 fix) Contenedor scrolleable: con muchas
+                notificaciones antes no se podía ver las de abajo sin ir
+                borrando las de arriba. */}
+            <div className="max-h-[min(65vh,560px)] overflow-y-auto">
             {/* App update — pinned al top, en verde para diferenciar
                 de los updates de paquetes (ámbar). */}
             {showAppUpdate && appUpdate && (
@@ -527,7 +531,7 @@ export function NotificationsBell() {
               </div>
             )}
 
-            <div className="max-h-[60vh] overflow-y-auto">
+            <div>
               {lastRefreshError && (
                 <div className="m-3 rounded bg-rose-500/15 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/30">
                   {lastRefreshError}
@@ -589,6 +593,7 @@ export function NotificationsBell() {
                   ))}
                 </ul>
               )}
+            </div>
             </div>
           </motion.div>
         )}

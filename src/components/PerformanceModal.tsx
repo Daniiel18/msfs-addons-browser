@@ -22,6 +22,10 @@ import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { ToggleSwitch } from "./AddonToggle";
 import { t } from "../lib/i18n";
 
+/** Referencia estable para el fallback vacío de `savedIds` — NUNCA crear
+ *  un `[]` nuevo dentro de un selector de zustand (dispara React #185). */
+const EMPTY_IDS: string[] = [];
+
 /**
  * (v5.0.0) **Modal de Rendimiento (FPS)** de un aeropuerto.
  *
@@ -60,7 +64,12 @@ export function PerformanceModal({
   // (v6.2.25) Memoria de optimizaciones aplicadas por escenario — para
   // ofrecer "restaurar" cuando un update reinstala y borra los renombrados.
   const syncApplied = useFpsAppliedStore((s) => s.syncFromConfig);
-  const savedIds = useFpsAppliedStore((s) => s.get(pkg.folderName));
+  // (v6.2.33 fix) Seleccionamos el array crudo (referencia estable) y el
+  // fallback vacío se aplica FUERA del selector. Antes el selector hacía
+  // `s.get(folder)` que devolvía un `[]` NUEVO en cada snapshot cuando el
+  // folder no tenía entrada → useSyncExternalStore entraba en bucle de
+  // render (React #185 "Maximum update depth exceeded") al abrir el modal.
+  const savedIds = useFpsAppliedStore((s) => s.applied[pkg.folderName]) ?? EMPTY_IDS;
   const remember = (cfg: PerfConfig | null) => {
     if (cfg)
       syncApplied(

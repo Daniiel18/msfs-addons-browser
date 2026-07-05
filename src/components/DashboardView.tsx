@@ -13,6 +13,7 @@ import {
   Truck,
   Navigation,
   Users,
+  X,
 } from "lucide-react";
 import type { DashboardStats } from "../lib/types";
 import { api } from "../lib/tauri";
@@ -122,7 +123,26 @@ export function DashboardView() {
   useEffect(() => {
     api.pilotProfile().then(setPilot).catch(() => {});
   }, []);
-  const wrappedYear = new Date().getFullYear();
+  // (v6.2.33) El Wrapped es del AÑO YA TERMINADO (el natural que pasó),
+  // no del año en curso — el usuario no lo quiere "siempre presente".
+  // Se muestra sólo si hay vuelos de ese año y hasta que se descarta.
+  const wrappedYear = new Date().getFullYear() - 1;
+  const wrappedDismissKey = `simfleet.wrapped.dismissed.${wrappedYear}`;
+  const [wrappedDismissed, setWrappedDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(wrappedDismissKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismissWrapped = () => {
+    try {
+      localStorage.setItem(wrappedDismissKey, "1");
+    } catch {
+      /* ignore */
+    }
+    setWrappedDismissed(true);
+  };
   const wrappedCard = useMemo(() => {
     const stats = computeWrapped(logEntries, wrappedYear);
     const locale = getActiveLocale() === "es" ? "es-ES" : "en-US";
@@ -216,22 +236,32 @@ export function DashboardView() {
         )}
       </button>
 
-      {/* (v6.2.30 / R7) Wrapped anual — sólo si hay vuelos este año. */}
-      {wrappedFlights > 0 && (
-        <button
-          onClick={() => setShowWrapped(true)}
-          className="flex w-full items-center gap-3 rounded-xl border border-fuchsia-500/30 bg-gradient-to-r from-fuchsia-500/10 to-violet-500/10 px-4 py-3 text-left transition-colors hover:from-fuchsia-500/15 hover:to-violet-500/15"
-        >
-          <Sparkles className="h-5 w-5 shrink-0 text-fuchsia-300" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-fuchsia-100">
-              {t("wrapped.cta.title", { year: String(wrappedYear) })}
+      {/* (v6.2.33) Wrapped del año YA terminado — sólo si hay vuelos de
+          ese año y no se ha descartado (no "siempre presente"). */}
+      {wrappedFlights > 0 && !wrappedDismissed && (
+        <div className="flex w-full items-center gap-2 rounded-xl border border-fuchsia-500/30 bg-gradient-to-r from-fuchsia-500/10 to-violet-500/10 px-4 py-3">
+          <button
+            onClick={() => setShowWrapped(true)}
+            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+          >
+            <Sparkles className="h-5 w-5 shrink-0 text-fuchsia-300" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-fuchsia-100">
+                {t("wrapped.cta.title", { year: String(wrappedYear) })}
+              </div>
+              <div className="text-xs text-fuchsia-200/70">
+                {t("wrapped.cta.hint", { n: String(wrappedFlights) })}
+              </div>
             </div>
-            <div className="text-xs text-fuchsia-200/70">
-              {t("wrapped.cta.hint", { n: String(wrappedFlights) })}
-            </div>
-          </div>
-        </button>
+          </button>
+          <button
+            onClick={dismissWrapped}
+            title={t("common.dismiss")}
+            className="shrink-0 rounded-md p-1.5 text-fuchsia-200/60 hover:bg-fuchsia-500/15 hover:text-fuchsia-100"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       )}
 
       {showPreflight && (
