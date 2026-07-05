@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -15,14 +15,14 @@ import {
 } from "lucide-react";
 import { api } from "../lib/tauri";
 import { t, getActiveLocale } from "../lib/i18n";
-import { computePreflight, type PreflightCheck } from "../lib/preflight";
-import { useSimBriefStore } from "../stores/useSimBriefStore";
-import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { type PreflightCheck } from "../lib/preflight";
+import { usePreflight } from "../lib/usePreflight";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAiracUpdateStore } from "../stores/useAiracUpdateStore";
 import { useNewSceneryStore } from "../stores/useNewSceneryStore";
 import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
+import { usePreflightStore } from "../stores/usePreflightStore";
 
 interface Props {
   onClose: () => void;
@@ -41,15 +41,11 @@ interface Props {
  * Toda la lógica de checks vive en `lib/preflight.ts` (pura, testeable).
  */
 export function PreflightModal({ onClose }: Props) {
-  const flights = useSimBriefStore((s) => s.flights);
-  const status = useFlightLogStore((s) => s.status);
-  const packages = useCommunityStore((s) => s.packages);
-  const updates = useCommunityStore((s) => s.updates);
   const setEnabled = useCommunityStore((s) => s.setEnabled);
-  const airac = useAiracUpdateStore((s) => s.info);
   const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
   const triggerSearch = useAppStore((s) => s.triggerSearch);
   const pushToast = useToastStore((s) => s.push);
+  const setBypass = usePreflightStore((s) => s.setBypass);
 
   const fresh = useNewSceneryStore((s) => s.fresh);
   const radarLoading = useNewSceneryStore((s) => s.loading);
@@ -58,18 +54,9 @@ export function PreflightModal({ onClose }: Props) {
 
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // El próximo vuelo = OFP más reciente por fetchedAt.
-  const plan = useMemo(() => {
-    if (flights.length === 0) return null;
-    return [...flights].sort((a, b) =>
-      (b.fetchedAt ?? "").localeCompare(a.fetchedAt ?? ""),
-    )[0];
-  }, [flights]);
-
-  const { route, checks, issues, ready } = useMemo(
-    () => computePreflight({ plan, status, packages, airac, updates }),
-    [plan, status, packages, airac, updates],
-  );
+  const {
+    result: { route, checks, issues, ready },
+  } = usePreflight();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -87,6 +74,20 @@ export function PreflightModal({ onClose }: Props) {
       void triggerSearch(action.icao);
     } else if (action.kind === "airac") {
       void airacOpenUpdater();
+    } else if (action.kind === "gsx") {
+      setBusyId(check.id);
+      try {
+        const profiles = await api.gsxLookup(action.icao);
+        if (profiles.length > 0) {
+          await api.openExternal(profiles[0].link);
+        } else {
+          pushToast({ kind: "info", title: t("preflight.gsx_none", { icao: action.icao }) });
+        }
+      } catch (e) {
+        pushToast({ kind: "error", title: t("preflight.gsx_err"), message: String(e) });
+      } finally {
+        setBusyId(null);
+      }
     } else if (action.kind === "enable") {
       setBusyId(check.id);
       try {
@@ -224,6 +225,21 @@ export function PreflightModal({ onClose }: Props) {
                       <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
                         {t(c.detailKey, c.detailArgs)}
                       </p>
+                    )}
+                    {/* (v6.2.34) Bypass "usar escenario por defecto" — para
+                        cuando el escenario no existe o no lo quieres. */}
+                    {c.bypassIcao && (
+                      <label className="mt-1.5 inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-200">
+                        <input
+                          type="checkbox"
+                          className="h-3 w-3 accent-emerald-500"
+                          checked={c.status === "ok"}
+                          onChange={(e) =>
+                            setBypass(c.bypassIcao as string, e.target.checked)
+                          }
+                        />
+                        {t("preflight.use_default")}
+                      </label>
                     )}
                   </div>
                   {c.action && c.actionKey && (

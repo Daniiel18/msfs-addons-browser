@@ -27,6 +27,7 @@ export type CheckStatus = "ok" | "warn" | "info";
 export type PreflightAction =
   | { kind: "search"; icao: string }
   | { kind: "enable"; folderName: string }
+  | { kind: "gsx"; icao: string }
   | { kind: "airac" };
 
 export interface PreflightCheck {
@@ -39,6 +40,10 @@ export interface PreflightCheck {
   action?: PreflightAction;
   /** Etiqueta i18n del botón de acción, si hay acción. */
   actionKey?: string;
+  /** ICAO al que aplica el bypass "usar escenario por defecto" (sólo en
+   *  checks de escenario faltante/desactivado/update). Cuando está, el
+   *  modal ofrece un check para omitir este punto. */
+  bypassIcao?: string;
 }
 
 export interface PreflightRoute {
@@ -59,6 +64,39 @@ export interface PreflightInput {
   packages: CommunityPackage[];
   airac: AiracUpdateInfo | null;
   updates: AvailableUpdate[];
+  /** ICAOs con perfil GSX instalado. Si está vacío, se asume que el
+   *  usuario no usa GSX y se OMITEN los checks de GSX. */
+  gsxInstalledIcaos?: Set<string>;
+  /** ICAOs marcados como "usaré el escenario por defecto" — sus checks
+   *  de escenario se dan por resueltos (bypass). */
+  bypass?: Set<string>;
+}
+
+/** ¿Es `iso` de HOY (hora local)? */
+function isToday(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+/** OFP de HOY más reciente (por generación/fetch). El pre-vuelo sólo
+ *  considera el plan del día — no uno de hace días. `null` si no hay. */
+export function pickTodayPlan(flights: SimBriefFlight[]): SimBriefFlight | null {
+  const today = flights.filter(
+    (f) => isToday(f.generatedAt) || isToday(f.fetchedAt),
+  );
+  if (today.length === 0) return null;
+  return [...today].sort((a, b) =>
+    (b.generatedAt ?? b.fetchedAt ?? "").localeCompare(
+      a.generatedAt ?? a.fetchedAt ?? "",
+    ),
+  )[0];
 }
 
 export interface PreflightResult {
@@ -99,6 +137,9 @@ function pickRoute(
 
 export function computePreflight(input: PreflightInput): PreflightResult {
   const { plan, status, packages, airac, updates } = input;
+  const bypass = input.bypass ?? new Set<string>();
+  const gsxIcaos = input.gsxInstalledIcaos ?? new Set<string>();
+  const gsxEnabled = gsxIcaos.size > 0;
   const checks: PreflightCheck[] = [];
   const route = pickRoute(plan, status);
 
@@ -141,15 +182,26 @@ export function computePreflight(input: PreflightInput): PreflightResult {
   for (const [leg, icao] of legs) {
     const pkg = findScenery(icao);
     const upd = findUpdate(icao);
-    if (!pkg) {
+    // (v6.2.34) Bypass: el usuario marcó "usaré el escenario por
+    // defecto" para este ICAO → damos el punto por resuelto.
+    if (bypass.has(icao.toUpperCase())) {
       checks.push({
         id: `${leg}_scn`,
-        status: "info",
+        status: "ok",
+        titleKey: `preflight.check.${leg}_bypass`,
+        titleArgs: { icao },
+        bypassIcao: icao.toUpperCase(),
+      });
+    } else if (!pkg) {
+      checks.push({
+        id: `${leg}_scn`,
+        status: "warn",
         titleKey: `preflight.check.${leg}_default`,
         titleArgs: { icao },
         detailKey: "preflight.check.default_hint",
         action: { kind: "search", icao },
-        actionKey: "preflight.action.search",
+        actionKey: "preflight.action.download",
+        bypassIcao: icao.toUpperCase(),
       });
     } else if (pkg.enabled === false) {
       checks.push({
@@ -159,6 +211,7 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         titleArgs: { icao },
         action: { kind: "enable", folderName: pkg.folderName },
         actionKey: "preflight.action.enable",
+        bypassIcao: icao.toUpperCase(),
       });
     } else if (upd) {
       checks.push({
@@ -179,6 +232,26 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         status: "ok",
         titleKey: `preflight.check.${leg}_ok`,
         titleArgs: { icao },
+      });
+    }
+
+    // (v6.2.34) GSX: si usas GSX y tienes el escenario instalado pero NO
+    // hay perfil GSX para este aeropuerto, ofrecemos buscarlo/descargarlo.
+    // Es informativo (no bloquea "listo"), y no aplica si vas por defecto.
+    if (
+      gsxEnabled &&
+      pkg &&
+      pkg.enabled !== false &&
+      !bypass.has(icao.toUpperCase()) &&
+      !gsxIcaos.has(icao.toUpperCase())
+    ) {
+      checks.push({
+        id: `${leg}_gsx`,
+        status: "info",
+        titleKey: `preflight.check.${leg}_gsx`,
+        titleArgs: { icao },
+        action: { kind: "gsx", icao },
+        actionKey: "preflight.action.gsx",
       });
     }
   }

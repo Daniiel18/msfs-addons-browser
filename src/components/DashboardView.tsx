@@ -27,11 +27,10 @@ import {
   airacUpdateVisible,
 } from "../stores/useAiracUpdateStore";
 import { useNewSceneryStore } from "../stores/useNewSceneryStore";
-import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
-import { computePreflight } from "../lib/preflight";
-import { PreflightModal } from "./PreflightModal";
+import { usePreflight } from "../lib/usePreflight";
+import { usePreflightStore } from "../stores/usePreflightStore";
 import { DiskCleanupModal } from "./DiskCleanupModal";
 import { ShareCardModal } from "./ShareCardModal";
 import { computeWrapped } from "../lib/wrapped";
@@ -75,21 +74,20 @@ export function DashboardView() {
   const packages = useCommunityStore((s) => s.packages);
   const packagesCount = packages.length;
 
-  // (v6.2.26 / R3) Chequeo pre-vuelo "¿Listo para volar?" + radar de
-  // escenarios nuevos. Calculamos aquí el resumen (nº de puntos a
-  // revisar) para el badge del botón; el detalle vive en el modal.
-  const [showPreflight, setShowPreflight] = useState(false);
+  // (v6.2.26 / R3, v6.2.34) Chequeo pre-vuelo "¿Listo para volar?" +
+  // radar. El resultado es compartido (usePreflight) para que el badge
+  // del Dashboard y la campanita coincidan; el modal se abre a nivel App
+  // vía usePreflightStore.
   const [showCleanup, setShowCleanup] = useState(false);
   const [showWrapped, setShowWrapped] = useState(false);
   const [pilot, setPilot] = useState<PilotProfile | null>(null);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);
-  const flights = useSimBriefStore((s) => s.flights);
-  const flightStatus = useFlightLogStore((s) => s.status);
   const logEntries = useFlightLogStore((s) => s.entries);
-  const communityUpdates = useCommunityStore((s) => s.updates);
   const freshScenery = useNewSceneryStore((s) => s.fresh);
   const radarCheck = useNewSceneryStore((s) => s.check);
   const radarLastChecked = useNewSceneryStore((s) => s.lastCheckedAt);
+  const openPreflight = usePreflightStore((s) => s.setOpen);
+  const preflightIssues = usePreflight().result.issues;
 
   // Radar: navega el catálogo al montar el Dashboard, con throttle para
   // no golpear la red al ir y volver de vista.
@@ -99,22 +97,6 @@ export function DashboardView() {
     }
     void radarCheck(simVersion);
   }, [radarCheck, simVersion, radarLastChecked]);
-
-  const preflightIssues = useMemo(() => {
-    const plan =
-      flights.length > 0
-        ? [...flights].sort((a, b) =>
-            (b.fetchedAt ?? "").localeCompare(a.fetchedAt ?? ""),
-          )[0]
-        : null;
-    return computePreflight({
-      plan,
-      status: flightStatus,
-      packages,
-      airac: airacInfo,
-      updates: communityUpdates,
-    }).issues;
-  }, [flights, flightStatus, packages, airacInfo, communityUpdates]);
 
   const preflightBadge = preflightIssues + freshScenery.length;
 
@@ -213,7 +195,7 @@ export function DashboardView() {
 
       {/* (v6.2.26 / R3) Acceso al chequeo "¿Listo para volar?". */}
       <button
-        onClick={() => setShowPreflight(true)}
+        onClick={() => openPreflight(true)}
         className="flex w-full items-center gap-3 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-sky-500/10 px-4 py-3 text-left transition-colors hover:from-emerald-500/15 hover:to-sky-500/15"
       >
         <Rocket className="h-5 w-5 shrink-0 text-emerald-300" />
@@ -264,9 +246,6 @@ export function DashboardView() {
         </div>
       )}
 
-      {showPreflight && (
-        <PreflightModal onClose={() => setShowPreflight(false)} />
-      )}
       {showCleanup && (
         <DiskCleanupModal onClose={() => setShowCleanup(false)} />
       )}

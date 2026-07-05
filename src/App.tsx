@@ -49,6 +49,7 @@ import { ReplayBanner } from "./components/ReplayBanner";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsModal } from "./components/SettingsModal";
 import { CommandPalette } from "./components/CommandPalette";
+import { PreflightHost } from "./components/PreflightHost";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
 import type { UpdateInfo } from "./lib/types";
 import { FlyingNowBadge } from "./components/FlyingNowBadge";
@@ -1013,6 +1014,8 @@ export default function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {/* (v6.2.27 / R4) Paleta de comandos global — Ctrl/Cmd+K. */}
       <CommandPalette onOpenSettings={() => setSettingsOpen(true)} />
+      {/* (v6.2.34) Pre-vuelo "¿Listo para volar?" — auto-alerta al OFP del día. */}
+      <PreflightHost />
       {tourOpen && (
         <OnboardingTour
           onClose={() => setTourOpen(false)}

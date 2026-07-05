@@ -11,6 +11,7 @@ import {
   Sparkles,
   Truck,
   Navigation,
+  Rocket,
   Swords,
   Wrench,
   Gauge,
@@ -29,6 +30,8 @@ import {
 import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
 import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
+import { usePreflight } from "../lib/usePreflight";
+import { usePreflightStore } from "../stores/usePreflightStore";
 import { PerformanceModal } from "./PerformanceModal";
 import type {
   AvailableUpdate,
@@ -138,12 +141,19 @@ export function NotificationsBell() {
   }, []);
 
   const showAppUpdate = appUpdate !== null && !appUpdateDismissed;
+  // (v6.2.34) Pre-vuelo pendiente — persiste en la campanita hasta que
+  // el usuario resuelve o marca "usar por defecto" cada punto.
+  const preflightIssues = usePreflight().result.issues;
+  const openPreflight = usePreflightStore((s) => s.setOpen);
+  const showPreflight = preflightIssues > 0;
+
   const packageCount = updates.length;
   const totalCount =
     packageCount +
     (showAppUpdate ? 1 : 0) +
     (showGsx ? 1 : 0) +
     (showAirac ? 1 : 0) +
+    (showPreflight ? 1 : 0) +
     duelNotices.length +
     maintAlerts.length +
     fpsNotices.length;
@@ -255,6 +265,26 @@ export function NotificationsBell() {
                 notificaciones antes no se podía ver las de abajo sin ir
                 borrando las de arriba. */}
             <div className="max-h-[min(65vh,560px)] overflow-y-auto">
+            {/* (v6.2.34) Pre-vuelo pendiente — persiste hasta resolver. */}
+            {showPreflight && (
+              <button
+                onClick={() => {
+                  openPreflight(true);
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 border-b border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-left hover:bg-emerald-500/15"
+              >
+                <Rocket className="h-4 w-4 shrink-0 text-emerald-300" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-emerald-100">
+                    {t("preflight.cta.title")}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-emerald-200/80">
+                    {t("preflight.cta.issues", { n: String(preflightIssues) })}
+                  </div>
+                </div>
+              </button>
+            )}
             {/* App update — pinned al top, en verde para diferenciar
                 de los updates de paquetes (ámbar). */}
             {showAppUpdate && appUpdate && (
