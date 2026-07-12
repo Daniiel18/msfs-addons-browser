@@ -20,6 +20,7 @@ import {
   Users,
 } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useAppStore } from "../stores/useAppStore";
 import { findVsSnapshot } from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
 import type { AirportBrief, FlightLogEntry } from "../lib/types";
@@ -216,6 +217,34 @@ export function FlightBookView() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // (v6.2.35) La campanita puede pedir abrir DIRECTO el Crew VS de un
+  // vuelo (aviso "Crew VS listo"). Buscamos el vuelo que casa
+  // origen/destino con la fecha más cercana al duelo, lo seleccionamos y
+  // abrimos el modal de combate. Esperamos a que los vuelos estén
+  // cargados antes de consumir (y limpiar) la petición.
+  const crewVsRequest = useAppStore((s) => s.crewVsRequest);
+  const clearCrewVsRequest = useAppStore((s) => s.clearCrewVsRequest);
+  useEffect(() => {
+    if (!crewVsRequest || entries.length === 0) return;
+    const { origin, dest, at } = crewVsRequest;
+    const matches = entries.filter(
+      (e) =>
+        (e.originIcao ?? "").toUpperCase() === origin.toUpperCase() &&
+        (e.destinationIcao ?? "").toUpperCase() === dest.toUpperCase(),
+    );
+    if (matches.length > 0) {
+      const best = matches.reduce((a, b) =>
+        Math.abs(new Date(a.startedAt).getTime() - at) <=
+        Math.abs(new Date(b.startedAt).getTime() - at)
+          ? a
+          : b,
+      );
+      setSelectedFlightId(best.id);
+      setVsOpen(true);
+    }
+    clearCrewVsRequest();
+  }, [crewVsRequest, entries, clearCrewVsRequest]);
 
   // Si el vuelo seleccionado desaparece (lo borraron, recarga falló),
   // volvemos al modo globo en lugar de quedar con un id roto.

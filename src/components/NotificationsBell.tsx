@@ -63,6 +63,7 @@ export function NotificationsBell() {
   const startUpdateAll = useCommunityStore((s) => s.startUpdateAll);
   const setView = useAppStore((s) => s.setView);
   const triggerSearch = useAppStore((s) => s.triggerSearch);
+  const requestCrewVs = useAppStore((s) => s.requestCrewVs);
 
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -411,7 +412,10 @@ export function NotificationsBell() {
                   <Swords className="mt-0.5 h-4 w-4 shrink-0 text-fuchsia-300" />
                   <button
                     onClick={() => {
-                      setView("flightbook");
+                      // (v6.2.35) Abre DIRECTO el Crew VS de ese vuelo (no
+                      // sólo el FlightBook) y descarta el aviso.
+                      requestCrewVs(d.origin, d.dest, d.at);
+                      dismissDuelNotice(d.channel);
                       setOpen(false);
                     }}
                     className="min-w-0 flex-1 text-left"

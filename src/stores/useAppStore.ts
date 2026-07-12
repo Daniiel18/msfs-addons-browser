@@ -81,6 +81,16 @@ interface AppState {
   jumpToAddon: (filter: string) => void;
   /** Limpia la semilla tras consumirla. */
   clearAddonsSeed: () => void;
+
+  /** (v6.2.35) Petición de abrir el Crew VS de un vuelo concreto — la fija
+   *  la campanita al clicar el aviso "Crew VS listo". FlightBookView la
+   *  consume: selecciona el vuelo que casa origen/destino/fecha y abre el
+   *  modal de combate. `null` = sin petición. */
+  crewVsRequest: { origin: string; dest: string; at: number } | null;
+  /** Salta al FlightBook y pide abrir el Crew VS del vuelo que casa. */
+  requestCrewVs: (origin: string, dest: string, at: number) => void;
+  /** Limpia la petición tras consumirla. */
+  clearCrewVsRequest: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -169,6 +179,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   addonsSeedFilter: null,
   jumpToAddon: (filter) => set({ view: "addons", addonsSeedFilter: filter }),
   clearAddonsSeed: () => set({ addonsSeedFilter: null }),
+
+  crewVsRequest: null,
+  requestCrewVs: (origin, dest, at) =>
+    set({ view: "flightbook", crewVsRequest: { origin, dest, at } }),
+  clearCrewVsRequest: () => set({ crewVsRequest: null }),
 
   async triggerSearch(query, sourceId) {
     const targetSource = sourceId ?? get().activeSourceId;
