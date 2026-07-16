@@ -1,5 +1,6 @@
 pub mod sceneryaddons;
 pub mod simplaza;
+pub mod skybound;
 
 use async_trait::async_trait;
 use scraper::{ElementRef, Selector};

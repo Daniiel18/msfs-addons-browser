@@ -147,6 +147,9 @@ export interface DiagAppMetrics {
 
 interface Api {
   listSources: () => Promise<SourceDescriptor[]>;
+  /** (v6.2.38) Skybound (catálogo MSFS2024, requiere login). */
+  skyboundSetCredentials: (username: string, password: string) => Promise<void>;
+  skyboundStatus: () => Promise<{ hasCredentials: boolean; loggedIn: boolean }>;
   search: (query: string, sourceId: string) => Promise<Addon[]>;
   /** Lista paginada del catálogo (sin query). Page 1-based. */
   browseSource: (sourceId: string, page: number) => Promise<BrowsePage>;
@@ -618,6 +621,10 @@ interface Api {
 
 const realApi: Api = {
   listSources: () => invoke<SourceDescriptor[]>("list_sources"),
+  skyboundSetCredentials: (username, password) =>
+    invoke<void>("skybound_set_credentials", { username, password }),
+  skyboundStatus: () =>
+    invoke<{ hasCredentials: boolean; loggedIn: boolean }>("skybound_status"),
   search: (query, sourceId) => invoke<Addon[]>("search", { query, sourceId }),
   browseSource: (sourceId, page) =>
     invoke<BrowsePage>("browse_source", { sourceId, page }),
@@ -1073,6 +1080,10 @@ const demoApi: Api = {
       { id: "sceneryaddons", name: "SceneryAddons", homeUrl: "https://sceneryaddons.org" },
       { id: "simplaza",      name: "Simplaza",      homeUrl: "https://simplaza.org" },
     ];
+  },
+  async skyboundSetCredentials() {},
+  async skyboundStatus() {
+    return { hasCredentials: false, loggedIn: false };
   },
   async browseSource(sourceId, page) {
     await sleep(250);

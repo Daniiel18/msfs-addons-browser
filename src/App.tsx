@@ -139,6 +139,25 @@ export default function App() {
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);
+  // (v6.2.38) Fuentes visibles según la versión de MSFS. Simplaza NO
+  // sube addons de MSFS2024, así que ahí ofrecemos Skybound en su lugar;
+  // SceneryAddons sirve para ambas. En MSFS2020 mantenemos Simplaza.
+  const visibleSources = sources.filter((s) => {
+    if (s.id === "skybound") return simVersion === "msfs2024";
+    if (s.id === "simplaza") return simVersion !== "msfs2024";
+    return true;
+  });
+  // Si la fuente activa deja de estar visible (cambio de versión), saltamos
+  // a la primera visible para no quedar en una pestaña vacía.
+  useEffect(() => {
+    if (
+      visibleSources.length > 0 &&
+      !visibleSources.some((s) => s.id === activeSourceId)
+    ) {
+      setActiveSource(visibleSources[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simVersion, sources.length]);
   const theme = useSettingsStore((s) => s.settings.theme);
   const language = useSettingsStore((s) => s.settings.language);
 
@@ -848,7 +867,7 @@ export default function App() {
             <FlyingNowBadge />
             {view === "search" && (
               <SourceToggle
-                sources={sources}
+                sources={visibleSources}
                 activeId={activeSourceId}
                 onChange={setActiveSource}
               />

@@ -75,6 +75,9 @@ pub struct AppState {
     /// un tempdir + lista de items inspeccionados, esperando el
     /// commit del modal de selección.
     pub drop_sessions: drop_install::DropSessions,
+    /// (v6.2.38) Credenciales + sesión de Skybound, compartidas con la
+    /// fuente `SkyboundSource`. Las actualiza `skybound_set_credentials`.
+    pub skybound_auth: Arc<tokio::sync::RwLock<sources::skybound::SkyboundAuth>>,
 }
 
 impl AppState {
@@ -292,6 +295,8 @@ pub fn run() {
             commands::backup::backup_community,
             commands::backup::export_addons,
             commands::backup::save_binary_file,
+            commands::skybound::skybound_set_credentials,
+            commands::skybound::skybound_status,
             commands::cloud::cloud_get_config,
             commands::cloud::cloud_set_credentials,
             commands::cloud::cloud_start_oauth,
@@ -491,12 +496,25 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
 
+    // (v6.2.38) Auth compartida de Skybound (fuente MSFS2024). Se llena
+    // desde la DB más abajo (bootstrap) y por el comando de credenciales.
+    let skybound_auth = Arc::new(tokio::sync::RwLock::new(
+        sources::skybound::SkyboundAuth::default(),
+    ));
+
     let sources: Vec<Arc<dyn Source>> = vec![
         Arc::new(sources::sceneryaddons::SceneryAddonsSource::new(http.clone())),
         Arc::new(sources::simplaza::SimplazaSource::new(http.clone())),
+        Arc::new(sources::skybound::SkyboundSource::new(
+            http.clone(),
+            skybound_auth.clone(),
+        )),
     ];
 
     let db = db::init(&app_data_dir).await?;
+
+    // (v6.2.38) Carga credenciales de Skybound guardadas al `auth` compartido.
+    commands::skybound::bootstrap(&db, &skybound_auth).await;
 
     // Torrent output dir sits under app data so it's easy to clean and
     // survives app restarts only as long as the job itself is active.
@@ -718,6 +736,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         http,
         minimize_to_tray,
         drop_sessions: drop_install::DropSessions::default(),
+        skybound_auth,
     })
 }
 

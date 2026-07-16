@@ -16,5 +16,6 @@ pub mod scoring;
 pub mod search;
 pub mod settings;
 pub mod simbrief;
+pub mod skybound;
 pub mod stats;
 pub mod updater;

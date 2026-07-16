@@ -13,6 +13,7 @@ import {
   Archive,
   Bell,
   CheckCircle2,
+  LogIn,
   ChevronDown,
   Cloud,
   CloudOff,
@@ -48,6 +49,7 @@ import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
+import { SkyboundSettings } from "./SkyboundSettings";
 
 /**
  * Modal de configuración.
@@ -67,6 +69,7 @@ const SECTION_META: Array<{ key: string; labelKey: string }> = [
   { key: "map_display", labelKey: "settings.section.map_display" },
   { key: "folders", labelKey: "settings.section.folders" },
   { key: "gsx", labelKey: "settings.section.gsx" },
+  { key: "skybound", labelKey: "settings.section.skybound" },
   { key: "cloud", labelKey: "settings.section.cloud" },
   { key: "msfs_logbook", labelKey: "settings.section.msfs_logbook" },
   { key: "backup", labelKey: "settings.section.backup" },
@@ -98,7 +101,7 @@ const SETTINGS_GROUPS: Array<{
     id: "flight",
     labelKey: "settings.group.flight",
     icon: <Plane className="h-4 w-4" />,
-    sections: ["flights", "map_display", "gsx"],
+    sections: ["flights", "map_display", "gsx", "skybound"],
   },
   {
     id: "data",
@@ -743,6 +746,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
               <Section navKey="gsx" title={t("settings.section.gsx")} icon={<CheckCircle2 className="h-3.5 w-3.5" />}>
                 <GsxProfilesPanel onFeedback={setFeedback} />
+              </Section>
+
+              <Section navKey="skybound" title={t("settings.section.skybound")} icon={<LogIn className="h-3.5 w-3.5" />}>
+                <SkyboundSettings />
               </Section>
 
               <Section
