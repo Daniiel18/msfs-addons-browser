@@ -72,24 +72,31 @@ export interface PreflightInput {
   bypass?: Set<string>;
 }
 
-/** ¿Es `iso` de HOY (hora local)? */
-function isToday(iso: string | null | undefined): boolean {
+/** (v6.2.37 B3) ¿Es `iso` del "día" del vuelo? Robusto ante zonas
+ *  horarias / medianoche: acepta si es el MISMO día local O si cae en
+ *  las últimas 12 h (y no más de 6 h en el futuro). Un OFP de hace días
+ *  queda fuera; uno de "hoy" generado justo antes/después de medianoche
+ *  no se pierde por la TZ. */
+function isRecentPlan(iso: string | null | undefined): boolean {
   if (!iso) return false;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return false;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return false;
+  const d = new Date(t);
   const now = new Date();
-  return (
+  const sameLocalDay =
     d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
+    d.getDate() === now.getDate();
+  if (sameLocalDay) return true;
+  const deltaMs = now.getTime() - t;
+  return deltaMs >= -6 * 3600_000 && deltaMs < 12 * 3600_000;
 }
 
-/** OFP de HOY más reciente (por generación/fetch). El pre-vuelo sólo
+/** OFP del DÍA más reciente (por generación/fetch). El pre-vuelo sólo
  *  considera el plan del día — no uno de hace días. `null` si no hay. */
 export function pickTodayPlan(flights: SimBriefFlight[]): SimBriefFlight | null {
   const today = flights.filter(
-    (f) => isToday(f.generatedAt) || isToday(f.fetchedAt),
+    (f) => isRecentPlan(f.generatedAt) || isRecentPlan(f.fetchedAt),
   );
   if (today.length === 0) return null;
   return [...today].sort((a, b) =>

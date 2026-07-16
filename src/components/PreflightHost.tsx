@@ -3,6 +3,7 @@ import { PreflightModal } from "./PreflightModal";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { pickTodayPlan } from "../lib/preflight";
+import { usePreflight } from "../lib/usePreflight";
 import { playPreflightChime } from "../lib/sound";
 
 /**
@@ -29,16 +30,19 @@ export function PreflightHost() {
   const flights = useSimBriefStore((s) => s.flights);
   const lastAlerted = usePreflightStore((s) => s.lastAlertedOfp);
   const setLastAlerted = usePreflightStore((s) => s.setLastAlertedOfp);
+  // (v6.2.37 B1) Sólo avisamos (sonido + foco + abrir) si el pre-vuelo
+  // tiene puntos PENDIENTES. Si todo está listo, no interrumpimos.
+  const { issues } = usePreflight().result;
 
   useEffect(() => {
     const plan = pickTodayPlan(flights);
-    if (plan && plan.ofpId !== lastAlerted) {
-      setLastAlerted(plan.ofpId);
-      playPreflightChime();
-      void focusApp();
-      setOpen(true);
-    }
-  }, [flights, lastAlerted, setLastAlerted, setOpen]);
+    if (!plan || plan.ofpId === lastAlerted) return;
+    if (issues <= 0) return; // todo en orden → sin aviso ni marca
+    setLastAlerted(plan.ofpId);
+    playPreflightChime();
+    void focusApp();
+    setOpen(true);
+  }, [flights, lastAlerted, setLastAlerted, setOpen, issues]);
 
   return open ? <PreflightModal onClose={() => setOpen(false)} /> : null;
 }

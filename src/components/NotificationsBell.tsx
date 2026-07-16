@@ -161,8 +161,12 @@ export function NotificationsBell() {
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
+  // (v6.2.37 B4) El aviso de pre-vuelo NO cuenta para el peek: es un
+  // recordatorio persistente (ya se ve en el badge y en el Dashboard),
+  // no debe forzar la apertura del panel.
+  const peekCount = totalCount - (showPreflight ? 1 : 0);
   useEffect(() => {
-    if (totalCount === 0) return;
+    if (peekCount === 0) return;
     const PEEK_KEY = "msfs-addons:notifications-peeked";
     if (typeof window === "undefined") return;
     if (window.sessionStorage.getItem(PEEK_KEY)) return;
@@ -170,7 +174,7 @@ export function NotificationsBell() {
     setOpen(true);
     const t = window.setTimeout(() => setOpen(false), 4000);
     return () => window.clearTimeout(t);
-  }, [totalCount]);
+  }, [peekCount]);
 
   const focusOnMap = (folderName: string) => {
     setView("map");

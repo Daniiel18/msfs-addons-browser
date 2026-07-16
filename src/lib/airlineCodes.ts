@@ -560,9 +560,24 @@ export function canonicalAirlineKey(
   icao?: string | null,
   name?: string | null,
 ): string {
+  // (v6.2.37 B2) Resolvemos a IATA cuando se puede, para que fusionen
+  // TODAS las variantes de una aerolínea: código ICAO, nombre completo
+  // ("Delta Air Lines") y `aircraft_airline` sucio ("DAL (N374DA)").
   const i = (icao ?? "").trim().toUpperCase();
-  if (i) return i;
+  if (i) {
+    const iata = icaoToIata(i);
+    return iata ? `I:${iata}` : `C:${i}`;
+  }
   const cleaned = (name ?? "").replace(/\s*\([^)]*\)\s*$/, "").trim();
-  const tok = cleaned.split(/[\s\-/]+/)[0] ?? "";
-  return tok.toUpperCase();
+  if (!cleaned) return "";
+  const tok = (cleaned.split(/[\s\-/]+/)[0] ?? "").toUpperCase();
+  // Un token de 3 letras suele ser un código ICAO ("DAL") colado en el
+  // nombre — resuélvelo como tal para que case con el icao real.
+  if (/^[A-Z]{3}$/.test(tok)) {
+    const iata = icaoToIata(tok);
+    return iata ? `I:${iata}` : `C:${tok}`;
+  }
+  // Nombre completo → intenta IATA; si no, cae al primer token.
+  const iata = nameToIata(cleaned);
+  return iata ? `I:${iata}` : `N:${tok}`;
 }
