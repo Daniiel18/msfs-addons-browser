@@ -12,17 +12,10 @@
 //! recurrir al WebView.
 
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
-use regex::Regex;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{stable_id, Addon, BrowsePage, DownloadKind, DownloadMethod, Source, SourceError};
-
-/// URLs http(s) y enlaces magnet dentro de la descripción lexical.
-static URL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?:https?://[^\s"'\\)]+|magnet:\?[^\s"'\\)]+)"#).unwrap()
-});
 
 const BASE: &str = "https://skybound.cx";
 const CATALOG_SLUG: &str = "msfs-2024";
@@ -121,77 +114,131 @@ impl SkyboundSource {
             .map(|s| s.to_string())
     }
 
-    /// Extrae métodos de descarga de las VERSIONES compatibles con
-    /// MSFS2024. El link real vive en `compatibility[2024].versions[].url`
-    /// (+ `additionalDownloads`, `file`), que la API pública devuelve con
-    /// depth=2 — así NO hace falta el login de Clerk para los que lo traen.
-    /// Los demás caen al fallback "Abrir en Skybound".
-    fn extract_downloads(doc: &serde_json::Value) -> Vec<DownloadMethod> {
-        // Los links viven o en las VERSIONES de MSFS2024 (buzzheavier /
-        // magnet) o en la DESCRIPCIÓN (algunos usan Google Drive ahí).
-        // Escaneamos ambos. No mezclamos versiones de MSFS2020.
-        let versions_str: String = doc
-            .get("compatibility")
-            .and_then(|c| c.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter(|e| {
-                        e.get("simulator")
-                            .and_then(|s| s.get("slug"))
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.eq_ignore_ascii_case(SIM_SLUG_2024))
-                            .unwrap_or(false)
-                    })
-                    .map(|e| e.get("versions").map(|v| v.to_string()).unwrap_or_default())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default();
-        let desc_str = doc.get("description").map(|d| d.to_string()).unwrap_or_default();
-        let s = format!("{versions_str} {desc_str}");
-        if s.trim().is_empty() {
-            return Vec::new();
+    /// Nombre bonito de un host de descarga. Genérico: dominio limpio con
+    /// mayúscula inicial. Casos comunes con nombre propio.
+    fn host_name(url: &str) -> String {
+        if url.to_lowercase().starts_with("magnet:") {
+            return "Torrent".into();
         }
+        let host = url
+            .split("://")
+            .nth(1)
+            .unwrap_or(url)
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches("www.");
+        let low = host.to_lowercase();
+        for (needle, label) in [
+            ("modsfire", "Modsfire"),
+            ("buzzheavier", "Buzzheavier"),
+            ("drive.google", "Google Drive"),
+            ("mega.nz", "MEGA"),
+            ("mega.io", "MEGA"),
+            ("mediafire", "MediaFire"),
+            ("gofile", "Gofile"),
+            ("pixeldrain", "Pixeldrain"),
+            ("1fichier", "1fichier"),
+            ("sharepoint", "SharePoint"),
+            ("dropbox", "Dropbox"),
+        ] {
+            if low.contains(needle) {
+                return label.into();
+            }
+        }
+        // Genérico: primer segmento del dominio con mayúscula.
+        let base = low.split('.').next().unwrap_or(&low);
+        let mut c = base.chars();
+        match c.next() {
+            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            None => "Descargar".into(),
+        }
+    }
+
+    /// Añade un método de descarga a partir de una URL suelta.
+    fn push_url(url: &str, out: &mut Vec<DownloadMethod>, seen: &mut std::collections::HashSet<String>) {
+        let url = url.trim().trim_end_matches(['\\', '"', ')', ',', ' ']);
+        if url.is_empty() {
+            return;
+        }
+        let low = url.to_lowercase();
+        // Descartar lo que NO es una descarga (página de contraseña / origen).
+        if low.contains("skybound.cx") || low.contains("flightsim.to") {
+            return;
+        }
+        let is_magnet = low.starts_with("magnet:");
+        if !is_magnet && !low.starts_with("http") {
+            return;
+        }
+        let dedup_key = if is_magnet {
+            low.split('&').next().unwrap_or(&low).to_string()
+        } else {
+            low.clone()
+        };
+        if !seen.insert(dedup_key) {
+            return;
+        }
+        out.push(DownloadMethod {
+            kind: if is_magnet {
+                DownloadKind::Torrent
+            } else {
+                DownloadKind::Mirror
+            },
+            name: Self::host_name(url),
+            url: url.to_string(),
+        });
+    }
+
+    /// Extrae los métodos de descarga de las VERSIONES compatibles con
+    /// MSFS2024. TODOS los addons publican el enlace en la API (con
+    /// depth=2): `versions[].url` (cualquier host: modsfire, buzzheavier,
+    /// magnet…), `additionalDownloads[].url`, o un `file` alojado en
+    /// Skybound. Aceptamos CUALQUIER host — NO hace falta login.
+    fn extract_downloads(doc: &serde_json::Value) -> Vec<DownloadMethod> {
         let mut out: Vec<DownloadMethod> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in URL_RE.find_iter(&s) {
-            let url = m.as_str().trim_end_matches(['\\', '"', ')', ',', '.']).to_string();
-            let low = url.to_lowercase();
-            // Descartar lo que NO es un host de descarga.
-            if low.contains("skybound.cx") || low.contains("flightsim.to") {
+        let Some(comp) = doc.get("compatibility").and_then(|c| c.as_array()) else {
+            return out;
+        };
+        for entry in comp {
+            let is_2024 = entry
+                .get("simulator")
+                .and_then(|s| s.get("slug"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.eq_ignore_ascii_case(SIM_SLUG_2024))
+                .unwrap_or(false);
+            if !is_2024 {
                 continue;
             }
-            let (kind, name): (DownloadKind, &str) = if low.starts_with("magnet:") {
-                (DownloadKind::Torrent, "Torrent")
-            } else if low.contains("buzzheavier") {
-                (DownloadKind::Mirror, "Buzzheavier")
-            } else if low.contains("drive.google") {
-                (DownloadKind::Mirror, "Google Drive")
-            } else if low.contains("mega.nz") || low.contains("mega.io") {
-                (DownloadKind::Mirror, "MEGA")
-            } else if low.contains("mediafire") {
-                (DownloadKind::Mirror, "MediaFire")
-            } else if low.contains("gofile") {
-                (DownloadKind::Mirror, "Gofile")
-            } else if low.contains("pixeldrain") {
-                (DownloadKind::Mirror, "Pixeldrain")
-            } else if low.contains("1fichier") {
-                (DownloadKind::Mirror, "1fichier")
-            } else {
-                continue; // otros dominios (imágenes, docs…) no son descarga
+            let Some(versions) = entry.get("versions").and_then(|v| v.as_array()) else {
+                continue;
             };
-            // Dedup por URL.
-            let dedup_key = if low.starts_with("magnet:") {
-                low.split('&').next().unwrap_or(&low).to_string()
-            } else {
-                low.clone()
-            };
-            if seen.insert(dedup_key) {
-                out.push(DownloadMethod {
-                    kind,
-                    name: name.to_string(),
-                    url,
-                });
+            for v in versions {
+                if let Some(u) = v.get("url").and_then(|u| u.as_str()) {
+                    Self::push_url(u, &mut out, &mut seen);
+                }
+                if let Some(add) = v.get("additionalDownloads").and_then(|a| a.as_array()) {
+                    for a in add {
+                        if let Some(u) = a.get("url").and_then(|u| u.as_str()) {
+                            Self::push_url(u, &mut out, &mut seen);
+                        }
+                    }
+                }
+                // Archivo alojado en Skybound (downloadType "file").
+                if let Some(fu) = v.get("file").and_then(|f| f.get("url")).and_then(|u| u.as_str()) {
+                    let abs = if fu.starts_with("http") {
+                        fu.to_string()
+                    } else {
+                        format!("{BASE}{fu}")
+                    };
+                    if seen.insert(abs.to_lowercase()) {
+                        out.push(DownloadMethod {
+                            kind: DownloadKind::Direct,
+                            name: "Skybound".into(),
+                            url: abs,
+                        });
+                    }
+                }
             }
         }
         out
