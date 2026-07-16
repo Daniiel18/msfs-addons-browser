@@ -12,10 +12,17 @@
 //! recurrir al WebView.
 
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{stable_id, Addon, BrowsePage, DownloadKind, DownloadMethod, Source, SourceError};
+
+/// URLs http(s) y enlaces magnet dentro de la descripción lexical.
+static URL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?:https?://[^\s"'\\)]+|magnet:\?[^\s"'\\)]+)"#).unwrap()
+});
 
 const BASE: &str = "https://skybound.cx";
 const CATALOG_SLUG: &str = "msfs-2024";
@@ -114,6 +121,82 @@ impl SkyboundSource {
             .map(|s| s.to_string())
     }
 
+    /// Extrae métodos de descarga de las VERSIONES compatibles con
+    /// MSFS2024. El link real vive en `compatibility[2024].versions[].url`
+    /// (+ `additionalDownloads`, `file`), que la API pública devuelve con
+    /// depth=2 — así NO hace falta el login de Clerk para los que lo traen.
+    /// Los demás caen al fallback "Abrir en Skybound".
+    fn extract_downloads(doc: &serde_json::Value) -> Vec<DownloadMethod> {
+        // Los links viven o en las VERSIONES de MSFS2024 (buzzheavier /
+        // magnet) o en la DESCRIPCIÓN (algunos usan Google Drive ahí).
+        // Escaneamos ambos. No mezclamos versiones de MSFS2020.
+        let versions_str: String = doc
+            .get("compatibility")
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|e| {
+                        e.get("simulator")
+                            .and_then(|s| s.get("slug"))
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.eq_ignore_ascii_case(SIM_SLUG_2024))
+                            .unwrap_or(false)
+                    })
+                    .map(|e| e.get("versions").map(|v| v.to_string()).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let desc_str = doc.get("description").map(|d| d.to_string()).unwrap_or_default();
+        let s = format!("{versions_str} {desc_str}");
+        if s.trim().is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<DownloadMethod> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in URL_RE.find_iter(&s) {
+            let url = m.as_str().trim_end_matches(['\\', '"', ')', ',', '.']).to_string();
+            let low = url.to_lowercase();
+            // Descartar lo que NO es un host de descarga.
+            if low.contains("skybound.cx") || low.contains("flightsim.to") {
+                continue;
+            }
+            let (kind, name): (DownloadKind, &str) = if low.starts_with("magnet:") {
+                (DownloadKind::Torrent, "Torrent")
+            } else if low.contains("buzzheavier") {
+                (DownloadKind::Mirror, "Buzzheavier")
+            } else if low.contains("drive.google") {
+                (DownloadKind::Mirror, "Google Drive")
+            } else if low.contains("mega.nz") || low.contains("mega.io") {
+                (DownloadKind::Mirror, "MEGA")
+            } else if low.contains("mediafire") {
+                (DownloadKind::Mirror, "MediaFire")
+            } else if low.contains("gofile") {
+                (DownloadKind::Mirror, "Gofile")
+            } else if low.contains("pixeldrain") {
+                (DownloadKind::Mirror, "Pixeldrain")
+            } else if low.contains("1fichier") {
+                (DownloadKind::Mirror, "1fichier")
+            } else {
+                continue; // otros dominios (imágenes, docs…) no son descarga
+            };
+            // Dedup por URL.
+            let dedup_key = if low.starts_with("magnet:") {
+                low.split('&').next().unwrap_or(&low).to_string()
+            } else {
+                low.clone()
+            };
+            if seen.insert(dedup_key) {
+                out.push(DownloadMethod {
+                    kind,
+                    name: name.to_string(),
+                    url,
+                });
+            }
+        }
+        out
+    }
+
     fn map_addon(&self, doc: &serde_json::Value) -> Option<Addon> {
         let title = doc.get("title")?.as_str()?.to_string();
         let slug = doc.get("slug")?.as_str()?.to_string();
@@ -150,12 +233,18 @@ impl SkyboundSource {
             icao: None,
             simulator: "MSFS 2024".into(),
             page_url: page_url.clone(),
-            // La descarga se hace en la web de Skybound (login allí).
-            download_methods: vec![DownloadMethod {
-                kind: DownloadKind::Direct,
-                name: "Abrir en Skybound".into(),
-                url: page_url,
-            }],
+            // Links reales de la descripción (buzzheavier / GDrive / magnet)
+            // + fallback a la ficha de Skybound (donde el resto se descarga
+            // tras iniciar sesión con Clerk en la web).
+            download_methods: {
+                let mut m = Self::extract_downloads(doc);
+                m.push(DownloadMethod {
+                    kind: DownloadKind::Direct,
+                    name: "Abrir en Skybound".into(),
+                    url: page_url,
+                });
+                m
+            },
             image_url,
             released_at,
         })
@@ -164,7 +253,7 @@ impl SkyboundSource {
     /// Trae TODOS los addons (son ~90) y filtra a MSFS2024 sin scenery.
     async fn all_2024(&self) -> Result<Vec<Addon>, SourceError> {
         let v = self
-            .api_get("/api/addons?depth=1&limit=200&sort=-createdAt")
+            .api_get("/api/addons?depth=2&limit=200&sort=-createdAt")
             .await?;
         let docs = v
             .get("docs")
@@ -198,7 +287,7 @@ impl Source for SkyboundSource {
         }
         // API PayloadCMS: where[title][like] (case-insensitive).
         let path = format!(
-            "/api/addons?where[title][like]={}&depth=1&limit=100&sort=-createdAt",
+            "/api/addons?where[title][like]={}&depth=2&limit=100&sort=-createdAt",
             urlencoding::encode(q)
         );
         let v = self.api_get(&path).await?;
