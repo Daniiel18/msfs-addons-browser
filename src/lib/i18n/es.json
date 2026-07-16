@@ -131,7 +131,7 @@
   "settings.section.gsx": "GSX Pro",
   "settings.section.skybound": "Skybound (MSFS 2024)",
   "settings.skybound.title": "Cuenta de Skybound",
-  "settings.skybound.hint": "Catálogo alternativo para MSFS 2024 (Simplaza no publica addons de 2024). Requiere iniciar sesión; tus credenciales se guardan localmente. Aparece como fuente en «Buscar» solo cuando tu versión es MSFS 2024.",
+  "settings.skybound.hint": "Catálogo alternativo para MSFS 2024 (Simplaza no publica addons de 2024). Explorar y buscar NO requiere login — aparece como fuente en «Buscar» cuando tu versión es MSFS 2024. Guarda credenciales solo si quieres, para descargas automáticas en el futuro (opcional).",
   "settings.skybound.user": "Usuario o correo",
   "settings.skybound.pass": "Contraseña",
   "settings.skybound.save": "Guardar credenciales",
