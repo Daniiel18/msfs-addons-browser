@@ -547,3 +547,22 @@ export function icaoToName(icao?: string | null): string | null {
   // Curado primero; luego la base de OpenFlights (~1180 nombres reales).
   return ICAO_TO_NAME[k] ?? OF_ICAO_TO_NAME[k] ?? null;
 }
+
+/**
+ * (v6.2.36) Clave CANÓNICA de aerolínea para deduplicar los chips del
+ * FlightBook y hacer que el filtro cuadre todas las variantes. Prioriza
+ * el `airline_icao` (TRIM/UPPER); si falta, extrae el primer token del
+ * `aircraft_airline` limpiando un sufijo "(MATRÍCULA)". Así "DAL",
+ * "DAL " y `aircraft_airline="DAL (N374DA)"` colapsan a la misma clave
+ * "DAL" y sus vuelos se suman en un único logo.
+ */
+export function canonicalAirlineKey(
+  icao?: string | null,
+  name?: string | null,
+): string {
+  const i = (icao ?? "").trim().toUpperCase();
+  if (i) return i;
+  const cleaned = (name ?? "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const tok = cleaned.split(/[\s\-/]+/)[0] ?? "";
+  return tok.toUpperCase();
+}

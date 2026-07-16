@@ -64,6 +64,10 @@ interface LiveVsState {
   self: VsPilot | null;
   rival: VsPilot | null;
   rivalPos: VsPos | null;
+  /** (v6.2.36) Traza acumulada del rival — se acumula en el STORE (no en
+   *  el mapa) para que esté completa aunque no estés en el FlightBook
+   *  cuando el rival vuela. El mapa la lee tal cual. */
+  rivalTrack: { lat: number; lon: number }[];
   /** Hay rival presente en el mismo canal (misma ruta+día). */
   matchReady: boolean;
   /** Última actualización de la posición rival (ms epoch) — para "stale". */
@@ -378,6 +382,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
   self: null,
   rival: null,
   rivalPos: null,
+  rivalTrack: [],
   matchReady: false,
   rivalPosAt: 0,
   selfLanding: null,
@@ -416,6 +421,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       connected: false,
       rival: null,
       rivalPos: null,
+      rivalTrack: [],
       matchReady: false,
       selfLanding: saved?.selfLanding ?? null,
       rivalLanding: saved?.rivalLanding ?? null,
@@ -465,10 +471,28 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
           prevAc.registration !== p.aircraft.registration ||
           prevAc.aircraftType !== p.aircraft.aircraftType ||
           prevAc.airlineName !== p.aircraft.airlineName);
+      // (v6.2.36) Acumula la traza del rival AQUÍ (en el store), no en el
+      // mapa: así queda completa aunque no estés en el FlightBook cuando
+      // el rival vuela. Igual criterio anti-salto que el mapa antes.
+      const prevTrack = get().rivalTrack;
+      let nextTrack = prevTrack;
+      const last = prevTrack[prevTrack.length - 1];
+      if (
+        !last ||
+        Math.abs(last.lat - p.lat) >= 1e-6 ||
+        Math.abs(last.lon - p.lon) >= 1e-6
+      ) {
+        if (last && (Math.abs(last.lat - p.lat) > 1.5 || Math.abs(last.lon - p.lon) > 1.5)) {
+          nextTrack = [{ lat: p.lat, lon: p.lon }];
+        } else {
+          nextTrack = [...prevTrack, { lat: p.lat, lon: p.lon }].slice(-3000);
+        }
+      }
       set({
         rivalPos: { lat: p.lat, lon: p.lon, heading: p.heading, alt: p.alt, gs: p.gs },
         rivalPosAt: Date.now(),
         rivalPhase: p.phase ?? null,
+        rivalTrack: nextTrack,
         ...(acChanged ? { rivalAircraft: p.aircraft } : {}),
       });
       if (acChanged) persist();
@@ -570,6 +594,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       currentChannel: "",
       rival: null,
       rivalPos: null,
+      rivalTrack: [],
       matchReady: false,
       selfLanding: null,
       rivalLanding: null,

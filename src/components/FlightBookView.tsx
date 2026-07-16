@@ -23,7 +23,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useAppStore } from "../stores/useAppStore";
 import { findVsSnapshot } from "../stores/useLiveVsStore";
 import { useUnits } from "../lib/units";
-import type { AirportBrief, FlightLogEntry } from "../lib/types";
+import type { AirportBrief, AirlineTag, FlightLogEntry } from "../lib/types";
 import { RoutesMapView } from "./RoutesMapView";
 import { ShareCardModal } from "./ShareCardModal";
 import { buildFlightCardSvg } from "../lib/shareCards";
@@ -33,7 +33,7 @@ import { EditFlightModal } from "./EditFlightModal";
 import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
-import { icaoToName } from "../lib/airlineCodes";
+import { icaoToName, canonicalAirlineKey } from "../lib/airlineCodes";
 import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-react";
 
 // (v4.24.2) Persistencia del colapso del sidebar de vuelos. El
@@ -330,10 +330,9 @@ export function FlightBookView() {
   // Esto hace que el StatsWidget muestre KPIs específicos al filtro.
   const statsPool = useMemo(() => {
     if (!selectedAirline) return completed;
-    return completed.filter((e) =>
-      selectedAirline.icao
-        ? e.airlineIcao === selectedAirline.icao
-        : e.airlineIcao === null && e.aircraftAirline === selectedAirline.name,
+    const selKey = canonicalAirlineKey(selectedAirline.icao, selectedAirline.name);
+    return completed.filter(
+      (e) => canonicalAirlineKey(e.airlineIcao, e.aircraftAirline) === selKey,
     );
   }, [completed, selectedAirline]);
   const stats = useMemo(() => {
@@ -404,10 +403,9 @@ export function FlightBookView() {
   const filteredCompleted = useMemo(() => {
     let arr = completed;
     if (selectedAirline) {
-      arr = arr.filter((e) =>
-        selectedAirline.icao
-          ? e.airlineIcao === selectedAirline.icao
-          : e.airlineIcao === null && e.aircraftAirline === selectedAirline.name,
+      const selKey = canonicalAirlineKey(selectedAirline.icao, selectedAirline.name);
+      arr = arr.filter(
+        (e) => canonicalAirlineKey(e.airlineIcao, e.aircraftAirline) === selKey,
       );
     }
     if (!sidebarQuery.trim()) return arr;
@@ -2191,9 +2189,40 @@ function AirlineTagFilter() {
   const selected = useFlightLogStore((s) => s.selectedAirline);
   const setSelected = useFlightLogStore((s) => s.setSelectedAirline);
   // (v3.6.3 fix J4) Auto-ocultar tags con flight_count = 0 (puede
-  // pasar si el listado se desactualiza). Y no renderizar la barra
-  // si no hay ninguna aerolínea con vuelos.
-  const visible = airlines.filter((a) => a.flightCount > 0);
+  // pasar si el listado se desactualiza).
+  // (v6.2.36) MERGE de logos duplicados: el backend puede emitir varios
+  // tags para la misma aerolínea (variantes de espacios/mayúsculas, o
+  // icao vs aircraft_airline sucio como "DAL (N374DA)"). Los colapsamos
+  // por clave canónica, SUMANDO vuelos, y nos quedamos con la variante de
+  // más vuelos como representante (la que tiene icao gana el desempate).
+  const visible = useMemo(() => {
+    const byKey = new Map<string, AirlineTag>();
+    for (const a of airlines) {
+      if (a.flightCount <= 0) continue;
+      const key = canonicalAirlineKey(a.icao, a.name);
+      if (!key) continue;
+      const prev = byKey.get(key);
+      if (!prev) {
+        byKey.set(key, { ...a });
+      } else {
+        const merged: AirlineTag = {
+          // Representante = el de más vuelos; a igualdad, el que tenga icao.
+          icao: prev.icao ?? a.icao,
+          name:
+            (a.flightCount > prev.flightCount ? a.name : prev.name) ||
+            prev.name,
+          flightCount: prev.flightCount + a.flightCount,
+        };
+        // Si la nueva variante tiene más vuelos, hereda su icao/name.
+        if (a.flightCount > prev.flightCount) {
+          merged.icao = a.icao ?? prev.icao;
+          merged.name = a.name;
+        }
+        byKey.set(key, merged);
+      }
+    }
+    return [...byKey.values()].sort((x, y) => y.flightCount - x.flightCount);
+  }, [airlines]);
   if (visible.length === 0) return null;
   return (
     <div

@@ -18,6 +18,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { greatCircleLine } from "../lib/greatCircle";
+import { canonicalAirlineKey } from "../lib/airlineCodes";
 import { t } from "../lib/i18n";
 import type { RouteFix } from "../lib/types";
 import {
@@ -292,27 +293,11 @@ export function RoutesMapView({
     map.easeTo({ center: [rivalPos.lon, rivalPos.lat], duration: 400 });
   }, [followRival, rivalPos]);
 
-  // (v6.2.11) Traza del rival acumulada desde los broadcasts de posición. Se
-  // reinicia ante un salto grande (teletransporte / nuevo vuelo).
-  const [rivalTrackPoints, setRivalTrackPoints] = useState<
-    { lat: number; lon: number }[]
-  >([]);
-  useEffect(() => {
-    if (rivalPos == null) return;
-    const { lat, lon } = rivalPos;
-    setRivalTrackPoints((prev) => {
-      const last = prev[prev.length - 1];
-      if (last) {
-        if (Math.abs(last.lat - lat) < 1e-6 && Math.abs(last.lon - lon) < 1e-6) {
-          return prev;
-        }
-        if (Math.abs(last.lat - lat) > 1.5 || Math.abs(last.lon - lon) > 1.5) {
-          return [{ lat, lon }];
-        }
-      }
-      return [...prev, { lat, lon }].slice(-3000);
-    });
-  }, [rivalPos]);
+  // (v6.2.36) Traza del rival: ahora la acumula el STORE (useLiveVsStore)
+  // en cada broadcast, así está completa aunque no estuvieras en el
+  // FlightBook cuando el rival despegó. Antes se acumulaba local aquí y
+  // sólo desde que montabas el mapa → "sólo aparecía tras hacer clic".
+  const rivalTrackPoints = useLiveVsStore((s) => s.rivalTrack);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -1157,10 +1142,10 @@ export function RoutesMapView({
             )
             .filter((e) => {
               if (!selectedAirline) return true;
-              return selectedAirline.icao
-                ? e.airlineIcao === selectedAirline.icao
-                : e.airlineIcao === null &&
-                    e.aircraftAirline === selectedAirline.name;
+              return (
+                canonicalAirlineKey(e.airlineIcao, e.aircraftAirline) ===
+                canonicalAirlineKey(selectedAirline.icao, selectedAirline.name)
+              );
             })
             .map((e) => {
               return {
