@@ -1792,6 +1792,13 @@ mod windows_simconnect {
         // (spawn en tierra) disparaba un OSD/STREAM-B falso. Se rearma al subir
         // y se desarma al asentarse en tierra (fase ya no Airborne).
         let mut flew_high = false;
+        // (v6.2.35 fix) MISMA idea para la MÁQUINA DE ESTADOS (handle_aircraft_data):
+        // sólo permitimos la transición Airborne→Landed si el avión REALMENTE voló
+        // (AGL > 100ft) desde el último despegue. Sin esto, un bache en el takeoff
+        // roll (el avión deja el suelo 1 tick a 30-50kt) disparaba
+        // (Airborne, on_ground, gs<50) → Landed → aterrizaje FALSO en medio del
+        // despegue, que finalizaba el vuelo (destino "?"). Se rearma al asentarse.
+        let mut airborne_confirmed = false;
         // (v3.30.0 #2) Buffer de muestras PRE-DEPARTURE (cold-and-dark).
         // El track sólo se persiste cuando ya existe flight_id (post-OUT),
         // así que las reglas de pre-departure salían "No data to evaluate".
@@ -2495,6 +2502,7 @@ mod windows_simconnect {
                         &mut osd_emitted,
                         &mut osd_touch_fpm,
                         &mut osd_bounced,
+                        &mut airborne_confirmed,
                     );
                     // (v4.1.1 FIX) La detección de gate usa el INI de GSX
                     // en disco (`gsx_parking::find_nearest_parking`), que
@@ -3132,6 +3140,7 @@ mod windows_simconnect {
         osd_emitted: &mut bool,
         osd_touch_fpm: &mut Option<i64>,
         osd_bounced: &mut bool,
+        airborne_confirmed: &mut bool,
     ) {
         // (v4.0.0 P7.7) Replay/Slew detection FIRST — antes de
         // procesar cualquier otra lógica del state machine.
@@ -3597,6 +3606,15 @@ mod windows_simconnect {
         let blockout_should_cancel = matches!(*phase, FlightPhase::BlockOut)
             && parking_brake_set
             && all_engines_off;
+        // (v6.2.35 fix) Arma "voló de verdad" al superar 100ft AGL en el aire;
+        // se rearma (desactiva) al asentarse en tierra a baja velocidad. Bloquea
+        // el falso Landed durante el takeoff roll (baches a 30-50kt que nunca
+        // suben >100ft).
+        if !on_ground && agl_ft > 100.0 {
+            *airborne_confirmed = true;
+        } else if on_ground && gs < 5.0 {
+            *airborne_confirmed = false;
+        }
         let new_phase = match (*phase, on_ground, gs) {
             (FlightPhase::Disconnected, true, _) => FlightPhase::OnGround,
             (FlightPhase::Disconnected, false, _) => FlightPhase::Airborne,
@@ -3627,8 +3645,15 @@ mod windows_simconnect {
             {
                 FlightPhase::Airborne
             }
-            // ON — touchdown.
-            (FlightPhase::Airborne, true, gs) if gs < 50.0 => FlightPhase::Landed,
+            // ON — touchdown REAL: sólo si el avión llegó a volar (>100ft AGL).
+            (FlightPhase::Airborne, true, gs) if gs < 50.0 && *airborne_confirmed => {
+                FlightPhase::Landed
+            }
+            // (v6.2.35 fix) Bache en el takeoff roll: el avión dejó el suelo un
+            // instante a 30-50kt SIN haber volado (airborne_confirmed=false).
+            // NO es aterrizaje — volvemos a BlockOut (vuelo abierto, en pista);
+            // el despegue real re-disparará BlockOut→Airborne.
+            (FlightPhase::Airborne, true, gs) if gs < 50.0 => FlightPhase::BlockOut,
             // Touch-and-go.
             (FlightPhase::Landed, false, gs) if gs >= 30.0 => FlightPhase::Airborne,
             // Cancelar BlockOut sin despegar.

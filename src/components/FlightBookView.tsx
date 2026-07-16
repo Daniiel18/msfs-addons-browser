@@ -48,6 +48,18 @@ const SIDEBAR_COLLAPSED_KEY = "simfleet.fb.sidebarCollapsed";
 // hasta que el usuario lo deseleccione explícitamente.
 const SELECTED_FLIGHT_KEY = "simfleet.fb.selectedFlightId";
 
+/** (v6.2.35) Limpia el nombre del avión para mostrar: algunas liveries
+ *  cuelan " AEROLÍNEA (MATRÍCULA)" en el título ("PMDG 737-800 DAL
+ *  (N374DA)"). Quitamos ese sufijo para que quede sólo el avión. No toca
+ *  los nombres limpios ("Airbus", "Boeing 737-800"). */
+export function cleanAircraftLabel(s: string | null | undefined): string {
+  if (!s) return "";
+  return s
+    .replace(/\s+[A-Z0-9]{2,4}\s*\([A-Za-z0-9-]{2,10}\)\s*$/, "")
+    .replace(/\s*\([A-Za-z0-9-]{2,10}\)\s*$/, "")
+    .trim();
+}
+
 function readSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
@@ -1026,7 +1038,7 @@ function SelectedFlightPanel({
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             {(entry.aircraftAtcType || entry.aircraftTitle) && (
               <span className="text-sm font-medium text-amber-100">
-                {entry.aircraftAtcType ?? entry.aircraftTitle}
+                {cleanAircraftLabel(entry.aircraftAtcType ?? entry.aircraftTitle)}
               </span>
             )}
             <span className="text-[11px] tracking-wide text-amber-300/70">
@@ -1999,7 +2011,7 @@ function CompactFlightRow({
 }) {
   const duration =
     entry.flightTimeS !== null ? formatHM(entry.flightTimeS) : "—";
-  const aircraft = entry.aircraftAtcType ?? entry.aircraftTitle ?? "";
+  const aircraft = cleanAircraftLabel(entry.aircraftAtcType ?? entry.aircraftTitle);
   // (v4.0.0 — P3.3 + P3.4) Vuelo importado (VAS-ACARS u otro): se
   // muestra un badge "Imported" y se **oculta** el grade del score.
   // El rubric depende de simvars que el .bin no expone (lights,
