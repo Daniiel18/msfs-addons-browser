@@ -204,12 +204,38 @@ pub fn inspect(
         ext, temp_path.display()
     );
 
-    let extract_result = match ext.as_str() {
-        "zip" => extract_zip(archive_path, &temp_path, password),
-        "rar" => extract_rar(archive_path, &temp_path, password),
-        "7z" => extract_7z(archive_path, &temp_path, password),
+    let do_extract = |pw: Option<&str>| match ext.as_str() {
+        "zip" => extract_zip(archive_path, &temp_path, pw),
+        "rar" => extract_rar(archive_path, &temp_path, pw),
+        "7z" => extract_7z(archive_path, &temp_path, pw),
         _ => unreachable!(),
     };
+    let mut extract_result = do_extract(password);
+    // (v6.2.42) Si falló por contraseña y el usuario NO dio una, probamos
+    // AUTOMÁTICAMENTE las contraseñas conocidas (p.ej. la de Skybound,
+    // "https://skybound.cx") antes de pedirla — así arrastrar un RAR de
+    // Skybound se instala sin fricción.
+    if extract_result.is_err() && password.is_none() {
+        for pw in crate::install::known_archive_passwords() {
+            // Limpia lo extraído a medias antes de reintentar.
+            if let Ok(rd) = std::fs::read_dir(&temp_path) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        let _ = std::fs::remove_dir_all(&p);
+                    } else {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
+            let r = do_extract(Some(pw));
+            if r.is_ok() {
+                tracing::info!(target: "drop", "extracción OK con contraseña conocida");
+                extract_result = r;
+                break;
+            }
+        }
+    }
     if let Err(e) = extract_result {
         // (v5.2.0) Si el fallo es por contraseña, devolvemos un sentinela
         // que el frontend reconoce para pedirla (o avisar que es errónea).

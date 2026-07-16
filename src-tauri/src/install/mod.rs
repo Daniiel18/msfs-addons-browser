@@ -303,6 +303,33 @@ fn pick_primary_installer(installers: &[PathBuf]) -> PathBuf {
         .unwrap_or_else(|| installers[0].clone())
 }
 
+/// (v6.2.42) Contraseñas de archivo conocidas que probamos AUTOMÁTICAMENTE
+/// cuando un archivo viene cifrado. Skybound protege TODOS sus RAR con la
+/// misma clave ("https://skybound.cx"), indicada en la ficha del addon, así
+/// que la instalación no falla por pedir la contraseña. Si algún día
+/// aparecen otras, se añaden aquí.
+pub fn known_archive_passwords() -> &'static [&'static str] {
+    &["https://skybound.cx"]
+}
+
+/// Borra el contenido de `dir` (dejándolo vacío) — para reintentar la
+/// extracción con otra contraseña sin arrastrar archivos a medias.
+fn clear_dir(dir: &Path) -> anyhow::Result<()> {
+    if dir.exists() {
+        for entry in fs::read_dir(dir)?.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let _ = fs::remove_dir_all(&p);
+            } else {
+                let _ = fs::remove_file(&p);
+            }
+        }
+    } else {
+        fs::create_dir_all(dir)?;
+    }
+    Ok(())
+}
+
 fn extract_to(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     let ext = archive
         .extension()
@@ -310,18 +337,68 @@ fn extract_to(archive: &Path, dest: &Path) -> anyhow::Result<()> {
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    match ext.as_str() {
-        "zip" => extract_zip(archive, dest),
-        "rar" => extract_rar(archive, dest),
-        "7z"  => extract_7z(archive, dest),
-        other => Err(anyhow!(
-            "Formato de archivo no soportado: .{} (se esperaba .zip, .rar o .7z)",
-            other
-        )),
+    // (v6.2.42) Probamos SIN contraseña primero (el caso normal); si falla
+    // (archivo cifrado), reintentamos con cada contraseña conocida. La
+    // mayoría de archivos no están cifrados, así que el primer intento gana
+    // sin coste. Sólo hay reintentos cuando de verdad falla.
+    let mut candidates: Vec<Option<&str>> = vec![None];
+    for p in known_archive_passwords() {
+        candidates.push(Some(p));
     }
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for (i, pw) in candidates.iter().enumerate() {
+        if i > 0 {
+            // Limpia lo extraído a medias del intento anterior.
+            let _ = clear_dir(dest);
+        }
+        let r = match ext.as_str() {
+            "zip" => extract_zip(archive, dest, *pw),
+            "rar" => extract_rar(archive, dest, *pw),
+            "7z" => extract_7z(archive, dest, *pw),
+            other => {
+                return Err(anyhow!(
+                    "Formato de archivo no soportado: .{} (se esperaba .zip, .rar o .7z)",
+                    other
+                ))
+            }
+        };
+        match r {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("la extracción falló")))
 }
 
-fn extract_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+fn extract_zip(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    if let Some(pw) = password {
+        // Descifrado por entrada (ZipCrypto/AES).
+        let file = fs::File::open(archive)
+            .with_context(|| format!("no se pudo abrir el archivo {}", archive.display()))?;
+        let mut zip = zip::ZipArchive::new(file).context("no se pudo leer el archivo ZIP")?;
+        for i in 0..zip.len() {
+            let mut entry = zip
+                .by_index_decrypt(i, pw.as_bytes())
+                .map_err(|e| anyhow!("zip decrypt: {e}"))?;
+            let Some(rel) = entry.enclosed_name() else { continue };
+            let out = dest.join(rel);
+            if entry.is_dir() {
+                fs::create_dir_all(&out)?;
+            } else {
+                if let Some(parent) = out.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut sink = fs::File::create(&out)?;
+                io::copy(&mut entry, &mut sink)?;
+            }
+        }
+        return Ok(());
+    }
+    extract_zip_plain(archive, dest)
+}
+
+fn extract_zip_plain(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     let file = fs::File::open(archive)
         .with_context(|| format!("no se pudo abrir el archivo {}", archive.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("no se pudo leer el archivo ZIP")?;
@@ -364,12 +441,19 @@ fn extract_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
 /// `read_header` / `extract`/`skip` consume el header actual y devuelve
 /// el archivo posicionado en el siguiente. Por eso hay que reasignar
 /// `archive = …` en cada vuelta del bucle.
-fn extract_rar(archive: &Path, dest: &Path) -> anyhow::Result<()> {
-    let mut rar = unrar::Archive::new(archive)
-        .open_for_processing()
-        .with_context(|| {
-            format!("no se pudo abrir el archivo RAR {}", archive.display())
-        })?;
+fn extract_rar(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    let mut rar = match password {
+        Some(pw) => unrar::Archive::with_password(archive, pw)
+            .open_for_processing()
+            .with_context(|| {
+                format!("no se pudo abrir el archivo RAR {}", archive.display())
+            })?,
+        None => unrar::Archive::new(archive)
+            .open_for_processing()
+            .with_context(|| {
+                format!("no se pudo abrir el archivo RAR {}", archive.display())
+            })?,
+    };
 
     while let Some(header) = rar.read_header().context("header RAR inválido")? {
         let entry = header.entry();
@@ -416,9 +500,17 @@ fn extract_rar(archive: &Path, dest: &Path) -> anyhow::Result<()> {
 ///
 /// `sevenz-rust2` expone una API de nivel alto que hace todo en una
 /// sola llamada y maneja solid blocks + multi-volumen internamente.
-fn extract_7z(archive: &Path, dest: &Path) -> anyhow::Result<()> {
-    sevenz_rust2::decompress_file(archive, dest)
-        .with_context(|| format!("no se pudo extraer {}", archive.display()))?;
+fn extract_7z(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    match password {
+        Some(pw) => sevenz_rust2::decompress_file_with_password(
+            archive,
+            dest,
+            sevenz_rust2::Password::from(pw),
+        )
+        .with_context(|| format!("no se pudo extraer {}", archive.display()))?,
+        None => sevenz_rust2::decompress_file(archive, dest)
+            .with_context(|| format!("no se pudo extraer {}", archive.display()))?,
+    }
     Ok(())
 }
 
