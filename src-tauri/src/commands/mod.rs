@@ -13,6 +13,7 @@ pub mod install;
 pub mod perf;
 pub mod recording;
 pub mod scoring;
+pub mod gsx_remote;
 pub mod search;
 pub mod settings;
 pub mod simbrief;

@@ -53,6 +53,7 @@ import { PreflightHost } from "./components/PreflightHost";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
 import type { UpdateInfo } from "./lib/types";
 import { FlyingNowBadge } from "./components/FlyingNowBadge";
+import { GsxRemoteBadge } from "./components/GsxRemoteBadge";
 import { OnboardingTour } from "./components/OnboardingTour";
 import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
@@ -865,6 +866,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <FlyingNowBadge />
+            <GsxRemoteBadge />
             {view === "search" && (
               <SourceToggle
                 sources={visibleSources}

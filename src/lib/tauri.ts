@@ -150,6 +150,15 @@ interface Api {
   /** (v6.2.38) Skybound (catálogo MSFS2024, requiere login). */
   skyboundSetCredentials: (username: string, password: string) => Promise<void>;
   skyboundStatus: () => Promise<{ hasCredentials: boolean; loggedIn: boolean }>;
+  /** (v6.2.38) Estado remoto de GSX (descubrimiento por sondeo en la LAN,
+   *  puerto 8744). `connected=false` si no se encontró. */
+  gsxRemoteStatus: () => Promise<{
+    connected: boolean;
+    host: string | null;
+    status: string | null;
+    percent: number | null;
+    raw: string | null;
+  }>;
   search: (query: string, sourceId: string) => Promise<Addon[]>;
   /** Lista paginada del catálogo (sin query). Page 1-based. */
   browseSource: (sourceId: string, page: number) => Promise<BrowsePage>;
@@ -625,6 +634,8 @@ const realApi: Api = {
     invoke<void>("skybound_set_credentials", { username, password }),
   skyboundStatus: () =>
     invoke<{ hasCredentials: boolean; loggedIn: boolean }>("skybound_status"),
+  gsxRemoteStatus: () =>
+    invoke("gsx_remote_status"),
   search: (query, sourceId) => invoke<Addon[]>("search", { query, sourceId }),
   browseSource: (sourceId, page) =>
     invoke<BrowsePage>("browse_source", { sourceId, page }),
@@ -1084,6 +1095,9 @@ const demoApi: Api = {
   async skyboundSetCredentials() {},
   async skyboundStatus() {
     return { hasCredentials: false, loggedIn: false };
+  },
+  async gsxRemoteStatus() {
+    return { connected: false, host: null, status: null, percent: null, raw: null };
   },
   async browseSource(sourceId, page) {
     await sleep(250);

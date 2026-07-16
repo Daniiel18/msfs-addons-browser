@@ -297,6 +297,7 @@ pub fn run() {
             commands::backup::save_binary_file,
             commands::skybound::skybound_set_credentials,
             commands::skybound::skybound_status,
+            commands::gsx_remote::gsx_remote_status,
             commands::cloud::cloud_get_config,
             commands::cloud::cloud_set_credentials,
             commands::cloud::cloud_start_oauth,
