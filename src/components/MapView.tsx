@@ -548,6 +548,8 @@ function Sidebar({
   noGsxCount: number;
 }) {
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  // (v6.2.44) Perfiles GSX con update disponible (ICAO upper → info).
+  const gsxUpdates = useGsxLocalStore((s) => s.updates);
   const toggleGsx = (target: "gsx" | "no-gsx") => {
     setGsxFilter(gsxFilter === target ? "all" : target);
   };
@@ -621,6 +623,11 @@ function Sidebar({
             // tiene sentido en sceneries con ICAO definido.
             const hasGsx =
               !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
+            // (v6.2.44) ¿Ese perfil GSX instalado tiene update? Badge
+            // ámbar clickeable → link del perfil en flightsim.to.
+            const gsxUpdate = p.icao
+              ? gsxUpdates.get(p.icao.toUpperCase())
+              : undefined;
             return (
               <li
                 key={p.folderName}
@@ -651,13 +658,34 @@ function Sidebar({
                           {p.icao}
                         </span>
                       )}
-                      {p.icao && hasGsx && (
+                      {p.icao && hasGsx && !gsxUpdate && (
                         <span
                           className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
                           title={`Perfil GSX detectado en %APPDATA%\\Virtuali\\GSX\\MSFS para ${p.icao}`}
                         >
                           ✓ GSX
                         </span>
+                      )}
+                      {p.icao && hasGsx && gsxUpdate && (
+                        <a
+                          href="#"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            // (v6.2.44) Click → link del perfil concreto
+                            // en flightsim.to (para re-descargar la
+                            // versión nueva).
+                            void api.openExternal(gsxUpdate.link);
+                          }}
+                          className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
+                          title={`Update de perfil GSX disponible para ${p.icao}${
+                            gsxUpdate.latestVersion
+                              ? ` (v${gsxUpdate.latestVersion})`
+                              : ""
+                          }. Click → abrir perfil en flightsim.to`}
+                        >
+                          ⬆ GSX
+                        </a>
                       )}
                       {p.icao && !hasGsx && (
                         <a

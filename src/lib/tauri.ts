@@ -52,6 +52,7 @@ import type {
   FolderSyncSaveReport,
   GsxInstallReport,
   GsxProfile,
+  GsxProfileUpdate,
   InstallResult,
   InstalledAddon,
   CrossLinkOffer,
@@ -197,6 +198,9 @@ interface Api {
    *  instalado en `%APPDATA%\Virtuali\GSX\MSFS`. La frontend usa esto
    *  para mostrar un check en cada card de escenario. */
   gsxListInstalledIcaos: () => Promise<string[]>;
+  /** (v6.2.44) Revisa updates de los perfiles GSX instalados (compara la
+   *  fecha del .ini local con la `updatedAt` de flightsim.to). */
+  gsxCheckProfileUpdates: () => Promise<GsxProfileUpdate[]>;
   /** (v2.0.0) Instala perfil(es) GSX desde un archivo. Acepta
    *  `.ini`/`.py` sueltos o `.zip`/`.rar` con varios perfiles dentro.
    *  Devuelve el reporte con cuántos archivos se instalaron y cuáles
@@ -693,6 +697,8 @@ const realApi: Api = {
 
   gsxLookup: (icao) => invoke<GsxProfile[]>("gsx_lookup", { icao }),
   gsxListInstalledIcaos: () => invoke<string[]>("gsx_list_installed_icaos"),
+  gsxCheckProfileUpdates: () =>
+    invoke<GsxProfileUpdate[]>("gsx_check_profile_updates"),
   gsxInstallProfile: (sourcePath) =>
     invoke<GsxInstallReport>("gsx_install_profile", { sourcePath }),
   readTextFile: (path) => invoke<string>("read_text_file", { path }),
@@ -1276,6 +1282,9 @@ const demoApi: Api = {
     return [];
   },
   async gsxListInstalledIcaos() {
+    return [];
+  },
+  async gsxCheckProfileUpdates() {
     return [];
   },
   async gsxInstallProfile(_sourcePath) {

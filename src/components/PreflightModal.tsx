@@ -88,6 +88,10 @@ export function PreflightModal({ onClose }: Props) {
       } finally {
         setBusyId(null);
       }
+    } else if (action.kind === "gsx-update") {
+      // (v6.2.44) Perfil GSX con update → abre el link del perfil en
+      // flightsim.to para re-descargar la versión nueva.
+      void api.openExternal(action.link);
     } else if (action.kind === "enable") {
       setBusyId(check.id);
       try {

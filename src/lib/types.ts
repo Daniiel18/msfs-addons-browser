@@ -1166,6 +1166,17 @@ export interface GsxProfile {
   thumbnail: string | null;
   authorName: string | null;
   simulator: string | null;
+  /** (v6.2.44) Versión publicada + fecha de update (de la API filter). */
+  version?: string | null;
+  updatedAt?: string | null;
+}
+
+/** (v6.2.44) Aviso de update de un perfil GSX instalado. */
+export interface GsxProfileUpdate {
+  icao: string;
+  hasUpdate: boolean;
+  latestVersion: string | null;
+  link: string;
 }
 
 /** (v2.0.0) Resultado de instalar perfil(es) GSX. Espejo de

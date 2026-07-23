@@ -75,6 +75,109 @@ pub async fn gsx_list_installed_icaos() -> Result<Vec<String>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// (v6.2.44) Aviso de update de un perfil GSX instalado. El badge del
+/// mapa pasa a ámbar y el pre-vuelo lo indica, con link para re-descargar.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GsxProfileUpdate {
+    pub icao: String,
+    pub has_update: bool,
+    pub latest_version: Option<String>,
+    pub link: String,
+}
+
+/// ICAOs instalados con el mtime (epoch secs) del .ini MÁS RECIENTE de
+/// cada uno — la "fecha de descarga" local que comparamos con la fecha
+/// de actualización publicada en flightsim.to.
+fn installed_profiles_mtimes() -> Vec<(String, i64)> {
+    let Some(folder) = gsx_profiles_folder() else {
+        return Vec::new();
+    };
+    if !folder.is_dir() {
+        return Vec::new();
+    }
+    let mut map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let Ok(dir) = std::fs::read_dir(&folder) else {
+        return Vec::new();
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if !ext.eq_ignore_ascii_case("ini") {
+            continue;
+        }
+        let icao = leading_icao_from_filename(stem).or_else(|| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| icao_from_afcad_path(&c))
+        });
+        let Some(icao) = icao else { continue };
+        let mtime = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let e = map.entry(icao).or_insert(0);
+        if mtime > *e {
+            *e = mtime;
+        }
+    }
+    map.into_iter().collect()
+}
+
+/// (v6.2.44) Revisa si hay updates para los perfiles GSX instalados:
+/// por cada ICAO compara la fecha del .ini local con la `updatedAt`
+/// publicada del perfil más relevante en flightsim.to. Devuelve sólo
+/// una entrada por ICAO instalado (con `has_update` y el link).
+#[tauri::command]
+pub async fn gsx_check_profile_updates(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<GsxProfileUpdate>, String> {
+    let mtimes = tokio::task::spawn_blocking(installed_profiles_mtimes)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(mtimes.len());
+    for (icao, mtime) in mtimes {
+        // El catálogo está cacheado en memoria → barato por ICAO.
+        let profiles = gsx::lookup_with_cache(&state.gsx, &state.db, &icao)
+            .await
+            .unwrap_or_default();
+        let Some(top) = profiles.into_iter().next() else {
+            continue;
+        };
+        // Update si la publicación es MÁS NUEVA que el .ini local (con
+        // 12h de margen para no marcar falsos positivos por husos/redondeo).
+        let has_update = top
+            .updated_at
+            .as_deref()
+            .and_then(parse_iso_secs)
+            .map(|up| up > mtime + 12 * 3600)
+            .unwrap_or(false);
+        out.push(GsxProfileUpdate {
+            icao,
+            has_update,
+            latest_version: top.version,
+            link: top.link,
+        });
+    }
+    Ok(out)
+}
+
+/// Parsea un ISO-8601 (`2026-07-19T12:14:01Z`) a epoch secs.
+fn parse_iso_secs(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s.trim())
+        .ok()
+        .map(|dt| dt.timestamp())
+}
+
 /// (v2.0.0) Resultado de instalar perfil(es) GSX desde un archivo.
 /// Si la fuente era un solo .ini/.py, `installed_files.len() == 1`
 /// y `archive_kind = "single"`. Si era .zip/.rar, refleja cuántos

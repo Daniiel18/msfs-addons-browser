@@ -80,6 +80,14 @@ pub struct GsxProfile {
     pub thumbnail: Option<String>,
     pub author_name: Option<String>,
     pub simulator: Option<String>,
+    /// (v6.2.44) Versión publicada del perfil ("3.0") — de la API filter.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// (v6.2.44) Fecha de última actualización ISO-8601 ("2026-07-19T…Z").
+    /// La usamos para detectar updates comparándola con el mtime del .ini
+    /// local instalado.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 // ---- Tipos de la respuesta cruda de flightsim.to ----------------------------
@@ -122,6 +130,10 @@ struct RawProfile {
     simulator: Option<String>,
     #[serde(default)]
     author: Option<RawAuthor>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +157,8 @@ impl From<RawProfile> for GsxProfile {
             thumbnail: r.thumbnail,
             author_name,
             simulator: r.simulator,
+            version: r.version.filter(|s| !s.trim().is_empty()),
+            updated_at: r.updated_at.filter(|s| !s.trim().is_empty()),
         }
     }
 }

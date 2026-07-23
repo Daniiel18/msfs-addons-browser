@@ -23,6 +23,7 @@ export function usePreflight(): {
   const updates = useCommunityStore((s) => s.updates);
   const airac = useAiracUpdateStore((s) => s.info);
   const gsxIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  const gsxUpdates = useGsxLocalStore((s) => s.updates);
   const bypass = usePreflightStore((s) => s.bypass);
 
   return useMemo(() => {
@@ -37,8 +38,9 @@ export function usePreflight(): {
       airac,
       updates,
       gsxInstalledIcaos: gsxIcaos,
+      gsxUpdates,
       bypass: bypassSet,
     });
     return { result, plan };
-  }, [flights, status, packages, updates, airac, gsxIcaos, bypass]);
+  }, [flights, status, packages, updates, airac, gsxIcaos, gsxUpdates, bypass]);
 }

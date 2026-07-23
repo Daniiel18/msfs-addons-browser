@@ -3,6 +3,7 @@ import type {
   AvailableUpdate,
   CommunityPackage,
   FlightStatus,
+  GsxProfileUpdate,
   SimBriefFlight,
 } from "./types";
 
@@ -28,6 +29,7 @@ export type PreflightAction =
   | { kind: "search"; icao: string }
   | { kind: "enable"; folderName: string }
   | { kind: "gsx"; icao: string }
+  | { kind: "gsx-update"; icao: string; link: string }
   | { kind: "airac" };
 
 export interface PreflightCheck {
@@ -67,6 +69,9 @@ export interface PreflightInput {
   /** ICAOs con perfil GSX instalado. Si está vacío, se asume que el
    *  usuario no usa GSX y se OMITEN los checks de GSX. */
   gsxInstalledIcaos?: Set<string>;
+  /** (v6.2.44) Perfiles GSX instalados CON update disponible (ICAO
+   *  upper → info con el link del perfil en flightsim.to). */
+  gsxUpdates?: Map<string, GsxProfileUpdate>;
   /** ICAOs marcados como "usaré el escenario por defecto" — sus checks
    *  de escenario se dan por resueltos (bypass). */
   bypass?: Set<string>;
@@ -147,6 +152,8 @@ export function computePreflight(input: PreflightInput): PreflightResult {
   const bypass = input.bypass ?? new Set<string>();
   const gsxIcaos = input.gsxInstalledIcaos ?? new Set<string>();
   const gsxEnabled = gsxIcaos.size > 0;
+  const gsxUpdatesMap =
+    input.gsxUpdates ?? new Map<string, GsxProfileUpdate>();
   const checks: PreflightCheck[] = [];
   const route = pickRoute(plan, status);
 
@@ -259,6 +266,27 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         titleArgs: { icao },
         action: { kind: "gsx", icao },
         actionKey: "preflight.action.gsx",
+      });
+    }
+
+    // (v6.2.44) GSX: perfil instalado PERO con update disponible en
+    // flightsim.to → info con link para re-descargar la versión nueva.
+    const gsxUpd = gsxUpdatesMap.get(icao.toUpperCase());
+    if (
+      gsxEnabled &&
+      pkg &&
+      pkg.enabled !== false &&
+      !bypass.has(icao.toUpperCase()) &&
+      gsxIcaos.has(icao.toUpperCase()) &&
+      gsxUpd
+    ) {
+      checks.push({
+        id: `${leg}_gsx_upd`,
+        status: "info",
+        titleKey: `preflight.check.${leg}_gsx_update`,
+        titleArgs: { icao, version: gsxUpd.latestVersion ?? "?" },
+        action: { kind: "gsx-update", icao, link: gsxUpd.link },
+        actionKey: "preflight.action.gsx_update",
       });
     }
   }

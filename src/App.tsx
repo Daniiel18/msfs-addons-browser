@@ -521,7 +521,12 @@ export default function App() {
         // (v1.1.4) Hidratamos la lista de perfiles GSX locales sin
         // bloquear el splash — corre en paralelo con el resto. Sin
         // marca de tarea propia, fail silently si no hay carpeta.
-        useGsxLocalStore.getState().refresh(),
+        // (v6.2.44) Tras conocer los instalados, chequeamos updates en
+        // background (pega a flightsim.to por ICAO) sin bloquear nada.
+        useGsxLocalStore
+          .getState()
+          .refresh()
+          .then(() => useGsxLocalStore.getState().refreshUpdates()),
       ]);
 
       // (v5.3.4) Gate de versión de MSFS según lo INSTALADO:
