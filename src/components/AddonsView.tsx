@@ -497,6 +497,11 @@ export function AddonsView() {
         <LinkMapView addons={addons} airports={airports} />
       ) : (
         <>
+          {/* (v6.2.50) Banner de descarga de liveries ARRIBA del todo (antes
+              quedaba enterrado tras ~300 addons con el filtro "All"). */}
+          {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
+            <LiveryBrowseBanner />
+          )}
           {visible.length === 0 ? (
             <EmptyState
               hasAny={addons.length > 0}
@@ -540,10 +545,7 @@ export function AddonsView() {
               UNKNOWN seleccionados, lo que el usuario reportó como
               "se cuela en todos los filtros". */}
           {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
-            <>
-              <LiveryBrowseBanner />
-              <AircraftLiveriesSection filter={filter} />
-            </>
+            <AircraftLiveriesSection filter={filter} />
           )}
         </>
       )}

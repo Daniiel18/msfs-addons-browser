@@ -39,10 +39,32 @@ pub fn open_livery_browser(app: tauri::AppHandle, url: Option<String>) -> Result
     let app_emit = app.clone();
     let dl_dir_cb = dl_dir.clone();
 
+    // UA de Chrome de escritorio: el UA por defecto de WebView2 lleva "Edg/…"
+    // y marcas de embebido; normalizarlo evita que SPAs/anti-bot rendericen
+    // distinto o en blanco.
+    const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+        AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
     WebviewWindowBuilder::new(&app, LIVERY_WIN, WebviewUrl::External(parsed))
         .title("Buscar liveries — flightsim.to (inicia sesión con tu cuenta)")
         .inner_size(1280.0, 880.0)
         .min_inner_size(900.0, 600.0)
+        .center()
+        .user_agent(CHROME_UA)
+        // (v6.2.51) DevTools ON en esta ventana para diagnosticar la página en
+        // blanco: click derecho → Inspeccionar → pestaña Console.
+        .devtools(true)
+        .on_navigation(|url| {
+            tracing::info!(target: "livery", "webview navega → {}", url);
+            true
+        })
+        .on_page_load(|_w, payload| {
+            tracing::info!(
+                target: "livery",
+                "webview page_load {:?} → {}",
+                payload.event(), payload.url()
+            );
+        })
         .on_download(move |_webview, event| {
             use tauri::webview::DownloadEvent;
             match event {
@@ -80,6 +102,14 @@ pub fn open_livery_browser(app: tauri::AppHandle, url: Option<String>) -> Result
         })
         .build()
         .map_err(|e| e.to_string())?;
+
+    // (v6.2.51) Abrimos DevTools automáticamente en ESTA ventana para
+    // diagnosticar la página en blanco (pestaña Console/Network). Se puede
+    // cerrar; en cuanto quede resuelto lo quitamos.
+    #[cfg(feature = "devtools")]
+    if let Some(w) = app.get_webview_window(LIVERY_WIN) {
+        w.open_devtools();
+    }
 
     tracing::info!(target: "livery", "navegador de liveries abierto");
     Ok(())
