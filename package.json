@@ -1,7 +1,7 @@
 {
   "name": "simfleet",
   "private": true,
-  "version": "6.2.46",
+  "version": "6.2.47",
   "type": "module",
   "scripts": {
     "start": "tauri dev",

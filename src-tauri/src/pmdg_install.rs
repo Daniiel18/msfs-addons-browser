@@ -5,9 +5,10 @@
 //! Qué hace (mecanismo "A" de esa app — el que funciona bien):
 //!   1. Detecta el avión objetivo leyendo `required_tags` de `livery.cfg`
 //!      (PMDG) o el `base_container` de `aircraft.cfg` (iFly).
-//!   2. Copia la livery al paquete Community `pmdg-flightmods-manager` /
-//!      `ifly-flightmods-manager` bajo `SimObjects/Airplanes/…` en la
-//!      variante correcta (`b738_ext`, `b77w_ext`, `900ER`, `GE`, …).
+//!   2. (v6.2.47) Copia la livery a su PROPIO paquete Community
+//!      `pmdg-livery-{nombre}` / `ifly-livery-{nombre}` (una carpeta por
+//!      livery, visible como addon aparte) bajo `SimObjects/Airplanes/…` en
+//!      la variante correcta (`b738_ext`, `b77w_ext`, `900ER`, `GE`, …).
 //!   3. Regenera `layout.json` **en Rust nativo** (sin depender del
 //!      `MSFSLayoutGenerator.exe` de terceros).
 //!
@@ -116,14 +117,54 @@ const PMDG_DB: &[PmdgSpec] = &[
     },
 ];
 
-/// Nombre del paquete Community contenedor. Coincide con el que crea la
-/// app de doguer27 → si el usuario ya lo tiene, las liveries se mezclan
-/// en el mismo paquete (no se duplica).
-pub fn manager_package_name(ac_type: AcType) -> &'static str {
-    match ac_type {
-        AcType::Pmdg => "pmdg-flightmods-manager",
-        AcType::Ifly => "ifly-flightmods-manager",
+/// (v6.2.47) Nombre de la carpeta Community para UNA livery (modo "carpeta
+/// separada"). Sale del `name` del livery.cfg (aerolínea + matrícula, p.ej.
+/// "Air France Cargo (F-GUOB)" → `air-france-cargo-f-guob`); si no hay, del
+/// nombre de la carpeta. Prefijo por familia para agruparlas y evitar choques
+/// con paquetes reales.
+fn package_folder_name(info: &LiveryInfo) -> String {
+    let base = info.airline.as_deref().unwrap_or(&info.name);
+    let mut slug = sanitize_kebab(base);
+    if slug.is_empty() {
+        slug = sanitize_kebab(&info.name);
     }
+    if slug.is_empty() {
+        slug = "livery".to_string();
+    }
+    let prefix = match info.ac_type {
+        AcType::Pmdg => "pmdg-livery",
+        AcType::Ifly => "ifly-livery",
+    };
+    format!("{prefix}-{slug}")
+}
+
+/// Convierte a kebab-case ASCII: minúsculas, espacios→`-`, quita todo lo que no
+/// sea `[a-z0-9-]`, colapsa y recorta guiones. (Igual que la app original.)
+fn sanitize_kebab(s: &str) -> String {
+    let lowered: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| if c == ' ' || c == '_' { '-' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    // Colapsa guiones repetidos y recorta los de los extremos.
+    let mut out = String::with_capacity(lowered.len());
+    let mut prev_dash = false;
+    for c in lowered.chars() {
+        if c == '-' {
+            if !prev_dash && !out.is_empty() {
+                out.push('-');
+            }
+            prev_dash = true;
+        } else {
+            out.push(c);
+            prev_dash = false;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 /// ¿La carpeta `dir` es una livery instalable? Lee `livery.cfg` (PMDG) o
@@ -216,8 +257,8 @@ pub fn find_liveries(root: &Path) -> Vec<LiveryInfo> {
     out
 }
 
-/// Instala UNA livery en su paquete manager de Community y devuelve la
-/// ruta del paquete (para que el caller regenere `layout.json` una vez).
+/// Instala UNA livery en su PROPIO paquete Community (carpeta separada) y
+/// devuelve su ruta (para que el caller regenere `layout.json` una vez).
 pub fn install_livery(livery_dir: &Path, community: &Path) -> anyhow::Result<PathBuf> {
     let info = resolve_livery(livery_dir).ok_or_else(|| {
         anyhow::anyhow!(
@@ -226,17 +267,22 @@ pub fn install_livery(livery_dir: &Path, community: &Path) -> anyhow::Result<Pat
         )
     })?;
 
-    let manager = community.join(manager_package_name(info.ac_type));
-    ensure_manager_package(&manager, manager_package_name(info.ac_type))?;
+    // (v6.2.47) Modo "carpeta separada por livery" (el "addon linker" de
+    // doguer27) como PREDETERMINADO: cada livery es su PROPIO paquete Community
+    // con nombre legible (de `name` del livery.cfg) → se ve como un addon aparte
+    // en Community y en SimFleet, en vez de quedar enterrada en un paquete común.
+    let pkg_name = package_folder_name(&info);
+    let pkg = community.join(&pkg_name);
+    ensure_manager_package(&pkg, &pkg_name)?;
 
     let target_base = match info.ac_type {
-        AcType::Pmdg => manager
+        AcType::Pmdg => pkg
             .join("SimObjects")
             .join("Airplanes")
             .join(&info.sim_folder)
             .join("liveries")
             .join("pmdg"),
-        AcType::Ifly => manager.join("SimObjects").join("Airplanes"),
+        AcType::Ifly => pkg.join("SimObjects").join("Airplanes"),
     };
     std::fs::create_dir_all(&target_base)?;
 
@@ -250,14 +296,14 @@ pub fn install_livery(livery_dir: &Path, community: &Path) -> anyhow::Result<Pat
         "livery instalada: {} → {}",
         info.name, target.display()
     );
-    Ok(manager)
+    Ok(pkg)
 }
 
-/// Crea el paquete contenedor (manifest + layout placeholder) si no existe.
-/// No sobrescribe un manifest previo (p.ej. el de la app de doguer27).
-fn ensure_manager_package(manager: &Path, title: &str) -> anyhow::Result<()> {
-    std::fs::create_dir_all(manager)?;
-    let manifest = manager.join("manifest.json");
+/// Crea el paquete de la livery (manifest + layout placeholder) si no existe.
+/// No sobrescribe un manifest previo.
+fn ensure_manager_package(pkg: &Path, title: &str) -> anyhow::Result<()> {
+    std::fs::create_dir_all(pkg)?;
+    let manifest = pkg.join("manifest.json");
     if !manifest.exists() {
         // Manifest mínimo — EXACTAMENTE el que usa la app original (probado
         // en el sim). content_type AIRCRAFT para que MSFS lo cargue.
@@ -270,7 +316,7 @@ fn ensure_manager_package(manager: &Path, title: &str) -> anyhow::Result<()> {
         });
         std::fs::write(&manifest, serde_json::to_string_pretty(&body)?)?;
     }
-    let layout = manager.join("layout.json");
+    let layout = pkg.join("layout.json");
     if !layout.exists() {
         std::fs::write(&layout, "{\n  \"content\": []\n}")?;
     }
@@ -496,6 +542,32 @@ mod tests {
         assert_eq!(
             ini_value("name = \"American Airlines\"\n", "name").as_deref(),
             Some("American Airlines")
+        );
+    }
+
+    #[test]
+    fn kebab_slug_from_livery_name() {
+        assert_eq!(
+            sanitize_kebab("Air France Cargo (F-GUOB)"),
+            "air-france-cargo-f-guob"
+        );
+        assert_eq!(sanitize_kebab("  Delta__A321  "), "delta-a321");
+    }
+
+    #[test]
+    fn package_folder_name_prefixes_and_slugs() {
+        let info = LiveryInfo {
+            path: std::path::PathBuf::from("x"),
+            name: "AFR-FGUOB-CO".into(),
+            ac_type: AcType::Pmdg,
+            ac_key: "PMDG 777F".into(),
+            sim_folder: "PMDG 777F".into(),
+            variant_label: Some("F".into()),
+            airline: Some("Air France Cargo (F-GUOB)".into()),
+        };
+        assert_eq!(
+            package_folder_name(&info),
+            "pmdg-livery-air-france-cargo-f-guob"
         );
     }
 
