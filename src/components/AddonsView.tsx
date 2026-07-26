@@ -3,7 +3,6 @@ import {
   Boxes,
   CircleOff,
   Cog,
-  Download,
   GitBranch,
   HardDrive,
   LayoutGrid,
@@ -497,11 +496,9 @@ export function AddonsView() {
         <LinkMapView addons={addons} airports={airports} />
       ) : (
         <>
-          {/* (v6.2.50) Banner de descarga de liveries ARRIBA del todo (antes
-              quedaba enterrado tras ~300 addons con el filtro "All"). */}
-          {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
-            <LiveryBrowseBanner />
-          )}
+          {/* (v6.2.53) Banner de descarga de liveries RETIRADO por pedido del
+              usuario (molestaba). El instalador por drag&drop sigue activo. Se
+              re-añade cuando el flujo de descarga esté resuelto. */}
           {visible.length === 0 ? (
             <EmptyState
               hasAny={addons.length > 0}
@@ -707,74 +704,6 @@ function modelLabel(vendor: string, m: string): string {
   if (vendor === "inibuilds" && m === "a350") return "A350";
   if (vendor === "fbw" && m === "a32nx") return "A32NX";
   return m.toUpperCase();
-}
-
-/** (v6.2.49) Banner para abrir el navegador embebido de flightsim.to y
- *  descargar liveries con la cuenta del usuario (la descarga se intercepta y
- *  se instala sola). Con accesos rápidos por avión. */
-function LiveryBrowseBanner() {
-  const pushToast = useToastStore((s) => s.push);
-  const open = (url?: string) => {
-    const target = url ?? "https://flightsim.to/liveries";
-    // (v6.2.52) Abrimos flightsim.to en el navegador REAL del usuario (ahí ya
-    // está logueado y la página carga bien) y arrancamos la vigilancia de la
-    // carpeta de Descargas para instalar la livery en cuanto la baje.
-    void api.openExternal(target).catch(() => {});
-    void api
-      .startLiveryDownloadWatch()
-      .then(() =>
-        pushToast({
-          kind: "info",
-          title: t("livery.browse.opened"),
-          message: t("livery.browse.opened_hint"),
-          ttlMs: 9000,
-        }),
-      )
-      .catch((e) =>
-        pushToast({ kind: "error", title: t("livery.browse.err"), message: String(e) }),
-      );
-  };
-  const quick: Array<[string, string]> = [
-    ["PMDG 737-800", "https://flightsim.to/liveries/pmdg-boeing-737-800"],
-    ["iFly 737 MAX", "https://flightsim.to/liveries/ifly-boeing-737-max"],
-    ["Todas", "https://flightsim.to/liveries"],
-  ];
-  return (
-    <section className="mb-4 rounded-xl border border-fuchsia-500/25 bg-fuchsia-500/[0.06] px-4 py-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-100">
-            <Palette className="h-4 w-4 text-fuchsia-300" />
-            {t("livery.browse.title")}
-          </h3>
-          <p className="mt-0.5 text-[11px] text-slate-400">
-            {t("livery.browse.subtitle")}
-          </p>
-        </div>
-        <button
-          onClick={() => open()}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-fuchsia-500 px-3 py-1.5 text-xs font-semibold text-fuchsia-950 hover:bg-fuchsia-400"
-        >
-          <Download className="h-3.5 w-3.5" />
-          {t("livery.browse.open")}
-        </button>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        <span className="text-[10px] uppercase tracking-wider text-slate-500">
-          {t("livery.browse.quick")}
-        </span>
-        {quick.map(([label, url]) => (
-          <button
-            key={label}
-            onClick={() => open(url)}
-            className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-fuchsia-500/40 hover:text-fuchsia-200"
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function AircraftLiveriesSection({ filter }: { filter: string }) {
