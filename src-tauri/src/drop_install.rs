@@ -687,8 +687,18 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
         }
     }
 
+    // (v6.2.48) Liveries PMDG/iFly detectadas ANTES del scan de `.ini` — para
+    // poder excluir sus `.ini` internos. Excluimos las que viven dentro de un
+    // paquete Community (con manifest): se instalan con él.
+    let liveries: Vec<crate::pmdg_install::LiveryInfo> =
+        crate::pmdg_install::find_liveries(root)
+            .into_iter()
+            .filter(|liv| !community_dirs.iter().any(|d| liv.path.starts_with(d)))
+            .collect();
+    let livery_dirs: Vec<PathBuf> = liveries.iter().map(|l| l.path.clone()).collect();
+
     // Paso 2 — .ini/.py de GSX. Excluimos los que estén DENTRO de un
-    // community_dir.
+    // community_dir o de una livery.
     for entry in walkdir::WalkDir::new(root) {
         let entry = match entry {
             Ok(e) => e,
@@ -704,6 +714,13 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
             .unwrap_or("")
             .to_ascii_lowercase();
         if ext != "ini" && ext != "py" {
+            continue;
+        }
+        // (v6.2.48) `.ini` DENTRO de una livery (p.ej. `options.ini`) NO es un
+        // config de `work`: es parte de la livery y se instala CON ella a
+        // Community (PMDG lo lee de ahí). El `.ini` que va a `work\Aircraft` es
+        // el nombrado con la MATRÍCULA, que viene SUELTO (fuera de la livery).
+        if livery_dirs.iter().any(|d| entry.path().starts_with(d)) {
             continue;
         }
         if community_dirs.iter().any(|d| entry.path().starts_with(d)) {
@@ -724,15 +741,9 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
         }
     }
 
-    // Paso 3 (v6.2.45) — liveries PMDG/iFly en formato abierto (carpeta con
-    // `livery.cfg`/`aircraft.cfg` + `texture*`, SIN manifest propio). Las que
-    // ya viven dentro de un paquete Community (con manifest) se instalan con él
-    // y se excluyen aquí.
-    for liv in crate::pmdg_install::find_liveries(root) {
-        if community_dirs.iter().any(|d| liv.path.starts_with(d)) {
-            continue;
-        }
-        items.push(livery_to_item(&liv, root));
+    // Paso 3 (v6.2.45) — liveries PMDG/iFly en formato abierto (una por item).
+    for liv in &liveries {
+        items.push(livery_to_item(liv, root));
     }
 
     // (v2.1.1) Ordenar items por relative_path para que las variantes
