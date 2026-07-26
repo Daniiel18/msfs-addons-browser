@@ -1,207 +1,199 @@
-//! (v6.2.49) Navegador embebido de flightsim.to para DESCARGAR liveries con la
-//! cuenta/sesión del usuario.
+//! (v6.2.52) Descarga de liveries de flightsim.to con la cuenta del usuario,
+//! por un mecanismo FIABLE (el WebView2 embebido renderizaba en blanco y no era
+//! depurable en vivo):
 //!
-//! Por qué así: flightsim.to gatea la descarga con **Cloudflare Turnstile** (el
-//! login headless devuelve `{"message":"Turnstile token is required"}`), y el
-//! link de descarga se genera por JavaScript con token. No hay forma fiable de
-//! bajar el archivo por HTTP. La ÚNICA vía con la cuenta del usuario es un
-//! navegador REAL: abrimos una `WebviewWindow` a flightsim.to donde el usuario
-//! inicia sesión una vez (su sesión persiste), y **interceptamos la descarga**
-//! (`on_download`) → guardamos el archivo → emitimos un evento para que el
-//! front lo instale con el MISMO flujo del drag&drop (inspect → modal → install).
+//!   1. El front abre flightsim.to en el **navegador real** del usuario
+//!      (`openExternal`) — ahí ya está logueado y la página carga bien.
+//!   2. `start_livery_download_watch` **vigila la carpeta de Descargas**: cuando
+//!      aparece un archivo NUEVO (`.zip/.rar/.7z`) y termina de escribirse, lo
+//!      inspecciona; si contiene liveries PMDG/iFly, emite
+//!      `livery-download://finished` → el front lo instala con el MISMO flujo del
+//!      drag&drop (nested-zip, variante, carpeta `pmdg-livery-*`).
+//!
+//! Sólo actúa sobre archivos que REALMENTE son liveries — cualquier otra descarga
+//! se ignora en silencio. La vigilancia dura ~25 min por click (se extiende si
+//! vuelves a pulsar "Buscar liveries").
 
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const LIVERY_WIN: &str = "livery-browser";
+use tauri::{Emitter, Manager};
 
-/// Abre (o enfoca) el navegador embebido de flightsim.to. `url` opcional para
-/// entrar directo a una categoría de avión (p.ej. `/liveries/pmdg-boeing-737-800`).
+static WATCHING: AtomicBool = AtomicBool::new(false);
+/// Epoch secs hasta cuando vigilar. Cada click lo empuja +25 min.
+static DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+const WATCH_WINDOW_SECS: u64 = 25 * 60;
+
+/// Arranca (o extiende) la vigilancia de la carpeta de Descargas para instalar
+/// liveries automáticamente. Idempotente: si ya hay un vigilante, sólo extiende
+/// la ventana.
 #[tauri::command]
-pub fn open_livery_browser(app: tauri::AppHandle, url: Option<String>) -> Result<(), String> {
-    // Ya abierto → mostrar + enfocar.
-    if let Some(w) = app.get_webview_window(LIVERY_WIN) {
-        let _ = w.show();
-        let _ = w.set_focus();
+pub fn start_livery_download_watch(app: tauri::AppHandle) -> Result<(), String> {
+    let deadline = now_secs() + WATCH_WINDOW_SECS;
+    DEADLINE.store(deadline, Ordering::SeqCst);
+
+    // Ya hay un vigilante corriendo → sólo extendimos la ventana.
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        tracing::info!(target: "livery", "watch: ventana extendida hasta {}", deadline);
         return Ok(());
     }
 
-    let start = url.unwrap_or_else(|| "https://flightsim.to/liveries".to_string());
-    let parsed: tauri::Url = start
-        .parse()
-        .map_err(|e| format!("URL inválida: {e}"))?;
-
-    // Carpeta temporal para las descargas interceptadas. La limpiamos de restos
-    // viejos para no acumular.
-    let dl_dir = std::env::temp_dir().join("simfleet-livery-dl");
-    let _ = std::fs::create_dir_all(&dl_dir);
-    cleanup_old_downloads(&dl_dir);
-
-    let app_emit = app.clone();
-    let dl_dir_cb = dl_dir.clone();
-
-    // UA de Chrome de escritorio: el UA por defecto de WebView2 lleva "Edg/…"
-    // y marcas de embebido; normalizarlo evita que SPAs/anti-bot rendericen
-    // distinto o en blanco.
-    const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
-        AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
-    WebviewWindowBuilder::new(&app, LIVERY_WIN, WebviewUrl::External(parsed))
-        .title("Buscar liveries — flightsim.to (inicia sesión con tu cuenta)")
-        .inner_size(1280.0, 880.0)
-        .min_inner_size(900.0, 600.0)
-        .center()
-        .user_agent(CHROME_UA)
-        // (v6.2.51) DevTools ON en esta ventana para diagnosticar la página en
-        // blanco: click derecho → Inspeccionar → pestaña Console.
-        .devtools(true)
-        .on_navigation(|url| {
-            tracing::info!(target: "livery", "webview navega → {}", url);
-            true
-        })
-        .on_page_load(|_w, payload| {
-            tracing::info!(
-                target: "livery",
-                "webview page_load {:?} → {}",
-                payload.event(), payload.url()
-            );
-        })
-        .on_download(move |_webview, event| {
-            use tauri::webview::DownloadEvent;
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    let fname = download_filename(&url);
-                    let target = dl_dir_cb.join(&fname);
-                    tracing::info!(
-                        target: "livery",
-                        "descarga interceptada: {} → {}",
-                        url, target.display()
-                    );
-                    *destination = target;
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    tracing::info!(
-                        target: "livery",
-                        "descarga terminada (ok={}) url={} path={:?}",
-                        success, url, path
-                    );
-                    if success {
-                        if let Some(p) = path {
-                            let _ = app_emit.emit(
-                                "livery-download://finished",
-                                p.to_string_lossy().to_string(),
-                            );
-                        }
-                    } else {
-                        let _ = app_emit.emit("livery-download://failed", url.to_string());
-                    }
-                }
-                _ => {}
-            }
-            // Siempre permitimos la descarga (ya redirigimos el destino).
-            true
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // (v6.2.51) Abrimos DevTools automáticamente en ESTA ventana para
-    // diagnosticar la página en blanco (pestaña Console/Network). Se puede
-    // cerrar; en cuanto quede resuelto lo quitamos.
-    #[cfg(feature = "devtools")]
-    if let Some(w) = app.get_webview_window(LIVERY_WIN) {
-        w.open_devtools();
+    let dirs = downloads_dirs();
+    if dirs.is_empty() {
+        WATCHING.store(false, Ordering::SeqCst);
+        return Err("No pude localizar la carpeta de Descargas".into());
     }
+    tracing::info!(
+        target: "livery",
+        "watch: vigilando {:?} para liveries descargadas",
+        dirs
+    );
 
-    tracing::info!(target: "livery", "navegador de liveries abierto");
+    std::thread::Builder::new()
+        .name("livery-download-watch".into())
+        .spawn(move || watch_loop(app, dirs))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Nombre de archivo a partir de la URL de descarga. Garantiza una extensión de
-/// archivo soportada (`.zip` por defecto) para que el pipeline de drop sepa
-/// extraerlo.
-fn download_filename(url: &tauri::Url) -> String {
-    let raw = url
-        .path_segments()
-        .and_then(|mut s| s.next_back())
-        .unwrap_or("")
-        .to_string();
-    let decoded = percent_decode(&raw);
-    let sanitized = sanitize_filename(decoded.trim());
-    let has_archive_ext = sanitized
-        .rsplit('.')
-        .next()
-        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "zip" | "rar" | "7z"))
-        .unwrap_or(false);
-    if sanitized.is_empty() {
-        return format!("livery-{}.zip", now_secs());
+fn watch_loop(app: tauri::AppHandle, dirs: Vec<PathBuf>) {
+    // Baseline: los archivos que YA existen no se procesan (sólo descargas
+    // nuevas tras pulsar el botón).
+    let mut processed: HashSet<PathBuf> = HashSet::new();
+    for d in &dirs {
+        for f in list_archives(d) {
+            processed.insert(f);
+        }
     }
-    if has_archive_ext {
-        sanitized
-    } else {
-        format!("{}.zip", sanitized.trim_end_matches('.'))
-    }
-}
+    // Tamaño visto por archivo, para detectar cuándo terminó de escribirse.
+    let mut sizes: HashMap<PathBuf, u64> = HashMap::new();
 
-/// Percent-decode mínimo (%20 → espacio, etc.), best-effort.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push(h * 16 + l);
-                i += 3;
-                continue;
+    loop {
+        std::thread::sleep(Duration::from_secs(3));
+        if now_secs() > DEADLINE.load(Ordering::SeqCst) {
+            break;
+        }
+        for d in &dirs {
+            for f in list_archives(d) {
+                if processed.contains(&f) {
+                    continue;
+                }
+                let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+                let prev = sizes.insert(f.clone(), size);
+                // Esperamos a que el tamaño se estabilice (2 lecturas iguales,
+                // > 0) → descarga terminada.
+                if prev != Some(size) || size == 0 {
+                    continue;
+                }
+                processed.insert(f.clone());
+                sizes.remove(&f);
+                handle_new_archive(&app, &f);
             }
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+
+    WATCHING.store(false, Ordering::SeqCst);
+    tracing::info!(target: "livery", "watch: vigilancia terminada");
 }
 
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+/// Inspecciona un archivo recién descargado; si contiene liveries, dispara la
+/// instalación en el front. Si no, lo ignora en silencio.
+fn handle_new_archive(app: &tauri::AppHandle, path: &Path) {
+    let state = app.state::<crate::AppState>();
+    let insp = match crate::drop_install::inspect(path, None, &state.drop_sessions) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::debug!(target: "livery", "watch: inspect falló {}: {}", path.display(), e);
+            return;
+        }
+    };
+    let has_livery = insp
+        .items
+        .iter()
+        .any(|i| matches!(i.kind.as_str(), "pmdg_livery" | "ifly_livery"));
+    // Cerramos la sesión del vigilante — el front re-inspecciona con su flujo.
+    crate::drop_install::cancel(&insp.session_id, &state.drop_sessions);
+
+    if has_livery {
+        tracing::info!(
+            target: "livery",
+            "watch: livery detectada en descarga {} → instalando",
+            path.display()
+        );
+        let _ = app.emit(
+            "livery-download://finished",
+            path.to_string_lossy().to_string(),
+        );
+    } else {
+        tracing::debug!(
+            target: "livery",
+            "watch: descarga {} no es livery, ignorada",
+            path.display()
+        );
     }
 }
 
-/// Quita caracteres ilegales de un nombre de archivo Windows.
-fn sanitize_filename(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
-        .filter(|c| !c.is_control())
-        .collect::<String>()
-        .trim()
-        .to_string()
+/// Archivos comprimidos directamente en `dir` (no recursivo).
+fn list_archives(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|s| s.to_str())
+                    .map(|e| matches!(e.to_ascii_lowercase().as_str(), "zip" | "rar" | "7z"))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Carpeta(s) de Descargas del usuario. Respeta la reubicación del known-folder
+/// (el usuario puede tenerla en `D:\Downloads`) leyendo el registro, con
+/// fallback a `%USERPROFILE%\Downloads`.
+fn downloads_dirs() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    #[cfg(windows)]
+    if let Some(p) = downloads_from_registry() {
+        out.push(p);
+    }
+    if let Some(up) = std::env::var_os("USERPROFILE") {
+        let p = Path::new(&up).join("Downloads");
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out.into_iter().filter(|p| p.is_dir()).collect()
+}
+
+#[cfg(windows)]
+fn downloads_from_registry() -> Option<PathBuf> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        .ok()?;
+    // GUID del known-folder Downloads.
+    let val: String = key
+        .get_value("{374DE290-123F-4565-9164-39C4925E467B}")
+        .ok()?;
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// Borra archivos de descargas de más de 1 día en la carpeta temporal.
-fn cleanup_old_downloads(dir: &std::path::Path) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let now = std::time::SystemTime::now();
-    for entry in rd.flatten() {
-        let stale = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| now.duration_since(t).ok())
-            .map(|age| age.as_secs() > 86_400)
-            .unwrap_or(false);
-        if stale {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
 }

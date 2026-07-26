@@ -201,10 +201,10 @@ interface Api {
   /** (v6.2.44) Revisa updates de los perfiles GSX instalados (compara la
    *  fecha del .ini local con la `updatedAt` de flightsim.to). */
   gsxCheckProfileUpdates: () => Promise<GsxProfileUpdate[]>;
-  /** (v6.2.49) Abre el navegador embebido de flightsim.to para descargar
-   *  liveries con la cuenta del usuario (la descarga se intercepta y se
-   *  instala sola). `url` opcional para ir directo a un avión. */
-  openLiveryBrowser: (url?: string) => Promise<void>;
+  /** (v6.2.52) Vigila la carpeta de Descargas: cuando bajes una livery de
+   *  flightsim.to (en tu navegador real, con tu cuenta), la detecta y la
+   *  instala automáticamente. Se llama al abrir flightsim.to. */
+  startLiveryDownloadWatch: () => Promise<void>;
   /** (v2.0.0) Instala perfil(es) GSX desde un archivo. Acepta
    *  `.ini`/`.py` sueltos o `.zip`/`.rar` con varios perfiles dentro.
    *  Devuelve el reporte con cuántos archivos se instalaron y cuáles
@@ -703,7 +703,7 @@ const realApi: Api = {
   gsxListInstalledIcaos: () => invoke<string[]>("gsx_list_installed_icaos"),
   gsxCheckProfileUpdates: () =>
     invoke<GsxProfileUpdate[]>("gsx_check_profile_updates"),
-  openLiveryBrowser: (url) => invoke<void>("open_livery_browser", { url: url ?? null }),
+  startLiveryDownloadWatch: () => invoke<void>("start_livery_download_watch"),
   gsxInstallProfile: (sourcePath) =>
     invoke<GsxInstallReport>("gsx_install_profile", { sourcePath }),
   readTextFile: (path) => invoke<string>("read_text_file", { path }),
@@ -1292,7 +1292,7 @@ const demoApi: Api = {
   async gsxCheckProfileUpdates() {
     return [];
   },
-  async openLiveryBrowser(_url) {
+  async startLiveryDownloadWatch() {
     return;
   },
   async gsxInstallProfile(_sourcePath) {

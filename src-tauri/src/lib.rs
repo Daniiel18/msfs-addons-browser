@@ -199,7 +199,7 @@ pub fn run() {
             commands::gsx::gsx_lookup,
             commands::gsx::gsx_list_installed_icaos,
             commands::gsx::gsx_check_profile_updates,
-            commands::livery::open_livery_browser,
+            commands::livery::start_livery_download_watch,
             commands::gsx::gsx_install_profile,
             commands::gsx::read_text_file,
             gsx_update::gsx_check_update,

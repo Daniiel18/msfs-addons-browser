@@ -715,14 +715,19 @@ function modelLabel(vendor: string, m: string): string {
 function LiveryBrowseBanner() {
   const pushToast = useToastStore((s) => s.push);
   const open = (url?: string) => {
+    const target = url ?? "https://flightsim.to/liveries";
+    // (v6.2.52) Abrimos flightsim.to en el navegador REAL del usuario (ahí ya
+    // está logueado y la página carga bien) y arrancamos la vigilancia de la
+    // carpeta de Descargas para instalar la livery en cuanto la baje.
+    void api.openExternal(target).catch(() => {});
     void api
-      .openLiveryBrowser(url)
+      .startLiveryDownloadWatch()
       .then(() =>
         pushToast({
           kind: "info",
           title: t("livery.browse.opened"),
           message: t("livery.browse.opened_hint"),
-          ttlMs: 6000,
+          ttlMs: 9000,
         }),
       )
       .catch((e) =>
