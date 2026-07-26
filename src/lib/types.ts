@@ -1223,6 +1223,8 @@ export interface DropCommitReport {
   installedPackages: string[];
   /** (v6.1) Configs de avión (iFly/PMDG) instaladas en su carpeta work. */
   installedConfigs?: string[];
+  /** (v6.2.45) Liveries PMDG/iFly instaladas en Community (formato abierto). */
+  installedLiveries?: string[];
   errors: string[];
 }
 

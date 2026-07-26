@@ -178,7 +178,10 @@ export function DragDropOverlay() {
           // (el usuario no espera que se borre su carpeta de origen).
           if (
             !insp.isFolder &&
-            (r.installedGsx.length > 0 || r.installedPackages.length > 0)
+            (r.installedGsx.length > 0 ||
+              r.installedPackages.length > 0 ||
+              (r.installedConfigs?.length ?? 0) > 0 ||
+              (r.installedLiveries?.length ?? 0) > 0)
           ) {
             committed.push(insp.archivePath);
           }
@@ -538,6 +541,20 @@ function Installed({ report }: { report: DropCommitReport }) {
     parts.push(
       t("drop.installed.packages", {
         count: String(report.installedPackages.length),
+      }),
+    );
+  }
+  if ((report.installedLiveries?.length ?? 0) > 0) {
+    parts.push(
+      t("drop.installed.liveries", {
+        count: String(report.installedLiveries?.length ?? 0),
+      }),
+    );
+  }
+  if ((report.installedConfigs?.length ?? 0) > 0) {
+    parts.push(
+      t("drop.installed.configs", {
+        count: String(report.installedConfigs?.length ?? 0),
       }),
     );
   }

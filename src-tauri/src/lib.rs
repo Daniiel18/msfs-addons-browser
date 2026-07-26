@@ -35,6 +35,7 @@ pub mod package_ops;
 pub mod parser;
 pub mod perf_config;
 pub mod planespotters;
+pub mod pmdg_install;
 pub mod pmdg_liveries;
 pub mod scoring;
 pub mod sim;

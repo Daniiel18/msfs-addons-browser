@@ -9,6 +9,7 @@ import {
   ChevronRight,
   FileDown,
   Loader2,
+  Palette,
   Plane,
   Trash2,
   X,
@@ -154,7 +155,8 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           if (
             r.installedGsx.length > 0 ||
             r.installedPackages.length > 0 ||
-            (r.installedConfigs?.length ?? 0) > 0
+            (r.installedConfigs?.length ?? 0) > 0 ||
+            (r.installedLiveries?.length ?? 0) > 0
           ) {
             committed.push(insp.archivePath);
           }
@@ -163,6 +165,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
             installedGsx: [],
             installedPackages: [],
             installedConfigs: [],
+            installedLiveries: [],
             errors: [
               `${insp.archivePath.split(/[\\/]/).pop() ?? "archivo"}: ${String(e)}`,
             ],
@@ -219,6 +222,10 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
   const configItems = inspection.items.filter((i) =>
     ["ifly_config", "pmdg_config"].includes(i.kind),
   );
+  // (v6.2.45) Liveries PMDG/iFly en formato abierto — sección propia.
+  const liveryItems = inspection.items.filter((i) =>
+    ["pmdg_livery", "ifly_livery"].includes(i.kind),
+  );
   const otherItems = inspection.items.filter(
     (i) =>
       ![
@@ -226,6 +233,8 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
         "community_package",
         "ifly_config",
         "pmdg_config",
+        "pmdg_livery",
+        "ifly_livery",
       ].includes(i.kind),
   );
 
@@ -379,6 +388,16 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
                     destinationHint="MSFS Community"
                   />
                 )}
+                {liveryItems.length > 0 && (
+                  <Section
+                    title={t("drop.tab.livery")}
+                    icon={<Palette className="h-3 w-3 text-fuchsia-300" />}
+                    items={liveryItems}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint="MSFS Community"
+                  />
+                )}
                 {configItems.length > 0 && (
                   <Section
                     title={t("drop.tab.config")}
@@ -451,7 +470,8 @@ function InstalledSuccess({ reports }: { reports: DropCommitReport[] }) {
       n +
       r.installedPackages.length +
       r.installedGsx.length +
-      (r.installedConfigs?.length ?? 0),
+      (r.installedConfigs?.length ?? 0) +
+      (r.installedLiveries?.length ?? 0),
     0,
   );
   return (

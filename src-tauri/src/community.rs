@@ -239,6 +239,34 @@ pub fn addon_work_root(prefer_2024: bool) -> Option<PathBuf> {
     None
 }
 
+/// (v6.2.45) TODAS las raíces de estado (`work/`) candidatas, en TODAS las
+/// versiones/perfiles instalados. A diferencia de `addon_work_root` (que elige
+/// una sola raíz por versión), esto une:
+///   · 2020 → `<perfil2020>\Packages`
+///   · 2024 → `<perfil2024>\WASM\MSFS2024`  (donde PMDG 2024 escribe sus
+///            configs por matrícula — lo usa la app de doguer27)
+///   · 2024 → `<perfil2024>\WASM\MSFS2020`  (donde iFly deja su `work`)
+/// El instalador de `.ini` de avión busca el paquete `pmdg-aircraft-*` /
+/// `ifly-aircraft-*` en la PRIMERA de estas raíces donde exista realmente —
+/// así funciona sin importar dónde lo haya creado cada addon.
+pub fn addon_work_roots_all() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for (cfg, variant) in find_all_user_cfgs() {
+        let Some(profile) = cfg.parent() else { continue };
+        let is_2024 = matches!(
+            variant,
+            MsfsVariant::MsStore2024 | MsfsVariant::Steam2024
+        );
+        if is_2024 {
+            out.push(profile.join("WASM").join("MSFS2024"));
+            out.push(profile.join("WASM").join("MSFS2020"));
+        } else {
+            out.push(profile.join("Packages"));
+        }
+    }
+    out.into_iter().filter(|p| p.is_dir()).collect()
+}
+
 static PACKAGES_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)InstalledPackagesPath\s+"(.+?)""#).unwrap());
 

@@ -95,6 +95,9 @@ pub struct DropCommitReport {
     /// (v6.1) Configs de avión (iFly/PMDG) instaladas en su carpeta `work`.
     #[serde(default)]
     pub installed_configs: Vec<String>,
+    /// (v6.2.45) Liveries PMDG/iFly instaladas en Community (formato abierto).
+    #[serde(default)]
+    pub installed_liveries: Vec<String>,
     pub errors: Vec<String>,
 }
 
@@ -325,8 +328,14 @@ pub fn commit(
         installed_gsx: Vec::new(),
         installed_packages: Vec::new(),
         installed_configs: Vec::new(),
+        installed_liveries: Vec::new(),
         errors: Vec::new(),
     };
+
+    // (v6.2.45) Paquetes manager de liveries tocados en este commit → al
+    // final regeneramos su `layout.json` UNA sola vez (aunque se instalen
+    // varias liveries en el mismo paquete).
+    let mut livery_pkgs_to_relayout: Vec<PathBuf> = Vec::new();
 
     for path_str in selected_paths {
         let Some(item) = items.iter().find(|i| i.source_path == *path_str) else {
@@ -371,6 +380,26 @@ pub fn commit(
                     }
                 }
             }
+            "pmdg_livery" | "ifly_livery" => {
+                let src_dir = PathBuf::from(&item.source_path);
+                match crate::pmdg_install::install_livery(&src_dir, community_path) {
+                    Ok(manager) => {
+                        tracing::info!(
+                            target: "drop",
+                            "livery instalada: {} → {}",
+                            item.label, manager.display()
+                        );
+                        report.installed_liveries.push(item.label.clone());
+                        if !livery_pkgs_to_relayout.contains(&manager) {
+                            livery_pkgs_to_relayout.push(manager);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(target: "drop", "livery falló ({}): {}", item.label, e);
+                        report.errors.push(format!("{}: {}", item.label, e));
+                    }
+                }
+            }
             "community_package" => {
                 let src_dir = PathBuf::from(&item.source_path);
                 match install_community_package(&src_dir, community_path) {
@@ -398,6 +427,17 @@ pub fn commit(
                     .errors
                     .push(format!("Tipo no instalable: {}", item.kind));
             }
+        }
+    }
+
+    // (v6.2.45) Regenerar layout.json de cada paquete manager tocado, una
+    // vez, tras copiar todas las liveries seleccionadas.
+    for pkg in &livery_pkgs_to_relayout {
+        if let Err(e) = crate::pmdg_install::regenerate_layout(pkg) {
+            tracing::error!(target: "drop", "layout.json falló ({}): {}", pkg.display(), e);
+            report
+                .errors
+                .push(format!("layout.json {}: {}", pkg.display(), e));
         }
     }
 
@@ -584,11 +624,68 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
         }
     }
 
+    // Paso 3 (v6.2.45) — liveries PMDG/iFly en formato abierto (carpeta con
+    // `livery.cfg`/`aircraft.cfg` + `texture*`, SIN manifest propio). Las que
+    // ya viven dentro de un paquete Community (con manifest) se instalan con él
+    // y se excluyen aquí.
+    for liv in crate::pmdg_install::find_liveries(root) {
+        if community_dirs.iter().any(|d| liv.path.starts_with(d)) {
+            continue;
+        }
+        items.push(livery_to_item(&liv, root));
+    }
+
     // (v2.1.1) Ordenar items por relative_path para que las variantes
     // del mismo perfil queden agrupadas visualmente.
     items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
     Ok(items)
+}
+
+/// (v6.2.45) Convierte una livery detectada en un `DropItem` selectable.
+fn livery_to_item(liv: &crate::pmdg_install::LiveryInfo, root: &Path) -> DropItem {
+    use crate::pmdg_install::AcType;
+    let kind = match liv.ac_type {
+        AcType::Pmdg => "pmdg_livery",
+        AcType::Ifly => "ifly_livery",
+    };
+    let relative_path = liv
+        .path
+        .strip_prefix(root)
+        .unwrap_or(&liv.path)
+        .to_string_lossy()
+        .into_owned();
+    let size_bytes = dir_size(&liv.path);
+    // Chips: avión + variante. La aerolínea (si hay) va en el label.
+    let mut variants = vec![liv.ac_key.clone()];
+    if let Some(v) = &liv.variant_label {
+        variants.push(v.clone());
+    }
+    let label = match &liv.airline {
+        Some(a) => format!("{} · {}", a, liv.ac_key),
+        None => format!("{} · {}", liv.name, liv.ac_key),
+    };
+    DropItem {
+        kind: kind.to_string(),
+        label,
+        icao: None,
+        variants,
+        source_path: liv.path.to_string_lossy().into_owned(),
+        relative_path,
+        size_bytes,
+        description: None,
+    }
+}
+
+/// Tamaño total (bytes) de un directorio, best-effort.
+fn dir_size(dir: &Path) -> u64 {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// (v2.1.1) Construye un label detallado para un archivo GSX.
@@ -892,20 +989,18 @@ fn install_gsx(src: &Path) -> anyhow::Result<String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// (v6.1) Instala una config de avión (iFly/PMDG) en la carpeta `work` de su
-/// paquete, dentro del PERFIL DE ESTADO de MSFS (NO en Community). La raíz la
-/// resuelve `community::addon_work_root` según la versión (2020/2024) — rutas
-/// verificadas en disco:
-///   · iFly  → `<work_root>/ifly-aircraft-*/work/<archivo>`
-///   · PMDG  → `<work_root>/pmdg-aircraft-*/work/Aircraft/<archivo>` (los
-///     configs por matrícula de PMDG viven ahí). Con varias variantes PMDG,
-///     preferimos la que YA contiene esa matrícula; si ninguna, la primera.
+/// (v6.1, ampliado v6.2.45) Instala una config de avión (iFly/PMDG) en la
+/// carpeta `work` de su paquete, dentro del PERFIL DE ESTADO de MSFS (NO en
+/// Community):
+///   · iFly  → `<root>/ifly-aircraft-*/work/<archivo>`
+///   · PMDG  → `<root>/pmdg-aircraft-*/work/Aircraft/<matrícula>.ini`
+///     (nombramos por `atc_id` del `livery.cfg` adyacente, como la app de
+///     doguer27; con varias variantes PMDG preferimos la que ya tiene la matrícula).
 ///
-/// `prefer_2024` = versión de MSFS activa del usuario. OJO (verificado en disco):
-/// la carpeta de estado depende del ADDON, no solo de la versión:
-///   · iFly  → SÍ cambia: 2024 va a `…2024\WASM\MSFS2020`, 2020 a `…\Packages`.
-///   · PMDG  → SIEMPRE en el perfil 2020 (`…\Microsoft Flight Simulator\Packages`),
-///     incluso usándolo en MSFS 2024 (PMDG no escribe en el sandbox WASM).
+/// (v6.2.45) Ya NO asumimos una sola raíz: buscamos el paquete en TODAS las
+/// raíces candidatas (`community::addon_work_roots_all` — `Packages`,
+/// `WASM\MSFS2024`, `WASM\MSFS2020`) e instalamos donde el addon la creó
+/// realmente. `prefer_2024` sólo prioriza el orden de búsqueda.
 fn install_addon_config(
     src: &Path,
     kind: &str,
@@ -921,36 +1016,39 @@ fn install_addon_config(
         other => anyhow::bail!("kind de config desconocido: {other}"),
     };
 
-    // PMDG ignora la versión: siempre el perfil 2020. iFly sí la respeta.
-    let root_2024 = if kind == "pmdg_config" {
-        false
-    } else {
-        prefer_2024
-    };
-    let work_root = crate::community::addon_work_root(root_2024).ok_or_else(|| {
-        anyhow::anyhow!("No pude resolver la carpeta de estado (work) de MSFS")
-    })?;
-    let work_root = work_root.as_path();
-
-    // Paquetes candidatos: dirs del work_root que empiezan por el prefijo
-    // (ahí es donde cada addon crea su carpeta `work`).
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(work_root)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| {
-                    p.is_dir()
-                        && p.file_name()
-                            .and_then(|s| s.to_str())
-                            .map(|n| n.to_ascii_lowercase().starts_with(prefix))
-                            .unwrap_or(false)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // (v6.2.45) Buscamos el paquete `{prefix}-*` en TODAS las raíces de estado
+    // candidatas (2020 `Packages`, 2024 `WASM\MSFS2024` —donde PMDG 2024 escribe,
+    // como la app de doguer27— y 2024 `WASM\MSFS2020` —donde deja iFly su work—),
+    // e instalamos donde el addon REALMENTE creó su carpeta. Así no dependemos de
+    // una única suposición de ruta. `prefer_2024` sólo prioriza el orden.
+    let mut roots = crate::community::addon_work_roots_all();
+    if !prefer_2024 {
+        // Si el usuario usa 2020, priorizamos las raíces `Packages`.
+        roots.sort_by_key(|p| {
+            let s = p.to_string_lossy().to_ascii_lowercase();
+            u8::from(s.contains("wasm"))
+        });
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for root in &roots {
+        if let Ok(rd) = std::fs::read_dir(root) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir()
+                    && p.file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|n| n.to_ascii_lowercase().starts_with(prefix))
+                        .unwrap_or(false)
+                {
+                    candidates.push(p);
+                }
+            }
+        }
+    }
     if candidates.is_empty() {
         anyhow::bail!(
-            "No encuentro ningún paquete {prefix}-* en el perfil de MSFS ({})",
-            work_root.display()
+            "No encuentro ningún paquete {prefix}-* en ninguna carpeta de estado de MSFS. \
+             ¿Está instalado el avión?"
         );
     }
 
@@ -973,7 +1071,19 @@ fn install_addon_config(
         dest_dir = dest_dir.join(s);
     }
     std::fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(file_name);
+    // (v6.2.45) PMDG: si el .ini viene JUNTO a un `livery.cfg` con `atc_id`,
+    // lo instalamos como `{atc_id}.ini` (como hace la app de doguer27) para que
+    // PMDG lo asocie a esa matrícula. Si no, conservamos el nombre original.
+    let dest_name: PathBuf = if kind == "pmdg_config" {
+        src.parent()
+            .and_then(crate::pmdg_install::atc_id_in_dir)
+            .filter(|id| !id.is_empty())
+            .map(|id| PathBuf::from(format!("{id}.ini")))
+            .unwrap_or_else(|| PathBuf::from(file_name))
+    } else {
+        PathBuf::from(file_name)
+    };
+    let dest = dest_dir.join(&dest_name);
     tracing::info!(
         target: "drop",
         "copiando config {} → {}",
