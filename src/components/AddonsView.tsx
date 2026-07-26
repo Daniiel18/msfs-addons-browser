@@ -3,6 +3,7 @@ import {
   Boxes,
   CircleOff,
   Cog,
+  Download,
   GitBranch,
   HardDrive,
   LayoutGrid,
@@ -16,6 +17,7 @@ import {
   PowerOff,
   RefreshCcw,
   HelpCircle,
+  Trash2,
 } from "lucide-react";
 import type { CommunityPackage, PmdgLivery } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
@@ -538,7 +540,10 @@ export function AddonsView() {
               UNKNOWN seleccionados, lo que el usuario reportó como
               "se cuela en todos los filtros". */}
           {(typeFilter === "ALL" || typeFilter === "LIVERY") && (
-            <AircraftLiveriesSection filter={filter} />
+            <>
+              <LiveryBrowseBanner />
+              <AircraftLiveriesSection filter={filter} />
+            </>
           )}
         </>
       )}
@@ -702,6 +707,69 @@ function modelLabel(vendor: string, m: string): string {
   return m.toUpperCase();
 }
 
+/** (v6.2.49) Banner para abrir el navegador embebido de flightsim.to y
+ *  descargar liveries con la cuenta del usuario (la descarga se intercepta y
+ *  se instala sola). Con accesos rápidos por avión. */
+function LiveryBrowseBanner() {
+  const pushToast = useToastStore((s) => s.push);
+  const open = (url?: string) => {
+    void api
+      .openLiveryBrowser(url)
+      .then(() =>
+        pushToast({
+          kind: "info",
+          title: t("livery.browse.opened"),
+          message: t("livery.browse.opened_hint"),
+          ttlMs: 6000,
+        }),
+      )
+      .catch((e) =>
+        pushToast({ kind: "error", title: t("livery.browse.err"), message: String(e) }),
+      );
+  };
+  const quick: Array<[string, string]> = [
+    ["PMDG 737-800", "https://flightsim.to/liveries/pmdg-boeing-737-800"],
+    ["iFly 737 MAX", "https://flightsim.to/liveries/ifly-boeing-737-max"],
+    ["Todas", "https://flightsim.to/liveries"],
+  ];
+  return (
+    <section className="mb-4 rounded-xl border border-fuchsia-500/25 bg-fuchsia-500/[0.06] px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-100">
+            <Palette className="h-4 w-4 text-fuchsia-300" />
+            {t("livery.browse.title")}
+          </h3>
+          <p className="mt-0.5 text-[11px] text-slate-400">
+            {t("livery.browse.subtitle")}
+          </p>
+        </div>
+        <button
+          onClick={() => open()}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-fuchsia-500 px-3 py-1.5 text-xs font-semibold text-fuchsia-950 hover:bg-fuchsia-400"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {t("livery.browse.open")}
+        </button>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-slate-500">
+          {t("livery.browse.quick")}
+        </span>
+        {quick.map(([label, url]) => (
+          <button
+            key={label}
+            onClick={() => open(url)}
+            className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-fuchsia-500/40 hover:text-fuchsia-200"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function AircraftLiveriesSection({ filter }: { filter: string }) {
   const [liveries, setLiveries] = useState<PmdgLivery[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -853,6 +921,14 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
                           <LiveryCard
                             key={`${liv.title}-${idx}`}
                             liv={liv}
+                            onUninstalled={(folder) =>
+                              setLiveries(
+                                (prev) =>
+                                  prev?.filter(
+                                    (l) => l.packageFolder !== folder,
+                                  ) ?? null,
+                              )
+                            }
                           />
                         ))}
                       </ul>
@@ -867,9 +943,34 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
   );
 }
 
-function LiveryCard({ liv }: { liv: PmdgLivery }) {
+function LiveryCard({
+  liv,
+  onUninstalled,
+}: {
+  liv: PmdgLivery;
+  onUninstalled: (packageFolder: string) => void;
+}) {
+  const pushToast = useToastStore((s) => s.push);
+  const rescan = useCommunityStore((s) => s.rescan);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const doUninstall = async () => {
+    setBusy(true);
+    try {
+      await api.uninstallCommunityPackage(liv.packageFolder);
+      pushToast({ kind: "success", title: t("livery.uninstall.ok"), ttlMs: 2500 });
+      onUninstalled(liv.packageFolder);
+      void rescan().catch(() => {});
+    } catch (e) {
+      pushToast({ kind: "error", title: t("livery.uninstall.err"), message: String(e) });
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
   return (
-    <li className="group flex h-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60 transition-colors hover:border-brand-500/40 hover:bg-slate-900">
+    <li className="group relative flex h-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60 transition-colors hover:border-brand-500/40 hover:bg-slate-900">
       {/* Thumbnail rectangular arriba (~16:9), igual que PackageCard. */}
       <div className="relative h-28 w-full overflow-hidden bg-slate-900">
         {liv.thumbnailDataUrl ? (
@@ -887,6 +988,44 @@ function LiveryCard({ liv }: { liv: PmdgLivery }) {
           <span className="absolute right-2 top-2 rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] font-medium text-slate-100 ring-1 ring-slate-700">
             {liv.tailNumber}
           </span>
+        )}
+        {/* (v6.2.49) Desinstalar (aparece al hover). Dos pasos para evitar
+            borrados accidentales. */}
+        {!confirming ? (
+          <button
+            onClick={() => setConfirming(true)}
+            title={t("livery.uninstall")}
+            className="absolute left-2 top-2 rounded bg-slate-950/80 p-1 text-slate-400 opacity-0 ring-1 ring-slate-700 transition group-hover:opacity-100 hover:text-rose-300"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/90 px-3 text-center">
+            <p className="text-[11px] text-slate-200">
+              {t("livery.uninstall.confirm")}
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirming(false)}
+                disabled={busy}
+                className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+              >
+                {t("drop.modal.cancel")}
+              </button>
+              <button
+                onClick={doUninstall}
+                disabled={busy}
+                className="inline-flex items-center gap-1 rounded bg-rose-500 px-2 py-0.5 text-[11px] font-semibold text-rose-950 hover:bg-rose-400 disabled:opacity-50"
+              >
+                {busy ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3" />
+                )}
+                {t("livery.uninstall")}
+              </button>
+            </div>
+          </div>
         )}
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">

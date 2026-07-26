@@ -78,6 +78,14 @@ export function DragDropOverlay() {
         if (paths.length === 0) return;
         await processDropBatch(paths);
       }),
+      // (v6.2.49) Descarga interceptada del navegador embebido de liveries →
+      // la tratamos EXACTAMENTE como un archivo soltado (inspect → modal →
+      // install). Así el livery descargado con la cuenta del usuario se instala
+      // con el mismo pipeline (nested-zip, detección de variante, etc.).
+      listen<string>("livery-download://finished", async (event) => {
+        const path = event.payload;
+        if (path) await processDropBatch([path]);
+      }),
     );
 
     return () => {

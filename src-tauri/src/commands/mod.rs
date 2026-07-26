@@ -10,6 +10,7 @@ pub mod economy;
 pub mod flight_log;
 pub mod gsx;
 pub mod install;
+pub mod livery;
 pub mod perf;
 pub mod recording;
 pub mod scoring;
