@@ -51,6 +51,9 @@ pub struct LiveryInfo {
 struct PmdgSpec {
     key: &'static str,
     sim_folder: &'static str,
+    /// Carpeta WASM del avión (`pmdg-aircraft-77f`, …) — donde PMDG guarda
+    /// sus configs por matrícula en `…\work\Aircraft`.
+    wasm: &'static str,
     /// (substring del required_tags → etiqueta de variante).
     variants: &'static [(&'static str, &'static str)],
 }
@@ -62,11 +65,13 @@ const PMDG_DB: &[PmdgSpec] = &[
     PmdgSpec {
         key: "PMDG 737-600",
         sim_folder: "PMDG 737-600",
+        wasm: "pmdg-aircraft-736",
         variants: &[("b736_ext", "600")],
     },
     PmdgSpec {
         key: "PMDG 737-800",
         sim_folder: "PMDG 737-800",
+        wasm: "pmdg-aircraft-738",
         variants: &[
             ("b738bdsf_ext", "BDSF"),
             ("b738bcf_ext", "BCF"),
@@ -77,26 +82,31 @@ const PMDG_DB: &[PmdgSpec] = &[
     PmdgSpec {
         key: "PMDG 737-900",
         sim_folder: "PMDG 737-900",
+        wasm: "pmdg-aircraft-739",
         variants: &[("b739er_ext", "900ER"), ("b739_ext", "900")],
     },
     PmdgSpec {
         key: "PMDG 777F",
         sim_folder: "PMDG 777F",
+        wasm: "pmdg-aircraft-77f",
         variants: &[("b77f_ext", "F")],
     },
     PmdgSpec {
         key: "PMDG 777-300ER",
         sim_folder: "PMDG 777-300ER",
+        wasm: "pmdg-aircraft-77w",
         variants: &[("b77w_ext", "300ER")],
     },
     PmdgSpec {
         key: "PMDG 777-200LR",
         sim_folder: "PMDG 777-200LR",
+        wasm: "pmdg-aircraft-77l",
         variants: &[("b77l_ext", "200LR")],
     },
     PmdgSpec {
         key: "PMDG 777-200ER",
         sim_folder: "PMDG 777-200ER",
+        wasm: "pmdg-aircraft-77er",
         variants: &[
             ("b772_ext,engine_ge", "GE"),
             ("b772_ext,engine_rr", "RR"),
@@ -318,6 +328,17 @@ pub fn regenerate_layout(pkg_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// (v6.2.46) Carpeta WASM del avión (`pmdg-aircraft-77f`, …) leyendo el
+/// `required_tags` del `livery.cfg` en `dir`. Es como la app de doguer27
+/// resuelve a QUÉ avión pertenece el config `.ini` de forma AUTOMÁTICA —
+/// determinista, sin adivinar por carpetas existentes.
+pub fn pmdg_wasm_from_dir(dir: &Path) -> Option<&'static str> {
+    let cfg = dir.join_ci("livery.cfg")?;
+    let content = read_lossy(&cfg);
+    let tags = ini_value(&content, "required_tags")?.to_ascii_lowercase();
+    pmdg_match(&tags).map(|(spec, _)| spec.wasm)
+}
+
 /// (v6.2.45) `atc_id` (matrícula) de la livery cuyo `.ini` está en `dir`.
 /// Es como la app original nombra el config PMDG en `work\Aircraft`:
 /// `{atc_id}.ini` — así PMDG lo asocia a esa matrícula. Lee `livery.cfg`.
@@ -458,10 +479,55 @@ mod tests {
     }
 
     #[test]
+    fn wasm_for_777f_from_tags() {
+        // Caso real "Air France Cargo": required_tags = b77f_ext,engine_ge.
+        let (spec, _) = pmdg_match("b77f_ext,engine_ge").unwrap();
+        assert_eq!(spec.wasm, "pmdg-aircraft-77f");
+    }
+
+    #[test]
+    fn wasm_for_738_from_tags() {
+        let (spec, _) = pmdg_match("b738_ext").unwrap();
+        assert_eq!(spec.wasm, "pmdg-aircraft-738");
+    }
+
+    #[test]
     fn ini_value_strips_quotes() {
         assert_eq!(
             ini_value("name = \"American Airlines\"\n", "name").as_deref(),
             Some("American Airlines")
         );
+    }
+
+    /// Reproduce la estructura REAL del pack "Air France Cargo" (nested zip
+    /// AFR-FGUOB-CO): livery.cfg (b77f_ext,engine_ge / atc_id F-GUOB) +
+    /// carpeta `texture` + options.ini. Verifica detección + resolución.
+    #[test]
+    fn detects_air_france_cargo_livery_structure() {
+        let tmp = std::env::temp_dir().join(format!(
+            "simfleet_livtest_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let liv = tmp.join("AFR-FGUOB-CO");
+        std::fs::create_dir_all(liv.join("texture")).unwrap();
+        std::fs::write(
+            liv.join("livery.cfg"),
+            "[Selection]\nrequired_tags = b77f_ext,engine_ge\n\n[GENERAL]\nname = Air France Cargo (F-GUOB)\natc_id = F-GUOB\n",
+        )
+        .unwrap();
+        std::fs::write(liv.join("options.ini"), "[Displays]\nPFD_x=1\n").unwrap();
+
+        let found = find_liveries(&tmp);
+        assert_eq!(found.len(), 1, "debe detectar 1 livery");
+        let info = &found[0];
+        assert_eq!(info.ac_type, AcType::Pmdg);
+        assert_eq!(info.ac_key, "PMDG 777F");
+        assert_eq!(pmdg_wasm_from_dir(&liv), Some("pmdg-aircraft-77f"));
+        assert_eq!(atc_id_in_dir(&liv).as_deref(), Some("F-GUOB"));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

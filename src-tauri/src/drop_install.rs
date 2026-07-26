@@ -257,6 +257,11 @@ pub fn inspect(
     }
     tracing::info!(target: "drop", "extracción completada");
 
+    // (v6.2.46) Aplanar archivos anidados (zip-of-zips): los packs de liveries
+    // de flightsim.to vienen como un .zip contenedor con un .zip por matrícula.
+    // Solo sobre el TEMP (nunca sobre carpetas del usuario).
+    flatten_nested_archives(&temp_path);
+
     let items = scan_extracted(&temp_path)?;
     tracing::info!(
         target: "drop",
@@ -543,6 +548,101 @@ fn extract_7z(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result
             .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?,
     }
     Ok(())
+}
+
+// =============================================================================
+// Aplanado de archivos anidados (zip-of-zips)
+// =============================================================================
+
+fn is_archive_ext(p: &Path) -> bool {
+    matches!(
+        p.extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("zip") | Some("rar") | Some("7z")
+    )
+}
+
+fn extract_any(src: &Path, dest: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    match src
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("zip") => extract_zip(src, dest, None),
+        Some("rar") => extract_rar(src, dest, None),
+        Some("7z") => extract_7z(src, dest, None),
+        _ => anyhow::bail!("extensión no soportada"),
+    }
+}
+
+/// Directorios que contienen `manifest.json` (paquetes Community). Sus
+/// archivos internos NO se aplanan (podrían ser assets del paquete).
+fn collect_manifest_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+        if entry.file_type().is_file() && entry.file_name() == "manifest.json" {
+            if let Some(p) = entry.path().parent() {
+                out.push(p.to_path_buf());
+            }
+        }
+    }
+    out
+}
+
+/// (v6.2.46) Extrae en sitio cada `.zip/.rar/.7z` anidado que NO esté dentro
+/// de un paquete Community, e itera hasta que no queden (tope de seguridad).
+/// Solo debe llamarse sobre un directorio TEMPORAL — nunca sobre carpetas del
+/// usuario, porque borra los archivos comprimidos tras extraerlos.
+fn flatten_nested_archives(root: &Path) {
+    let mut failed: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for _ in 0..128 {
+        let manifest_dirs = collect_manifest_dirs(root);
+        let next = walkdir::WalkDir::new(root)
+            .into_iter()
+            .flatten()
+            .map(|e| e.path().to_path_buf())
+            .find(|p| {
+                p.is_file()
+                    && !failed.contains(p)
+                    && is_archive_ext(p)
+                    && !manifest_dirs.iter().any(|d| p.starts_with(d))
+            });
+        let Some(arc) = next else { break };
+        let parent = arc.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| root.to_path_buf());
+        let stem = arc
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("nested")
+            .to_string();
+        let mut dest = parent.join(&stem);
+        let mut n = 1;
+        while dest.exists() {
+            dest = parent.join(format!("{stem}_{n}"));
+            n += 1;
+        }
+        match extract_any(&arc, &dest) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&arc);
+                tracing::info!(
+                    target: "drop",
+                    "archivo anidado extraído: {} → {}",
+                    arc.display(), dest.display()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "drop",
+                    "no pude extraer anidado {}: {} (se ignora)",
+                    arc.display(), e
+                );
+                failed.insert(arc);
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -1016,14 +1116,52 @@ fn install_addon_config(
         other => anyhow::bail!("kind de config desconocido: {other}"),
     };
 
-    // (v6.2.45) Buscamos el paquete `{prefix}-*` en TODAS las raíces de estado
+    // (v6.2.46) PMDG con `livery.cfg` adyacente → ruta DETERMINISTA, igual que
+    // la app de doguer27: el avión sale del `required_tags`, y el archivo va a
+    // `<perfil2024>\WASM\MSFS2024\{wasm}\work\Aircraft\{atc_id}.ini`. Así no
+    // dependemos de qué carpetas existan ni de en qué raíz cayó otra matrícula.
+    if kind == "pmdg_config" {
+        if let Some(wasm) = src
+            .parent()
+            .and_then(crate::pmdg_install::pmdg_wasm_from_dir)
+        {
+            if let Some(root2024) = crate::community::pmdg_2024_work_root() {
+                let dest_dir = root2024.join(wasm).join("work").join("Aircraft");
+                std::fs::create_dir_all(&dest_dir)?;
+                let dest_name = src
+                    .parent()
+                    .and_then(crate::pmdg_install::atc_id_in_dir)
+                    .filter(|id| !id.is_empty())
+                    .map(|id| format!("{id}.ini"))
+                    .unwrap_or_else(|| file_name.to_string_lossy().into_owned());
+                let dest = dest_dir.join(&dest_name);
+                std::fs::copy(src, &dest)?;
+                tracing::info!(
+                    target: "drop",
+                    "config PMDG (determinista, {wasm}) {} → {}",
+                    src.display(), dest.display()
+                );
+                return Ok(dest.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    // (v6.2.45) Fallback: buscamos el paquete `{prefix}-*` en TODAS las raíces
     // candidatas (2020 `Packages`, 2024 `WASM\MSFS2024` —donde PMDG 2024 escribe,
     // como la app de doguer27— y 2024 `WASM\MSFS2020` —donde deja iFly su work—),
     // e instalamos donde el addon REALMENTE creó su carpeta. Así no dependemos de
     // una única suposición de ruta. `prefer_2024` sólo prioriza el orden.
     let mut roots = crate::community::addon_work_roots_all();
-    if !prefer_2024 {
-        // Si el usuario usa 2020, priorizamos las raíces `Packages`.
+    if kind == "pmdg_config" {
+        // PMDG (config suelto, sin livery.cfg): priorizamos SIEMPRE `WASM\MSFS2024`
+        // (donde PMDG 2024 escribe) sobre `Packages` — evita el bug de que dos
+        // matrículas del mismo pack caigan en raíces distintas.
+        roots.sort_by_key(|p| {
+            let s = p.to_string_lossy().to_ascii_lowercase();
+            u8::from(!s.contains("msfs2024"))
+        });
+    } else if !prefer_2024 {
+        // iFly con usuario en 2020: priorizamos las raíces `Packages`.
         roots.sort_by_key(|p| {
             let s = p.to_string_lossy().to_ascii_lowercase();
             u8::from(s.contains("wasm"))

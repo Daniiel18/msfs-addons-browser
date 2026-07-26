@@ -267,6 +267,25 @@ pub fn addon_work_roots_all() -> Vec<PathBuf> {
     out.into_iter().filter(|p| p.is_dir()).collect()
 }
 
+/// (v6.2.46) Raíz `WASM\MSFS2024` del perfil de MSFS 2024 — donde PMDG (en
+/// 2024) guarda los configs por matrícula (`{wasm}\work\Aircraft\{atc_id}.ini`),
+/// EXACTAMENTE la ruta que usa la app de doguer27. La subcarpeta puede no
+/// existir aún (PMDG la crea al volar); devolvemos la ruta si el PERFIL 2024
+/// existe (garantizado por su `UserCfg.opt`), y el caller hace `create_dir_all`.
+pub fn pmdg_2024_work_root() -> Option<PathBuf> {
+    for (cfg, variant) in find_all_user_cfgs() {
+        if matches!(
+            variant,
+            MsfsVariant::MsStore2024 | MsfsVariant::Steam2024
+        ) {
+            if let Some(profile) = cfg.parent() {
+                return Some(profile.join("WASM").join("MSFS2024"));
+            }
+        }
+    }
+    None
+}
+
 static PACKAGES_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)InstalledPackagesPath\s+"(.+?)""#).unwrap());
 
