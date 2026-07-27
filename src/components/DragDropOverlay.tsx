@@ -9,12 +9,14 @@ import {
   Upload,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { DropCommitReport, DropInspection } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
+import { playLandingSound } from "../lib/landingSound";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
-import { DropSelectModal, DeleteConfirm } from "./DropSelectModal";
+import { DropSelectModal, DeleteConfirm, isEmbeddedDownload } from "./DropSelectModal";
 import { t } from "../lib/i18n";
 
 /**
@@ -34,6 +36,20 @@ import { t } from "../lib/i18n";
  * un modal por archivo. Recolectamos las inspecciones primero y
  * mostramos UN solo modal paginado.
  */
+/** (v6.2.57) Sonido de "toque de pista" + traer la app al frente. Se llama
+ *  cuando la instalación/modal de una descarga del embebido está LISTA. */
+async function notifyDownloadReady() {
+  playLandingSound();
+  try {
+    const win = getCurrentWindow();
+    await win.unminimize().catch(() => {});
+    await win.show().catch(() => {});
+    await win.setFocus().catch(() => {});
+  } catch {
+    /* ignore */
+  }
+}
+
 export function DragDropOverlay() {
   const [hovering, setHovering] = useState(false);
   const [activeInspections, setActiveInspections] = useState<
@@ -84,7 +100,11 @@ export function DragDropOverlay() {
       // con el mismo pipeline (nested-zip, detección de variante, etc.).
       listen<string>("livery-download://finished", async (event) => {
         const path = event.payload;
-        if (path) await processDropBatch([path]);
+        if (!path) return;
+        // (v6.2.57) El sonido + traer-al-frente ya NO van aquí (al empezar a
+        // procesar), sino cuando el MODAL está LISTO — se dispara dentro de
+        // processDropBatch justo antes de mostrarlo / instalar.
+        await processDropBatch([path]);
       }),
     );
 
@@ -164,9 +184,17 @@ export function DragDropOverlay() {
       .map((i) => i.inspection)
       .filter((i): i is DropInspection => !!i && i.items.length > 0);
 
+    // (v6.2.57) ¿El lote viene del navegador embebido? Sólo entonces sonamos +
+    // traemos la app al frente — y JUSTO cuando el modal/instalación está listo.
+    const fromEmbedded = validInspections.some((i) =>
+      isEmbeddedDownload(i.archivePath),
+    );
+
     const allSingle =
       validInspections.length > 0 &&
-      validInspections.every((i) => i.items.length === 1);
+      validInspections.every(
+        (i) => i.items.length === 1 && i.items[0].kind !== "installer_exe",
+      );
 
     if (validInspections.length > 0 && allSingle) {
       // FAST-PATH: todo de 1 item (liveries, aviones sueltos…). Commit
@@ -182,15 +210,18 @@ export function DragDropOverlay() {
             null,
           );
           reports.push(r);
-          // (v5.2.0) NO ofrecemos borrar el original si era una CARPETA
-          // (el usuario no espera que se borre su carpeta de origen).
-          if (
-            !insp.isFolder &&
-            (r.installedGsx.length > 0 ||
-              r.installedPackages.length > 0 ||
-              (r.installedConfigs?.length ?? 0) > 0 ||
-              (r.installedLiveries?.length ?? 0) > 0)
-          ) {
+          const installedSomething =
+            r.installedGsx.length > 0 ||
+            r.installedPackages.length > 0 ||
+            (r.installedConfigs?.length ?? 0) > 0 ||
+            (r.installedLiveries?.length ?? 0) > 0;
+          // (v6.2.56) Descarga del navegador embebido (carpeta temporal
+          // `simfleet-livery-dl`): la BORRAMOS sola tras instalar, sin
+          // preguntar (el usuario no sabe ni le importa dónde quedó).
+          if (isEmbeddedDownload(insp.archivePath) && installedSomething) {
+            await api.deleteDroppedArchive(insp.archivePath).catch(() => {});
+          } else if (!insp.isFolder && installedSomething) {
+            // Archivo que TÚ arrastraste → sí ofrecemos borrar (confirm).
             committed.push(insp.archivePath);
           }
         } catch (e) {
@@ -201,10 +232,14 @@ export function DragDropOverlay() {
           });
         }
       }
+      // (v6.2.57) Instalación lista (fast-path) → sonido + app al frente.
+      if (fromEmbedded) void notifyDownloadReady();
       await onDoneBatch(validInspections, reports);
       deleteAccumRef.current.push(...committed);
     } else if (validInspections.length > 0) {
-      // Multi-item → modal de selección paginado.
+      // Multi-item → modal de selección paginado. Sonamos + traemos al frente
+      // AHORA que el modal está listo (no al empezar a procesar).
+      if (fromEmbedded) void notifyDownloadReady();
       setActiveInspections(validInspections);
     }
 

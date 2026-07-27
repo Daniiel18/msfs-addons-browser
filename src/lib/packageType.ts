@@ -51,6 +51,23 @@ const SOUND_RE =
 const TEXTURE_MOD_RE =
   /\b(downscaled|improve\s*fps|new\s*cockpit|cockpit\s*texture|texture\s*(?:pack|mod|overhaul)|retexture|4k\s*texture|cockpit\s*overhaul)\b/i;
 
+/** (v6.2.58) Mods de cabina/texturas PMDG/iFly que NO son liveries de
+ *  aerolínea (zHUES, "new cockpit", cabina sucia/desgastada). Se quedan en
+ *  MISC aunque el paquete sea PMDG/iFly. */
+const COCKPIT_MOD_RE =
+  /\b(hues|cockpit|panel\s*mod|instrument\s*mod|weathered|dirty|used\s*look|worn)\b/i;
+
+/** (v6.2.58) Livery de PMDG/iFly: un paquete de sólo-texturas (containers
+ *  pero SIN modelo propio) que referencia un avión PMDG o iFly es casi
+ *  siempre una LIVERY de aerolínea — antes caía en MISC por declarar
+ *  content_type=AIRCRAFT sin modelo. Excluimos los mods de cabina. */
+function looksLikePmdgIflyLivery(p: CommunityPackage): boolean {
+  const t = `${p.title} ${p.folderName}`.toLowerCase();
+  if (!/\b(pmdg|ifly)\b/.test(t)) return false;
+  if (COCKPIT_MOD_RE.test(t)) return false;
+  return true;
+}
+
 /** Señales TEXTUALES explícitas de livery (no deps>0, que es engañoso). */
 function looksLikeLivery(p: CommunityPackage): boolean {
   const t = `${p.title} ${p.folderName}`;
@@ -192,7 +209,15 @@ export function derivedType(p: CommunityPackage): DerivedType {
     parseJsonArray(p.simobjectDirsJson).length > 0;
   if (ct === "AIRCRAFT") {
     if (p.hasOwnModel) return "AIRCRAFT"; // avión de verdad
-    if (hasContainers) return "MISC"; // modifica un avión (texturas/cabina)
+    if (hasContainers) {
+      // (v6.2.58) Un paquete de sólo-texturas (containers, sin modelo) puede
+      // ser una LIVERY de aerolínea, NO un mod de cabina. Lo mandamos a
+      // LIVERY si hay señal de livery (aerolínea/matrícula) o si es un livery
+      // de PMDG/iFly. Si no, es una mod de cabina/texturas → MISC.
+      if (!TEXTURE_MOD_RE.test(hay) && (looksLikeLivery(p) || looksLikePmdgIflyLivery(p)))
+        return "LIVERY";
+      return "MISC"; // modifica un avión (texturas/cabina)
+    }
     // AIRCRAFT sin containers ni modelo: keywords de textura → MISC,
     // si no, lo dejamos como AIRCRAFT (manifest correcto sin SimObjects
     // parseable — raro pero posible).

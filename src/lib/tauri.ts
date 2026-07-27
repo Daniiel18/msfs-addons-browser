@@ -53,6 +53,7 @@ import type {
   GsxInstallReport,
   GsxProfile,
   GsxProfileUpdate,
+  FlightsimUpdate,
   InstallResult,
   InstalledAddon,
   CrossLinkOffer,
@@ -198,13 +199,33 @@ interface Api {
    *  instalado en `%APPDATA%\Virtuali\GSX\MSFS`. La frontend usa esto
    *  para mostrar un check en cada card de escenario. */
   gsxListInstalledIcaos: () => Promise<string[]>;
-  /** (v6.2.44) Revisa updates de los perfiles GSX instalados (compara la
-   *  fecha del .ini local con la `updatedAt` de flightsim.to). */
+  /** (v6.2.44) Revisa updates de los perfiles GSX instalados. (v6.2.58)
+   *  Detección por línea base: sólo marca cuando el catálogo avanza más allá
+   *  de lo que se vio la primera vez (sin falsos positivos). */
   gsxCheckProfileUpdates: () => Promise<GsxProfileUpdate[]>;
+  /** (v6.2.58) Marca un update GSX como manejado: avanza el baseline para que
+   *  el badge no reaparezca (se llama al pulsar el badge). */
+  gsxAckUpdate: (icao: string) => Promise<void>;
+  /** (v6.2.60) Revisa updates de addons descargados de flightsim.to por el
+   *  embebido (compara el updatedAt actual vs el baseline al instalar). */
+  flightsimCheckUpdates: () => Promise<FlightsimUpdate[]>;
+  /** (v6.2.60) Marca un addon de flightsim.to como manejado: avanza su
+   *  baseline para que el badge no reaparezca (se llama al pulsar el badge). */
+  flightsimAckUpdate: (folderName: string) => Promise<void>;
+  /** (DEBUG v6.2.60) Fuerza updates de prueba en los addons rastreados
+   *  (rebobina el baseline). Devuelve cuántos afectó. Ayuda temporal. */
+  flightsimDebugForceUpdate: () => Promise<number>;
   /** (v6.2.52) Vigila la carpeta de Descargas: cuando bajes una livery de
    *  flightsim.to (en tu navegador real, con tu cuenta), la detecta y la
    *  instala automáticamente. Se llama al abrir flightsim.to. */
   startLiveryDownloadWatch: () => Promise<void>;
+  /** (v6.2.55) Abre el navegador EMBEBIDO de flightsim.to (ya arreglado el
+   *  render con disable_drag_drop_handler). Inicias sesión ahí con tu cuenta,
+   *  descargas y la descarga se intercepta e instala sola. */
+  openLiveryBrowser: (url?: string) => Promise<void>;
+  /** (v6.2.56) Copia una app/instalador descargado a la carpeta elegida
+   *  (nunca a Community). Devuelve la ruta final. */
+  saveInstallerTo: (src: string, destFolder: string) => Promise<string>;
   /** (v2.0.0) Instala perfil(es) GSX desde un archivo. Acepta
    *  `.ini`/`.py` sueltos o `.zip`/`.rar` con varios perfiles dentro.
    *  Devuelve el reporte con cuántos archivos se instalaron y cuáles
@@ -703,7 +724,17 @@ const realApi: Api = {
   gsxListInstalledIcaos: () => invoke<string[]>("gsx_list_installed_icaos"),
   gsxCheckProfileUpdates: () =>
     invoke<GsxProfileUpdate[]>("gsx_check_profile_updates"),
+  gsxAckUpdate: (icao) => invoke<void>("gsx_ack_update", { icao }),
+  flightsimCheckUpdates: () =>
+    invoke<FlightsimUpdate[]>("flightsim_check_updates"),
+  flightsimAckUpdate: (folderName) =>
+    invoke<void>("flightsim_ack_update", { folderName }),
+  flightsimDebugForceUpdate: () =>
+    invoke<number>("flightsim_debug_force_update"),
   startLiveryDownloadWatch: () => invoke<void>("start_livery_download_watch"),
+  openLiveryBrowser: (url) => invoke<void>("open_livery_browser", { url: url ?? null }),
+  saveInstallerTo: (src, destFolder) =>
+    invoke<string>("save_installer_to", { src, destFolder }),
   gsxInstallProfile: (sourcePath) =>
     invoke<GsxInstallReport>("gsx_install_profile", { sourcePath }),
   readTextFile: (path) => invoke<string>("read_text_file", { path }),
@@ -1292,8 +1323,22 @@ const demoApi: Api = {
   async gsxCheckProfileUpdates() {
     return [];
   },
+  async gsxAckUpdate() {},
+  async flightsimCheckUpdates() {
+    return [];
+  },
+  async flightsimAckUpdate() {},
+  async flightsimDebugForceUpdate() {
+    return 0;
+  },
   async startLiveryDownloadWatch() {
     return;
+  },
+  async openLiveryBrowser(_url) {
+    return;
+  },
+  async saveInstallerTo(_src, _destFolder) {
+    return "";
   },
   async gsxInstallProfile(_sourcePath) {
     return {

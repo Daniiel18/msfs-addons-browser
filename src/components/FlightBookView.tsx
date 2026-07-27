@@ -2221,7 +2221,30 @@ function AirlineTagFilter() {
         byKey.set(key, merged);
       }
     }
-    return [...byKey.values()].sort((x, y) => y.flightCount - x.flightCount);
+    // (v6.2.66) SEGUNDO merge por NOMBRE VISIBLE resuelto — colapsa variantes
+    // que la clave canónica no unió (p.ej. un icao sin IATA vs el nombre
+    // completo, o "DAL" vs "Delta Air Lines"). Resolvemos el nombre real con
+    // `icaoToName` para que ambas caras de la misma aerolínea caigan juntas y
+    // se sume su conteo (fin del chip duplicado).
+    const byName = new Map<string, AirlineTag>();
+    for (const a of byKey.values()) {
+      const display = (icaoToName(a.icao) ?? a.name ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      const nkey = display || `#${a.icao ?? a.name}`;
+      const prev = byName.get(nkey);
+      if (!prev) {
+        byName.set(nkey, { ...a });
+      } else {
+        const takeNew = a.flightCount > prev.flightCount;
+        byName.set(nkey, {
+          icao: (takeNew ? a.icao : prev.icao) ?? prev.icao ?? a.icao,
+          name: (takeNew ? a.name : prev.name) || prev.name || a.name,
+          flightCount: prev.flightCount + a.flightCount,
+        });
+      }
+    }
+    return [...byName.values()].sort((x, y) => y.flightCount - x.flightCount);
   }, [airlines]);
   if (visible.length === 0) return null;
   return (

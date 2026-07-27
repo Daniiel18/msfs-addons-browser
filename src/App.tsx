@@ -23,6 +23,7 @@ import { useSettingsStore } from "./stores/useSettingsStore";
 import { useGsxUpdateStore } from "./stores/useGsxUpdateStore";
 import { useAiracUpdateStore } from "./stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "./stores/useGsxLocalStore";
+import { useFlightsimUpdateStore } from "./stores/useFlightsimUpdateStore";
 import { SourceToggle } from "./components/SourceToggle";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
@@ -43,6 +44,8 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
 import { LiveVsManager } from "./components/LiveVsManager";
 import { GsxUpdateGate } from "./components/GsxUpdateGate";
+import { GsxOfferModal } from "./components/GsxOfferModal";
+import { useGsxOfferStore } from "./stores/useGsxOfferStore";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
@@ -57,12 +60,6 @@ import { GsxRemoteBadge } from "./components/GsxRemoteBadge";
 import { OnboardingTour } from "./components/OnboardingTour";
 import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
-import {
-  WhatsNewModal,
-  buildWhatsNewSlides,
-  isUpdateSinceLastSeen,
-  markWhatsNewSeen,
-} from "./components/WhatsNewModal";
 import { CrossLinkModal } from "./components/CrossLinkModal";
 import type { CrossLinkOffer } from "./lib/types";
 
@@ -314,16 +311,6 @@ export default function App() {
   // en la instancia principal sólo cuando la app SE ACTUALIZA (la versión
   // guardada en localStorage difiere de la actual), una vez por versión; en
   // MODO SEGURO siempre. No coexiste con el tour de bienvenida.
-  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
-  // (v6.1) Identidad del piloto (daniel/hector) para personalizar el slide
-  // de Crew VS del What's New (el badge "TÚ" en la tarjeta correcta).
-  const [pilotIdentity, setPilotIdentity] = useState<string | null>(null);
-  useEffect(() => {
-    api
-      .pilotProfile()
-      .then((p) => setPilotIdentity(p.identity))
-      .catch(() => {});
-  }, []);
   // (v6 — #1) Oferta de cross-link 2020/2024 tras instalar un escenario
   // doble-compat. El backend la emite por `cross-link://offer`.
   const [crossLinkOffer, setCrossLinkOffer] = useState<CrossLinkOffer | null>(
@@ -422,11 +409,6 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    // (v6) Capturadas DENTRO del closure del bootstrap — las versiones de
-    // `appVersion`/`safeMode` en el scope del render quedan "stale" aquí
-    // (el effect corre una vez al montar). Las usamos para decidir el What's New.
-    let resolvedVersion: string | null = null;
-    let resolvedSafeMode = false;
     const run = async () => {
       const wrap = async (idx: number, fn: () => Promise<unknown>) => {
         try {
@@ -465,12 +447,10 @@ export default function App() {
         try {
           const { getVersion } = await import("@tauri-apps/api/app");
           const v = await getVersion();
-          resolvedVersion = v;
           if (!cancelled) setAppVersion(v);
         } catch (e) {
           console.warn("getVersion failed:", e);
         }
-        resolvedSafeMode = await api.isSafeMode().catch(() => false);
       }
       await wrap(0, async () => {
         const u = await api.checkForUpdate().catch(() => null);
@@ -527,7 +507,14 @@ export default function App() {
           .getState()
           .refresh()
           .then(() => useGsxLocalStore.getState().refreshUpdates()),
+        // (v6.2.60) Updates de addons descargados de flightsim.to (baseline por
+        // file_id, fiable). En background, sin bloquear el splash.
+        useFlightsimUpdateStore.getState().refreshUpdates(),
       ]);
+
+      // (v6.2.64) Oferta de perfiles GSX al instalar un escenario nuevo con
+      // ICAO. Suscribe el diff del listado de Community (idempotente).
+      useGsxOfferStore.getState().start();
 
       // (v5.3.4) Gate de versión de MSFS según lo INSTALADO:
       //   · 2020 Y 2024 instalados → preguntar en el splash CADA arranque
@@ -683,9 +670,7 @@ export default function App() {
           // usuario lo pidió: "debe salir cada vez que se actualiza"). Al
           // cerrarlo se marca la versión vista, así no reaparece hasta el
           // siguiente bump.
-          if (resolvedSafeMode || isUpdateSinceLastSeen(resolvedVersion)) {
-            setWhatsNewOpen(true);
-          }
+          // (v6.2.55) What's New ELIMINADO por completo (pedido del usuario).
 
           // Tour de bienvenida sólo para usuarios nuevos.
           if (firstRun) setTourOpen(true);
@@ -879,6 +864,23 @@ export default function App() {
                 onChange={setActiveSource}
               />
             )}
+            {/* (v6.2.57) Botón dedicado a flightsim.to (abre el navegador
+                embebido: liveries, perfiles GSX, apps). Independiente de la
+                versión de MSFS. Antes estaba en Addons; el usuario lo pidió aquí. */}
+            {view === "search" && (
+              <button
+                onClick={() =>
+                  void api.openLiveryBrowser("https://flightsim.to")
+                }
+                title={t("flightsimto.tooltip")}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/10 px-2.5 py-2 text-fuchsia-300 hover:border-fuchsia-500/50 hover:text-fuchsia-200"
+              >
+                <Globe2 className="h-4 w-4" />
+                <span className="hidden text-xs font-medium sm:inline">
+                  flightsim.to
+                </span>
+              </button>
+            )}
             <button
               onClick={() => window.dispatchEvent(new Event("simfleet:palette"))}
               title={t("palette.tooltip")}
@@ -1059,6 +1061,7 @@ export default function App() {
       <Toaster />
       <LiveVsManager />
       <GsxUpdateGate />
+      <GsxOfferModal />
       <SimBriefConfirmModal />
       <IncompleteFlightModal />
       <ReplayBanner />
@@ -1067,15 +1070,7 @@ export default function App() {
       {/* (v6 — #4) Novedades "What's New" anti-skip. Al cerrar, en la
           instancia principal persistimos la versión vista (una vez por
           actualización); en MODO SEGURO no, para que reaparezca siempre. */}
-      {whatsNewOpen && (
-        <WhatsNewModal
-          slides={buildWhatsNewSlides(pilotIdentity)}
-          onClose={() => {
-            setWhatsNewOpen(false);
-            if (!safeMode && appVersion) markWhatsNewSeen(appVersion);
-          }}
-        />
-      )}
+      {/* (v6.2.55) What's New ELIMINADO por completo (pedido del usuario). */}
       {/* (v6 — #1) Oferta de cross-link 2020/2024 tras instalar doble-compat. */}
       {crossLinkOffer && (
         <CrossLinkModal

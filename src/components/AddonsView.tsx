@@ -18,8 +18,9 @@ import {
   HelpCircle,
   Trash2,
 } from "lucide-react";
-import type { CommunityPackage, PmdgLivery } from "../lib/types";
+import type { CommunityPackage, PmdgLivery, FlightsimUpdate } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
+import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
 import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
 import { PackageDetailModal } from "./PackageDetailModal";
@@ -93,6 +94,13 @@ export function AddonsView() {
   const detailsFor = useCommunityStore((s) => s.detailsFor);
   const openDetails = useCommunityStore((s) => s.openDetails);
   const updates = useCommunityStore((s) => s.updates);
+  // (v6.2.60) Updates de addons descargados de flightsim.to (folderName → info).
+  const flightsimUpdates = useFlightsimUpdateStore((s) => s.updates);
+  const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
+  const openFlightsimUpdate = (u: FlightsimUpdate) => {
+    ackFlightsimUpdate(u.folderName); // limpia el badge + avanza baseline
+    void api.openLiveryBrowser(u.link); // abre la página del addon en el embebido
+  };
   const scanning = useCommunityStore((s) => s.scanning);
   const rescan = useCommunityStore((s) => s.rescan);
   const setManyEnabled = useCommunityStore((s) => s.setManyEnabled);
@@ -496,9 +504,8 @@ export function AddonsView() {
         <LinkMapView addons={addons} airports={airports} />
       ) : (
         <>
-          {/* (v6.2.53) Banner de descarga de liveries RETIRADO por pedido del
-              usuario (molestaba). El instalador por drag&drop sigue activo. Se
-              re-añade cuando el flujo de descarga esté resuelto. */}
+          {/* (v6.2.57) Banner de flightsim.to MOVIDO a Search (botón dedicado
+              en el header). El usuario lo pidió fuera de Addons. */}
           {visible.length === 0 ? (
             <EmptyState
               hasAny={addons.length > 0}
@@ -506,7 +513,13 @@ export function AddonsView() {
             />
           ) : typeFilter !== "ALL" || filter.trim() !== "" ? (
             // Lista plana — el usuario ya filtró, no agrupamos.
-            <CardsGrid items={visible} updates={updates} onOpen={openDetails} />
+            <CardsGrid
+              items={visible}
+              updates={updates}
+              flightsimUpdates={flightsimUpdates}
+              onFlightsimUpdate={openFlightsimUpdate}
+              onOpen={openDetails}
+            />
           ) : (
             // Agrupado por tipo con cabeceras.
             <div className="space-y-5">
@@ -525,6 +538,8 @@ export function AddonsView() {
                     <CardsGrid
                       items={items}
                       updates={updates}
+                      flightsimUpdates={flightsimUpdates}
+                      onFlightsimUpdate={openFlightsimUpdate}
                       onOpen={openDetails}
                     />
                   </section>
@@ -705,6 +720,7 @@ function modelLabel(vendor: string, m: string): string {
   if (vendor === "fbw" && m === "a32nx") return "A32NX";
   return m.toUpperCase();
 }
+
 
 function AircraftLiveriesSection({ filter }: { filter: string }) {
   const [liveries, setLiveries] = useState<PmdgLivery[] | null>(null);
@@ -990,10 +1006,14 @@ function LiveryCard({
 function CardsGrid({
   items,
   updates,
+  flightsimUpdates,
+  onFlightsimUpdate,
   onOpen,
 }: {
   items: { p: CommunityPackage; t: DerivedType }[];
   updates: { folderName: string }[];
+  flightsimUpdates: Map<string, FlightsimUpdate>;
+  onFlightsimUpdate: (u: FlightsimUpdate) => void;
   onOpen: (folder: string) => void;
 }) {
   return (
@@ -1004,6 +1024,8 @@ function CardsGrid({
           pkg={p}
           derived={t}
           hasUpdate={updates.some((u) => u.folderName === p.folderName)}
+          flightsimUpdate={flightsimUpdates.get(p.folderName)}
+          onFlightsimUpdate={onFlightsimUpdate}
           onClick={() => onOpen(p.folderName)}
         />
       ))}
@@ -1083,11 +1105,15 @@ function PackageCard({
   pkg,
   derived,
   hasUpdate,
+  flightsimUpdate,
+  onFlightsimUpdate,
   onClick,
 }: {
   pkg: CommunityPackage;
   derived: DerivedType;
   hasUpdate: boolean;
+  flightsimUpdate?: FlightsimUpdate;
+  onFlightsimUpdate: (u: FlightsimUpdate) => void;
   onClick: () => void;
 }) {
   // Skip de thumbnails para títulos con keywords de placeholder
@@ -1150,6 +1176,22 @@ function PackageCard({
               <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/30">
                 Update
               </span>
+            )}
+            {/* (v6.2.60) Update de flightsim.to (baseline por file_id). Badge
+                CLICKEABLE — abre la página del addon en el embebido. Va con
+                pointer-events-auto porque el contenedor los desactiva. */}
+            {flightsimUpdate && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFlightsimUpdate(flightsimUpdate);
+                }}
+                title={t("addons.card.fsto_update_tip")}
+                className="pointer-events-auto rounded bg-sky-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-950 shadow-md shadow-sky-500/30 hover:bg-sky-400"
+              >
+                ⬆ flightsim.to
+              </button>
             )}
             {!enabled && (
               <span className="rounded bg-slate-900/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400 ring-1 ring-slate-700">

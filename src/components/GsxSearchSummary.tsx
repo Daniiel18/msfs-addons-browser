@@ -55,7 +55,7 @@ export function GsxSearchSummary({ query }: Props) {
   if (!isIcao) return null;
 
   const url = `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(icao)}`;
-  const handleClick = () => api.openExternal(url);
+  const handleClick = () => api.openLiveryBrowser(url);
 
   if (loading || count === null) {
     return (

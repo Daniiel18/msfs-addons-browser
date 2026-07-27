@@ -190,10 +190,35 @@ pub fn inspect(
         });
     }
 
+    // (v6.2.56) App / instalador SUELTO (.exe/.msi/...) → NO va a Community; el
+    // front pedirá carpeta. Un solo item, sin extracción.
+    if matches!(ext.as_str(), "exe" | "msi" | "msix" | "msixbundle" | "appx") {
+        let root = archive_path.parent().unwrap_or(Path::new(""));
+        let item = installer_to_item(archive_path, root);
+        let session = DropSession {
+            _tempdir: None,
+            archive_path: archive_str.clone(),
+            items: vec![item.clone()],
+            created_at: std::time::Instant::now(),
+        };
+        sessions
+            .0
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?
+            .insert(session_id.clone(), session);
+        return Ok(DropInspection {
+            session_id,
+            archive_path: archive_str,
+            items: vec![item],
+            is_single: true,
+            is_folder: false,
+        });
+    }
+
     // .zip / .rar / .7z → extraer y enumerar.
     if !matches!(ext.as_str(), "zip" | "rar" | "7z") {
         anyhow::bail!(
-            "Extensión no soportada: .{} (acepta .ini, .py, .zip, .rar, .7z)",
+            "Extensión no soportada: .{} (acepta .ini, .py, .zip, .rar, .7z, .exe, .msi)",
             ext
         );
     }
@@ -746,11 +771,74 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
         items.push(livery_to_item(liv, root));
     }
 
+    // Paso 4 (v6.2.56) — apps / instaladores (`.exe/.msi/...`). Si NO hay nada
+    // de MSFS (ni Community, ni GSX, ni livery, ni config), es una app de
+    // terceros que NO va a Community: la marcamos `installer_exe` para que el
+    // front pida una carpeta destino (nunca la instala en Community).
+    let has_msfs_content = items.iter().any(|i| {
+        matches!(
+            i.kind.as_str(),
+            "community_package" | "gsx_profile" | "pmdg_livery" | "ifly_livery"
+                | "pmdg_config" | "ifly_config"
+        )
+    });
+    if !has_msfs_content {
+        for exe in find_installer_files(root) {
+            items.push(installer_to_item(&exe, root));
+        }
+    }
+
     // (v2.1.1) Ordenar items por relative_path para que las variantes
     // del mismo perfil queden agrupadas visualmente.
     items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
     Ok(items)
+}
+
+/// (v6.2.56) Ejecutables/instaladores dentro de `root` (no recursivo profundo:
+/// basta con encontrarlos en el árbol). Extensiones típicas de apps de terceros.
+fn find_installer_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let ext = entry
+            .path()
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(ext.as_str(), "exe" | "msi" | "msix" | "msixbundle" | "appx") {
+            out.push(entry.path().to_path_buf());
+        }
+    }
+    out
+}
+
+/// (v6.2.56) `DropItem` de app/instalador — el front lo instala pidiendo carpeta.
+fn installer_to_item(exe: &Path, root: &Path) -> DropItem {
+    let file_name = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("app.exe")
+        .to_string();
+    let relative_path = exe
+        .strip_prefix(root)
+        .unwrap_or(exe)
+        .to_string_lossy()
+        .into_owned();
+    let size_bytes = std::fs::metadata(exe).map(|m| m.len()).unwrap_or(0);
+    DropItem {
+        kind: "installer_exe".to_string(),
+        label: format!("App / instalador · {}", file_name),
+        icao: None,
+        variants: vec!["no va en Community".to_string()],
+        source_path: exe.to_string_lossy().into_owned(),
+        relative_path,
+        size_bytes,
+        description: None,
+    }
 }
 
 /// (v6.2.45) Convierte una livery detectada en un `DropItem` selectable.
@@ -1150,6 +1238,48 @@ fn install_addon_config(
                 tracing::info!(
                     target: "drop",
                     "config PMDG (determinista, {wasm}) {} → {}",
+                    src.display(), dest.display()
+                );
+                return Ok(dest.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    // (v6.2.54) iFly: la carpeta `work` depende de la VERSIÓN ACTIVA de MSFS:
+    //   · 2024 → `<perfil 2024>\WASM\MSFS2020\ifly-aircraft-*\work`
+    //   · 2020 → `<perfil 2020>\Packages\ifly-aircraft-*\work`
+    // (BUG previo: en 2024 caía en el `Packages` del perfil 2020.) Resolvemos la
+    // raíz por versión con `addon_work_root(prefer_2024)`, tomamos el nombre de
+    // la carpeta iFly de donde exista (es el mismo en ambas versiones) y creamos
+    // la carpeta si aún no está.
+    if kind == "ifly_config" {
+        if let Some(vroot) = crate::community::addon_work_root(prefer_2024) {
+            let ifly_name = crate::community::addon_work_roots_all()
+                .iter()
+                .filter_map(|r| std::fs::read_dir(r).ok())
+                .flatten()
+                .flatten()
+                .find_map(|e| {
+                    let n = e.file_name();
+                    let is_ifly = n
+                        .to_str()
+                        .map(|s| s.to_ascii_lowercase().starts_with("ifly-aircraft"))
+                        .unwrap_or(false);
+                    if is_ifly {
+                        Some(n)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(ifly_name) = ifly_name {
+                let dest_dir = vroot.join(&ifly_name).join("work");
+                std::fs::create_dir_all(&dest_dir)?;
+                let dest = dest_dir.join(file_name);
+                std::fs::copy(src, &dest)?;
+                tracing::info!(
+                    target: "drop",
+                    "config iFly ({}) {} → {}",
+                    if prefer_2024 { "2024" } else { "2020" },
                     src.display(), dest.display()
                 );
                 return Ok(dest.to_string_lossy().into_owned());

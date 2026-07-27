@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, Check, ImageOff, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Sparkles } from "lucide-react";
 import { t } from "../lib/i18n";
 
 /**
@@ -120,7 +120,6 @@ export function WhatsNewModal({
   const [unlocked, setUnlocked] = useState(false);
   const [progress, setProgress] = useState(0); // 0..1 del candado de 2s
   const [nudge, setNudge] = useState(false); // sacudida al pulsar antes de tiempo
-  const [imgError, setImgError] = useState(false);
 
   const slide = slides[index];
   const isLast = index >= slides.length - 1;
@@ -129,7 +128,6 @@ export function WhatsNewModal({
   useEffect(() => {
     setUnlocked(false);
     setProgress(0);
-    setImgError(false);
     const started = Date.now();
     const id = setInterval(() => {
       const p = Math.min(1, (Date.now() - started) / SLIDE_LOCK_MS);
@@ -174,28 +172,13 @@ export function WhatsNewModal({
         transition={{ duration: nudge ? 0.4 : 0.2 }}
         className="w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
       >
-        {/* Imagen / mockup — OBLIGATORIO. Placeholder si falla. */}
-        <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-900">
-          {!imgError ? (
-            <img
-              src={slide.image}
-              alt={t(slide.titleKey)}
-              className="h-full w-full object-cover"
-              onError={() => setImgError(true)}
-            />
-          ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-600">
-              <ImageOff className="h-8 w-8" />
-              <span className="text-[11px]">{slide.image}</span>
-            </div>
-          )}
-          <div className="absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-brand-500/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow">
+        {/* (v6.2.55) Mockup/imagen RETIRADO por pedido del usuario (molestaba).
+            What's New queda solo texto. Se re-añade cuando lo indique. */}
+        <div className="p-5">
+          <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-brand-500/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow">
             <Sparkles className="h-3 w-3" />
             {t("whatsnew.badge")}
           </div>
-        </div>
-
-        <div className="p-5">
           <h2 className="text-base font-semibold text-slate-100">
             {t(slide.titleKey)}
           </h2>

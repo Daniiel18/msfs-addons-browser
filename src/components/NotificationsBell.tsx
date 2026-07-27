@@ -6,6 +6,7 @@ import {
   CheckCheck,
   Download,
   ExternalLink,
+  FlaskConical,
   Map as MapIcon,
   RefreshCw,
   Sparkles,
@@ -28,6 +29,7 @@ import {
   airacUpdateVisible,
 } from "../stores/useAiracUpdateStore";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
+import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
 import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
 import { usePreflight } from "../lib/usePreflight";
@@ -82,6 +84,13 @@ export function NotificationsBell() {
   const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
   const showAirac = airacUpdateVisible(airacInfo);
 
+  // (v6.2.60) Updates de addons descargados de flightsim.to por el embebido.
+  // Clic → abre la página del addon (re-descargar) y avanza el baseline; la X
+  // sólo lo descarta (también avanza el baseline).
+  const flightsimUpdatesMap = useFlightsimUpdateStore((s) => s.updates);
+  const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
+  const refreshFlightsimUpdates = useFlightsimUpdateStore((s) => s.refreshUpdates);
+
   // (v6.2.11) Avisos de "Crew VS listo" (duelos completados, ambos aterrizaron).
   const duelNotices = useLiveVsStore((s) => s.duelNotices);
   const dismissDuelNotice = useLiveVsStore((s) => s.dismissDuelNotice);
@@ -108,6 +117,12 @@ export function NotificationsBell() {
   const fpsNotices = useFpsNoticesStore((s) => s.notices);
   const fpsDismiss = useFpsNoticesStore((s) => s.dismiss);
   const communityPackages = useCommunityStore((s) => s.packages);
+  // (v6.2.63) Sólo mostramos updates de flightsim.to de addons AÚN instalados
+  // (defensivo: cubre desinstalación manual fuera de la app; la desinstalación
+  // por la app ya borra la fila de tracking en el backend).
+  const flightsimUpdates = Array.from(flightsimUpdatesMap.values()).filter((u) =>
+    communityPackages.some((p) => p.folderName === u.folderName),
+  );
   const [perfPkg, setPerfPkg] = useState<CommunityPackage | null>(null);
   useEffect(() => {
     fpsStart();
@@ -157,7 +172,8 @@ export function NotificationsBell() {
     (showPreflight ? 1 : 0) +
     duelNotices.length +
     maintAlerts.length +
-    fpsNotices.length;
+    fpsNotices.length +
+    flightsimUpdates.length;
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
@@ -239,6 +255,23 @@ export function NotificationsBell() {
                 </h3>
               </div>
               <div className="flex items-center gap-1.5">
+                {/* (DEBUG v6.2.60, temporal) Fuerza updates de prueba de
+                    flightsim.to para verificar el flujo campana/badge. */}
+                <button
+                  onClick={() => {
+                    void api
+                      .flightsimDebugForceUpdate()
+                      .then((n) => {
+                        console.info(`[debug] flightsim force-update: ${n} filas`);
+                        return refreshFlightsimUpdates();
+                      })
+                      .catch((e) => console.warn("debug force-update failed:", e));
+                  }}
+                  title="DEBUG: forzar update de prueba de flightsim.to"
+                  className="rounded-md border border-sky-800 p-1.5 text-sky-300 hover:border-sky-500/40 hover:bg-sky-900/30"
+                >
+                  <FlaskConical className="h-3.5 w-3.5" />
+                </button>
                 <button
                   onClick={() => {
                     void api
@@ -404,6 +437,47 @@ export function NotificationsBell() {
                 </div>
               </div>
             )}
+
+            {/* (v6.2.60) Updates de addons descargados de flightsim.to — en
+                sky/azul. Clic → abre la página del addon en el embebido para
+                re-descargar (y avanza el baseline); la X sólo lo descarta. */}
+            {flightsimUpdates.map((u) => (
+              <div
+                key={u.folderName}
+                className="border-b border-sky-500/20 bg-sky-500/10 px-4 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Download className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
+                  <button
+                    onClick={() => {
+                      ackFlightsimUpdate(u.folderName);
+                      void api.openLiveryBrowser(u.link);
+                      setOpen(false);
+                    }}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="text-xs font-semibold text-sky-100">
+                      {t("notifications.fsto_update")}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-sky-200/80">
+                      {u.title ?? u.folderName}
+                    </div>
+                    {(u.currentVersion || u.latestVersion) && (
+                      <div className="mt-1 inline-flex items-center gap-1 rounded bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-200 ring-1 ring-sky-500/30">
+                        v{u.currentVersion ?? "?"} → v{u.latestVersion ?? "?"}
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => ackFlightsimUpdate(u.folderName)}
+                    title={t("common.dismiss")}
+                    className="shrink-0 rounded-md p-1 text-sky-200/70 hover:bg-sky-500/20 hover:text-sky-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
 
             {/* (v6.2.11) Crew VS listo — duelos completados (ambos aterrizaron).
                 Clic abre el FlightBook para revisarlo; la X lo descarta. */}

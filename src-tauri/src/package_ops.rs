@@ -476,5 +476,12 @@ async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<u64, P
     .bind(format!("%{}%", folder_name))
     .execute(pool)
     .await?;
-    Ok(r1.rows_affected() + r2.rows_affected())
+    // (v6.2.63) Quitar el tracking de updates de flightsim.to de esta carpeta:
+    // si el usuario desinstaló el addon, NO deben salirle updates de algo que
+    // ya no tiene instalado (ni en el badge ni en la campana).
+    let r3 = sqlx::query("DELETE FROM flightsim_tracked_files WHERE folder_name = ?1")
+        .bind(folder_name)
+        .execute(pool)
+        .await?;
+    Ok(r1.rows_affected() + r2.rows_affected() + r3.rows_affected())
 }

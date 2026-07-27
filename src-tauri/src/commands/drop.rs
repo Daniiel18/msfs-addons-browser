@@ -39,6 +39,15 @@ pub async fn drop_commit(
         session_id,
         selected_paths.len()
     );
+    // (v6.2.60) Capturamos el path del archivo original ANTES del commit (que
+    // consume la sesión). Si vino de una descarga del embebido, lo usamos abajo
+    // para registrar el tracking de updates de flightsim.to.
+    let archive_path: Option<String> = state
+        .drop_sessions
+        .0
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&session_id).map(|s| s.archive_path.clone()));
     let community = match community_path {
         Some(p) => PathBuf::from(p),
         None => PathBuf::from(
@@ -76,6 +85,42 @@ pub async fn drop_commit(
         if let Some(offer) = crate::cross_link::build_offer_for_paths(&report.installed_packages) {
             use tauri::Emitter;
             let _ = app.emit("cross-link://offer", &offer);
+        }
+    }
+
+    // (v6.2.60) Tracking de updates de flightsim.to: si esta instalación vino de
+    // una descarga del embebido asociada a un archivo (file_id), registramos
+    // cada carpeta instalada con su versión/updatedAt actuales (baseline).
+    if let Some(ap) = archive_path {
+        let file_id = state
+            .livery_downloads
+            .lock()
+            .ok()
+            .and_then(|mut m| m.remove(&ap));
+        if let Some(file_id) = file_id {
+            // `installed_packages` trae rutas completas; el tracking se indexa
+            // por NOMBRE de carpeta (= `CommunityPackage.folderName`) para casar
+            // el badge en Addons. (Las liveries PMDG/iFly se fusionan en el avión
+            // base, no son carpeta propia → no se rastrean por ahora.)
+            let folders: Vec<String> = report
+                .installed_packages
+                .iter()
+                .filter_map(|p| {
+                    std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_string)
+                })
+                .collect();
+            if !folders.is_empty() {
+                // En background: hace un GET a flightsim.to para leer versión/fecha;
+                // no debe retrasar la respuesta del install.
+                let db = state.db.clone();
+                let http = state.http.clone();
+                tokio::spawn(async move {
+                    crate::flightsim_track::record_tracked(&db, &http, &file_id, &folders).await;
+                });
+            }
         }
     }
 

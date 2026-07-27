@@ -28,9 +28,12 @@ interface GsxLocalState {
   /** Chequea updates de los perfiles instalados (lento: pega a la red
    *  por cada ICAO). Se llama en background tras el `refresh()`. */
   refreshUpdates: () => Promise<void>;
+  /** (v6.2.58) Marca un update como manejado: avanza el baseline en el
+   *  backend y quita el badge localmente al instante. */
+  ackUpdate: (icao: string) => void;
 }
 
-export const useGsxLocalStore = create<GsxLocalState>((set) => ({
+export const useGsxLocalStore = create<GsxLocalState>((set, get) => ({
   installedIcaos: new Set<string>(),
   updates: new Map<string, GsxProfileUpdate>(),
   async refresh() {
@@ -44,6 +47,11 @@ export const useGsxLocalStore = create<GsxLocalState>((set) => ({
     }
   },
   async refreshUpdates() {
+    // (v6.2.58) Detección por LÍNEA BASE (backend): la primera vez que se ve
+    // un perfil instalado se guarda el `updatedAt` actual del catálogo como
+    // baseline y NO se marca; sólo marca cuando el catálogo avanza más allá
+    // del baseline (update genuino). Esto elimina el falso positivo de EHAM
+    // sin quitar la función.
     try {
       const list = await api.gsxCheckProfileUpdates();
       const map = new Map<string, GsxProfileUpdate>();
@@ -54,5 +62,13 @@ export const useGsxLocalStore = create<GsxLocalState>((set) => ({
     } catch (e) {
       console.warn("gsxCheckProfileUpdates falló:", e);
     }
+  },
+  ackUpdate(icao) {
+    const key = icao.toUpperCase();
+    // Quita el badge al instante (optimista)…
+    const next = new Map(get().updates);
+    if (next.delete(key)) set({ updates: next });
+    // …y avanza el baseline en el backend para que no reaparezca.
+    void api.gsxAckUpdate(key);
   },
 }));

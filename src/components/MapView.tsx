@@ -550,6 +550,7 @@ function Sidebar({
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
   // (v6.2.44) Perfiles GSX con update disponible (ICAO upper → info).
   const gsxUpdates = useGsxLocalStore((s) => s.updates);
+  const gsxAckUpdate = useGsxLocalStore((s) => s.ackUpdate);
   const toggleGsx = (target: "gsx" | "no-gsx") => {
     setGsxFilter(gsxFilter === target ? "all" : target);
   };
@@ -672,10 +673,16 @@ function Sidebar({
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            // (v6.2.44) Click → link del perfil concreto
-                            // en flightsim.to (para re-descargar la
-                            // versión nueva).
-                            void api.openExternal(gsxUpdate.link);
+                            // (v6.2.58) Click → marcar como manejado (limpia el
+                            // badge + avanza el baseline) y abrir la BÚSQUEDA de
+                            // GSX del ICAO en el embebido (todos los perfiles),
+                            // para que el usuario elija cuál re-descargar.
+                            gsxAckUpdate(p.icao!);
+                            void api.openLiveryBrowser(
+                              `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(
+                                p.icao!,
+                              )}`,
+                            );
                           }}
                           className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
                           title={`Update de perfil GSX disponible para ${p.icao}${
@@ -699,7 +706,7 @@ function Sidebar({
                             const url = `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(
                               p.icao!,
                             )}`;
-                            void api.openExternal(url);
+                            void api.openLiveryBrowser(url);
                           }}
                           className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
                           title={`Sin perfil GSX local para ${p.icao}. Click → buscar en flightsim.to`}

@@ -1,7 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use crate::gsx::{self, GsxProfile};
+use crate::db::repo;
+use crate::gsx::{self, GsxClient, GsxProfile};
 use crate::AppState;
+
+/// Fuente para la fila de baseline en `update_check_cache`.
+const GSX_SOURCE: &str = "gsx";
 
 /// Devuelve los perfiles GSX Pro disponibles para un ICAO (vacío si no
 /// hay coincidencias). El comando es idempotente y respeta el caché de
@@ -89,14 +93,17 @@ pub struct GsxProfileUpdate {
 /// ICAOs instalados con el mtime (epoch secs) del .ini MÁS RECIENTE de
 /// cada uno — la "fecha de descarga" local que comparamos con la fecha
 /// de actualización publicada en flightsim.to.
-fn installed_profiles_mtimes() -> Vec<(String, i64)> {
+fn installed_profiles_mtimes() -> Vec<(String, String, i64)> {
     let Some(folder) = gsx_profiles_folder() else {
         return Vec::new();
     };
     if !folder.is_dir() {
         return Vec::new();
     }
-    let mut map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // icao → (stem del .ini más nuevo, mtime). Guardamos el stem para poder
+    // matchear el perfil ESPECÍFICO (vendor) en el catálogo, no el top match.
+    let mut map: std::collections::HashMap<String, (String, i64)> =
+        std::collections::HashMap::new();
     let Ok(dir) = std::fs::read_dir(&folder) else {
         return Vec::new();
     };
@@ -125,50 +132,154 @@ fn installed_profiles_mtimes() -> Vec<(String, i64)> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let e = map.entry(icao).or_insert(0);
-        if mtime > *e {
-            *e = mtime;
+        let e = map.entry(icao).or_insert((String::new(), 0));
+        if mtime > e.1 {
+            *e = (stem.to_string(), mtime);
         }
     }
-    map.into_iter().collect()
+    map.into_iter()
+        .map(|(icao, (stem, mt))| (icao, stem, mt))
+        .collect()
 }
 
-/// (v6.2.44) Revisa si hay updates para los perfiles GSX instalados:
-/// por cada ICAO compara la fecha del .ini local con la `updatedAt`
-/// publicada del perfil más relevante en flightsim.to. Devuelve sólo
-/// una entrada por ICAO instalado (con `has_update` y el link).
+/// (v6.2.58) Resuelve el perfil de catálogo ESPECÍFICO para un ICAO+stem
+/// instalado: extrae tokens distintivos del filename (el vendor, p.ej.
+/// "flytampa" de `eham-flytampa`) y busca el perfil cuyo título los contiene.
+/// Si no hay match de vendor, cae al primero del catálogo.
+async fn resolve_specific_profile(
+    gsx: &GsxClient,
+    db: &sqlx::SqlitePool,
+    icao: &str,
+    stem: &str,
+) -> Option<GsxProfile> {
+    let profiles = gsx::lookup_with_cache(gsx, db, icao)
+        .await
+        .unwrap_or_default();
+    if profiles.is_empty() {
+        return None;
+    }
+    let icao_low = icao.to_ascii_lowercase();
+    let tokens: Vec<String> = stem
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| {
+            t.len() >= 4
+                && *t != icao_low
+                && *t != "handler"
+                && *t != "afcad"
+                && *t != "profile"
+        })
+        .map(|s| s.to_string())
+        .collect();
+    profiles
+        .iter()
+        .find(|p| {
+            let title = p.title.to_ascii_lowercase();
+            tokens.iter().any(|t| title.contains(t.as_str()))
+        })
+        .cloned()
+        .or_else(|| profiles.into_iter().next())
+}
+
+/// (v6.2.58) Revisa si hay updates para los perfiles GSX instalados usando
+/// una **línea base** (no la fecha del .ini local, que daba falsos positivos
+/// como el de EHAM). La primera vez que vemos un perfil instalado guardamos el
+/// `updatedAt` actual del catálogo como baseline y NO marcamos nada; sólo
+/// marcamos update cuando el catálogo AVANZA más allá de ese baseline —
+/// entonces sí hubo una versión nueva de verdad. El baseline se limpia con
+/// `gsx_ack_update` al pulsar el badge.
 #[tauri::command]
 pub async fn gsx_check_profile_updates(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<GsxProfileUpdate>, String> {
-    let mtimes = tokio::task::spawn_blocking(installed_profiles_mtimes)
+    let installed = tokio::task::spawn_blocking(installed_profiles_mtimes)
         .await
         .map_err(|e| e.to_string())?;
-    let mut out = Vec::with_capacity(mtimes.len());
-    for (icao, mtime) in mtimes {
-        // El catálogo está cacheado en memoria → barato por ICAO.
-        let profiles = gsx::lookup_with_cache(&state.gsx, &state.db, &icao)
-            .await
-            .unwrap_or_default();
-        let Some(top) = profiles.into_iter().next() else {
+    let mut out = Vec::with_capacity(installed.len());
+    for (icao, stem, _mtime) in installed {
+        let Some(prof) =
+            resolve_specific_profile(&state.gsx, &state.db, &icao, &stem).await
+        else {
             continue;
         };
-        // Update si la publicación es MÁS NUEVA que el .ini local (con
-        // 12h de margen para no marcar falsos positivos por husos/redondeo).
-        let has_update = top
-            .updated_at
-            .as_deref()
-            .and_then(parse_iso_secs)
-            .map(|up| up > mtime + 12 * 3600)
-            .unwrap_or(false);
+        // Señal comparable = `updatedAt` del catálogo en epoch. Sin fecha no se
+        // puede comparar de forma fiable → no marcamos.
+        let cur = prof.updated_at.as_deref().and_then(parse_iso_secs);
+        // Baseline persistido en `update_check_cache` (last_known_version = el
+        // epoch que vimos la primera vez).
+        let baseline = repo::get_update_check_cache(&state.db, &icao, GSX_SOURCE)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.last_known_version)
+            .and_then(|s| s.parse::<i64>().ok());
+        let has_update = match (baseline, cur) {
+            // Ya teníamos baseline → update genuino si el catálogo avanzó.
+            (Some(base), Some(cur)) => cur > base,
+            // Primera vez que vemos este perfil → sembrar baseline, sin marcar.
+            (None, Some(cur)) => {
+                let id_s = prof.id.to_string();
+                let _ = repo::set_update_check_cache(
+                    &state.db,
+                    &icao,
+                    GSX_SOURCE,
+                    Some(&cur.to_string()),
+                    Some(&id_s),
+                )
+                .await;
+                false
+            }
+            _ => false,
+        };
         out.push(GsxProfileUpdate {
             icao,
             has_update,
-            latest_version: top.version,
-            link: top.link,
+            latest_version: prof.version.clone(),
+            link: prof.link.clone(),
         });
     }
     Ok(out)
+}
+
+/// (v6.2.58) "Ya lo estoy manejando": avanza el baseline del perfil GSX al
+/// `updatedAt` actual del catálogo, de modo que el badge ámbar se limpie tras
+/// pulsarlo (el clic abre flightsim.to para re-descargar). Si luego sale una
+/// versión aún más nueva, volverá a marcarse.
+#[tauri::command]
+pub async fn gsx_ack_update(
+    icao: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let icao_up = icao.trim().to_ascii_uppercase();
+    if icao_up.is_empty() {
+        return Ok(());
+    }
+    // Necesitamos el stem del .ini instalado para resolver el perfil específico.
+    let installed = tokio::task::spawn_blocking(installed_profiles_mtimes)
+        .await
+        .map_err(|e| e.to_string())?;
+    let stem = installed
+        .into_iter()
+        .find(|(ic, _, _)| ic.eq_ignore_ascii_case(&icao_up))
+        .map(|(_, stem, _)| stem)
+        .unwrap_or_default();
+    if let Some(prof) =
+        resolve_specific_profile(&state.gsx, &state.db, &icao_up, &stem).await
+    {
+        if let Some(cur) = prof.updated_at.as_deref().and_then(parse_iso_secs) {
+            let id_s = prof.id.to_string();
+            repo::set_update_check_cache(
+                &state.db,
+                &icao_up,
+                GSX_SOURCE,
+                Some(&cur.to_string()),
+                Some(&id_s),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// Parsea un ISO-8601 (`2026-07-19T12:14:01Z`) a epoch secs.

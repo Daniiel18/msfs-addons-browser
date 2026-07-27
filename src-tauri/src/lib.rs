@@ -15,6 +15,7 @@ pub mod drop_install;
 pub mod download;
 pub mod flight_log;
 pub mod flight_report;
+pub mod flightsim_track;
 pub mod livery_meta;
 pub mod gsx;
 pub mod gsx_update;
@@ -79,6 +80,11 @@ pub struct AppState {
     /// (v6.2.38) Credenciales + sesión de Skybound, compartidas con la
     /// fuente `SkyboundSource`. Las actualiza `skybound_set_credentials`.
     pub skybound_auth: Arc<tokio::sync::RwLock<sources::skybound::SkyboundAuth>>,
+    /// (v6.2.60) Descargas del navegador embebido pendientes de instalar,
+    /// asociadas al `file_id` de flightsim.to de donde salieron
+    /// (`download_path → file_id`). Se escribe en `on_download` y se lee en
+    /// `drop_commit` para registrar el tracking de updates de esos addons.
+    pub livery_downloads: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -199,8 +205,13 @@ pub fn run() {
             commands::gsx::gsx_lookup,
             commands::gsx::gsx_list_installed_icaos,
             commands::gsx::gsx_check_profile_updates,
+            commands::gsx::gsx_ack_update,
             commands::livery::start_livery_download_watch,
             commands::livery::open_livery_browser,
+            commands::livery::save_installer_to,
+            commands::livery::flightsim_check_updates,
+            commands::livery::flightsim_ack_update,
+            commands::livery::flightsim_debug_force_update,
             commands::gsx::gsx_install_profile,
             commands::gsx::read_text_file,
             gsx_update::gsx_check_update,
@@ -742,6 +753,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         minimize_to_tray,
         drop_sessions: drop_install::DropSessions::default(),
         skybound_auth,
+        livery_downloads: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     })
 }
 

@@ -88,6 +88,14 @@ pub struct GsxProfile {
     /// local instalado.
     #[serde(default)]
     pub updated_at: Option<String>,
+    /// (v6.2.64) Cantidad de descargas del perfil en flightsim.to.
+    #[serde(default)]
+    pub downloads: Option<i64>,
+    /// (v6.2.64) Rating promedio (0-5) y nº de votos — para el modal de oferta.
+    #[serde(default)]
+    pub rating: Option<f64>,
+    #[serde(default)]
+    pub rating_count: Option<i64>,
 }
 
 // ---- Tipos de la respuesta cruda de flightsim.to ----------------------------
@@ -134,6 +142,12 @@ struct RawProfile {
     version: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
+    #[serde(default)]
+    downloads: Option<i64>,
+    #[serde(default)]
+    rating: Option<f64>,
+    #[serde(default)]
+    rating_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +173,9 @@ impl From<RawProfile> for GsxProfile {
             simulator: r.simulator,
             version: r.version.filter(|s| !s.trim().is_empty()),
             updated_at: r.updated_at.filter(|s| !s.trim().is_empty()),
+            downloads: r.downloads,
+            rating: r.rating,
+            rating_count: r.rating_count,
         }
     }
 }
@@ -396,11 +413,16 @@ pub async fn lookup_with_cache(
         if let Some(age) = parse_sqlite_datetime(&row.fetched_at) {
             if age < CACHE_TTL {
                 if let Ok(parsed) = serde_json::from_str::<Vec<GsxProfile>>(&row.profiles_json) {
-                    if !parsed.is_empty() {
+                    // (v6.2.68) Revalidar cachés del FORMATO VIEJO: si NINGÚN
+                    // perfil trae `downloads`, la fila se grabó antes de agregar
+                    // downloads/rating (v6.2.64) → re-consultamos para poblar el
+                    // modal de oferta (descargas/estrellas/"Más popular").
+                    let stale_format = parsed.iter().all(|p| p.downloads.is_none());
+                    if !parsed.is_empty() && !stale_format {
                         tracing::debug!("gsx: cache hit for {} ({} profiles)", key, parsed.len());
                         return Ok(parsed);
                     }
-                    tracing::debug!("gsx: cache miss revalidate (vacía) for {}", key);
+                    tracing::debug!("gsx: cache miss revalidate (vacía/vieja) for {}", key);
                 }
             }
         }

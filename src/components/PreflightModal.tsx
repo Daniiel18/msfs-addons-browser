@@ -23,6 +23,7 @@ import { useNewSceneryStore } from "../stores/useNewSceneryStore";
 import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
+import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 
 interface Props {
   onClose: () => void;
@@ -74,24 +75,17 @@ export function PreflightModal({ onClose }: Props) {
       void triggerSearch(action.icao);
     } else if (action.kind === "airac") {
       void airacOpenUpdater();
-    } else if (action.kind === "gsx") {
-      setBusyId(check.id);
-      try {
-        const profiles = await api.gsxLookup(action.icao);
-        if (profiles.length > 0) {
-          await api.openExternal(profiles[0].link);
-        } else {
-          pushToast({ kind: "info", title: t("preflight.gsx_none", { icao: action.icao }) });
-        }
-      } catch (e) {
-        pushToast({ kind: "error", title: t("preflight.gsx_err"), message: String(e) });
-      } finally {
-        setBusyId(null);
+    } else if (action.kind === "gsx" || action.kind === "gsx-update") {
+      // (v6.2.58) Si es un update real, márcalo como manejado (avanza el
+      // baseline para que el badge no reaparezca).
+      if (action.kind === "gsx-update") {
+        useGsxLocalStore.getState().ackUpdate(action.icao);
       }
-    } else if (action.kind === "gsx-update") {
-      // (v6.2.44) Perfil GSX con update → abre el link del perfil en
-      // flightsim.to para re-descargar la versión nueva.
-      void api.openExternal(action.link);
+      // (v6.2.57) Abre la BÚSQUEDA de GSX del ICAO en el embebido (todos los
+      // perfiles disponibles), no un perfil concreto — el usuario elige.
+      void api.openLiveryBrowser(
+        `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(action.icao)}`,
+      );
     } else if (action.kind === "enable") {
       setBusyId(check.id);
       try {

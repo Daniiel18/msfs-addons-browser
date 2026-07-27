@@ -1169,6 +1169,10 @@ export interface GsxProfile {
   /** (v6.2.44) Versión publicada + fecha de update (de la API filter). */
   version?: string | null;
   updatedAt?: string | null;
+  /** (v6.2.64) Descargas + rating (0-5) + nº de votos — para el modal de oferta. */
+  downloads?: number | null;
+  rating?: number | null;
+  ratingCount?: number | null;
 }
 
 /** (v6.2.44) Aviso de update de un perfil GSX instalado. */
@@ -1176,6 +1180,22 @@ export interface GsxProfileUpdate {
   icao: string;
   hasUpdate: boolean;
   latestVersion: string | null;
+  link: string;
+}
+
+/** (v6.2.60) Update de un addon descargado de flightsim.to por el embebido.
+ *  Espejo de `flightsim_track::FlightsimUpdate`. Indexado por `folderName`
+ *  (= carpeta de Community) para casar el badge en Addons. */
+export interface FlightsimUpdate {
+  folderName: string;
+  fileId: string;
+  title: string | null;
+  hasUpdate: boolean;
+  /** Versión instalada (baseline). */
+  currentVersion: string | null;
+  /** Versión actual publicada en flightsim.to. */
+  latestVersion: string | null;
+  /** URL de la página del addon (para re-descargar). */
   link: string;
 }
 

@@ -18,6 +18,7 @@ import { api } from "../lib/tauri";
 import type { DropCommitReport, DropInspection, DropItem } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useToastStore } from "../stores/useToastStore";
 
 /**
  * (v2.1.0, refactor v2.2.0) Modal selector multi-archivo.
@@ -42,7 +43,15 @@ interface Props {
   onDone: (reports: DropCommitReport[]) => void;
 }
 
+/** (v6.2.56) ¿El archivo viene del navegador embebido de flightsim.to? Esos
+ *  caen en la carpeta temporal `simfleet-livery-dl` y se auto-borran tras
+ *  instalar (sin confirmación). Los que arrastra el usuario, sí preguntan. */
+export function isEmbeddedDownload(path: string): boolean {
+  return path.replace(/\\/g, "/").includes("simfleet-livery-dl");
+}
+
 export function DropSelectModal({ inspections, onClose, onDone }: Props) {
+  const pushToast = useToastStore((s) => s.push);
   const [pageIdx, setPageIdx] = useState(0);
   const inspection = inspections[pageIdx];
 
@@ -138,26 +147,47 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           await api.dropCancel(insp.sessionId).catch(() => {});
           continue;
         }
+        // (v6.2.56) Apps / instaladores: NO van a Community. Piden carpeta y
+        // se copian ahí. Los sacamos del commit (el backend no los instala).
+        const installerItems = insp.items.filter(
+          (it) => it.kind === "installer_exe" && sel.has(it.sourcePath),
+        );
+        for (const it of installerItems) {
+          try {
+            const folder = await api.pickFolderPath();
+            if (folder) {
+              const dest = await api.saveInstallerTo(it.sourcePath, folder);
+              pushToast({
+                kind: "success",
+                title: t("installer.saved"),
+                message: dest,
+                ttlMs: 6000,
+              });
+            }
+          } catch (e) {
+            pushToast({ kind: "error", title: t("installer.err"), message: String(e) });
+          }
+        }
+        const commitPaths = Array.from(sel).filter(
+          (p) => !installerItems.some((it) => it.sourcePath === p),
+        );
+        if (commitPaths.length === 0) {
+          await api.dropCancel(insp.sessionId).catch(() => {});
+          continue;
+        }
         try {
-          const r = await api.dropCommit(
-            insp.sessionId,
-            Array.from(sel),
-            null,
-          );
+          const r = await api.dropCommit(insp.sessionId, commitPaths, null);
           reports.push(r);
-          // (v4.14.0 #5c) Solo ofrecemos borrar el archivo origen si
-          // REALMENTE se instaló algo desde él — perfil GSX o paquete
-          // Community. Antes se empujaba `archivePath` aunque el commit
-          // no instalara nada (solo errores), lo que ofrecía borrar un
-          // archivo que no se había instalado. Con esto, los drops de
-          // perfiles GSX (.zip/.rar/.7z → %AppData%\Virtuali\GSX\MSFS)
-          // disparan el confirm de borrado igual que los de Community.
-          if (
+          const installedSomething =
             r.installedGsx.length > 0 ||
             r.installedPackages.length > 0 ||
             (r.installedConfigs?.length ?? 0) > 0 ||
-            (r.installedLiveries?.length ?? 0) > 0
-          ) {
+            (r.installedLiveries?.length ?? 0) > 0;
+          // (v6.2.56) Descarga del navegador embebido → se BORRA sola tras
+          // instalar (sin confirmar). Archivo que arrastraste → confirm.
+          if (isEmbeddedDownload(insp.archivePath) && installedSomething) {
+            await api.deleteDroppedArchive(insp.archivePath).catch(() => {});
+          } else if (installedSomething) {
             committed.push(insp.archivePath);
           }
         } catch (e) {
@@ -226,6 +256,10 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
   const liveryItems = inspection.items.filter((i) =>
     ["pmdg_livery", "ifly_livery"].includes(i.kind),
   );
+  // (v6.2.56) Apps / instaladores — sección propia, con destino a carpeta.
+  const installerItemsView = inspection.items.filter(
+    (i) => i.kind === "installer_exe",
+  );
   const otherItems = inspection.items.filter(
     (i) =>
       ![
@@ -235,6 +269,7 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
         "pmdg_config",
         "pmdg_livery",
         "ifly_livery",
+        "installer_exe",
       ].includes(i.kind),
   );
 
@@ -406,6 +441,16 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
                     selected={selected}
                     toggle={toggle}
                     destinationHint={t("drop.config.dest")}
+                  />
+                )}
+                {installerItemsView.length > 0 && (
+                  <Section
+                    title={t("drop.tab.installer")}
+                    icon={<Box className="h-3 w-3 text-amber-300" />}
+                    items={installerItemsView}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint={t("drop.installer.dest")}
                   />
                 )}
                 {otherItems.length > 0 && (
@@ -597,8 +642,7 @@ function Section({
             <li
               key={it.sourcePath}
               onClick={() =>
-                !["installer_exe", "unknown"].includes(it.kind) &&
-                toggle(it.sourcePath)
+                it.kind !== "unknown" && toggle(it.sourcePath)
               }
               className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 text-xs transition-colors ${
                 selected.has(it.sourcePath)
@@ -609,7 +653,7 @@ function Section({
               <input
                 type="checkbox"
                 checked={selected.has(it.sourcePath)}
-                disabled={["installer_exe", "unknown"].includes(it.kind)}
+                disabled={it.kind === "unknown"}
                 onChange={() => toggle(it.sourcePath)}
                 onClick={(e) => e.stopPropagation()}
                 className="mt-0.5 accent-emerald-500 disabled:opacity-30"
