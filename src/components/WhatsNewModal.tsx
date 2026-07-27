@@ -1,255 +1,159 @@
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, Check, Sparkles } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "framer-motion";
+import { Sparkles, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { t } from "../lib/i18n";
 
 /**
- * (v6) Modal "Novedades / What's New" — ANTI-SKIP.
- *
- * Reglas (pedido del usuario):
- *  · Instancia principal: se lanza una sola vez cada vez que la app SE
- *    ACTUALIZA (la versión guardada en localStorage difiere de la actual).
- *    En MODO SEGURO se muestra siempre (para revisarlo en pruebas).
- *  · NO se cierra de golpe: sin botón X, el backdrop no cierra, Escape no
- *    cierra. La única salida es avanzar TODAS las slides y pulsar "Entendido".
- *  · Temporizador estricto de 2.0s por slide: el botón "Siguiente" queda
- *    bloqueado (con un anillo de progreso que se llena) hasta que pasen los
- *    2s. Si el usuario lo pulsa antes, se sacude y muestra "Lee el contenido".
- *  · Cada slide DEBE traer una captura/mockup (no solo texto). Si la imagen
- *    falta o no carga, se muestra un placeholder claro.
- *  · Bilingüe: los textos salen por i18n (ES/EN); el modal acepta un array de
- *    objetos { titleKey, bodyKey, image }.
+ * (v6.2.69) "Novedades" — carrusel que se muestra UNA vez por versión al
+ * arrancar, destacando lo nuevo y en especial la integración con flightsim.to.
+ * Cada slide trae una imagen (mockup en /public/whatsnew) + título + descripción
+ * bilingües (i18n). Navegación libre: dots, ‹ ›, cerrar cuando quieras.
  */
+const WHATS_NEW_VERSION = "6.2.68";
+const SEEN_KEY = "simfleet.whatsnew.seen.v2";
 
-/** localStorage key — guarda la VERSIÓN de la app para la que ya se mostró el
- *  What's New. Así en la instancia principal sólo reaparece cuando la app SE
- *  ACTUALIZA (la versión cambia), una sola vez por versión. */
-const SEEN_KEY = "simfleet:whatsnew-version";
+const SLIDES = [
+  { key: "flightsimto", image: "/whatsnew/fsto-browser.svg" },
+  { key: "tracking", image: "/whatsnew/fsto-tracking.svg" },
+  { key: "gsx", image: "/whatsnew/gsx-offer.svg" },
+  { key: "liveries", image: "/whatsnew/liveries.svg" },
+] as const;
 
-/** ms que el usuario debe permanecer en cada slide antes de poder avanzar. */
-const SLIDE_LOCK_MS = 2000;
+export function WhatsNewModal() {
+  const [open, setOpen] = useState(false);
+  const [i, setI] = useState(0);
 
-export interface WhatsNewSlide {
-  titleKey: string;
-  bodyKey: string;
-  /** Ruta bajo /public (ej. "/whatsnew/gsx-update.svg"). Obligatoria. */
-  image: string;
-}
-
-/** Slides por defecto — novedades del LOTE R2–R8 (v6.2.25–6.2.31):
- *  restaurar optimizaciones FPS tras update, chequeo "¿Listo para
- *  volar?" + radar de escenarios nuevos, búsqueda global Ctrl+K, replay
- *  del vuelo en el mapa, limpieza inteligente de disco, y tarjeta
- *  compartible + Wrapped anual + export web del FlightBook. */
-const DEFAULT_SLIDES: WhatsNewSlide[] = [
-  {
-    titleKey: "whatsnew.r_preflight.title",
-    bodyKey: "whatsnew.r_preflight.body",
-    image: "/whatsnew/preflight.svg",
-  },
-  {
-    titleKey: "whatsnew.r_palette.title",
-    bodyKey: "whatsnew.r_palette.body",
-    image: "/whatsnew/command-palette.svg",
-  },
-  {
-    titleKey: "whatsnew.r_replay.title",
-    bodyKey: "whatsnew.r_replay.body",
-    image: "/whatsnew/replay.svg",
-  },
-  {
-    titleKey: "whatsnew.r_cleanup.title",
-    bodyKey: "whatsnew.r_cleanup.body",
-    image: "/whatsnew/disk-cleanup.svg",
-  },
-  {
-    titleKey: "whatsnew.r_share.title",
-    bodyKey: "whatsnew.r_share.body",
-    image: "/whatsnew/share-wrapped.svg",
-  },
-  {
-    titleKey: "whatsnew.r_fps.title",
-    bodyKey: "whatsnew.r_fps.body",
-    image: "/whatsnew/fps-restore.svg",
-  },
-];
-
-/** (v6.2) Slides del What's New. Antes se personalizaba el de Crew VS por
- *  identidad; los slides de esta versión no lo necesitan. */
-export function buildWhatsNewSlides(_identity?: string | null): WhatsNewSlide[] {
-  return DEFAULT_SLIDES;
-}
-
-/** Versión de la app para la que ya se mostró el What's New (o null). */
-export function getWhatsNewSeenVersion(): string | null {
-  try {
-    return localStorage.getItem(SEEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-/** Marca el What's New como visto para `version` (NO abre el modal). Lo usa
- *  App para fijar la línea base en primera instalación y al cerrar el modal. */
-export function markWhatsNewSeen(version: string) {
-  try {
-    localStorage.setItem(SEEN_KEY, version);
-  } catch {
-    /* ignore */
-  }
-}
-
-/** ¿Hay que mostrar el What's New en la instancia principal?
- *  `true` siempre que la versión vista guardada NO coincida con la actual —
- *  incluido cuando NO hay línea base (primera vez con esta feature o instalación
- *  fresca). El usuario lo pidió explícito: "debe salir CADA VEZ que se actualiza".
- *  Antes se saltaba la primera vez sin baseline y por eso no salió en 5.4→6. */
-export function isUpdateSinceLastSeen(currentVersion: string | null): boolean {
-  if (!currentVersion) return false;
-  return getWhatsNewSeenVersion() !== currentVersion;
-}
-
-export function WhatsNewModal({
-  slides = DEFAULT_SLIDES,
-  onClose,
-}: {
-  slides?: WhatsNewSlide[];
-  onClose: () => void;
-}) {
-  const [index, setIndex] = useState(0);
-  const [unlocked, setUnlocked] = useState(false);
-  const [progress, setProgress] = useState(0); // 0..1 del candado de 2s
-  const [nudge, setNudge] = useState(false); // sacudida al pulsar antes de tiempo
-
-  const slide = slides[index];
-  const isLast = index >= slides.length - 1;
-
-  // Candado de 2s por slide — se reinicia en cada cambio de slide.
   useEffect(() => {
-    setUnlocked(false);
-    setProgress(0);
-    const started = Date.now();
-    const id = setInterval(() => {
-      const p = Math.min(1, (Date.now() - started) / SLIDE_LOCK_MS);
-      setProgress(p);
-      if (p >= 1) {
-        setUnlocked(true);
-        clearInterval(id);
-      }
-    }, 50);
-    return () => clearInterval(id);
-  }, [index]);
+    try {
+      if (localStorage.getItem(SEEN_KEY) !== WHATS_NEW_VERSION) setOpen(true);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
-  const advance = () => {
-    if (!unlocked) {
-      // Pulsó antes de tiempo → sacudir + pista "lee el contenido".
-      setNudge(true);
-      window.setTimeout(() => setNudge(false), 450);
-      return;
+  const close = () => {
+    try {
+      localStorage.setItem(SEEN_KEY, WHATS_NEW_VERSION);
+    } catch {
+      /* ignore */
     }
-    if (isLast) {
-      // El persistir la versión vista lo hace App en onClose (en modo seguro
-      // NO persiste, para que el What's New reaparezca siempre en pruebas).
-      onClose();
-    } else {
-      setIndex((i) => i + 1);
-    }
+    setOpen(false);
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
-      // (anti-skip) el backdrop NO cierra.
-      onClick={(e) => e.stopPropagation()}
-    >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: 10 }}
-        animate={
-          nudge
-            ? { opacity: 1, scale: 1, y: 0, x: [0, -8, 8, -6, 6, 0] }
-            : { opacity: 1, scale: 1, y: 0, x: 0 }
-        }
-        transition={{ duration: nudge ? 0.4 : 0.2 }}
-        className="w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
-      >
-        {/* (v6.2.55) Mockup/imagen RETIRADO por pedido del usuario (molestaba).
-            What's New queda solo texto. Se re-añade cuando lo indique. */}
-        <div className="p-5">
-          <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-brand-500/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow">
-            <Sparkles className="h-3 w-3" />
-            {t("whatsnew.badge")}
-          </div>
-          <h2 className="text-base font-semibold text-slate-100">
-            {t(slide.titleKey)}
-          </h2>
-          <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
-            {t(slide.bodyKey)}
-          </p>
+  const last = SLIDES.length - 1;
+  const slide = SLIDES[i];
 
-          <div className="mt-5 flex items-center justify-between">
-            {/* Puntos de progreso */}
-            <div className="flex items-center gap-1.5">
-              {slides.map((_, i) => (
-                <span
-                  key={i}
-                  className={`h-1.5 rounded-full transition-all ${
-                    i === index
-                      ? "w-5 bg-brand-400"
-                      : i < index
-                        ? "w-1.5 bg-slate-500"
-                        : "w-1.5 bg-slate-700"
-                  }`}
-                />
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <AnimatePresence>
-                {!unlocked && nudge && (
-                  <motion.span
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="text-[11px] font-medium text-amber-300"
-                  >
-                    {t("whatsnew.read_first")}
-                  </motion.span>
-                )}
-              </AnimatePresence>
+  return createPortal(
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={close}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 10 }}
+            transition={{ duration: 0.16 }}
+            onClick={(e) => e.stopPropagation()}
+            className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          >
+            {/* badge + close */}
+            <div className="flex items-center justify-between px-5 pt-4">
+              <div className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-300 ring-1 ring-sky-500/30">
+                <Sparkles className="h-3 w-3" />
+                {t("whatsnew.badge", { version: WHATS_NEW_VERSION })}
+              </div>
               <button
-                onClick={advance}
-                aria-disabled={!unlocked}
-                className={`relative inline-flex items-center gap-1.5 overflow-hidden rounded-md px-4 py-2 text-xs font-medium transition-colors ${
-                  unlocked
-                    ? "bg-brand-500 text-white hover:bg-brand-400"
-                    : "cursor-not-allowed bg-slate-800 text-slate-400"
-                }`}
+                onClick={close}
+                title={t("common.dismiss")}
+                className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
               >
-                {/* Barra de progreso del candado (2s) */}
-                {!unlocked && (
-                  <span
-                    className="absolute inset-y-0 left-0 bg-slate-700"
-                    style={{ width: `${progress * 100}%` }}
-                  />
-                )}
-                <span className="relative z-10 inline-flex items-center gap-1.5">
-                  {isLast ? (
-                    <>
-                      {t("whatsnew.done")}
-                      <Check className="h-3.5 w-3.5" />
-                    </>
-                  ) : (
-                    <>
-                      {t("whatsnew.next")}
-                      <ArrowRight className="h-3.5 w-3.5" />
-                    </>
-                  )}
-                </span>
+                <X className="h-4 w-4" />
               </button>
             </div>
-          </div>
-        </div>
-      </motion.div>
-    </div>
+
+            {/* image + text (scrolls if needed) */}
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-3">
+              <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+                <AnimatePresence mode="wait">
+                  <motion.img
+                    key={slide.key}
+                    src={slide.image}
+                    alt=""
+                    initial={{ opacity: 0, x: 12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.18 }}
+                    className="aspect-video w-full object-cover"
+                  />
+                </AnimatePresence>
+              </div>
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={slide.key}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.16 }}
+                >
+                  <h2 className="mt-4 text-lg font-semibold text-slate-100">
+                    {t(`whatsnew.${slide.key}.title`)}
+                  </h2>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-400">
+                    {t(`whatsnew.${slide.key}.desc`)}
+                  </p>
+                </motion.div>
+              </AnimatePresence>
+            </div>
+
+            {/* footer: dots + nav */}
+            <div className="flex items-center justify-between gap-3 border-t border-slate-800 p-4">
+              <button
+                onClick={() => setI((n) => Math.max(0, n - 1))}
+                disabled={i === 0}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800 text-slate-300 transition-colors hover:bg-slate-900 disabled:opacity-30"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+
+              <div className="flex items-center gap-1.5">
+                {SLIDES.map((s, n) => (
+                  <button
+                    key={s.key}
+                    onClick={() => setI(n)}
+                    className={`h-1.5 rounded-full transition-all ${
+                      n === i ? "w-5 bg-sky-400" : "w-1.5 bg-slate-700 hover:bg-slate-600"
+                    }`}
+                  />
+                ))}
+              </div>
+
+              {i < last ? (
+                <button
+                  onClick={() => setI((n) => Math.min(last, n + 1))}
+                  className="inline-flex h-9 items-center gap-1 rounded-lg bg-slate-800 px-3 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-700"
+                >
+                  {t("whatsnew.next")}
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={close}
+                  className="inline-flex h-9 items-center rounded-lg bg-sky-500 px-4 text-sm font-semibold text-sky-950 transition-colors hover:bg-sky-400"
+                >
+                  {t("whatsnew.cta")}
+                </button>
+              )}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body,
   );
 }

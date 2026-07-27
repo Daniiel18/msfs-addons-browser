@@ -30,6 +30,7 @@ import {
 } from "../stores/useAiracUpdateStore";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
+import { useGsxOfferStore } from "../stores/useGsxOfferStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
 import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
 import { usePreflight } from "../lib/usePreflight";
@@ -90,6 +91,12 @@ export function NotificationsBell() {
   const flightsimUpdatesMap = useFlightsimUpdateStore((s) => s.updates);
   const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
   const refreshFlightsimUpdates = useFlightsimUpdateStore((s) => s.refreshUpdates);
+
+  // (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir → aviso en la campana;
+  // clic reabre el modal, X descarta.
+  const gsxPendingOffers = useGsxOfferStore((s) => s.pending);
+  const reopenGsxOffer = useGsxOfferStore((s) => s.reopen);
+  const clearGsxOffer = useGsxOfferStore((s) => s.clearPending);
 
   // (v6.2.11) Avisos de "Crew VS listo" (duelos completados, ambos aterrizaron).
   const duelNotices = useLiveVsStore((s) => s.duelNotices);
@@ -173,7 +180,8 @@ export function NotificationsBell() {
     duelNotices.length +
     maintAlerts.length +
     fpsNotices.length +
-    flightsimUpdates.length;
+    flightsimUpdates.length +
+    gsxPendingOffers.length;
 
   // Peek-on-first-launch: si hay notificaciones y no hemos peekado
   // antes, abrimos brevemente para que el usuario las vea.
@@ -472,6 +480,43 @@ export function NotificationsBell() {
                     onClick={() => ackFlightsimUpdate(u.folderName)}
                     title={t("common.dismiss")}
                     className="shrink-0 rounded-md p-1 text-sky-200/70 hover:bg-sky-500/20 hover:text-sky-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {/* (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir — en cyan.
+                Clic reabre el modal con las opciones; la X descarta. */}
+            {gsxPendingOffers.map((o) => (
+              <div
+                key={o.icao}
+                className="border-b border-cyan-500/20 bg-cyan-500/10 px-4 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Truck className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
+                  <button
+                    onClick={() => {
+                      reopenGsxOffer(o.icao);
+                      setOpen(false);
+                    }}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="text-xs font-semibold text-cyan-100">
+                      {t("gsxoffer.title", { icao: o.icao })}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-cyan-200/80">
+                      {o.airportTitle}
+                      {o.profiles.length > 0
+                        ? ` · ${t("gsxoffer.subtitle", { n: String(o.profiles.length) })}`
+                        : ""}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => clearGsxOffer(o.icao)}
+                    title={t("common.dismiss")}
+                    className="shrink-0 rounded-md p-1 text-cyan-200/70 hover:bg-cyan-500/20 hover:text-cyan-100"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

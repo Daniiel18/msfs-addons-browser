@@ -78,11 +78,12 @@ function isCompatible(profileTitle: string, creator: string | null): boolean {
  */
 export function GsxOfferModal() {
   const offer = useGsxOfferStore((s) => s.offer);
-  const dismiss = useGsxOfferStore((s) => s.dismiss);
+  const dismissToPending = useGsxOfferStore((s) => s.dismissToPending);
+  const closeSelected = useGsxOfferStore((s) => s.closeSelected);
 
   const openProfile = (link: string) => {
     void api.openLiveryBrowser(link);
-    dismiss();
+    closeSelected(); // seleccionó un perfil → NO deja aviso en la campana
   };
 
   const profiles = offer?.profiles ?? [];
@@ -111,7 +112,7 @@ export function GsxOfferModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={dismiss}
+          onClick={dismissToPending}
         >
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -137,7 +138,7 @@ export function GsxOfferModal() {
                 </div>
               </div>
               <button
-                onClick={dismiss}
+                onClick={dismissToPending}
                 title={t("common.dismiss")}
                 className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
               >
@@ -156,14 +157,14 @@ export function GsxOfferModal() {
                 </p>
               </div>
             ) : (
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 sm:grid-cols-2">
+              <div className="grid min-h-0 flex-1 auto-rows-min content-start grid-cols-1 gap-3 overflow-y-auto p-4 sm:grid-cols-2">
                 {cards.map(({ p, popular, compatible }) => (
                   <button
                     key={p.id}
                     onClick={() => openProfile(p.link)}
                     className="group flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-cyan-500/40 hover:bg-slate-900"
                   >
-                    <div className="relative aspect-[16/9] w-full shrink-0 overflow-hidden bg-slate-800">
+                    <div className="relative h-36 w-full shrink-0 overflow-hidden bg-slate-800">
                       {p.thumbnail && (
                         <img
                           src={p.thumbnail}

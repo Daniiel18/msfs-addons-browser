@@ -46,6 +46,7 @@ import { LiveVsManager } from "./components/LiveVsManager";
 import { GsxUpdateGate } from "./components/GsxUpdateGate";
 import { GsxOfferModal } from "./components/GsxOfferModal";
 import { useGsxOfferStore } from "./stores/useGsxOfferStore";
+import { WhatsNewModal } from "./components/WhatsNewModal";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
@@ -1062,6 +1063,7 @@ export default function App() {
       <LiveVsManager />
       <GsxUpdateGate />
       <GsxOfferModal />
+      <WhatsNewModal />
       <SimBriefConfirmModal />
       <IncompleteFlightModal />
       <ReplayBanner />

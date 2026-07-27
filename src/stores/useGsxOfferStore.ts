@@ -27,8 +27,19 @@ export interface GsxOffer {
 }
 
 interface GsxOfferState {
+  /** Oferta actualmente abierta en el modal (o null). */
   offer: GsxOffer | null;
-  dismiss: () => void;
+  /** Ofertas cerradas SIN seleccionar perfil → quedan como aviso en la campana
+   *  hasta que el usuario las abra o las descarte. */
+  pending: GsxOffer[];
+  /** Cerrar el modal SIN seleccionar (X o clic fuera): lo pasa a `pending`. */
+  dismissToPending: () => void;
+  /** Cerrar tras seleccionar un perfil: NO deja aviso en la campana. */
+  closeSelected: () => void;
+  /** Reabrir una oferta pendiente desde la campana. */
+  reopen: (icao: string) => void;
+  /** Descartar el aviso pendiente de la campana (sin abrirlo). */
+  clearPending: (icao: string) => void;
   start: () => void;
 }
 
@@ -53,7 +64,33 @@ let checking = false;
 
 export const useGsxOfferStore = create<GsxOfferState>((set, get) => ({
   offer: null,
-  dismiss: () => set({ offer: null }),
+  pending: [],
+  dismissToPending: () => {
+    const o = get().offer;
+    if (!o) return;
+    const pending = [o, ...get().pending.filter((x) => x.icao !== o.icao)];
+    set({ offer: null, pending });
+  },
+  closeSelected: () => {
+    const o = get().offer;
+    set({
+      offer: null,
+      pending: o
+        ? get().pending.filter((x) => x.icao !== o.icao)
+        : get().pending,
+    });
+  },
+  reopen: (icao) => {
+    const found = get().pending.find((x) => x.icao === icao);
+    if (found) {
+      set({
+        offer: found,
+        pending: get().pending.filter((x) => x.icao !== icao),
+      });
+    }
+  },
+  clearPending: (icao) =>
+    set({ pending: get().pending.filter((x) => x.icao !== icao) }),
   start: () => {
     if (started) return;
     started = true;
