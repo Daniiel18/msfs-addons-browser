@@ -61,9 +61,7 @@ impl SkyboundSource {
             .map_err(SourceError::Http)?;
         let status = resp.status();
         if status.as_u16() == 403 {
-            return Err(SourceError::Other(
-                "Skybound bloqueó la petición (Cloudflare). Prueba de nuevo; si persiste, ábrelo en el navegador.".into(),
-            ));
+            return Err(SourceError::Other(crate::tr!("skybound.cloudflareBlocked")));
         }
         if !status.is_success() {
             return Err(SourceError::Other(format!("Skybound HTTP {status}")));
@@ -151,7 +149,7 @@ impl SkyboundSource {
         let mut c = base.chars();
         match c.next() {
             Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-            None => "Descargar".into(),
+            None => crate::tr!("skybound.download"),
         }
     }
 
@@ -443,9 +441,9 @@ impl SkyboundSource {
             let host = raws[items[0].1].host.clone();
             let pretty = Self::pretty_part_base(&base);
             let name = if pretty == "Completo" {
-                format!("{host} · descargar ({} partes)", part_urls.len())
+                crate::tr!("skybound.downloadParts", host = host, n = part_urls.len())
             } else {
-                format!("{host} · {pretty} ({} partes)", part_urls.len())
+                crate::tr!("skybound.namedParts", host = host, name = pretty, n = part_urls.len())
             };
             let (first, rest) = part_urls.split_first().unwrap();
             seen_url.insert(first.to_ascii_lowercase());
@@ -469,7 +467,7 @@ impl SkyboundSource {
             let l = r.label.to_ascii_lowercase();
             let starts_digit = l.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true);
             let name = if r.is_skybound_file {
-                "Skybound (directo)".to_string()
+                crate::tr!("skybound.direct")
             } else if matches!(r.kind, DownloadKind::Torrent) {
                 "Torrent".to_string()
             } else if l.contains("mirror") || l.contains("backup") {
@@ -586,7 +584,7 @@ impl SkyboundSource {
                 let mut m = Self::extract_downloads(doc);
                 m.push(DownloadMethod {
                     kind: DownloadKind::Direct,
-                    name: "Abrir en Skybound".into(),
+                    name: crate::tr!("skybound.openInSkybound"),
                     url: page_url,
                     parts: Vec::new(),
                     password: None,

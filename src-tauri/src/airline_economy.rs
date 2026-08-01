@@ -1624,10 +1624,10 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
             (Some(o), Some(d)) => format!("{o} → {d}"),
             (Some(o), None) => o.to_string(),
             (None, Some(d)) => d.to_string(),
-            _ => "Vuelo".to_string(),
+            _ => crate::tr!("economy.flight"),
         };
         let label = if bought {
-            format!("{route} · compra avión")
+            crate::tr!("economy.aircraftPurchase", route = route)
         } else {
             route
         };
@@ -1654,7 +1654,7 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         events.push(Ev {
             t,
             delta: -cost,
-            label: format!("Mantenimiento: {comp}"),
+            label: crate::tr!("economy.maintenance", comp = comp),
             kind: "maint",
         });
     }
@@ -1668,7 +1668,7 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
             t: first.t.clone(),
             balance: bal,
             delta: 0.0,
-            label: "Inicio".to_string(),
+            label: crate::tr!("economy.start"),
             kind: "start".to_string(),
         });
     }

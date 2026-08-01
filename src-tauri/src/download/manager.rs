@@ -203,7 +203,7 @@ impl DownloadManager {
                 DownloadPhase::Completed | DownloadPhase::Error | DownloadPhase::Cancelled
             ) {
                 j.phase = DownloadPhase::Cancelled;
-                j.message = Some("Cancelado por el usuario".into());
+                j.message = Some(crate::tr!("manager.cancelledByUser"));
             }
         })
         .await;
@@ -226,7 +226,7 @@ impl DownloadManager {
         self.update(id, |j| {
             if j.phase == DownloadPhase::Downloading {
                 j.phase = DownloadPhase::Paused;
-                j.message = Some("Pausado".into());
+                j.message = Some(crate::tr!("manager.paused"));
             }
         })
         .await;
@@ -350,11 +350,7 @@ impl DownloadManager {
                     );
                     self.update(&job.id, |j| {
                         j.phase = DownloadPhase::Error;
-                        j.error = Some(
-                            "La app se cerró mientras se abría el enlace en el navegador. \
-                             Vuelve a pulsar el botón de descarga si lo necesitas."
-                                .into(),
-                        );
+                        j.error = Some(crate::tr!("manager.crashedDuringOpen"));
                     })
                     .await;
                 }
@@ -447,18 +443,15 @@ impl DownloadManager {
         self.update(id, |j| {
             j.phase = DownloadPhase::Downloading;
             j.message = Some(if parts.is_empty() {
-                "Abriendo la descarga dentro de SimFleet…".into()
+                crate::tr!("manager.openingDownload")
             } else {
-                format!(
-                    "Abriendo la descarga dentro de SimFleet ({} partes)…",
-                    parts.len() + 1
-                )
+                crate::tr!("manager.openingDownloadParts", n = parts.len() + 1)
             });
         })
         .await;
 
         let win_label = format!("hoster-dl-{id}");
-        let title = "Descarga — SimFleet".to_string();
+        let title = crate::tr!("manager.hosterWindowTitle");
         // Idioma de la app para los textos del overlay.
         let lang: String = sqlx::query_as::<_, (String,)>(
             "SELECT value FROM settings WHERE key='pref_language'",
@@ -483,19 +476,14 @@ impl DownloadManager {
             Ok(()) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Completed;
-                    j.message = Some(
-                        "Descarga abierta dentro de SimFleet. Si el sitio pide un clic o \
-                         un captcha, complétalo en la ventana; el archivo se instalará \
-                         solo al terminar."
-                            .into(),
-                    );
+                    j.message = Some(crate::tr!("manager.downloadOpened"));
                 })
                 .await;
             }
             Err(e) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;
-                    j.error = Some(format!("No se pudo abrir la descarga: {e}"));
+                    j.error = Some(crate::tr!("manager.openDownloadFailed", e = e));
                 })
                 .await;
             }
@@ -518,7 +506,7 @@ impl DownloadManager {
         // mientras espera el permit, salimos sin tocar nada.
         self.update(id, |j| {
             j.phase = DownloadPhase::Queued;
-            j.message = Some("En cola — esperando a que termine la descarga anterior…".into());
+            j.message = Some(crate::tr!("manager.queuedWaiting"));
         })
         .await;
 
@@ -527,7 +515,7 @@ impl DownloadManager {
             _ = cancel.cancelled() => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Cancelled;
-                    j.message = Some("Cancelado por el usuario antes de empezar".into());
+                    j.message = Some(crate::tr!("manager.cancelledBeforeStart"));
                 })
                 .await;
                 return;
@@ -543,7 +531,7 @@ impl DownloadManager {
                 tracing::error!("torrent_slot cerrado: {e}");
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;
-                    j.error = Some("El gestor de descargas no está disponible".into());
+                    j.error = Some(crate::tr!("manager.mgrUnavailable"));
                 })
                 .await;
                 return;
@@ -555,9 +543,7 @@ impl DownloadManager {
             // SceneryAddons gates this behind a ~10 s "Read First"
             // countdown — set the message up-front so the UI doesn't
             // look like it's stuck for those 10 seconds.
-            j.message = Some(
-                "Obteniendo enlace magnet (puede tardar ~10 s en SceneryAddons)…".into(),
-            );
+            j.message = Some(crate::tr!("manager.resolvingMagnet"));
         })
         .await;
 
@@ -575,12 +561,11 @@ impl DownloadManager {
                     self.update(id, |j| {
                         if cancelled {
                             j.phase = DownloadPhase::Cancelled;
-                            j.message = Some("Cancelado por el usuario".into());
+                            j.message = Some(crate::tr!("manager.cancelledByUser"));
                         } else {
                             j.phase = DownloadPhase::Error;
-                            j.error = Some(format!(
-                                "No se pudo obtener el enlace magnet del hoster: {e:#}"
-                            ));
+                            j.error =
+                                Some(crate::tr!("manager.magnetResolveFailed", e = format!("{e:#}")));
                         }
                     })
                     .await;
@@ -591,7 +576,7 @@ impl DownloadManager {
 
         // Resolution succeeded — reflect the next stage in the UI.
         self.update(id, |j| {
-            j.message = Some("Conectando con peers…".into());
+            j.message = Some(crate::tr!("manager.connectingPeers"));
         })
         .await;
 
@@ -667,7 +652,7 @@ impl DownloadManager {
                 self.update(id, |j| {
                     if cancelled {
                         j.phase = DownloadPhase::Cancelled;
-                        j.message = Some("Cancelado por el usuario".into());
+                        j.message = Some(crate::tr!("manager.cancelledByUser"));
                     } else {
                         j.phase = DownloadPhase::Error;
                         j.error = Some(format!("{e:#}"));
@@ -681,7 +666,7 @@ impl DownloadManager {
         // Install phase.
         self.update(id, |j| {
             j.phase = DownloadPhase::Installing;
-            j.message = Some("Extrayendo archivo…".into());
+            j.message = Some(crate::tr!("manager.extracting"));
         })
         .await;
 
@@ -689,11 +674,7 @@ impl DownloadManager {
             engine.cleanup_job_folder(&subfolder);
             self.update(id, |j| {
                 j.phase = DownloadPhase::Error;
-                j.error = Some(
-                    "El torrent no contiene un archivo .zip/.rar/.7z que podamos \
-                     auto-instalar. Abre la carpeta de descargas para revisarlo."
-                        .into(),
-                );
+                j.error = Some(crate::tr!("manager.noArchiveInTorrent"));
             })
             .await;
             return;
@@ -714,11 +695,7 @@ impl DownloadManager {
                 engine.cleanup_job_folder(&subfolder);
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;
-                    j.error = Some(
-                        "No se detectó la carpeta Community de MSFS 2020. Configúrala \
-                         manualmente desde Ajustes (próximamente) e intenta de nuevo."
-                            .into(),
-                    );
+                    j.error = Some(crate::tr!("manager.communityNotDetected"));
                 })
                 .await;
                 return;
@@ -791,19 +768,12 @@ impl DownloadManager {
                         // con la limpieza. Ahora se avisa claro y se redirige al
                         // método Mirror/Direct, que SÍ maneja instaladores (los
                         // abre en SimFleet y te deja guardarlos/ejecutarlos).
-                        j.message = Some(
-                            "El torrent contiene un instalador (.exe/.msi), no un \
-                             paquete auto-instalable. Descárgalo por el método \
-                             Mirror/Direct: SimFleet lo abre y te deja guardarlo \
-                             para ejecutarlo."
-                                .into(),
-                        );
+                        j.message = Some(crate::tr!("manager.torrentIsInstaller"));
                     } else {
-                        j.message = Some(format!(
-                            "Se instalaron {} paquete{} ({:.1} MB)",
-                            res.packages.len(),
-                            if res.packages.len() == 1 { "" } else { "s" },
-                            (res.total_bytes as f64) / (1024.0 * 1024.0),
+                        j.message = Some(crate::tr!(
+                            "manager.installedPackages",
+                            n = res.packages.len(),
+                            mb = format!("{:.1}", (res.total_bytes as f64) / (1024.0 * 1024.0)),
                         ));
                     }
                     j.install_path = primary.map(|p| p.install_path);
@@ -906,14 +876,14 @@ impl DownloadManager {
             Ok(Err(e)) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;
-                    j.error = Some(format!("Falló la instalación: {e:#}"));
+                    j.error = Some(crate::tr!("manager.installFailed", e = format!("{e:#}")));
                 })
                 .await;
             }
             Err(join_err) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;
-                    j.error = Some(format!("La tarea de instalación falló: {join_err}"));
+                    j.error = Some(crate::tr!("manager.installTaskFailed", err = join_err));
                 })
                 .await;
             }

@@ -844,12 +844,12 @@ pub fn apply_toggle(
         .unwrap_or("")
         .to_string();
     let mut cfg = read_or_generate(addon_dir, &folder, None)
-        .ok_or_else(|| anyhow::anyhow!("Este escenario no tiene opciones de rendimiento."))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("perf.noOptions")))?;
     let idx = cfg
         .options
         .iter()
         .position(|o| o.id == option_id)
-        .ok_or_else(|| anyhow::anyhow!("Opción '{option_id}' no encontrada."))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("perf.optionNotFound", option_id = option_id)))?;
 
     // Plan: por cada op, el destino activo según apply/dirección. Usa la
     // ruta DESACTIVADA explícita de la nota (`.disabled`, `.off`, `.bak`…),
@@ -897,13 +897,13 @@ pub fn apply_toggle(
                     let _ = fs::rename(dt, df);
                 }
                 let hint = if e.raw_os_error() == Some(32) {
-                    " — MSFS tiene el escenario abierto. Cierra el simulador (o vuelve al menú principal) e inténtalo de nuevo."
+                    crate::tr!("perf.renameLockedHint")
                 } else {
-                    ""
+                    String::new()
                 };
                 return Err(anyhow::anyhow!(
-                    "No se pudo renombrar {}: {e}{hint}",
-                    from.display()
+                    "{}",
+                    crate::tr!("perf.renameFailed", path = from.display(), e = e, hint = hint)
                 ));
             }
         }

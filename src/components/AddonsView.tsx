@@ -845,14 +845,14 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
   if (loading) {
     return (
       <section className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-xs text-slate-500">
-        Escaneando liveries de aircraft addons…
+        {t("addons.liveries.scanning")}
       </section>
     );
   }
   if (error) {
     return (
       <section className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
-        Error escaneando liveries: {error}
+        {t("addons.liveries.scan_error", { error })}
       </section>
     );
   }
@@ -915,7 +915,7 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
                 {items.length}
               </span>
               <span className="ml-auto text-[11px] text-slate-500">
-                {isOpen ? "↓ Colapsar" : "→ Expandir"}
+                {isOpen ? t("addons.liveries.collapse") : t("addons.liveries.expand")}
               </span>
             </header>
             {isOpen && (
@@ -1143,8 +1143,7 @@ function EmptyState({
         <Package className="mx-auto mb-3 h-8 w-8 text-slate-700" />
         <p className="text-sm text-slate-400">{t("addons.empty.non_scenery")}</p>
         <p className="mt-1 text-xs text-slate-600">
-          Arrastra un .zip / .rar / .7z / .ptp para instalar uno, o usa
-          la pestaña Buscar para descargar desde un catálogo.
+          {t("addons.empty.install_hint")}
         </p>
       </div>
     );
@@ -1152,7 +1151,7 @@ function EmptyState({
   if (hasFilter) {
     return (
       <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center text-xs text-slate-500">
-        Ningún addon coincide con tu filtro.
+        {t("addons.empty.no_filter_match")}
       </div>
     );
   }

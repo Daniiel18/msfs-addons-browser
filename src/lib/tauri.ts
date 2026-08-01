@@ -535,6 +535,8 @@ interface Api {
   // Settings
   getAppSettings: () => Promise<AppSettings>;
   setAppSetting: (key: string, value: string) => Promise<void>;
+  /** (v7.1) Empuja el locale ("es"/"en") al backend para sus mensajes. */
+  setBackendLocale: (locale: string) => Promise<void>;
   setAutostart: (enabled: boolean) => Promise<boolean>;
   clearCaches: () => Promise<number>;
   resetSettings: () => Promise<number>;
@@ -995,6 +997,7 @@ const realApi: Api = {
 
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   setAppSetting: (key, value) => invoke<void>("set_app_setting", { key, value }),
+  setBackendLocale: (locale) => invoke<void>("set_backend_locale", { locale }),
   setAutostart: (enabled) => invoke<boolean>("set_autostart", { enabled }),
   clearCaches: () => invoke<number>("clear_caches"),
   resetSettings: () => invoke<number>("reset_settings"),
@@ -1823,6 +1826,9 @@ const demoApi: Api = {
     };
   },
   async setAppSetting() {
+    /* no-op demo */
+  },
+  async setBackendLocale() {
     /* no-op demo */
   },
   async setAutostart(enabled) {

@@ -341,7 +341,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       const filename = `msfs-addons-${ts}.${ext}`;
       const filterMap: Record<ExportFormat, { name: string; extensions: string[] }> = {
         csv: { name: "CSV (Excel)", extensions: ["csv"] },
-        txt: { name: "Texto plano", extensions: ["txt"] },
+        txt: { name: t("settings.export.filter.txt"), extensions: ["txt"] },
         json: { name: "JSON", extensions: ["json"] },
       };
       const dest = await api.pickSavePath(filename, [filterMap[format]]);

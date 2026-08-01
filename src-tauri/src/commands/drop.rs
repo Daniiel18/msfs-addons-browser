@@ -53,7 +53,7 @@ pub async fn drop_commit(
         None => PathBuf::from(
             community::detect_community_folder()
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Community folder no detectada".to_string())?
+                .ok_or_else(|| crate::tr!("dropCmd.communityNotDetected"))?
                 .path,
         ),
     };
@@ -164,12 +164,12 @@ pub async fn delete_dropped_archive(archive_path: String) -> Result<(), String> 
             }
         }
     }
-    let msg = format!(
-        "No se pudo borrar {}: {}",
-        archive_path,
-        last_err
+    let msg = crate::tr!(
+        "dropCmd.deleteFailed",
+        path = archive_path,
+        e = last_err
             .map(|e| e.to_string())
-            .unwrap_or_else(|| "desconocido".to_string())
+            .unwrap_or_else(|| crate::tr!("dropCmd.unknown"))
     );
     tracing::warn!(target: "drop", "{}", msg);
     Err(msg)

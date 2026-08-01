@@ -176,8 +176,8 @@ fn build_presence(app: &tauri::AppHandle) -> Presence {
             .current_airport_icao
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(|a| format!("En {a}"))
-            .unwrap_or_else(|| "Volando".to_string()),
+            .map(|a| crate::tr!("discord.atAirport", airport = a))
+            .unwrap_or_else(|| crate::tr!("discord.flying")),
     };
 
     // Avión: título real del sim, o la matrícula/aerolínea como respaldo.
@@ -199,7 +199,7 @@ fn build_presence(app: &tauri::AppHandle) -> Presence {
         bits.push(aircraft);
     }
     if let Some(p) = st.phase_label.as_deref().map(phase_text) {
-        bits.push(p.to_string());
+        bits.push(p);
     }
     if let Some(alt) = st.current_alt_ft {
         if alt > 1000 {
@@ -217,8 +217,8 @@ fn build_presence(app: &tauri::AppHandle) -> Presence {
 /// Estado cuando no hay sim corriendo.
 fn idle() -> Presence {
     Presence {
-        details: "En SimFleet".to_string(),
-        state: "Gestionando addons".to_string(),
+        details: crate::tr!("discord.idleDetails"),
+        state: crate::tr!("discord.idleState"),
         start: None,
     }
 }
@@ -246,21 +246,21 @@ fn open_flight_start(app: &tauri::AppHandle) -> Option<i64> {
 }
 
 /// Fase del vuelo → texto corto para Discord.
-fn phase_text(p: &str) -> &'static str {
+fn phase_text(p: &str) -> String {
     match p {
-        "preflight" => "Prevuelo",
-        "engine_running" | "engine_start" => "Motores en marcha",
-        "pushback" => "Pushback",
-        "taxi_out" => "Rodaje a pista",
-        "takeoff" => "Despegue",
-        "climbing" => "En ascenso",
-        "cruise" => "En crucero",
-        "descent" => "En descenso",
-        "approach" => "En aproximación",
-        "landed_rollout" | "landing" => "Aterrizando",
-        "taxi_in" => "Rodaje a puerta",
-        "parking" => "En puerta",
-        "deboarding" => "Desembarque",
-        _ => "En vuelo",
+        "preflight" => crate::tr!("discord.phasePreflight"),
+        "engine_running" | "engine_start" => crate::tr!("discord.phaseEngineRunning"),
+        "pushback" => crate::tr!("discord.phasePushback"),
+        "taxi_out" => crate::tr!("discord.phaseTaxiOut"),
+        "takeoff" => crate::tr!("discord.phaseTakeoff"),
+        "climbing" => crate::tr!("discord.phaseClimbing"),
+        "cruise" => crate::tr!("discord.phaseCruise"),
+        "descent" => crate::tr!("discord.phaseDescent"),
+        "approach" => crate::tr!("discord.phaseApproach"),
+        "landed_rollout" | "landing" => crate::tr!("discord.phaseLanding"),
+        "taxi_in" => crate::tr!("discord.phaseTaxiIn"),
+        "parking" => crate::tr!("discord.phaseParking"),
+        "deboarding" => crate::tr!("discord.phaseDeboarding"),
+        _ => crate::tr!("discord.phaseInFlight"),
     }
 }

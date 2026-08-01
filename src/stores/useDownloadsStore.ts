@@ -15,6 +15,24 @@ import { useToastStore } from "./useToastStore";
  *  persistente leído desde `installed_addons`. */
 export type PanelTab = "active" | "installed";
 
+/** (v7.1) Datos para reofrecer descargas tras un fallo de torrent (sin seeds /
+ *  timeout): el modal muestra los mirrors y deja reintentar el torrent. */
+export type DownloadRecovery = {
+  addonId: string;
+  addonTitle: string;
+  source: string;
+  addonSimulator?: string;
+  methods: DownloadMethod[];
+  reason: string;
+};
+
+/** (v7.1) Métodos por addon guardados al iniciar una descarga, para reofrecer
+ *  mirrors si el torrent falla. Fuera del store — no necesita reactividad. */
+const recoveryMeta = new Map<
+  string,
+  { source: string; addonSimulator?: string; methods: DownloadMethod[] }
+>();
+
 interface DownloadsState {
   /** Jobs indexed by id → keeps reconciliation O(1) and gives stable iteration order. */
   jobs: Record<string, DownloadJob>;
@@ -47,7 +65,13 @@ interface DownloadsState {
     /** (v6 #1 fix) Compatibilidad de sim ("MSFS 2020/2024") para la
      *  oferta de cross-link tras instalar. */
     addonSimulator?: string;
+    /** (v7.1) Lista COMPLETA de métodos del addon — se guarda para reofrecer
+     *  mirrors si el torrent falla. */
+    allMethods?: DownloadMethod[];
   }) => Promise<void>;
+  /** (v7.1) Estado del modal de recuperación tras fallo de torrent. */
+  recovery: DownloadRecovery | null;
+  dismissRecovery: () => void;
   cancel: (id: string) => Promise<void>;
   pause: (id: string) => Promise<void>;
   resume: (id: string) => Promise<void>;
@@ -69,6 +93,9 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
   community: null,
   manualInstallBusy: false,
   manualInstallError: null,
+  recovery: null,
+
+  dismissRecovery: () => set({ recovery: null }),
 
   setPanelOpen: (isPanelOpen) => set({ isPanelOpen }),
   togglePanel: () => set((s) => ({ isPanelOpen: !s.isPanelOpen })),
@@ -151,21 +178,50 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
         .rescan()
         .catch((e) => console.warn("community rescan failed:", e));
     } else if (job.phase === "error" && prev?.phase !== "error") {
-      useToastStore.getState().push({
-        kind: "error",
-        title: t("toast.download.failed"),
-        message: job.error ?? job.addonTitle,
-        onClick: () => useDownloadsStore.getState().openPanelAt("active"),
-        ttlMs: null, // los errores se quedan hasta que el usuario los cierra
-      });
+      // (v7.1) Si el que falló fue un TORRENT (típicamente sin seeds o timeout)
+      // y tenemos los métodos del addon, reofrecemos los mirrors en un modal en
+      // vez de dejar al usuario en un callejón sin salida. Si no, toast normal.
+      const meta = recoveryMeta.get(job.addonId);
+      const wasCancelled = (job.error ?? "").toLowerCase().includes("cancel");
+      if (
+        job.methodKind === "torrent" &&
+        !wasCancelled &&
+        meta &&
+        meta.methods.length > 0
+      ) {
+        set({
+          recovery: {
+            addonId: job.addonId,
+            addonTitle: job.addonTitle,
+            source: meta.source,
+            addonSimulator: meta.addonSimulator,
+            methods: meta.methods,
+            reason: job.error ?? "",
+          },
+        });
+      } else {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("toast.download.failed"),
+          message: job.error ?? job.addonTitle,
+          onClick: () => useDownloadsStore.getState().openPanelAt("active"),
+          ttlMs: null, // los errores se quedan hasta que el usuario los cierra
+        });
+      }
     }
   },
 
-  async start({ addonId, addonTitle, source, method, addonSimulator }) {
+  async start({ addonId, addonTitle, source, method, addonSimulator, allMethods }) {
     // Intentionally do NOT auto-open the panel here. The button in the
     // header has a live badge count, and surprising the user with a
     // full-screen scrim on every click is worse UX than letting them
     // open the panel themselves when they care.
+    // (v7.1) Guardamos los métodos del addon por si el torrent falla y hay que
+    // reofrecer mirrors. Empezar una descarga nueva limpia un recovery previo.
+    if (allMethods && allMethods.length > 0) {
+      recoveryMeta.set(addonId, { source, addonSimulator, methods: allMethods });
+    }
+    set({ recovery: null });
     try {
       const job = await api.startDownload({ addonId, addonTitle, source, method, addonSimulator });
       // Ensure the store has the initial state even if the event for

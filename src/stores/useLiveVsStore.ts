@@ -5,6 +5,7 @@ import {
   type RealtimeChannel,
 } from "@supabase/supabase-js";
 import { useToastStore } from "./useToastStore";
+import { t } from "../lib/i18n";
 
 /**
  * (v6 #3) Live VS — estado del modo competitivo Daniel vs Héctor sobre
@@ -277,10 +278,14 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     try {
       useToastStore.getState().push({
         kind: "success",
-        title: "Crew VS listo",
-        message: `${notice.origin}→${notice.dest}: tú ${Math.round(
-          notice.selfFpm,
-        )} vs ${notice.rivalName} ${Math.round(notice.rivalFpm)} fpm`,
+        title: t("liveVs.duel_ready_toast.title"),
+        message: t("liveVs.duel_ready_toast.message", {
+          origin: notice.origin,
+          dest: notice.dest,
+          selfFpm: String(Math.round(notice.selfFpm)),
+          rivalName: notice.rivalName,
+          rivalFpm: String(Math.round(notice.rivalFpm)),
+        }),
         ttlMs: 8000,
       });
     } catch {

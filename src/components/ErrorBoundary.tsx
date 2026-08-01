@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { t } from "../lib/i18n";
 
 interface Props {
   children: ReactNode;
@@ -40,11 +41,10 @@ export class ErrorBoundary extends Component<Props, State> {
       <div className="min-h-screen bg-slate-950 p-6 text-slate-100">
         <div className="mx-auto max-w-3xl rounded-2xl border border-red-500/40 bg-red-500/5 p-6">
           <h1 className="text-lg font-semibold text-red-300">
-            La interfaz se cayó en runtime
+            {t("errorBoundary.title")}
           </h1>
           <p className="mt-1 text-sm text-slate-300">
-            Este panel se muestra porque un componente lanzó una excepción. Abre la
-            consola (F12) para el stack completo y pulsa Recargar para reintentar.
+            {t("errorBoundary.body")}
           </p>
           <pre className="mt-4 max-h-64 overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-red-200">
             {error.message}
@@ -60,7 +60,7 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={this.handleReload}
             className="mt-4 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 hover:border-brand-500/50"
           >
-            Recargar
+            {t("errorBoundary.reload")}
           </button>
         </div>
       </div>

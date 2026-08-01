@@ -198,7 +198,10 @@ export const useFlightLogStore = create<FlightLogState>((set, get) => ({
             useToastStore.getState().push({
               kind: "success",
               title: "VAS-ACARS",
-              message: `${p.imported ?? 0} nuevos · ${p.updated ?? 0} actualizados`,
+              message: t("flightLog.vas_toast.message", {
+                imported: String(p.imported ?? 0),
+                updated: String(p.updated ?? 0),
+              }),
               ttlMs: 5000,
             });
           });

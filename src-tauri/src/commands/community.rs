@@ -135,7 +135,7 @@ pub async fn scan_community(
             .await
         .map_err(|e| {
             tracing::error!(target: "scan", "scan_community: tarea panic: {e}");
-            format!("la tarea de escaneo falló: {e}")
+            crate::tr!("community.scanTaskFailed", e = e)
         })?
         .map_err(|e| {
             tracing::error!(target: "scan", "scan_community: scan error: {e:#}");
@@ -267,7 +267,7 @@ pub async fn uninstall_community_package(
                 "uninstall '{}' falló: {e:#}",
                 folder_name
             );
-            Err(e.to_string())
+            Err(e.localized())
         }
     }
 }
@@ -293,7 +293,7 @@ pub async fn set_package_enabled(
     );
     package_ops::set_package_enabled(&state.db, &folder_name, enabled, cascade)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.localized())
 }
 
 /// (v4.25.0) Toggle masivo — Enable All / Disable All del dashboard de
@@ -313,7 +313,7 @@ pub async fn set_packages_enabled(
     let _t = CmdTimer::start("set_packages_enabled");
     package_ops::set_packages_enabled(&state.db, &folder_names, enabled)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.localized())
 }
 
 /// (v4.25.0) Aristas del Link Map ('auto' del manifest + 'manual').
@@ -334,7 +334,7 @@ pub async fn add_addon_link(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     if source_folder.eq_ignore_ascii_case(&target_folder) {
-        return Err("un addon no puede enlazarse consigo mismo".to_string());
+        return Err(crate::tr!("community.linkSelf"));
     }
     cmd_log!("add_addon_link", "{} -> {}", source_folder, target_folder);
     repo::add_addon_link(&state.db, &source_folder, &target_folder)
@@ -496,7 +496,7 @@ pub async fn package_thumbnail(
     .await
     .map_err(|e| e.to_string())?;
     let Some((cached, install_path)) = row else {
-        return Err(format!("paquete desconocido: {}", folder_name));
+        return Err(crate::tr!("community.unknownPackage", folder = folder_name));
     };
     let folder_clone = folder_name.clone();
     let result = tokio::task::spawn_blocking(move || -> Option<String> {
@@ -698,7 +698,7 @@ pub async fn list_pmdg_liveries(
         pmdg_liveries::scan_pmdg_liveries(&path_for_task)
     })
     .await
-    .map_err(|e| format!("la tarea de escaneo PMDG falló: {e}"))?
+    .map_err(|e| crate::tr!("community.pmdgScanTaskFailed", e = e))?
     .map_err(|e| e.to_string())?;
     Ok(liveries)
 }
@@ -709,12 +709,9 @@ async fn resolve_path(community_path: Option<String>) -> Result<PathBuf, String>
     }
     let detected: Option<CommunityInfo> =
         community::detect_community_folder().map_err(|e| e.to_string())?;
-    let info = detected.ok_or_else(|| {
-        "No se detectó la carpeta Community automáticamente — pásala manualmente."
-            .to_string()
-    })?;
+    let info = detected.ok_or_else(|| crate::tr!("community.folderNotDetected"))?;
     if !info.exists {
-        return Err(format!("La carpeta Community detectada no existe: {}", info.path));
+        return Err(crate::tr!("community.folderNotExist", path = info.path));
     }
     Ok(PathBuf::from(info.path))
 }

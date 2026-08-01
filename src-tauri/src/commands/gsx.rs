@@ -39,7 +39,7 @@ pub async fn gsx_lookup(
 pub async fn gsx_list_installed_icaos() -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(|| {
         let folder = gsx_profiles_folder().ok_or_else(|| {
-            "No se pudo resolver %APPDATA%\\Virtuali\\GSX\\MSFS".to_string()
+            crate::tr!("gsx.resolveAppdataFailed")
         })?;
         if !folder.is_dir() {
             return Ok::<Vec<String>, String>(Vec::new());
@@ -328,7 +328,7 @@ pub async fn gsx_install_profile(
     tokio::task::spawn_blocking(move || {
         let src = Path::new(&source_path);
         if !src.is_file() {
-            return Err(format!("No existe el archivo {}", src.display()));
+            return Err(crate::tr!("gsx.fileNotFound", path = src.display()));
         }
         let ext = src
             .extension()
@@ -336,7 +336,7 @@ pub async fn gsx_install_profile(
             .unwrap_or("")
             .to_ascii_lowercase();
         let folder = gsx_profiles_folder().ok_or_else(|| {
-            "No se pudo resolver %APPDATA%\\Virtuali\\GSX\\MSFS".to_string()
+            crate::tr!("gsx.resolveAppdataFailed")
         })?;
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
 
@@ -344,7 +344,7 @@ pub async fn gsx_install_profile(
             "ini" | "py" => {
                 let file_name = src
                     .file_name()
-                    .ok_or_else(|| "archivo sin nombre".to_string())?;
+                    .ok_or_else(|| crate::tr!("gsx.fileNoName"))?;
                 let dest = folder.join(file_name);
                 std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
                 Ok(GsxInstallReport {
@@ -355,10 +355,7 @@ pub async fn gsx_install_profile(
             }
             "zip" => install_from_zip(src, &folder),
             "rar" => install_from_rar(src, &folder),
-            other => Err(format!(
-                "Extensión no soportada: .{} (acepta .ini, .py, .zip, .rar)",
-                other
-            )),
+            other => Err(crate::tr!("gsx.unsupportedExt", ext = other)),
         }
     })
     .await
@@ -374,7 +371,7 @@ fn install_from_zip(src: &Path, dest_folder: &Path) -> Result<GsxInstallReport, 
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     archive
         .extract(temp.path())
-        .map_err(|e| format!("Error extrayendo .zip: {e}"))?;
+        .map_err(|e| crate::tr!("gsx.zipExtractError", e = e))?;
     collect_and_copy_profiles(temp.path(), dest_folder, "zip")
 }
 
@@ -386,17 +383,17 @@ fn install_from_rar(src: &Path, dest_folder: &Path) -> Result<GsxInstallReport, 
     // a `temp.path()` via `process()` que acepta destination path.
     let archive = unrar::Archive::new(src)
         .open_for_processing()
-        .map_err(|e| format!("Error abriendo .rar: {e}"))?;
+        .map_err(|e| crate::tr!("gsx.rarOpenError", e = e))?;
     let mut iter = archive;
     loop {
         let header = match iter.read_header() {
             Ok(Some(h)) => h,
             Ok(None) => break,
-            Err(e) => return Err(format!("Error leyendo .rar: {e}")),
+            Err(e) => return Err(crate::tr!("gsx.rarReadError", e = e)),
         };
         iter = header
             .extract_with_base(temp.path())
-            .map_err(|e| format!("Error extrayendo .rar: {e}"))?;
+            .map_err(|e| crate::tr!("gsx.rarExtractError", e = e))?;
     }
     collect_and_copy_profiles(temp.path(), dest_folder, "rar")
 }
@@ -439,15 +436,12 @@ fn collect_and_copy_profiles(
         }
         let dest = dest_folder.join(p.file_name().unwrap());
         std::fs::copy(p, &dest).map_err(|e| {
-            format!("Error copiando {}: {}", p.display(), e)
+            crate::tr!("gsx.copyError", path = p.display(), e = e)
         })?;
         installed.push(dest.to_string_lossy().into_owned());
     }
     if installed.is_empty() {
-        return Err(format!(
-            "El archivo .{} no contiene perfiles GSX (.ini/.py)",
-            kind
-        ));
+        return Err(crate::tr!("gsx.noProfilesInArchive", kind = kind));
     }
     Ok(GsxInstallReport {
         archive_kind: kind.to_string(),
@@ -468,14 +462,11 @@ pub async fn read_text_file(path: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let p = Path::new(&path);
         if !p.is_file() {
-            return Err(format!("No existe el archivo {}", p.display()));
+            return Err(crate::tr!("gsx.fileNotFound", path = p.display()));
         }
         let meta = std::fs::metadata(p).map_err(|e| e.to_string())?;
         if meta.len() > 10 * 1024 * 1024 {
-            return Err(format!(
-                "Archivo muy grande ({} bytes); cap 10MB",
-                meta.len()
-            ));
+            return Err(crate::tr!("gsx.fileTooLarge", bytes = meta.len()));
         }
         std::fs::read_to_string(p).map_err(|e| e.to_string())
     })

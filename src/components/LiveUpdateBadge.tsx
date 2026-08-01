@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Download, Loader2, Sparkles, X } from "lucide-react";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 import type { UpdateInfo } from "../lib/types";
 
 /**
@@ -86,7 +87,7 @@ export function LiveUpdateBadge() {
       <button
         onClick={() => setShowModal(true)}
         className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 shadow-lg shadow-emerald-500/10 hover:bg-emerald-500/25"
-        title={`v${update.latestVersion} disponible — click para ver detalles`}
+        title={t("liveUpdate.badgeTip", { version: update.latestVersion })}
       >
         <motion.span
           animate={{ scale: [1, 1.2, 1] }}
@@ -117,7 +118,7 @@ export function LiveUpdateBadge() {
               <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-emerald-200">
                   <Sparkles className="h-4 w-4 text-emerald-300" />
-                  Actualización disponible
+                  {t("liveUpdate.title")}
                 </div>
                 <button
                   onClick={() => !installing && setShowModal(false)}
@@ -139,14 +140,14 @@ export function LiveUpdateBadge() {
                     rel="noopener noreferrer"
                     className="mt-0.5 inline-block text-[10px] text-emerald-300 hover:underline"
                   >
-                    Ver release en GitHub →
+                    {t("liveUpdate.viewRelease")}
                   </a>
                 </div>
 
                 {update.notesMarkdown && (
                   <div>
                     <div className="mb-1 text-[11px] uppercase tracking-wider text-slate-400">
-                      Cambios
+                      {t("liveUpdate.changes")}
                     </div>
                     <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-300">
                       {update.notesMarkdown.slice(0, 8000)}
@@ -159,7 +160,7 @@ export function LiveUpdateBadge() {
                   <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">
                     <div className="mb-1 flex items-center gap-2">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Descargando…
+                      {t("liveUpdate.downloading")}
                       {downloadPct !== null && (
                         <span className="ml-auto font-mono">
                           {downloadPct}%
@@ -175,10 +176,10 @@ export function LiveUpdateBadge() {
                       </div>
                     )}
                     <p className="mt-1.5 text-[10px] text-emerald-200/70">
-                      La app se cerrará tras la descarga.{" "}
+                      {t("liveUpdate.willClose")}{" "}
                       {autoRestart
-                        ? "Se reiniciará automáticamente al terminar."
-                        : "Tendrás que abrirla manualmente."}
+                        ? t("liveUpdate.willRestart")
+                        : t("liveUpdate.openManually")}
                     </p>
                   </div>
                 )}
@@ -191,7 +192,7 @@ export function LiveUpdateBadge() {
                     disabled={installing}
                     className="accent-emerald-500"
                   />
-                  Reiniciar la app automáticamente al terminar
+                  {t("liveUpdate.autoRestartLabel")}
                 </label>
               </div>
 
@@ -204,7 +205,7 @@ export function LiveUpdateBadge() {
                   disabled={installing}
                   className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
                 >
-                  Recordar más tarde
+                  {t("liveUpdate.remindLater")}
                 </button>
                 <button
                   onClick={onInstall}
@@ -216,7 +217,7 @@ export function LiveUpdateBadge() {
                   ) : (
                     <Download className="h-3.5 w-3.5" />
                   )}
-                  Instalar ahora
+                  {t("liveUpdate.installNow")}
                 </button>
               </footer>
             </motion.div>

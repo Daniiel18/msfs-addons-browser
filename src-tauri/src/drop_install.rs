@@ -110,7 +110,7 @@ pub fn inspect(
 ) -> anyhow::Result<DropInspection> {
     tracing::info!(target: "drop", "inspect: path={}", archive_path.display());
     if !archive_path.exists() {
-        anyhow::bail!("No existe la ruta {}", archive_path.display());
+        anyhow::bail!("{}", crate::tr!("dropInstall.pathNotExist", path = archive_path.display()));
     }
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -122,9 +122,7 @@ pub fn inspect(
     if archive_path.is_dir() {
         let items = scan_extracted(archive_path)?;
         if items.is_empty() {
-            anyhow::bail!(
-                "La carpeta no contiene paquetes MSFS (manifest+layout) ni perfiles GSX."
-            );
+            anyhow::bail!("{}", crate::tr!("dropInstall.folderNoContent"));
         }
         let is_single = items.len() == 1;
         let session = DropSession {
@@ -136,7 +134,7 @@ pub fn inspect(
         sessions
             .0
             .lock()
-            .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?
+            .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.mutexPoisoned", e = e)))?
             .insert(session_id.clone(), session);
         tracing::info!(
             target: "drop",
@@ -174,7 +172,7 @@ pub fn inspect(
         sessions
             .0
             .lock()
-            .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?
+            .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.mutexPoisoned", e = e)))?
             .insert(session_id.clone(), session);
         tracing::info!(
             target: "drop",
@@ -204,7 +202,7 @@ pub fn inspect(
         sessions
             .0
             .lock()
-            .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?
+            .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.mutexPoisoned", e = e)))?
             .insert(session_id.clone(), session);
         return Ok(DropInspection {
             session_id,
@@ -217,14 +215,11 @@ pub fn inspect(
 
     // .zip / .rar / .7z → extraer y enumerar.
     if !matches!(ext.as_str(), "zip" | "rar" | "7z") {
-        anyhow::bail!(
-            "Extensión no soportada: .{} (acepta .ini, .py, .zip, .rar, .7z, .exe, .msi)",
-            ext
-        );
+        anyhow::bail!("{}", crate::tr!("dropInstall.unsupportedExt", ext = ext));
     }
 
     let tempdir = tempfile::tempdir()
-        .map_err(|e| anyhow::anyhow!("no se pudo crear tempdir: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.tempdirFailed", e = e)))?;
     let temp_path = tempdir.path().to_path_buf();
     tracing::info!(
         target: "drop",
@@ -370,7 +365,7 @@ pub fn inspect(
     sessions
         .0
         .lock()
-        .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?
+        .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.mutexPoisoned", e = e)))?
         .insert(session_id.clone(), session);
 
     Ok(DropInspection {
@@ -408,10 +403,10 @@ pub fn commit(
         let map = sessions
             .0
             .lock()
-            .map_err(|e| anyhow::anyhow!("Mutex envenenado: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.mutexPoisoned", e = e)))?;
         match map.get(session_id) {
             Some(s) => s.items.clone(),
-            None => anyhow::bail!("Sesión {} no existe o expiró", session_id),
+            None => anyhow::bail!("{}", crate::tr!("dropInstall.sessionMissing", id = session_id)),
         }
     };
 
@@ -432,7 +427,7 @@ pub fn commit(
         let Some(item) = items.iter().find(|i| i.source_path == *path_str) else {
             report
                 .errors
-                .push(format!("Item no encontrado en sesión: {}", path_str));
+                .push(crate::tr!("dropInstall.itemNotInSession", path = path_str));
             tracing::warn!(target: "drop", "item no en sesión: {}", path_str);
             continue;
         };
@@ -516,7 +511,7 @@ pub fn commit(
                 tracing::warn!(target: "drop", "tipo no instalable: {}", other);
                 report
                     .errors
-                    .push(format!("Tipo no instalable: {}", item.kind));
+                    .push(crate::tr!("dropInstall.notInstallableType", kind = item.kind));
             }
         }
     }
@@ -966,9 +961,9 @@ fn installer_to_item(exe: &Path, root: &Path) -> DropItem {
     let size_bytes = std::fs::metadata(exe).map(|m| m.len()).unwrap_or(0);
     DropItem {
         kind: "installer_exe".to_string(),
-        label: format!("App / instalador · {}", file_name),
+        label: crate::tr!("dropInstall.appInstallerLabel", name = file_name),
         icao: None,
-        variants: vec!["no va en Community".to_string()],
+        variants: vec![crate::tr!("dropInstall.notForCommunity")],
         source_path: exe.to_string_lossy().into_owned(),
         relative_path,
         size_bytes,
@@ -1080,8 +1075,8 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
     let file_name = file_path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("archivo")
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| crate::tr!("drop.fallbackFile"));
     let stem = file_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1122,9 +1117,9 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
 
     // Por filename suffix.
     if stem_lower.contains("novdgs") || stem_lower.contains("no_vdgs") || stem_lower.contains("no-vdgs") {
-        variants.push("sin VDGS".to_string());
+        variants.push(crate::tr!("dropInstall.withoutVdgs"));
     } else if stem_lower.contains("vdgs") {
-        variants.push("con VDGS".to_string());
+        variants.push(crate::tr!("dropInstall.withVdgs"));
     }
     if stem_lower.contains("safedock") {
         variants.push("Safedock".to_string());
@@ -1134,7 +1129,7 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
     for suffix in locale_re {
         if stem_lower.ends_with(suffix) || stem_lower.contains(&format!("{}-", suffix)) {
             let code = suffix.trim_start_matches(['-', '_']);
-            variants.push(format!("idioma: {}", code.to_ascii_uppercase()));
+            variants.push(crate::tr!("dropInstall.language", code = code.to_ascii_uppercase()));
             break;
         }
     }
@@ -1165,7 +1160,7 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
                     || normalized_parent.contains("flytampa")
                     || normalized_parent.len() <= 30
                 {
-                    variants.push(format!("carpeta: {}", parent_str));
+                    variants.push(crate::tr!("dropInstall.folder", name = parent_str));
                 }
             }
         }
@@ -1263,20 +1258,21 @@ fn classify_community_dir(dir: &Path, root: &Path) -> anyhow::Result<DropItem> {
     let folder_name = dir
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("paquete");
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| crate::tr!("drop.fallbackPackage"));
     let manifest_path = dir.join("manifest.json");
     let manifest_text = std::fs::read_to_string(&manifest_path)?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text)?;
     let title = manifest
         .get("title")
         .and_then(|v| v.as_str())
-        .unwrap_or(folder_name)
+        .unwrap_or(&folder_name)
         .to_string();
     let content_type = manifest
         .get("content_type")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let icao = extract_icao(folder_name).or_else(|| extract_icao(&title));
+    let icao = extract_icao(&folder_name).or_else(|| extract_icao(&title));
     let size = directory_size(dir).unwrap_or(0);
     let rel = dir
         .strip_prefix(root)
@@ -1284,11 +1280,11 @@ fn classify_community_dir(dir: &Path, root: &Path) -> anyhow::Result<DropItem> {
         .and_then(|p| p.to_str())
         .map(String::from)
         .unwrap_or_else(|| folder_name.to_string());
-    let label = format!(
-        "{} ({})",
-        title,
-        content_type.as_deref().unwrap_or("paquete")
-    );
+    let ct = content_type
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| crate::tr!("dropInstall.package"));
+    let label = format!("{} ({})", title, ct);
     Ok(DropItem {
         kind: "community_package".to_string(),
         label,
@@ -1307,12 +1303,12 @@ fn classify_community_dir(dir: &Path, root: &Path) -> anyhow::Result<DropItem> {
 
 fn install_gsx(src: &Path) -> anyhow::Result<String> {
     let folder = gsx_profiles_folder().ok_or_else(|| {
-        anyhow::anyhow!("No se pudo resolver %APPDATA%\\Virtuali\\GSX\\MSFS")
+        anyhow::anyhow!("{}", crate::tr!("dropInstall.gsxPathUnresolved"))
     })?;
     std::fs::create_dir_all(&folder)?;
     let file_name = src
         .file_name()
-        .ok_or_else(|| anyhow::anyhow!("archivo sin nombre"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.fileNoName")))?;
     let dest = folder.join(file_name);
     tracing::info!(
         target: "drop",
@@ -1342,12 +1338,12 @@ fn install_addon_config(
 ) -> anyhow::Result<String> {
     let file_name = src
         .file_name()
-        .ok_or_else(|| anyhow::anyhow!("archivo sin nombre"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.fileNoName")))?;
 
     let (prefix, sub): (&str, &[&str]) = match kind {
         "ifly_config" => ("ifly-aircraft", &["work"]),
         "pmdg_config" => ("pmdg-aircraft", &["work", "Aircraft"]),
-        other => anyhow::bail!("kind de config desconocido: {other}"),
+        other => anyhow::bail!("{}", crate::tr!("dropInstall.unknownConfigKind", kind = other)),
     };
 
     // (v6.2.46) PMDG con `livery.cfg` adyacente → ruta DETERMINISTA, igual que
@@ -1460,10 +1456,7 @@ fn install_addon_config(
         }
     }
     if candidates.is_empty() {
-        anyhow::bail!(
-            "No encuentro ningún paquete {prefix}-* en ninguna carpeta de estado de MSFS. \
-             ¿Está instalado el avión?"
-        );
+        anyhow::bail!("{}", crate::tr!("dropInstall.packageNotFound", prefix = prefix));
     }
 
     // PMDG: si varias variantes, preferir la que ya tiene esta matrícula.
@@ -1511,7 +1504,7 @@ fn install_community_package(src_dir: &Path, community_path: &Path) -> anyhow::R
     let folder_name = src_dir
         .file_name()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("carpeta sin nombre"))?;
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.folderNoName")))?;
     let dest = community_path.join(folder_name);
     // (v7) Guard "src == dest": si arrastran una carpeta que YA vive en Community
     // (o la propia carpeta Community), `src_dir` y `dest` resuelven al MISMO

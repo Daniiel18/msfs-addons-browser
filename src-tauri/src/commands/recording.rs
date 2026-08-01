@@ -71,7 +71,7 @@ pub fn osd_show_topmost(app: tauri::AppHandle) -> Result<(), String> {
     };
     let win = app
         .get_webview_window("osd")
-        .ok_or_else(|| "ventana osd no encontrada".to_string())?;
+        .ok_or_else(|| crate::tr!("recording.osdWindowNotFound"))?;
     win.show().map_err(|e| e.to_string())?;
     // Reconstruimos el HWND con la versión de `windows` que linkeamos (robusto
     // ante diferencias de versión con el HWND que devuelve Tauri).
@@ -117,10 +117,7 @@ pub async fn recording_test_clip(
     // (v6 #2b fix) Serializa: si el auto-disparo ya está grabando (replay buffer
     // armado en aproximación), una 2ª captura del mismo monitor se desconecta.
     if !landing_recorder::try_acquire_recording() {
-        return Err(
-            "Hay una grabación de aterrizaje en curso. Inténtalo de nuevo cuando termine el vuelo."
-                .to_string(),
-        );
+        return Err(crate::tr!("recording.landingInProgress"));
     }
 
     let output_dir = PathBuf::from(&cfg.output_path);
@@ -156,7 +153,7 @@ pub async fn recording_test_clip(
     // Liberamos la reserva pase lo que pase con la grabación.
     landing_recorder::release_recording();
     rec_result
-        .map_err(|e| format!("tarea de grabación falló: {e}"))?
+        .map_err(|e| crate::tr!("recording.taskFailed", e = e))?
         .map_err(|e| e.to_string())?;
 
     let recorded_at: (String,) = sqlx::query_as("SELECT datetime('now')")

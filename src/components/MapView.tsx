@@ -662,7 +662,7 @@ function Sidebar({
                       {p.icao && hasGsx && !gsxUpdate && (
                         <span
                           className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
-                          title={`Perfil GSX detectado en %APPDATA%\\Virtuali\\GSX\\MSFS para ${p.icao}`}
+                          title={t("map.gsx_detected_tooltip", { icao: p.icao! })}
                         >
                           ✓ GSX
                         </span>
@@ -685,11 +685,12 @@ function Sidebar({
                             );
                           }}
                           className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
-                          title={`Update de perfil GSX disponible para ${p.icao}${
-                            gsxUpdate.latestVersion
+                          title={t("map.gsx_update_tooltip", {
+                            icao: p.icao!,
+                            version: gsxUpdate.latestVersion
                               ? ` (v${gsxUpdate.latestVersion})`
-                              : ""
-                          }. Click → abrir perfil en flightsim.to`}
+                              : "",
+                          })}
                         >
                           ⬆ GSX
                         </a>
@@ -709,7 +710,7 @@ function Sidebar({
                             void api.openLiveryBrowser(url);
                           }}
                           className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
-                          title={`Sin perfil GSX local para ${p.icao}. Click → buscar en flightsim.to`}
+                          title={t("map.gsx_missing_tooltip", { icao: p.icao! })}
                         >
                           ✗ GSX
                         </a>

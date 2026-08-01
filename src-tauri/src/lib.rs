@@ -16,6 +16,7 @@ pub mod discord_rpc;
 pub mod drop_install;
 pub mod download;
 pub mod flight_log;
+pub mod i18n;
 pub mod flight_report;
 pub mod flightsim_track;
 pub mod livery_meta;
@@ -314,6 +315,7 @@ pub fn run() {
             commands::flight_log::delete_flights_by_source,
             commands::settings::get_app_settings,
             commands::settings::set_app_setting,
+            commands::settings::set_backend_locale,
             commands::settings::set_autostart,
             commands::settings::clear_caches,
             commands::settings::reset_settings,

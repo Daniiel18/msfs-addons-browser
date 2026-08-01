@@ -153,7 +153,7 @@ export function UpdateBanner() {
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
               <span className="text-sm font-semibold text-emerald-50">
-                Nueva versión disponible
+                {t("updateBanner.newVersion")}
               </span>
               <span className="font-mono text-xs text-emerald-200/80">
                 v{info.currentVersion} → v{info.latestVersion}
@@ -172,14 +172,14 @@ export function UpdateBanner() {
                   ) : (
                     <Download className="h-3.5 w-3.5" />
                   )}
-                  {installing ? "Instalando…" : "Instalar ahora"}
+                  {installing ? t("updateBanner.installing") : t("updateBanner.installNow")}
                 </button>
               ) : (
                 <button
                   onClick={() => api.openExternal(info.releaseUrl)}
                   className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-400"
                 >
-                  <ExternalLink className="h-3.5 w-3.5" /> Ver en GitHub
+                  <ExternalLink className="h-3.5 w-3.5" /> {t("updateBanner.viewOnGitHub")}
                 </button>
               )}
               {lines.length > 0 && (
@@ -189,11 +189,11 @@ export function UpdateBanner() {
                 >
                   {expanded ? (
                     <>
-                      <ChevronUp className="h-3.5 w-3.5" /> Ocultar cambios
+                      <ChevronUp className="h-3.5 w-3.5" /> {t("updateBanner.hideChanges")}
                     </>
                   ) : (
                     <>
-                      <ChevronDown className="h-3.5 w-3.5" /> Ver cambios ({lines.length})
+                      <ChevronDown className="h-3.5 w-3.5" /> {t("updateBanner.viewChanges", { count: lines.length })}
                     </>
                   )}
                 </button>
@@ -218,8 +218,8 @@ export function UpdateBanner() {
               <div className="flex items-center justify-between text-[11px] text-emerald-100">
                 <span>
                   {pct !== null
-                    ? `Descargando · ${pct}%`
-                    : `Descargando ${mbDown ?? "0"} MB`}
+                    ? t("updateBanner.downloadingPct", { pct })
+                    : t("updateBanner.downloadingMb", { mb: mbDown ?? "0" })}
                 </span>
                 <span className="font-mono tabular-nums">
                   {mbDown ?? "0"} {mbTotal ? `/ ${mbTotal}` : ""} MB
@@ -235,8 +235,7 @@ export function UpdateBanner() {
               </div>
               {pct === 100 && (
                 <div className="text-[11px] text-emerald-200/80">
-                  Descarga completa — lanzando el instalador. La app se reabre
-                  en unos segundos.
+                  {t("updateBanner.downloadComplete")}
                 </div>
               )}
             </div>
@@ -263,7 +262,7 @@ export function UpdateBanner() {
                 ))}
                 {lines.length > 30 && (
                   <li className="text-emerald-300/70">
-                    + {lines.length - 30} más en{" "}
+                    {t("updateBanner.moreOn", { count: lines.length - 30 })}{" "}
                     <button
                       onClick={() => api.openExternal(info.releaseUrl)}
                       className="underline"

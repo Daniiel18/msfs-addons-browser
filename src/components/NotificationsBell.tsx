@@ -233,8 +233,8 @@ export function NotificationsBell() {
         className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/60 text-slate-300 transition-colors hover:border-brand-500/40 hover:text-slate-100"
         title={
           totalCount > 0
-            ? `${totalCount} notificación(es)`
-            : "Sin notificaciones"
+            ? t("notificationsBell.count_tooltip", { count: String(totalCount) })
+            : t("notificationsBell.none_tooltip")
         }
       >
         <Bell className="h-4 w-4" />
@@ -689,7 +689,7 @@ export function NotificationsBell() {
                       <button
                         onClick={() => openInSearch(u)}
                         className="flex flex-1 items-start gap-3 px-4 py-3 text-left"
-                        title={`Buscar ${u.icao || u.title} en ${u.source} para descargar la nueva versión`}
+                        title={t("notificationsBell.search_update_tooltip", { name: String(u.icao || u.title), source: u.source })}
                       >
                         <div className="mt-1 shrink-0">
                           <Download className="h-4 w-4 text-amber-300" />

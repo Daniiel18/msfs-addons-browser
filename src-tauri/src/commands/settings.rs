@@ -185,7 +185,7 @@ pub async fn set_app_setting(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     if !is_valid_key(&key) {
-        return Err(format!("clave de setting no permitida: {key}"));
+        return Err(crate::tr!("settings.invalidKey", key = key));
     }
     write_setting(&state.db, &key, &value)
         .await
@@ -203,6 +203,14 @@ pub async fn set_app_setting(
         crate::sim::set_from_str(&value);
     }
     Ok(())
+}
+
+/// (v7.1) El frontend empuja el locale resuelto ("es"/"en") para que los
+/// mensajes user-facing del backend (errores de comando, `DownloadJob`, eventos)
+/// salgan en el idioma correcto. Se llama en el bootstrap y al cambiar idioma.
+#[tauri::command]
+pub fn set_backend_locale(locale: String) {
+    crate::i18n::set_locale(&locale);
 }
 
 /// Limpia todas las claves `pref_*` — devuelve los toggles a sus
@@ -231,11 +239,11 @@ pub async fn set_autostart(
     if enabled && !already {
         manager
             .enable()
-            .map_err(|e| format!("no se pudo activar autostart: {e}"))?;
+            .map_err(|e| crate::tr!("settings.autostartEnableFailed", e = e))?;
     } else if !enabled && already {
         manager
             .disable()
-            .map_err(|e| format!("no se pudo desactivar autostart: {e}"))?;
+            .map_err(|e| crate::tr!("settings.autostartDisableFailed", e = e))?;
     }
     Ok(manager.is_enabled().unwrap_or(false))
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { api } from "../lib/tauri";
+import { t } from "../lib/i18n";
 
 interface Props {
   query: string;
@@ -62,7 +63,7 @@ export function GsxSearchSummary({ query }: Props) {
       <button
         onClick={handleClick}
         className="inline-flex items-center gap-2 rounded-lg bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-200 ring-1 ring-emerald-500/30 transition-colors hover:bg-emerald-500/25"
-        title={`Abrir GSX para ${icao} en flightsim.to`}
+        title={t("gsxSearch.open_tooltip", { icao })}
       >
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         GSX · {icao}
@@ -73,7 +74,7 @@ export function GsxSearchSummary({ query }: Props) {
   return (
     <button
       onClick={handleClick}
-      title={`${count} perfil${count === 1 ? "" : "es"} GSX para ${icao}. Click para abrir en flightsim.to`}
+      title={t("gsxSearch.count_tooltip", { count: String(count), icao })}
       className="group/gsx inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-emerald-950 shadow-lg shadow-emerald-500/30 ring-1 ring-emerald-300 transition-all hover:scale-[1.03] hover:bg-emerald-400 hover:shadow-emerald-400/40"
     >
       <Sparkles className="h-3.5 w-3.5" />

@@ -286,20 +286,14 @@ pub async fn start_oauth(
     let (client_id_opt, client_secret_opt) = resolve_credentials(&pool).await?;
     let client_id = client_id_opt
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!(
-            "Las credenciales de Google no están embebidas en esta build. \
-             Si ves este mensaje en producción, contacta al desarrollador — \
-             la app debió compilarse con SIMFLEET_GOOGLE_CLIENT_ID/SECRET."
-        ))?;
+        .ok_or_else(|| anyhow!("{}", crate::tr!("cloudSync.credsNotEmbedded")))?;
     let client_secret = client_secret_opt
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!(
-            "Las credenciales de Google no están embebidas en esta build."
-        ))?;
+        .ok_or_else(|| anyhow!("{}", crate::tr!("cloudSync.credsNotEmbeddedShort")))?;
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .context("No se pudo abrir el listener local para el callback OAuth")?;
+        .context(crate::tr!("cloudSync.listenerOpenFailed"))?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{}/", port);
 
@@ -380,7 +374,7 @@ async fn handle_callback(
 
     let (mut socket, _peer) = tokio::select! {
         r = listener.accept() => r?,
-        _ = &mut timeout => return Err(anyhow!("Timeout esperando autorización (5 min)")),
+        _ = &mut timeout => return Err(anyhow!("{}", crate::tr!("cloudSync.authTimeout"))),
     };
 
     let mut buf = [0u8; 8192];
@@ -405,9 +399,17 @@ async fn handle_callback(
 
     let success = state.as_deref() == Some(&expected_state) && code.is_some();
     let body = if !success {
-        "<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#0f172a;color:#e2e8f0'><h2>❌ Error en la autorización</h2><p>Vuelve a la app e inténtalo de nuevo.</p></body></html>"
+        format!(
+            "<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#0f172a;color:#e2e8f0'><h2>❌ {title}</h2><p>{msg}</p></body></html>",
+            title = crate::tr!("cloudSync.oauthPageErrorTitle"),
+            msg = crate::tr!("cloudSync.oauthPageErrorBody"),
+        )
     } else {
-        "<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#0f172a;color:#e2e8f0'><h2>✓ Conectado correctamente</h2><p>Puedes cerrar esta pestaña y volver a la app.</p></body></html>"
+        format!(
+            "<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#0f172a;color:#e2e8f0'><h2>✓ {title}</h2><p>{msg}</p></body></html>",
+            title = crate::tr!("cloudSync.oauthPageOkTitle"),
+            msg = crate::tr!("cloudSync.oauthPageOkBody"),
+        )
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -418,7 +420,7 @@ async fn handle_callback(
     let _ = socket.shutdown().await;
 
     if !success {
-        return Err(anyhow!("Callback inválido (state o code faltantes)"));
+        return Err(anyhow!("{}", crate::tr!("cloudSync.callbackInvalid")));
     }
     let code = code.unwrap();
 
@@ -433,7 +435,7 @@ async fn handle_callback(
     .await?;
 
     let refresh_token = tokens.refresh_token.ok_or_else(|| {
-        anyhow!("Google no devolvió refresh_token. Re-intenta con la app de OAuth en modo 'Desktop' y consent screen aprobado.")
+        anyhow!("{}", crate::tr!("cloudSync.noRefreshToken"))
     })?;
 
     let email = fetch_user_email(&http, &tokens.access_token).await.ok();
@@ -448,16 +450,10 @@ async fn handle_callback(
                 "OAuth completado pero email '{}' no está en WHITELIST_EMAILS — rechazando",
                 e
             );
-            return Err(anyhow!(
-                "El email '{}' no está autorizado para sincronizar. \
-                 Contacta al desarrollador para añadirlo a la whitelist.",
-                e
-            ));
+            return Err(anyhow!("{}", crate::tr!("cloudSync.emailNotAuthorized", email = e)));
         }
     } else {
-        return Err(anyhow!(
-            "No se pudo obtener el email del usuario para validar la whitelist."
-        ));
+        return Err(anyhow!("{}", crate::tr!("cloudSync.emailFetchFailed")));
     }
 
     set_setting(&pool, KEY_REFRESH_TOKEN, &refresh_token).await?;
@@ -514,11 +510,7 @@ async fn exchange_code_for_tokens(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Google /token devolvió {}: {}",
-            status,
-            txt
-        ));
+        return Err(anyhow!("{}", crate::tr!("cloudSync.tokenEndpointError", status = status, body = txt)));
     }
     Ok(resp.json().await?)
 }
@@ -545,7 +537,7 @@ async fn fresh_access_token(
 ) -> anyhow::Result<String> {
     let refresh_token = get_setting(pool, KEY_REFRESH_TOKEN)
         .await?
-        .ok_or_else(|| anyhow!("No conectado — pulsa Conectar primero"))?;
+        .ok_or_else(|| anyhow!("{}", crate::tr!("cloudSync.notConnected")))?;
     // (v3.6.3 fix I13) Usar resolve_credentials para que mire los valores
     // hardcoded del binario primero (build.rs + secrets.local.toml) y
     // SOLO si faltan caiga al fallback DB. Antes leía solo DB y daba
@@ -554,10 +546,10 @@ async fn fresh_access_token(
     let (cid_opt, secret_opt) = resolve_credentials(pool).await?;
     let client_id = cid_opt
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("Client ID no embebido en el binario (re-buildea con secrets.local.toml)"))?;
+        .ok_or_else(|| anyhow!("{}", crate::tr!("cloudSync.clientIdNotEmbedded")))?;
     let client_secret = secret_opt
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("Client Secret no embebido en el binario"))?;
+        .ok_or_else(|| anyhow!("{}", crate::tr!("cloudSync.clientSecretNotEmbedded")))?;
     let resp = http
         .post("https://oauth2.googleapis.com/token")
         .form(&[
@@ -571,11 +563,7 @@ async fn fresh_access_token(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Refresh token rechazado ({}): {}. Vuelve a Conectar.",
-            status,
-            txt
-        ));
+        return Err(anyhow!("{}", crate::tr!("cloudSync.refreshTokenRejected", status = status, body = txt)));
     }
     let body: TokenResponse = resp.json().await?;
     Ok(body.access_token)
@@ -604,31 +592,11 @@ async fn drive_error_for_response(resp: reqwest::Response) -> anyhow::Error {
     let code = status.as_u16();
     let body = truncate_body(&resp.text().await.unwrap_or_default());
     match code {
-        401 => anyhow!(
-            "Google Drive 401 (no autorizado). El access_token expiró o las \
-             credenciales son inválidas. Pulsa Desconectar y vuelve a Conectar. \
-             Detalle: {body}"
-        ),
-        403 => anyhow!(
-            "Google Drive 403 (prohibido). Lo más común: no activaste la Google \
-             Drive API en tu proyecto de Google Cloud. Ábrela en \
-             https://console.cloud.google.com/apis/library/drive.googleapis.com \
-             (selecciona TU proyecto, arriba) y pulsa 'Enable'. También puede ser \
-             cuota del proyecto excedida. Detalle: {body}"
-        ),
-        404 => anyhow!(
-            "Google Drive 404 (no encontrado). El archivo de sync remoto ya no \
-             existe (se borró o se purgó). Reintenta: se recreará solo. \
-             Detalle: {body}"
-        ),
-        429 => anyhow!(
-            "Google Drive 429 (demasiadas peticiones). Rate-limit/cuota excedido. \
-             Espera un momento y reintenta. Detalle: {body}"
-        ),
-        500..=599 => anyhow!(
-            "Google Drive {code} (error del servidor de Google — no es tu \
-             configuración). Reintenta en unos minutos. Detalle: {body}"
-        ),
+        401 => anyhow!("{}", crate::tr!("cloudSync.drive401", body = body)),
+        403 => anyhow!("{}", crate::tr!("cloudSync.drive403", body = body)),
+        404 => anyhow!("{}", crate::tr!("cloudSync.drive404", body = body)),
+        429 => anyhow!("{}", crate::tr!("cloudSync.drive429", body = body)),
+        500..=599 => anyhow!("{}", crate::tr!("cloudSync.drive5xx", code = code, body = body)),
         _ => anyhow!("Google Drive {status}: {body}"),
     }
 }
@@ -639,19 +607,17 @@ async fn drive_error_for_response(resp: reqwest::Response) -> anyhow::Error {
 /// `drive_error_for_response`.
 fn transport_error(context: &str, e: reqwest::Error) -> anyhow::Error {
     let kind = if e.is_timeout() {
-        "timeout — Google tardó demasiado en responder (revisa tu internet, o un \
-         firewall/proxy/antivirus que esté bloqueando la conexión)"
+        crate::tr!("cloudSync.transportTimeout")
     } else if e.is_connect() {
-        "no se pudo conectar con Google (sin internet, fallo de DNS, o un \
-         firewall/proxy bloqueando *.googleapis.com)"
+        crate::tr!("cloudSync.transportConnect")
     } else if e.is_request() {
-        "no se pudo construir/enviar la petición"
+        crate::tr!("cloudSync.transportRequest")
     } else if e.is_body() || e.is_decode() {
-        "fallo al leer/decodificar la respuesta de Google"
+        crate::tr!("cloudSync.transportDecode")
     } else {
-        "error de red"
+        crate::tr!("cloudSync.transportGeneric")
     };
-    anyhow!("{context}: {kind}. (causa técnica: {e})")
+    anyhow!("{}", crate::tr!("cloudSync.transportWrap", context = context, kind = kind, e = e))
 }
 
 /// (v3.38.0 #12) Acorta un fileId de Drive para logs/errores — no es
@@ -671,7 +637,7 @@ fn truncate_body(body: &str) -> String {
     const MAX: usize = 300;
     if trimmed.chars().count() > MAX {
         let head: String = trimmed.chars().take(MAX).collect();
-        format!("{head}… (recortado)")
+        format!("{head}… {suffix}", suffix = crate::tr!("cloudSync.truncatedSuffix"))
     } else {
         trimmed.to_string()
     }
@@ -691,7 +657,7 @@ async fn find_sync_file(
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| transport_error("Buscando el snapshot en Drive", e))?;
+        .map_err(|e| transport_error(&crate::tr!("cloudSync.ctxSearchingSnapshot"), e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -772,7 +738,7 @@ async fn create_sync_file(
         .body(body)
         .send()
         .await
-        .map_err(|e| transport_error("Creando el snapshot en Drive", e))?;
+        .map_err(|e| transport_error(&crate::tr!("cloudSync.ctxCreatingSnapshot"), e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -812,7 +778,7 @@ async fn update_sync_file(
         .body(gz)
         .send()
         .await
-        .map_err(|e| transport_error("Actualizando el snapshot en Drive", e))?;
+        .map_err(|e| transport_error(&crate::tr!("cloudSync.ctxUpdatingSnapshot"), e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -844,7 +810,7 @@ async fn download_sync_file(
         .timeout(DRIVE_TRANSFER_TIMEOUT)
         .send()
         .await
-        .map_err(|e| transport_error("Descargando el snapshot de Drive", e))?;
+        .map_err(|e| transport_error(&crate::tr!("cloudSync.ctxDownloadingSnapshot"), e))?;
     if !resp.status().is_success() {
         return Err(drive_error_for_response(resp).await);
     }
@@ -888,7 +854,7 @@ async fn purge_cloud_snapshot(
             .bearer_auth(access_token)
             .send()
             .await
-            .map_err(|e| transport_error("Borrando el snapshot de Drive", e))?;
+            .map_err(|e| transport_error(&crate::tr!("cloudSync.ctxDeletingSnapshot"), e))?;
         if !resp.status().is_success() {
             return Err(drive_error_for_response(resp).await);
         }
@@ -1458,9 +1424,9 @@ pub async fn test_connection(
         Ok(pair) => pair,
         Err(e) => {
             steps.push(CloudTestStep {
-                name: "Credenciales locales".to_string(),
+                name: crate::tr!("cloudSync.stepLocalCreds"),
                 ok: false,
-                detail: format!("Error consultando credenciales: {e}"),
+                detail: crate::tr!("cloudSync.credsQueryError", e = e),
             });
             return CloudTestReport {
                 overall_ok: false,
@@ -1473,33 +1439,31 @@ pub async fn test_connection(
     let secret_ok = client_secret.as_deref().filter(|s| !s.is_empty()).is_some();
     if !cid_ok || !secret_ok {
         steps.push(CloudTestStep {
-            name: "Credenciales locales".to_string(),
+            name: crate::tr!("cloudSync.stepLocalCreds"),
             ok: false,
-            detail: "No hay Client ID / Secret embedidos. El binario fue compilado sin `secrets.local.toml` (gitignored) — re-buildea con el archivo presente en `src-tauri/`.".to_string(),
+            detail: crate::tr!("cloudSync.noClientIdSecretEmbedded"),
         });
         return CloudTestReport {
             overall_ok: false,
             steps,
-            hint: Some(
-                "Las credenciales OAuth vienen embedidas en el binario via build.rs. Coloca `src-tauri/secrets.local.toml` y recompila.".to_string(),
-            ),
+            hint: Some(crate::tr!("cloudSync.hintCredsEmbedded")),
         };
     }
     let source = if HARDCODED_CLIENT_ID
         .map(|s| !s.is_empty())
         .unwrap_or(false)
     {
-        "embedidas en el binario"
+        crate::tr!("cloudSync.credsSourceEmbedded")
     } else {
-        "leídas de DB (legacy v2.x)"
+        crate::tr!("cloudSync.credsSourceDb")
     };
     steps.push(CloudTestStep {
-        name: "Credenciales locales".to_string(),
+        name: crate::tr!("cloudSync.stepLocalCreds"),
         ok: true,
-        detail: format!(
-            "Client ID + Secret OK ({} chars) — {}.",
-            client_id.as_ref().map(|s| s.len()).unwrap_or(0),
-            source
+        detail: crate::tr!(
+            "cloudSync.credsOkDetail",
+            chars = client_id.as_ref().map(|s| s.len()).unwrap_or(0),
+            source = source
         ),
     });
 
@@ -1507,41 +1471,39 @@ pub async fn test_connection(
     let refresh_token = get_setting(pool, KEY_REFRESH_TOKEN).await.ok().flatten();
     if refresh_token.is_none() {
         steps.push(CloudTestStep {
-            name: "Refresh token".to_string(),
+            name: crate::tr!("cloudSync.stepRefreshToken"),
             ok: false,
-            detail: "Aún no completaste el OAuth. Pulsa 'Conectar con Google'.".to_string(),
+            detail: crate::tr!("cloudSync.oauthNotCompletedDetail"),
         });
         return CloudTestReport {
             overall_ok: false,
             steps,
-            hint: Some("Falta completar el flow OAuth.".to_string()),
+            hint: Some(crate::tr!("cloudSync.hintCompleteOauth")),
         };
     }
     steps.push(CloudTestStep {
-        name: "Refresh token".to_string(),
+        name: crate::tr!("cloudSync.stepRefreshToken"),
         ok: true,
-        detail: "Tienes refresh_token guardado.".to_string(),
+        detail: crate::tr!("cloudSync.refreshTokenSaved"),
     });
 
     // Paso 3 — Access token (refresh)
     let access_token = match fresh_access_token(pool, http).await {
         Ok(t) => {
             steps.push(CloudTestStep {
-                name: "Refresh access token".to_string(),
+                name: crate::tr!("cloudSync.stepRefreshAccessToken"),
                 ok: true,
-                detail: format!("Access token nuevo obtenido ({} chars).", t.len()),
+                detail: crate::tr!("cloudSync.accessTokenObtained", chars = t.len()),
             });
             t
         }
         Err(e) => {
             steps.push(CloudTestStep {
-                name: "Refresh access token".to_string(),
+                name: crate::tr!("cloudSync.stepRefreshAccessToken"),
                 ok: false,
                 detail: format!("{}", e),
             });
-            hint = Some(
-                "El refresh_token fue rechazado. Probablemente: (a) revocaste el acceso de la app desde myaccount.google.com/permissions, o (b) la consent screen está en modo Testing y tu email no está en Test Users. Pulsa Desconectar + Conectar de nuevo.".to_string(),
-            );
+            hint = Some(crate::tr!("cloudSync.hintRefreshRejected"));
             return CloudTestReport {
                 overall_ok: false,
                 steps,
@@ -1562,24 +1524,22 @@ pub async fn test_connection(
                 .json::<UserInfo>()
                 .await
                 .map(|u| u.email)
-                .unwrap_or_else(|_| "(sin email)".to_string());
+                .unwrap_or_else(|_| crate::tr!("cloudSync.noEmailPlaceholder"));
             steps.push(CloudTestStep {
-                name: "userinfo (identidad)".to_string(),
+                name: crate::tr!("cloudSync.stepUserinfo"),
                 ok: true,
-                detail: format!("Conectado como {}.", email),
+                detail: crate::tr!("cloudSync.connectedAsDetail", email = email),
             });
         }
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             steps.push(CloudTestStep {
-                name: "userinfo (identidad)".to_string(),
+                name: crate::tr!("cloudSync.stepUserinfo"),
                 ok: false,
                 detail: format!("{}: {}", status, body),
             });
-            hint = Some(
-                "userinfo falló — el access_token no tiene la scope correcta. Desconecta y vuelve a Conectar.".to_string(),
-            );
+            hint = Some(crate::tr!("cloudSync.hintUserinfoFailed"));
             return CloudTestReport {
                 overall_ok: false,
                 steps,
@@ -1588,14 +1548,14 @@ pub async fn test_connection(
         }
         Err(e) => {
             steps.push(CloudTestStep {
-                name: "userinfo (identidad)".to_string(),
+                name: crate::tr!("cloudSync.stepUserinfo"),
                 ok: false,
-                detail: format!("Error de red: {}", e),
+                detail: crate::tr!("cloudSync.networkErrorDetail", e = e),
             });
             return CloudTestReport {
                 overall_ok: false,
                 steps,
-                hint: Some("No hay conexión a internet o Google está caído.".to_string()),
+                hint: Some(crate::tr!("cloudSync.hintNoInternet")),
             };
         }
     }
@@ -1609,23 +1569,21 @@ pub async fn test_connection(
     {
         Ok(resp) if resp.status().is_success() => {
             steps.push(CloudTestStep {
-                name: "Drive API alcanzable".to_string(),
+                name: crate::tr!("cloudSync.stepDriveReachable"),
                 ok: true,
-                detail: "GET /drive/v3/about respondió OK — la Drive API está activada y la scope es correcta.".to_string(),
+                detail: crate::tr!("cloudSync.driveAboutOk"),
             });
         }
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             steps.push(CloudTestStep {
-                name: "Drive API alcanzable".to_string(),
+                name: crate::tr!("cloudSync.stepDriveReachable"),
                 ok: false,
                 detail: format!("{}: {}", status, body),
             });
             if status.as_u16() == 403 {
-                hint = Some(
-                    "403 Forbidden en /drive/v3/about. Verifica que la Google Drive API esté activada EN EL MISMO proyecto donde creaste el OAuth client. Abre https://console.cloud.google.com/apis/library/drive.googleapis.com — el desplegable de arriba debe mostrar el proyecto de tu OAuth client.".to_string(),
-                );
+                hint = Some(crate::tr!("cloudSync.hintDrive403"));
             }
             return CloudTestReport {
                 overall_ok: false,
@@ -1635,14 +1593,14 @@ pub async fn test_connection(
         }
         Err(e) => {
             steps.push(CloudTestStep {
-                name: "Drive API alcanzable".to_string(),
+                name: crate::tr!("cloudSync.stepDriveReachable"),
                 ok: false,
-                detail: format!("Error de red: {}", e),
+                detail: crate::tr!("cloudSync.networkErrorDetail", e = e),
             });
             return CloudTestReport {
                 overall_ok: false,
                 steps,
-                hint: Some("Error de red.".to_string()),
+                hint: Some(crate::tr!("cloudSync.networkErrorHint")),
             };
         }
     }
@@ -1657,15 +1615,12 @@ pub async fn test_connection(
         Ok(resp) if resp.status().is_success() => {
             let list: DriveList = resp.json().await.unwrap_or(DriveList { files: vec![] });
             let detail = if list.files.is_empty() {
-                "Listado vacío (aún no hay backup en Drive — es normal en primera vez).".to_string()
+                crate::tr!("cloudSync.appDataFolderEmpty")
             } else {
-                format!(
-                    "Encontrado {} archivo(s) previo(s) en appDataFolder.",
-                    list.files.len()
-                )
+                crate::tr!("cloudSync.appDataFolderFound", n = list.files.len())
             };
             steps.push(CloudTestStep {
-                name: "Listar appDataFolder".to_string(),
+                name: crate::tr!("cloudSync.stepListAppDataFolder"),
                 ok: true,
                 detail,
             });
@@ -1674,26 +1629,26 @@ pub async fn test_connection(
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             steps.push(CloudTestStep {
-                name: "Listar appDataFolder".to_string(),
+                name: crate::tr!("cloudSync.stepListAppDataFolder"),
                 ok: false,
                 detail: format!("{}: {}", status, body),
             });
             return CloudTestReport {
                 overall_ok: false,
                 steps,
-                hint: Some("La scope `drive.appdata` no parece estar concedida. Desconecta y reconecta, asegúrate de aprobar TODAS las scopes en la consent screen.".to_string()),
+                hint: Some(crate::tr!("cloudSync.hintScopeNotGranted")),
             };
         }
         Err(e) => {
             steps.push(CloudTestStep {
-                name: "Listar appDataFolder".to_string(),
+                name: crate::tr!("cloudSync.stepListAppDataFolder"),
                 ok: false,
-                detail: format!("Error de red: {}", e),
+                detail: crate::tr!("cloudSync.networkErrorDetail", e = e),
             });
             return CloudTestReport {
                 overall_ok: false,
                 steps,
-                hint: Some("Error de red.".to_string()),
+                hint: Some(crate::tr!("cloudSync.networkErrorHint")),
             };
         }
     }
@@ -1701,10 +1656,7 @@ pub async fn test_connection(
     CloudTestReport {
         overall_ok: true,
         steps,
-        hint: Some(
-            "Todo OK — pulsa 'Sync ahora' para subir tu primera copia."
-                .to_string(),
-        ),
+        hint: Some(crate::tr!("cloudSync.hintAllOk")),
     }
 }
 
@@ -2031,7 +1983,7 @@ pub async fn download_missing(
     let remote: Snapshot = match serde_json::from_str(&text) {
         Ok(s) => s,
         Err(e) => {
-            return Err(anyhow!("snapshot remoto corrupto: {e:#}"));
+            return Err(anyhow!("{}", crate::tr!("cloudSync.remoteSnapshotCorrupt", e = format!("{e:#}"))));
         }
     };
     report.cloud_flights = remote.flight_log.len();
@@ -2443,12 +2395,12 @@ pub async fn save_to_folder(
     let path = std::path::PathBuf::from(folder_path);
     tokio::fs::create_dir_all(&path)
         .await
-        .with_context(|| format!("No se pudo crear/abrir {}", path.display()))?;
+        .with_context(|| crate::tr!("cloudSync.folderCreateFailed", path = path.display()))?;
     let out = path.join(SYNC_FILE_NAME);
     let bytes_written = payload.len() as u64;
     tokio::fs::write(&out, payload)
         .await
-        .with_context(|| format!("No se pudo escribir en {}", out.display()))?;
+        .with_context(|| crate::tr!("cloudSync.folderWriteFailed", path = out.display()))?;
     // Persistimos el path elegido para próximos saves automáticos.
     set_setting(pool, KEY_FOLDER_SYNC_PATH, folder_path.trim()).await?;
     set_setting(
@@ -2476,17 +2428,14 @@ pub async fn load_from_folder(
 ) -> anyhow::Result<FolderSyncLoadReport> {
     let path = std::path::PathBuf::from(folder_path).join(SYNC_FILE_NAME);
     if !path.is_file() {
-        return Err(anyhow!(
-            "No existe {} — no hay backup en esta carpeta",
-            path.display()
-        ));
+        return Err(anyhow!("{}", crate::tr!("cloudSync.folderBackupMissing", path = path.display())));
     }
     let text = tokio::fs::read_to_string(&path)
         .await
-        .with_context(|| format!("No se pudo leer {}", path.display()))?;
+        .with_context(|| crate::tr!("cloudSync.folderReadFailed", path = path.display()))?;
     let bytes_read = text.len() as u64;
     let snap: Snapshot = serde_json::from_str(&text)
-        .with_context(|| "Archivo corrupto o de una versión incompatible")?;
+        .with_context(|| crate::tr!("cloudSync.fileCorruptOrIncompatible"))?;
     // (v7 fix, pérdida de datos) `restore_snapshot` hace upsert POR id, y el id
     // de flight_log es un autoincrement LOCAL: el id=5 de esta PC y el id=5 del
     // backup son vuelos DISTINTOS → restaurar por id sobre una DB con datos
@@ -2499,11 +2448,7 @@ pub async fn load_from_folder(
         .await
         .unwrap_or(0);
     if local_count > 0 {
-        anyhow::bail!(
-            "Ya tenés {local_count} vuelos en esta PC. Cargar el backup por carpeta \
-             los sobreescribiría por id. Usá la sincronización de nube (botón «Bajar»), \
-             que mergea por claves sin pisar nada."
-        );
+        anyhow::bail!("{}", crate::tr!("cloudSync.folderLoadWouldOverwrite", n = local_count));
     }
     let restored = restore_snapshot(pool, &snap).await?;
     // Marcamos el path como activo y registramos last sync (incluso si

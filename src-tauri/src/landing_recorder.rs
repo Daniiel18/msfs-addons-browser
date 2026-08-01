@@ -231,10 +231,10 @@ mod capture_engine {
                     ColorFormat::Bgra8,
                     shared.clone(),
                 ))
-                .map_err(|e| anyhow!("no se pudo iniciar la captura de «{target_title}»: {e:?}"))?,
+                .map_err(|e| anyhow!("{}", crate::tr!("recorder.captureStartWindowFailed", target = target_title, e = format!("{e:?}"))))?,
                 Err(_) => {
                     let mon = Monitor::primary()
-                        .map_err(|e| anyhow!("sin ventana «{target_title}» ni monitor primario: {e:?}"))?;
+                        .map_err(|e| anyhow!("{}", crate::tr!("recorder.noWindowNoMonitor", target = target_title, e = format!("{e:?}"))))?;
                     tracing::warn!(
                         target: "rec",
                         "ventana «{target_title}» no encontrada — capturando el monitor primario"
@@ -249,7 +249,7 @@ mod capture_engine {
                         ColorFormat::Bgra8,
                         shared.clone(),
                     ))
-                    .map_err(|e| anyhow!("no se pudo iniciar la captura del monitor: {e:?}"))?
+                    .map_err(|e| anyhow!("{}", crate::tr!("recorder.captureMonitorFailed", e = format!("{e:?}"))))?
                 }
             };
 
@@ -286,9 +286,7 @@ mod capture_engine {
                             .finish()
                             .map_err(|e| anyhow!("finish (plan B): {e:?}"))?,
                         None => {
-                            return Err(anyhow!(
-                                "la captura no recibió ningún frame (¿ventana visible?)"
-                            ))
+                            return Err(anyhow!("{}", crate::tr!("recorder.noFrames")))
                         }
                     }
                 }
@@ -298,7 +296,7 @@ mod capture_engine {
             let tmp = &self.shared.temp_path;
             if std::fs::rename(tmp, final_path).is_err() {
                 std::fs::copy(tmp, final_path)
-                    .map_err(|e| anyhow!("no se pudo mover el clip: {e}"))?;
+                    .map_err(|e| anyhow!("{}", crate::tr!("recorder.clipMoveFailed", e = e)))?;
                 let _ = std::fs::remove_file(tmp);
             }
             Ok(())
@@ -815,7 +813,7 @@ pub fn record_window_clip(
     session.finish_and_save(out)?;
 
     if !out.is_file() {
-        anyhow::bail!("la grabación no produjo ningún archivo");
+        anyhow::bail!("{}", crate::tr!("recorder.noOutputFile"));
     }
     Ok(())
 }
@@ -830,7 +828,7 @@ pub fn record_window_clip(
     _height: u32,
     _fps: u32,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("la grabación solo está soportada en Windows")
+    anyhow::bail!("{}", crate::tr!("recorder.windowsOnly"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────

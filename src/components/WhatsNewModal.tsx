@@ -23,7 +23,7 @@ import { getActiveLocale } from "../lib/i18n";
  * poder avanzar, para que no se salte de un solo clic. Contenido bilingüe
  * embebido (sin claves i18n, para iterar rápido).
  */
-const WHATS_NEW_VERSION = "7.0.0";
+const WHATS_NEW_VERSION = "7.1.0";
 const SEEN_KEY = "simfleet.whatsnew.seen.v3";
 const PER_PAGE_SECONDS = 3;
 
@@ -47,8 +47,8 @@ const FEATURES: Feat[] = [
   },
   {
     Icon: ArrowDownUp,
-    es: ["Mirrors ordenados por los que funcionan", "modsfire y mixdrop primero; rapidgator (que fallaba) queda oculto."],
-    en: ["Mirrors sorted by what works", "modsfire and mixdrop first; rapidgator (which failed) is hidden."],
+    es: ["Mirrors más confiables", "modsfire y mixdrop primero, y si un torrent se queda sin seeds te ofrecemos los mirrors al instante."],
+    en: ["More reliable mirrors", "modsfire and mixdrop first, and if a torrent has no seeds we offer you the mirrors instantly."],
   },
   {
     Icon: FolderTree,

@@ -223,7 +223,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 />
                 <span className="text-xs text-slate-500">m</span>
                 <span className="ml-2 text-[10px] text-slate-500">
-                  (block-to-block real)
+                  {t("editflight.block_time_note")}
                 </span>
               </div>
             </Field>
@@ -285,8 +285,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 max={1_000_000}
               />
               <p className="mt-1 text-[10px] text-slate-500">
-                Si SimConnect estaba conectado al pushback, ya se capturó
-                automático. Edita aquí para corregir.
+                {t("editflight.fuel_note")}
               </p>
             </Field>
 
@@ -300,8 +299,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm uppercase text-slate-100 focus:border-amber-400 focus:outline-none"
               />
               <p className="mt-1 text-[10px] text-slate-500">
-                Tail number real. Usado por planespotters.net para mostrar la
-                foto del avión en el FlightBook.
+                {t("editflight.registration_note")}
               </p>
             </Field>
 

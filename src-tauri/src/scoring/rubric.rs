@@ -244,7 +244,7 @@ pub static RULES: &[Rule] = &[
     },
     Rule {
         id: "predep_engines_off",
-        label: "Motores apagados al inicio (arranque en frío)",
+        label: "Engines off at start (cold start)",
         phase: Phase::PreDeparture,
         points_max: 100,
         evaluator: eval_predep_engines_off,

@@ -138,7 +138,7 @@ pub async fn install_update(
         .unwrap_or(false);
     if !host_ok {
         tracing::error!(target: "updater", "asset_url con host NO confiable: {asset_url}");
-        return Err("La URL de actualización no es de GitHub; cancelado por seguridad.".into());
+        return Err(crate::tr!("updater.urlNotGithub"));
     }
 
     let resp = state
@@ -149,10 +149,10 @@ pub async fn install_update(
         .await
         .map_err(|e| {
             tracing::error!(target: "updater", "GET asset falló: {e:#}");
-            format!("descarga falló: {}", e)
+            crate::tr!("updater.downloadFailed", e = e)
         })?;
     if !resp.status().is_success() {
-        return Err(format!("descarga falló con HTTP {}", resp.status()));
+        return Err(crate::tr!("updater.downloadFailedHttp", status = resp.status()));
     }
     let total_bytes = resp.content_length();
 
@@ -169,7 +169,7 @@ pub async fn install_update(
 
     let mut file = tokio::fs::File::create(&installer_path).await.map_err(|e| {
         tracing::error!(target: "updater", "create temp falló: {e}");
-        format!("no se pudo crear el archivo temporal: {}", e)
+        crate::tr!("updater.tempCreateFailed", e = e)
     })?;
 
     use futures_util::StreamExt;
@@ -179,11 +179,11 @@ pub async fn install_update(
     while let Some(chunk_res) = stream.next().await {
         let chunk = chunk_res.map_err(|e| {
             tracing::error!(target: "updater", "stream chunk falló: {e}");
-            format!("descarga interrumpida: {}", e)
+            crate::tr!("updater.downloadInterrupted", e = e)
         })?;
         file.write_all(&chunk).await.map_err(|e| {
             tracing::error!(target: "updater", "write chunk falló: {e}");
-            format!("no se pudo escribir el chunk: {}", e)
+            crate::tr!("updater.chunkWriteFailed", e = e)
         })?;
         downloaded += chunk.len() as u64;
 
@@ -211,7 +211,7 @@ pub async fn install_update(
     // de `std::env::current_exe()`, no de rutas adivinadas.
     let current_exe = std::env::current_exe().map_err(|e| {
         tracing::error!(target: "updater", "current_exe falló: {e}");
-        format!("no se pudo resolver el ejecutable actual: {}", e)
+        crate::tr!("updater.currentExeFailed", e = e)
     })?;
     let exe_str = current_exe.to_string_lossy().into_owned();
     let exe_clean = exe_str
@@ -232,7 +232,7 @@ pub async fn install_update(
     )
     .map_err(|e| {
         tracing::error!(target: "updater", "no se pudo lanzar el orquestador: {e}");
-        format!("no se pudo lanzar el instalador: {}", e)
+        crate::tr!("updater.launchInstallerFailed", e = e)
     })?;
     tracing::info!(
         target: "updater",
@@ -485,7 +485,7 @@ fn launch_update_orchestrator(
 ) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "auto-install sólo soportado en Windows",
+        crate::tr!("updater.autoInstallWindowsOnly"),
     ))
 }
 

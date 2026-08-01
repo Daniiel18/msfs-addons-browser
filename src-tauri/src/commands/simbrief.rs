@@ -64,7 +64,7 @@ pub async fn set_simbrief_pilot_id(
 ) -> Result<(), String> {
     let trimmed = pilot_id.trim();
     if trimmed.is_empty() {
-        return Err("El pilot_id no puede estar vacío".into());
+        return Err(crate::tr!("simbrief.pilotIdEmpty"));
     }
     simbrief::set_pilot_id(&state.db, trimmed)
         .await
@@ -81,9 +81,7 @@ pub async fn refresh_simbrief(
     let pilot_id = simbrief::get_pilot_id(&state.db)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| {
-            "Configura tu SimBrief Pilot ID antes de refrescar.".to_string()
-        })?;
+        .ok_or_else(|| crate::tr!("simbrief.configurePilotIdRefresh"))?;
     simbrief::refresh_latest(&state.db, &state.http, &pilot_id)
         .await
         .map_err(|e| e.to_string())
@@ -100,7 +98,7 @@ pub async fn simbrief_briefing(
     let pilot_id = simbrief::get_pilot_id(&state.db)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Configura tu SimBrief Pilot ID para ver el briefing.".to_string())?;
+        .ok_or_else(|| crate::tr!("simbrief.configurePilotIdBriefing"))?;
     simbrief::fetch_briefing(&state.http, &pilot_id)
         .await
         .map_err(|e| e.to_string())
@@ -178,7 +176,7 @@ pub async fn link_simbrief_ofp(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| e.to_string())?
-    .ok_or_else(|| format!("OFP {} no existe en simbrief_flights", ofp_id))?;
+    .ok_or_else(|| crate::tr!("simbrief.ofpNotFound", ofpId = ofp_id))?;
 
     // (v4.17.0) DOBLE VALIDACIÓN por matrícula (cuenta SimBrief compartida):
     // comparamos el ATC TAIL NUMBER capturado por SimConnect contra el
@@ -255,7 +253,7 @@ pub async fn link_simbrief_ofp(
     .map_err(|e| e.to_string())?;
 
     if res.rows_affected() == 0 {
-        return Err(format!("flight_log id={} no existe", flight_id));
+        return Err(crate::tr!("simbrief.flightNotFound", flightId = flight_id));
     }
 
     tracing::info!(

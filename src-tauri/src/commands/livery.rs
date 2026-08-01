@@ -47,7 +47,7 @@ pub async fn open_livery_browser(
 ) -> Result<(), String> {
     let start = url.unwrap_or_else(|| "https://flightsim.to/liveries".to_string());
     tracing::info!(target: "livery", "open_livery_browser INICIO → {}", start);
-    let parsed: tauri::Url = start.parse().map_err(|e| format!("URL inválida: {e}"))?;
+    let parsed: tauri::Url = start.parse().map_err(|e| crate::tr!("livery.invalidUrl", e = e))?;
 
     // (v6.2.57.2) Ya abierto → NAVEGAR a la nueva URL + mostrar + enfocar. Ahora
     // el comando es `async`, así que `navigate()` ya no cuelga el hilo UI (fue el
@@ -145,7 +145,7 @@ pub async fn open_livery_browser(
 
     let mut builder = WebviewWindowBuilder::new(&app, LIVERY_WIN, WebviewUrl::External(parsed))
         .initialization_script(livery_init.as_str())
-        .title("Buscar liveries — flightsim.to (inicia sesión con tu cuenta)")
+        .title(crate::tr!("livery.windowTitle"))
         // (v7) Ventana FLOTANTE más chica que la principal (que se ve detrás),
         // siempre al frente y con foco.
         .inner_size(1024.0, 720.0)
@@ -550,7 +550,7 @@ pub(crate) fn open_hoster_download(
         "open_hoster_download → {} ({} parte(s) extra, pw={})",
         url, parts.len(), password.is_some()
     );
-    let parsed: tauri::Url = url.parse().map_err(|e| format!("URL inválida: {e}"))?;
+    let parsed: tauri::Url = url.parse().map_err(|e| crate::tr!("livery.invalidUrl", e = e))?;
 
     // Ya existe esa ventana → navegar + enfocar (evita duplicados).
     if let Some(w) = app.get_webview_window(&win_label) {
@@ -641,7 +641,7 @@ pub(crate) fn open_hoster_download(
                 DownloadEvent::Requested { url, destination } => {
                     let idx = *mp_idx.lock().unwrap();
                     let part_label = if multipart {
-                        format!("parte {} de {}", idx + 1, total)
+                        crate::tr!("livery.partOf", i = idx + 1, total = total)
                     } else {
                         String::new()
                     };
@@ -672,7 +672,7 @@ pub(crate) fn open_hoster_download(
                             idx + 1, total, url, target.display()
                         );
                         let _ = app_emit
-                            .emit("embedded-download://started", format!("parte {}", idx + 1));
+                            .emit("embedded-download://started", crate::tr!("livery.part", i = idx + 1));
                         let url_s = url.to_string();
                         let app2 = app_emit.clone();
                         let label2 = label_close.clone();
@@ -695,7 +695,7 @@ pub(crate) fn open_hoster_download(
                                     tracing::error!(target: "hoster", "descarga directa falló: {e}");
                                     show_hoster_failure(
                                         &app2, &label2,
-                                        "La descarga falló (el hoster cortó la conexión). Tocá Cancelar y reintentá desde SimFleet.",
+                                        &crate::tr!("livery.downloadFailedConn"),
                                     );
                                 }
                             }
@@ -736,7 +736,7 @@ pub(crate) fn open_hoster_download(
                         tracing::warn!(target: "hoster", "descarga WebView2 falló (ok=false)");
                         show_hoster_failure(
                             &app_emit, &label_close,
-                            "La descarga falló. Tocá Cancelar y reintentá desde SimFleet.",
+                            &crate::tr!("livery.downloadFailed"),
                         );
                         return true;
                     }
@@ -1369,7 +1369,7 @@ fn advance_after_part(
                 tracing::error!(target: "hoster", "no se pudieron unir {} partes: {e}", files_v.len());
                 show_hoster_failure(
                     app, win_label,
-                    "No se pudieron unir las partes de la descarga. Tocá Cancelar y reintentá desde SimFleet.",
+                    &crate::tr!("livery.joinPartsFailed"),
                 );
             }
         }
@@ -1549,7 +1549,7 @@ pub fn save_installer_to(src: String, dest_folder: String) -> Result<String, Str
     let dest_dir = std::path::PathBuf::from(&dest_folder);
     let file_name = src
         .file_name()
-        .ok_or_else(|| "archivo sin nombre".to_string())?;
+        .ok_or_else(|| crate::tr!("livery.fileNoName"))?;
     std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
     let dest = dest_dir.join(file_name);
     std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
@@ -1623,7 +1623,7 @@ pub fn start_livery_download_watch(app: tauri::AppHandle) -> Result<(), String> 
     let dirs = downloads_dirs();
     if dirs.is_empty() {
         WATCHING.store(false, Ordering::SeqCst);
-        return Err("No pude localizar la carpeta de Descargas".into());
+        return Err(crate::tr!("livery.downloadsFolderNotFound"));
     }
     tracing::info!(target: "livery", "watch: vigilando {:?}", dirs);
     std::thread::Builder::new()

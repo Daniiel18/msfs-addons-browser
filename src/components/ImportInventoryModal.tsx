@@ -415,7 +415,7 @@ function parseInventory(content: string, path: string): InventoryItem[] {
 
 function parseJson(content: string): InventoryItem[] {
   const arr = JSON.parse(content);
-  if (!Array.isArray(arr)) throw new Error("JSON no es un array");
+  if (!Array.isArray(arr)) throw new Error(t("import.error.json_not_array"));
   return arr.map((row): InventoryItem => ({
     rawTitle: String(row.title || row.name || row.folderName || ""),
     icao: row.icao ? String(row.icao).toUpperCase() : undefined,

@@ -450,7 +450,7 @@ function ProgressDetails({ job }: { job: DownloadJob }) {
   parts.push(`${formatBytes(job.bytesDone)} / ${formatBytes(job.bytesTotal)}`);
   if (job.phase === "downloading") {
     if (job.speedBps > 0) parts.push(`${formatBytes(job.speedBps)}/s`);
-    if (job.etaSeconds !== null && job.etaSeconds > 0) parts.push(`${formatDuration(job.etaSeconds)} restante`);
+    if (job.etaSeconds !== null && job.etaSeconds > 0) parts.push(t("downloads.eta_remaining", { time: formatDuration(job.etaSeconds) }));
   }
   return (
     <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">

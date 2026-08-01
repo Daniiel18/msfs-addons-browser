@@ -161,7 +161,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // idioma" — la DB cambia, este espejo lo refleja.
       const lang = (s.language ?? "auto") as "auto" | "es" | "en";
       persistLocale(lang);
-      setActiveLocale(lang);
+      const resolved = setActiveLocale(lang);
+      // (v7.1) Empuja el locale resuelto al backend para que sus mensajes
+      // user-facing (errores, DownloadJob, eventos) salgan en ese idioma.
+      void api.setBackendLocale(resolved).catch(() => {});
       // (v3.28.0 P7.11) Espejo de unidades a localStorage — la DB es la
       // fuente de verdad; esto sincroniza el cold-start y el caso de
       // cloud sync que bajó prefs de otra PC.
@@ -213,7 +216,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       await api.setAppSetting(KEY_MAP.language, lang);
       persistLocale(lang);
-      setActiveLocale(lang);
+      const resolved = setActiveLocale(lang);
+      void api.setBackendLocale(resolved).catch(() => {});
       const prev = get().settings;
       set({ settings: { ...prev, language: lang } });
       console.info(`[settings] language persisted: ${lang}`);

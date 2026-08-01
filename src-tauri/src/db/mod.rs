@@ -1032,25 +1032,20 @@ pub mod repo {
         let mut would_emit: Option<DiagWouldEmit> = None;
 
         if package.is_none() {
-            blocker = Some(format!(
-                "El paquete '{}' no está en community_packages — re-escanea Community.",
-                folder_name
-            ));
+            blocker = Some(crate::tr!("db.diagPackageMissing", folder = folder_name));
         } else if let Some(pkg) = package.as_ref() {
             if pkg.icao.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
-                blocker = Some(
-                    "El paquete no tiene ICAO extraído. Sin ICAO no se puede cruzar con el catálogo. Causas típicas: el manifest no tiene 'SCENERY' como content_type, o el título/folder no contiene un código ICAO de 4 letras."
-                        .to_string(),
-                );
+                blocker = Some(crate::tr!("db.diagNoIcao"));
             } else if pkg
                 .content_type
                 .as_deref()
                 .map(|s| !s.eq_ignore_ascii_case("SCENERY"))
                 .unwrap_or(true)
             {
-                blocker = Some(format!(
-                    "content_type es '{}' — la detección de updates exige 'SCENERY'. Si crees que es scenery, edita el manifest.",
-                    pkg.content_type.as_deref().unwrap_or("(vacío)")
+                let empty = crate::tr!("db.emptyValue");
+                blocker = Some(crate::tr!(
+                    "db.diagWrongContentType",
+                    contentType = pkg.content_type.as_deref().unwrap_or(&empty)
                 ));
             } else if pkg
                 .package_version
@@ -1058,14 +1053,11 @@ pub mod repo {
                 .map(|s| s.trim().is_empty())
                 .unwrap_or(true)
             {
-                blocker = Some(
-                    "El manifest no declara 'package_version'. Sin versión instalada no se puede comparar."
-                        .to_string(),
-                );
+                blocker = Some(crate::tr!("db.diagNoVersion"));
             } else if airport_match.is_none() {
-                blocker = Some(format!(
-                    "El ICAO '{}' no existe en la tabla 'airports' (dataset OurAirports). Sin esto se descartan falsos positivos. Si el ICAO es real, dispara 'refresh airports dataset' o verifica que se hayan descargado los datos.",
-                    icao_upper.as_deref().unwrap_or("?")
+                blocker = Some(crate::tr!(
+                    "db.diagIcaoNotInAirports",
+                    icao = icao_upper.as_deref().unwrap_or("?")
                 ));
             } else {
                 let with_version: Vec<&DiagCatalog> = catalog_entries
@@ -1074,9 +1066,9 @@ pub mod repo {
                     .collect();
 
                 if with_version.is_empty() {
-                    blocker = Some(format!(
-                        "El catálogo (addons) no tiene ninguna entrada con versión para ICAO '{}'. Causas: la búsqueda en SceneryAddons/Simplaza no devolvió nada con ese ICAO, o el parser no extrajo la versión del título. Pulsa 'Refresh updates' o busca el ICAO manualmente para alimentar la cache.",
-                        icao_upper.as_deref().unwrap_or("?")
+                    blocker = Some(crate::tr!(
+                        "db.diagNoCatalogVersion",
+                        icao = icao_upper.as_deref().unwrap_or("?")
                     ));
                 } else {
                     // Pick max version (string compare lenient — el caller
@@ -1094,9 +1086,10 @@ pub mod repo {
                         .unwrap();
                     let latest = best.version.clone().unwrap_or_default();
                     if latest <= installed {
-                        blocker = Some(format!(
-                            "Versión instalada '{}' >= mejor versión catalogada '{}' — no hay update real.",
-                            installed, latest
+                        blocker = Some(crate::tr!(
+                            "db.diagUpToDate",
+                            installed = installed,
+                            latest = latest
                         ));
                     } else {
                         would_emit = Some(DiagWouldEmit {

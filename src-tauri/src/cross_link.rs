@@ -156,10 +156,7 @@ pub fn create_junctions(other_community: &str, packages: &[CrossLinkPkg]) -> Cro
     let base = Path::new(other_community);
     if let Err(e) = std::fs::create_dir_all(base) {
         for p in packages {
-            failed.push(format!(
-                "{}: no se pudo crear la Community destino ({e})",
-                p.name
-            ));
+            failed.push(crate::tr!("crossLink.destCreateFailed", name = p.name, e = e));
         }
         return CrossLinkResult {
             linked,
@@ -176,7 +173,7 @@ pub fn create_junctions(other_community: &str, packages: &[CrossLinkPkg]) -> Cro
             continue;
         }
         if !Path::new(&p.source_path).is_dir() {
-            failed.push(format!("{}: la carpeta de origen no existe", p.name));
+            failed.push(crate::tr!("crossLink.sourceMissing", name = p.name));
             continue;
         }
         match make_junction(&link, Path::new(&p.source_path)) {
@@ -206,10 +203,7 @@ fn make_junction(link: &Path, target: &Path) -> anyhow::Result<()> {
     // rechazamos — no aparecen en nombres de paquete MSFS válidos.
     let bad = |c: char| matches!(c, '&' | '|' | '<' | '>' | '^' | '"' | '%');
     if link_s.contains(bad) || target_s.contains(bad) {
-        anyhow::bail!(
-            "nombre de carpeta con caracteres no permitidos para junction: {}",
-            link.display()
-        );
+        anyhow::bail!("{}", crate::tr!("crossLink.badJunctionChars", path = link.display()));
     }
     let out = Command::new("cmd")
         .args(["/C", "mklink", "/J", &link_s, &target_s])
@@ -220,7 +214,7 @@ fn make_junction(link: &Path, target: &Path) -> anyhow::Result<()> {
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
         let std_out = String::from_utf8_lossy(&out.stdout);
-        anyhow::bail!("mklink /J falló: {} {}", err.trim(), std_out.trim());
+        anyhow::bail!("{}", crate::tr!("crossLink.mklinkFailed", err = err.trim(), out = std_out.trim()));
     }
 }
 

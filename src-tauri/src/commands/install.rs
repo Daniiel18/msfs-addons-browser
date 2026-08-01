@@ -47,8 +47,7 @@ pub async fn install_archive(
                 })?
                 .ok_or_else(|| {
                     tracing::error!(target: "install", "Community folder no detectada");
-                    "No se detectó la carpeta Community automáticamente — configúrala desde Ajustes."
-                        .to_string()
+                    crate::tr!("installCmd.communityNotDetected")
                 })?
                 .path,
         ),
@@ -65,7 +64,7 @@ pub async fn install_archive(
     .await
     .map_err(|e| {
         tracing::error!(target: "install", "tarea de instalación panic: {e}");
-        format!("la tarea de instalación falló: {}", e)
+        crate::tr!("installCmd.taskFailed", e = e)
     })?
     .map_err(|e| {
         tracing::error!(target: "install", "install_archive error: {e:#}");

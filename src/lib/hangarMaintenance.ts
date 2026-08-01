@@ -1,4 +1,5 @@
 import type { HangarAircraft } from "./types";
+import { t } from "./i18n";
 
 /**
  * (v6.1 #31 #32) Mantenimiento SINTÉTICO del Hangar.
@@ -95,25 +96,34 @@ export interface MaintenanceData {
 const statusOf = (health: number): GearComponent["status"] =>
   health >= 80 ? "good" : health >= 50 ? "watch" : "alert";
 
-/** Catálogo de piezas por componente (para los reportes). */
-const PARTS_BY_COMPONENT: Record<string, ReportPart[]> = {
+/** Catálogo de piezas por componente (para los reportes). Nombre/razón como
+ *  claves i18n — se resuelven al construir el reporte (render-time), no aquí a
+ *  nivel de módulo (que corre antes de fijar el locale). */
+interface PartCatalogEntry {
+  nameKey: string;
+  partNumber: string;
+  qty: number;
+  reasonKey: string;
+  cost: number;
+}
+const PARTS_BY_COMPONENT: Record<string, PartCatalogEntry[]> = {
   gear: [
-    { name: "Juego de neumáticos (main)", partNumber: "TR-46x16", qty: 2, reason: "Desgaste por ciclos / aterrizajes duros", cost: 1850 },
-    { name: "Pastillas de freno carbono", partNumber: "BRK-CC-9", qty: 4, reason: "Espesor bajo límite", cost: 2400 },
-    { name: "Sello hidráulico tren", partNumber: "SEAL-LG-3", qty: 1, reason: "Fuga menor detectada", cost: 320 },
+    { nameKey: "hangarMaintenance.partTireSet", partNumber: "TR-46x16", qty: 2, reasonKey: "hangarMaintenance.reasonTireSet", cost: 1850 },
+    { nameKey: "hangarMaintenance.partBrakePads", partNumber: "BRK-CC-9", qty: 4, reasonKey: "hangarMaintenance.reasonBrakePads", cost: 2400 },
+    { nameKey: "hangarMaintenance.partGearSeal", partNumber: "SEAL-LG-3", qty: 1, reasonKey: "hangarMaintenance.reasonGearSeal", cost: 320 },
   ],
   engine: [
-    { name: "Filtro de aceite", partNumber: "OIL-F-22", qty: 2, reason: "Servicio programado por horas", cost: 180 },
-    { name: "Bujías / igniters", partNumber: "IGN-7B", qty: 2, reason: "Horas de operación", cost: 640 },
-    { name: "Inspección boroscópica", partNumber: "SVC-BORO", qty: 1, reason: "A-Check de motor", cost: 1200 },
+    { nameKey: "hangarMaintenance.partOilFilter", partNumber: "OIL-F-22", qty: 2, reasonKey: "hangarMaintenance.reasonOilFilter", cost: 180 },
+    { nameKey: "hangarMaintenance.partIgniters", partNumber: "IGN-7B", qty: 2, reasonKey: "hangarMaintenance.reasonIgniters", cost: 640 },
+    { nameKey: "hangarMaintenance.partBorescope", partNumber: "SVC-BORO", qty: 1, reasonKey: "hangarMaintenance.reasonBorescope", cost: 1200 },
   ],
   hydraulics: [
-    { name: "Fluido hidráulico Skydrol", partNumber: "HYD-5606", qty: 1, reason: "Cambio programado", cost: 260 },
-    { name: "Bomba hidráulica (overhaul)", partNumber: "PMP-3000", qty: 1, reason: "Horas de servicio", cost: 3100 },
+    { nameKey: "hangarMaintenance.partHydFluid", partNumber: "HYD-5606", qty: 1, reasonKey: "hangarMaintenance.reasonHydFluid", cost: 260 },
+    { nameKey: "hangarMaintenance.partHydPump", partNumber: "PMP-3000", qty: 1, reasonKey: "hangarMaintenance.reasonHydPump", cost: 3100 },
   ],
   avionics: [
-    { name: "Batería de respaldo aviónica", partNumber: "BAT-AV-2", qty: 1, reason: "Fin de vida útil", cost: 540 },
-    { name: "Actualización base de datos NAV", partNumber: "DB-NAV", qty: 1, reason: "Ciclo AIRAC", cost: 90 },
+    { nameKey: "hangarMaintenance.partAvBattery", partNumber: "BAT-AV-2", qty: 1, reasonKey: "hangarMaintenance.reasonAvBattery", cost: 540 },
+    { nameKey: "hangarMaintenance.partNavDb", partNumber: "DB-NAV", qty: 1, reasonKey: "hangarMaintenance.reasonNavDb", cost: 90 },
   ],
 };
 
@@ -137,11 +147,11 @@ export function deriveMaintenance(ac: HangarAircraft): MaintenanceData {
   const avHealth = Math.max(45, 100 - Math.round((hours % 8000) / 160));
 
   const components: GearComponent[] = [
-    { key: "gear", label: "Tren de aterrizaje", healthPct: gearHealth, status: statusOf(gearHealth), nextDueHours: Math.round((gearHealth - 20) * 8) },
-    { key: "engine", label: "Motores", healthPct: engineHealth, status: statusOf(engineHealth), nextDueHours: Math.round((engineHealth - 15) * 10) },
-    { key: "brakes", label: "Frenos y neumáticos", healthPct: brakesHealth, status: statusOf(brakesHealth), nextDueHours: Math.round((brakesHealth - 10) * 4) },
-    { key: "hydraulics", label: "Sistema hidráulico", healthPct: hydHealth, status: statusOf(hydHealth), nextDueHours: Math.round((hydHealth - 20) * 12) },
-    { key: "avionics", label: "Aviónica", healthPct: avHealth, status: statusOf(avHealth), nextDueHours: Math.round((avHealth - 25) * 20) },
+    { key: "gear", label: t("hangarMaintenance.componentGear"), healthPct: gearHealth, status: statusOf(gearHealth), nextDueHours: Math.round((gearHealth - 20) * 8) },
+    { key: "engine", label: t("hangarMaintenance.componentEngines"), healthPct: engineHealth, status: statusOf(engineHealth), nextDueHours: Math.round((engineHealth - 15) * 10) },
+    { key: "brakes", label: t("hangarMaintenance.componentBrakes"), healthPct: brakesHealth, status: statusOf(brakesHealth), nextDueHours: Math.round((brakesHealth - 10) * 4) },
+    { key: "hydraulics", label: t("hangarMaintenance.componentHydraulics"), healthPct: hydHealth, status: statusOf(hydHealth), nextDueHours: Math.round((hydHealth - 20) * 12) },
+    { key: "avionics", label: t("hangarMaintenance.componentAvionics"), healthPct: avHealth, status: statusOf(avHealth), nextDueHours: Math.round((avHealth - 25) * 20) },
   ];
 
   // ── Historial de reportes ────────────────────────────────────────────────
@@ -168,7 +178,13 @@ export function deriveMaintenance(ac: HangarAircraft): MaintenanceData {
       const pool = PARTS_BY_COMPONENT[k];
       const p = pool[Math.floor(rng() * pool.length)];
       // pequeña variación de coste determinista
-      parts.push({ ...p, cost: Math.round(p.cost * (0.9 + rng() * 0.3)) });
+      parts.push({
+        name: t(p.nameKey),
+        partNumber: p.partNumber,
+        qty: p.qty,
+        reason: t(p.reasonKey),
+        cost: Math.round(p.cost * (0.9 + rng() * 0.3)),
+      });
     }
     const partsCost = parts.reduce((s, p) => s + p.cost * p.qty, 0);
     const laborCost = Math.round((300 + rng() * 1200) + parts.length * 240);
@@ -194,7 +210,7 @@ export function deriveMaintenance(ac: HangarAircraft): MaintenanceData {
       summary:
         useKeys
           .map((k) => components.find((c) => c.key === k)?.label ?? k)
-          .join(", ") + " — inspección y reemplazo de componentes según límites.",
+          .join(", ") + t("hangarMaintenance.summarySuffix"),
       nextDueHours,
       nextDueDate: nextDueDate.toISOString(),
     });

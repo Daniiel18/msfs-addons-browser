@@ -51,6 +51,7 @@ import {
   isWhatsNewPending,
   WHATS_NEW_CLOSED_EVENT,
 } from "./components/WhatsNewModal";
+import { DownloadRecoveryModal } from "./components/DownloadRecoveryModal";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
@@ -810,17 +811,9 @@ export default function App() {
       {safeMode && (
         <div className="flex items-center justify-center gap-2 border-b border-rose-500/30 bg-rose-500/15 px-4 py-1.5 text-xs font-semibold text-rose-200">
           {watcherActive ? (
-            <>
-              🛡️ MODO SEGURO (pruebas) — SimConnect ACTIVO para probar Best
-              Landings · la nube sigue DESACTIVADA. DB independiente de tu
-              instancia principal.
-            </>
+            <>🛡️ {t("safeMode.bannerActive")}</>
           ) : (
-            <>
-              🛡️ MODO SEGURO — instancia de pruebas. SimConnect y la
-              sincronización con la nube están DESACTIVADOS; no afecta el vuelo
-              ni los datos de tu instancia principal.
-            </>
+            <>🛡️ {t("safeMode.bannerIdle")}</>
           )}
         </div>
       )}
@@ -1081,6 +1074,7 @@ export default function App() {
       <GsxUpdateGate />
       <GsxOfferModal />
       <WhatsNewModal />
+      <DownloadRecoveryModal />
       <SimBriefConfirmModal />
       <IncompleteFlightModal />
       <ReplayBanner />

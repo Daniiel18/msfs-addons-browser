@@ -41,7 +41,7 @@ pub async fn backup_community(
         .map_err(|e| e.to_string())?
     {
         Some(info) if info.exists => PathBuf::from(info.path),
-        _ => return Err("No se detectó la carpeta Community.".into()),
+        _ => return Err(crate::tr!("backup.communityNotDetected")),
     };
 
     let dest = PathBuf::from(&dest_path);
@@ -95,7 +95,7 @@ pub async fn save_binary_file(path: String, base64: String) -> Result<(), String
         .unwrap_or(&base64);
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload.trim())
-        .map_err(|e| format!("base64 inválido: {e}"))?;
+        .map_err(|e| crate::tr!("backup.invalidBase64", e = e))?;
     let p = PathBuf::from(&path);
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;

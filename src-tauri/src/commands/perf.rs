@@ -129,7 +129,7 @@ pub async fn perf_list_optimizable(items: Vec<PerfScanItem>) -> Result<Vec<Strin
             .collect::<Vec<_>>()
     })
     .await
-    .map_err(|e| format!("la tarea de escaneo falló: {e}"))
+    .map_err(|e| crate::tr!("perf.scanTaskFailed", e = e))
 }
 
 /// (Escáner masivo) Para cada aeropuerto instalado con ICAO, resuelve la
@@ -145,7 +145,7 @@ pub async fn perf_scan_all_from_source(
     let _t = CmdTimer::start("perf_scan_all_from_source");
     let source = state
         .source("sceneryaddons")
-        .ok_or_else(|| "fuente SceneryAddons no disponible".to_string())?;
+        .ok_or_else(|| crate::tr!("perf.sourceUnavailable"))?;
     let http = state.http.clone();
 
     let found: Vec<String> = stream::iter(
@@ -201,7 +201,7 @@ pub async fn perf_read_config(
     let dir = PathBuf::from(&install_path);
     tokio::task::spawn_blocking(move || perf_config::read_or_generate(&dir, &folder_name, icao))
         .await
-        .map_err(|e| format!("la tarea de lectura falló: {e}"))
+        .map_err(|e| crate::tr!("perf.readTaskFailed", e = e))
 }
 
 /// Aplica un toggle: renombra los archivos de la opción de forma atómica
@@ -217,7 +217,7 @@ pub async fn perf_toggle_option(
     let dir = PathBuf::from(&install_path);
     tokio::task::spawn_blocking(move || perf_config::apply_toggle(&dir, &option_id, enable))
         .await
-        .map_err(|e| format!("la tarea de toggle falló: {e}"))?
+        .map_err(|e| crate::tr!("perf.toggleTaskFailed", e = e))?
         .map_err(|e| format!("{e:#}"))
 }
 
@@ -260,5 +260,5 @@ pub async fn perf_enrich_from_source(
         }
     })
     .await
-    .map_err(|e| format!("la tarea de enriquecimiento falló: {e}"))
+    .map_err(|e| crate::tr!("perf.enrichTaskFailed", e = e))
 }

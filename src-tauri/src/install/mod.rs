@@ -79,14 +79,14 @@ pub fn install_archive(
 ) -> anyhow::Result<InstallResult> {
     if !archive_path.is_file() {
         return Err(anyhow!(
-            "No se encontró el archivo: {}",
-            archive_path.display()
+            "{}",
+            crate::tr!("install.fileNotFound", path = archive_path.display())
         ));
     }
     if !community_path.is_dir() {
         return Err(anyhow!(
-            "La carpeta Community no existe: {}",
-            community_path.display()
+            "{}",
+            crate::tr!("install.communityMissing", path = community_path.display())
         ));
     }
 
@@ -99,15 +99,13 @@ pub fn install_archive(
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     if ext == "ptp" {
-        return Err(anyhow!(
-            "Los archivos .ptp (liveries PMDG) están encriptados y no son soportados por esta app. Instálalos directamente con PMDG Operations Center."
-        ));
+        return Err(anyhow!("{}", crate::tr!("install.ptpUnsupported")));
     }
 
     let temp = tempfile::Builder::new()
         .prefix("msfs-addon-extract-")
         .tempdir()
-        .context("no se pudo crear el directorio temporal de extracción")?;
+        .context(crate::tr!("install.tempDirFailed"))?;
     let extract_root = temp.path();
     tracing::info!(
         "install: extracting {} → {}",
@@ -128,9 +126,7 @@ pub fn install_archive(
     if packages.is_empty() {
         let installers = find_installers(extract_root);
         if installers.is_empty() {
-            return Err(anyhow!(
-                "No se encontraron paquetes MSFS (manifest.json + layout.json) ni instaladores ejecutables dentro del archivo."
-            ));
+            return Err(anyhow!("{}", crate::tr!("install.noPackagesOrInstallers")));
         }
         let payload = persist_installer_payload(archive_path, extract_root, &installers)?;
         tracing::info!(
@@ -153,7 +149,7 @@ pub fn install_archive(
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| {
-                anyhow!("el paquete tiene un nombre de carpeta no-UTF-8: {:?}", pkg)
+                anyhow!("{}", crate::tr!("install.nonUtf8PackageName", path = pkg.display()))
             })?
             .to_string();
 
@@ -162,19 +158,12 @@ pub fn install_archive(
 
         if target.exists() {
             fs::remove_dir_all(&target).with_context(|| {
-                format!(
-                    "no se pudo eliminar la instalación previa en {} (¿archivo en uso?)",
-                    target.display()
-                )
+                crate::tr!("install.removePrevFailed", path = target.display())
             })?;
         }
 
         let size = copy_dir_recursive(pkg, &target).with_context(|| {
-            format!(
-                "falló la copia: {} → {}",
-                pkg.display(),
-                target.display()
-            )
+            crate::tr!("install.copyFailed", from = pkg.display(), to = target.display())
         })?;
 
         total_bytes += size;
@@ -237,7 +226,7 @@ fn persist_installer_payload(
 ) -> anyhow::Result<InstallerPayload> {
     let parent = archive
         .parent()
-        .ok_or_else(|| anyhow!("el archivo no tiene un directorio padre"))?;
+        .ok_or_else(|| anyhow!("{}", crate::tr!("install.noParentDir")))?;
     let stem = archive
         .file_stem()
         .and_then(|s| s.to_str())
@@ -248,7 +237,7 @@ fn persist_installer_payload(
         fs::remove_dir_all(&target).ok();
     }
     copy_dir_recursive(extract_root, &target)
-        .with_context(|| format!("no se pudo persistir el extracto en {}", target.display()))?;
+        .with_context(|| crate::tr!("install.persistFailed", path = target.display()))?;
 
     // Recalcular paths de los instaladores en el nuevo destino.
     let primary_in_temp = pick_primary_installer(installers);
@@ -358,8 +347,8 @@ fn extract_to(archive: &Path, dest: &Path) -> anyhow::Result<()> {
             "7z" => extract_7z(archive, dest, *pw),
             other => {
                 return Err(anyhow!(
-                    "Formato de archivo no soportado: .{} (se esperaba .zip, .rar o .7z)",
-                    other
+                    "{}",
+                    crate::tr!("install.unsupportedFormat", ext = other)
                 ))
             }
         };
@@ -368,15 +357,15 @@ fn extract_to(archive: &Path, dest: &Path) -> anyhow::Result<()> {
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("la extracción falló")))
+    Err(last_err.unwrap_or_else(|| anyhow!("{}", crate::tr!("install.extractionFailed"))))
 }
 
 fn extract_zip(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
     if let Some(pw) = password {
         // Descifrado por entrada (ZipCrypto/AES).
         let file = fs::File::open(archive)
-            .with_context(|| format!("no se pudo abrir el archivo {}", archive.display()))?;
-        let mut zip = zip::ZipArchive::new(file).context("no se pudo leer el archivo ZIP")?;
+            .with_context(|| crate::tr!("install.openArchiveFailed", path = archive.display()))?;
+        let mut zip = zip::ZipArchive::new(file).context(crate::tr!("install.zipReadFailed"))?;
         for i in 0..zip.len() {
             let mut entry = zip
                 .by_index_decrypt(i, pw.as_bytes())
@@ -400,8 +389,8 @@ fn extract_zip(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::R
 
 fn extract_zip_plain(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     let file = fs::File::open(archive)
-        .with_context(|| format!("no se pudo abrir el archivo {}", archive.display()))?;
-    let mut zip = zip::ZipArchive::new(file).context("no se pudo leer el archivo ZIP")?;
+        .with_context(|| crate::tr!("install.openArchiveFailed", path = archive.display()))?;
+    let mut zip = zip::ZipArchive::new(file).context(crate::tr!("install.zipReadFailed"))?;
 
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
@@ -446,16 +435,16 @@ fn extract_rar(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::R
         Some(pw) => unrar::Archive::with_password(archive, pw)
             .open_for_processing()
             .with_context(|| {
-                format!("no se pudo abrir el archivo RAR {}", archive.display())
+                crate::tr!("install.openRarFailed", path = archive.display())
             })?,
         None => unrar::Archive::new(archive)
             .open_for_processing()
             .with_context(|| {
-                format!("no se pudo abrir el archivo RAR {}", archive.display())
+                crate::tr!("install.openRarFailed", path = archive.display())
             })?,
     };
 
-    while let Some(header) = rar.read_header().context("header RAR inválido")? {
+    while let Some(header) = rar.read_header().context(crate::tr!("install.rarHeaderInvalid"))? {
         let entry = header.entry();
         // Defensa contra "rar-slip": rutas absolutas o con `..` se
         // ignoran. `unrar` aplica el base dir internamente, pero este
@@ -471,14 +460,14 @@ fn extract_rar(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::R
                 "install: entrada rar insegura ignorada: {}",
                 filename.display()
             );
-            rar = header.skip().context("skip RAR falló")?;
+            rar = header.skip().context(crate::tr!("install.rarSkipFailed"))?;
             continue;
         }
 
         rar = if entry.is_file() {
             header
                 .extract_with_base(dest)
-                .context("extracción RAR falló")?
+                .context(crate::tr!("install.rarExtractFailed"))?
         } else {
             // Crear el directorio explícitamente porque `unrar` a veces
             // no emite headers separados para directorios intermedios.
@@ -490,7 +479,7 @@ fn extract_rar(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::R
                     e
                 );
             }
-            header.skip().context("skip RAR falló")?
+            header.skip().context(crate::tr!("install.rarSkipFailed"))?
         };
     }
     Ok(())
@@ -531,17 +520,17 @@ fn extract_7z(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::Re
     match password {
         Some(pw) => {
             let file = std::fs::File::open(archive)
-                .with_context(|| format!("no se pudo abrir {}", archive.display()))?;
+                .with_context(|| crate::tr!("install.openFailed7z", path = archive.display()))?;
             sevenz_rust2::decompress_with_extract_fn_and_password(
                 file,
                 dest,
                 sevenz_rust2::Password::from(pw),
                 safe_7z_entry,
             )
-            .with_context(|| format!("no se pudo extraer {}", archive.display()))?;
+            .with_context(|| crate::tr!("install.extractFailed7z", path = archive.display()))?;
         }
         None => sevenz_rust2::decompress_file_with_extract_fn(archive, dest, safe_7z_entry)
-            .with_context(|| format!("no se pudo extraer {}", archive.display()))?,
+            .with_context(|| crate::tr!("install.extractFailed7z", path = archive.display()))?,
     }
     Ok(())
 }

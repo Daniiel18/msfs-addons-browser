@@ -359,10 +359,10 @@ impl TorrentEngine {
         let add_response = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                anyhow::bail!("cancelado mientras se resolvía la metadata del magnet");
+                anyhow::bail!("{}", crate::tr!("torrent.cancelledResolvingMetadata"));
             }
             r = tokio::time::timeout(std::time::Duration::from_secs(120), add_fut) => {
-                r.map_err(|_| anyhow!("timeout resolviendo la metadata del magnet (¿sin seeds?)"))?
+                r.map_err(|_| anyhow!("{}", crate::tr!("torrent.metadataTimeout")))?
                     .context("librqbit add_torrent failed")?
             }
         };

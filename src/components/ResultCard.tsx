@@ -18,7 +18,7 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { isNewer } from "../lib/version";
 import { ChangelogModal } from "./ChangelogModal";
-import { t } from "../lib/i18n";
+import { t, getActiveLocale } from "../lib/i18n";
 
 /**
  * Estado de instalación de un addon de búsqueda respecto a lo que
@@ -138,11 +138,14 @@ function formatReleaseDate(value: string): string {
   if (looksIso) {
     const d = new Date(value);
     if (!isNaN(d.getTime())) {
-      return d.toLocaleDateString("es-ES", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      });
+      return d.toLocaleDateString(
+        getActiveLocale() === "es" ? "es-ES" : "en-US",
+        {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        },
+      );
     }
   }
   return value;
@@ -331,6 +334,8 @@ export function ResultCard({ addon }: Props) {
       source: addon.source,
       method,
       addonSimulator: addon.simulator,
+      // (v7.1) Todos los métodos → si el torrent falla, reofrecemos mirrors.
+      allMethods: addon.downloadMethods,
     });
   };
 
@@ -378,7 +383,7 @@ export function ResultCard({ addon }: Props) {
               {addon.releasedAt && (
                 <span
                   className="inline-flex items-center gap-1"
-                  title={`Subido a la fuente: ${addon.releasedAt}`}
+                  title={t("result.uploaded_to_source", { date: addon.releasedAt })}
                 >
                   <Calendar className="h-3.5 w-3.5" />
                   {formatReleaseDate(addon.releasedAt)}

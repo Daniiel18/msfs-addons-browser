@@ -49,6 +49,25 @@ pub enum PackageOpError {
     Sqlx(#[from] sqlx::Error),
 }
 
+impl PackageOpError {
+    /// Mensaje localizado para el usuario final. `thiserror` sigue dando
+    /// el `Display` en español para los logs; esto es lo que se usa en el
+    /// boundary de comandos para lo que ve el frontend.
+    pub fn localized(&self) -> String {
+        match self {
+            PackageOpError::UnknownPackage(name) => {
+                crate::tr!("packageOps.unknownPackage", name = name)
+            }
+            PackageOpError::NothingToRemove(name) => {
+                crate::tr!("packageOps.nothingToRemove", name = name)
+            }
+            // Transparentes: reenvían el mensaje del error subyacente.
+            PackageOpError::Db(e) => e.to_string(),
+            PackageOpError::Sqlx(e) => e.to_string(),
+        }
+    }
+}
+
 /// Reporte del trabajo hecho — qué paths fueron borrados con éxito,
 /// cuáles fallaron, y cuántas filas de DB se limpiaron. El frontend
 /// usa esto para enseñar al usuario "se borró de N ubicaciones" en
@@ -259,16 +278,15 @@ fn sanity_check(path: &Path, expected_folder: &str) -> Result<(), String> {
         .and_then(|s| s.to_str())
         .unwrap_or_default();
     if !name.eq_ignore_ascii_case(expected_folder) {
-        return Err(format!(
-            "el último componente '{}' no coincide con el folder esperado '{}'",
-            name, expected_folder
+        return Err(crate::tr!(
+            "packageOps.sanityNameMismatch",
+            name = name,
+            expected = expected_folder
         ));
     }
     let lower = path.to_string_lossy().to_lowercase();
     if !(lower.contains("community") || lower.contains("sceneries")) {
-        return Err(
-            "el path no contiene 'community' ni 'sceneries' — sospechoso".to_string(),
-        );
+        return Err(crate::tr!("packageOps.sanityNotCommunity"));
     }
     Ok(())
 }
