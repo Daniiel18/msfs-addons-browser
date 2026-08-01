@@ -168,6 +168,11 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
             // o SimObjects). Carpetas sueltas sin nada de eso (backups,
             // basura) las seguimos saltando.
             let looks_like_addon = path.join("layout.json").is_file()
+                // (fix) También `.disabled`: si el paquete SOLO se detectaba por
+                // layout.json y el usuario lo desactivó (layout.json →
+                // layout.json.disabled), sin esto desaparecía del scan y de la
+                // DB, y ya no se podía re-activar desde la app.
+                || path.join("layout.json.disabled").is_file()
                 || !simobject_dirs.is_empty()
                 || path.join("SimObjects").is_dir()
                 || path.join("scenery").is_dir();

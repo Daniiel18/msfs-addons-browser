@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "6.2.70"
+version = "7.0.0"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -117,13 +117,15 @@ winreg = "0.55"
 # que el host maneja a nivel nativo, fuera del alcance del JS) y el menú
 # contextual. Versiones fijadas a las que ya usa Tauri/wry para que los tipos
 # COM unifiquen.
+# (v7) Discord Rich Presence — puro Rust, sin SDK nativo.
+discord-rich-presence = "1.1.0"
 webview2-com = "=0.38.2"
 windows-core = "=0.61.2"
 # (v6.2.5) SetWindowPos para forzar el OSD al tope del z-order (HWND_TOPMOST +
 # SWP_NOACTIVATE) y que salga SIEMPRE sobre el sim sin robarle el foco.
 # (v6.2.17) + Win32_Media_Audio / Win32_System_Com para la captura WASAPI
 # loopback (audio del sistema) que alimenta al encoder del grabador nuevo.
-windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com"] }
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_Storage_FileSystem"] }
 # (v6.2.17) Motor de grabación de "Best Landings": Windows Graphics Capture +
 # encoder H.264 por HARDWARE (Media Foundation) — el mismo stack que usa
 # ScreenRecorderLib (LandingToast). Reemplaza a windows-record 0.1, cuyo replay

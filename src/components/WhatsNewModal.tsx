@@ -1,29 +1,108 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { Sparkles, ChevronLeft, ChevronRight, X } from "lucide-react";
-import { t } from "../lib/i18n";
+import {
+  Plane,
+  Download,
+  ShieldCheck,
+  AppWindow,
+  ArrowDownUp,
+  FolderTree,
+  Medal,
+  Gamepad2,
+  CloudDownload,
+  type LucideIcon,
+} from "lucide-react";
+import { getActiveLocale } from "../lib/i18n";
 
 /**
- * (v6.2.69) "Novedades" — carrusel que se muestra UNA vez por versión al
- * arrancar, destacando lo nuevo y en especial la integración con flightsim.to.
- * Cada slide trae una imagen (mockup en /public/whatsnew) + título + descripción
- * bilingües (i18n). Navegación libre: dots, ‹ ›, cerrar cuando quieras.
+ * (v7) "Novedades" — modal BLOQUEANTE que se muestra UNA vez por versión al
+ * arrancar. A diferencia del carrusel viejo: NO tiene X ni se cierra al hacer
+ * clic afuera ni con Esc — el usuario DEBE leerlo. Las 8 novedades se reparten
+ * en 2 páginas (4 + 4) y cada página tiene una cuenta atrás corta antes de
+ * poder avanzar, para que no se salte de un solo clic. Contenido bilingüe
+ * embebido (sin claves i18n, para iterar rápido).
  */
-const WHATS_NEW_VERSION = "6.2.68";
-const SEEN_KEY = "simfleet.whatsnew.seen.v2";
+const WHATS_NEW_VERSION = "7.0.0";
+const SEEN_KEY = "simfleet.whatsnew.seen.v3";
+const PER_PAGE_SECONDS = 3;
 
-const SLIDES = [
-  { key: "flightsimto", image: "/whatsnew/fsto-browser.svg" },
-  { key: "tracking", image: "/whatsnew/fsto-tracking.svg" },
-  { key: "gsx", image: "/whatsnew/gsx-offer.svg" },
-  { key: "liveries", image: "/whatsnew/liveries.svg" },
-] as const;
+type Feat = { Icon: LucideIcon; es: [string, string]; en: [string, string] };
+
+const FEATURES: Feat[] = [
+  {
+    Icon: Download,
+    es: ["Descarga directa de mirrors", "modsfire, mixdrop y otros se bajan e instalan sin salir de SimFleet."],
+    en: ["Direct mirror downloads", "modsfire, mixdrop and more download and install without leaving SimFleet."],
+  },
+  {
+    Icon: ShieldCheck,
+    es: ["Bloqueador de anuncios", "uBlock Origin Lite dentro del navegador de descargas — adiós a los pop-ups."],
+    en: ["Built-in ad blocker", "uBlock Origin Lite inside the download browser — no more pop-ups."],
+  },
+  {
+    Icon: AppWindow,
+    es: ["Ventana de descarga tipo popout", "Con botón para cancelar la descarga y sin los botones del sistema."],
+    en: ["Pop-out download window", "With a cancel button and none of the system browser chrome."],
+  },
+  {
+    Icon: ArrowDownUp,
+    es: ["Mirrors ordenados por los que funcionan", "modsfire y mixdrop primero; rapidgator (que fallaba) queda oculto."],
+    en: ["Mirrors sorted by what works", "modsfire and mixdrop first; rapidgator (which failed) is hidden."],
+  },
+  {
+    Icon: FolderTree,
+    es: ["Perfiles GSX agrupados por variante", "El instalador separa FULL, LIGHT y las demás variantes por carpeta."],
+    en: ["GSX profiles grouped by variant", "The installer splits FULL, LIGHT and other variants into folders."],
+  },
+  {
+    Icon: Medal,
+    es: ["Logros con medallas", "23 insignias con niveles (bronce a diamante) sobre tu historial de vuelos."],
+    en: ["Achievements with medals", "23 tiered badges (bronze to diamond) based on your flight history."],
+  },
+  {
+    Icon: Gamepad2,
+    es: ["Discord Rich Presence", "Muestra tu vuelo en tu perfil de Discord (opcional, apagado por defecto)."],
+    en: ["Discord Rich Presence", "Shows your flight on your Discord profile (optional, off by default)."],
+  },
+  {
+    Icon: CloudDownload,
+    es: ["Integración con flightsim desde SimFleet", "Tus addons de flightsim.to dentro de SimFleet, con aviso cuando hay actualización."],
+    en: ["flightsim.to integration inside SimFleet", "Your flightsim.to addons inside SimFleet, with update alerts."],
+  },
+];
+
+const PAGES: Feat[][] = [FEATURES.slice(0, 4), FEATURES.slice(4)];
+
+/** (v7) ¿El usuario todavía no vio las novedades de esta versión? Lo usa
+ *  `App.tsx` para que el tour de bienvenida ESPERE a que este modal bloqueante
+ *  se cierre — si no, en una instalación nueva ambos salen a la vez y el backdrop
+ *  del tour tapa el botón «Continuar», dejando la app en soft-lock. */
+export function isWhatsNewPending(): boolean {
+  try {
+    return localStorage.getItem(SEEN_KEY) !== WHATS_NEW_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+/** Evento que dispara el modal al cerrarse, para encadenar el tour. */
+export const WHATS_NEW_CLOSED_EVENT = "simfleet:whatsnew-closed";
+
+const UI = {
+  es: { title: "Novedades de SimFleet", next: "Siguiente", done: "Empezar" },
+  en: { title: "What's new in SimFleet", next: "Next", done: "Get started" },
+} as const;
 
 export function WhatsNewModal() {
   const [open, setOpen] = useState(false);
-  const [i, setI] = useState(0);
+  const [page, setPage] = useState(0);
+  const [left, setLeft] = useState(PER_PAGE_SECONDS);
 
+  const locale = getActiveLocale();
+  const ui = UI[locale] ?? UI.en;
+
+  // Mostrar UNA vez por versión: si el usuario aún no vio esta versión, abrir.
   useEffect(() => {
     try {
       if (localStorage.getItem(SEEN_KEY) !== WHATS_NEW_VERSION) setOpen(true);
@@ -32,124 +111,118 @@ export function WhatsNewModal() {
     }
   }, []);
 
-  const close = () => {
+  // Cuenta atrás por página: se reinicia al abrir y al cambiar de página.
+  useEffect(() => {
+    if (!open) return;
+    setLeft(PER_PAGE_SECONDS);
+    const id = setInterval(() => {
+      setLeft((n) => {
+        if (n <= 1) {
+          clearInterval(id);
+          return 0;
+        }
+        return n - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [open, page]);
+
+  const isLast = page === PAGES.length - 1;
+  const waiting = left > 0;
+
+  const finish = () => {
     try {
       localStorage.setItem(SEEN_KEY, WHATS_NEW_VERSION);
     } catch {
       /* ignore */
     }
     setOpen(false);
+    // Avisa a App.tsx que ya se cerró → recién ahí abre el tour de bienvenida.
+    try {
+      window.dispatchEvent(new Event(WHATS_NEW_CLOSED_EVENT));
+    } catch {
+      /* ignore */
+    }
   };
 
-  const last = SLIDES.length - 1;
-  const slide = SLIDES[i];
+  const advance = () => {
+    if (waiting) return;
+    if (isLast) finish();
+    else setPage((p) => p + 1);
+  };
+
+  const btnLabel = (isLast ? ui.done : ui.next) + (waiting ? ` (${left})` : "");
 
   return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4"
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={close}
         >
+          {/* Sin onClick de cierre: el fondo es un bloqueo, no una salida. */}
           <motion.div
             initial={{ opacity: 0, scale: 0.96, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 10 }}
             transition={{ duration: 0.16 }}
-            onClick={(e) => e.stopPropagation()}
-            className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-7 text-center shadow-2xl ring-1 ring-slate-800"
           >
-            {/* badge + close */}
-            <div className="flex items-center justify-between px-5 pt-4">
-              <div className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-300 ring-1 ring-sky-500/30">
-                <Sparkles className="h-3 w-3" />
-                {t("whatsnew.badge", { version: WHATS_NEW_VERSION })}
-              </div>
-              <button
-                onClick={close}
-                title={t("common.dismiss")}
-                className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-500 text-white">
+              <Plane className="h-8 w-8" />
+            </div>
+            <h2 className="mb-6 text-xl font-semibold text-slate-100">{ui.title}</h2>
+
+            <AnimatePresence mode="wait">
+              <motion.ul
+                key={page}
+                initial={{ opacity: 0, x: 14 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -14 }}
+                transition={{ duration: 0.18 }}
+                className="flex flex-col gap-4 text-left"
               >
-                <X className="h-4 w-4" />
-              </button>
+                {PAGES[page].map((f) => {
+                  const [title, desc] = locale === "es" ? f.es : f.en;
+                  return (
+                    <li key={title} className="flex gap-3">
+                      <f.Icon className="mt-0.5 h-5 w-5 shrink-0 text-sky-300" />
+                      <div>
+                        <p className="text-sm font-medium text-slate-100">{title}</p>
+                        <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{desc}</p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </motion.ul>
+            </AnimatePresence>
+
+            <div className="mt-6 flex items-center justify-center gap-1.5">
+              {PAGES.map((_, n) => (
+                <span
+                  key={n}
+                  className={`h-1.5 rounded-full transition-all ${
+                    n === page ? "w-5 bg-sky-400" : "w-1.5 bg-slate-700"
+                  }`}
+                />
+              ))}
             </div>
 
-            {/* image + text (scrolls if needed) */}
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-3">
-              <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
-                <AnimatePresence mode="wait">
-                  <motion.img
-                    key={slide.key}
-                    src={slide.image}
-                    alt=""
-                    initial={{ opacity: 0, x: 12 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -12 }}
-                    transition={{ duration: 0.18 }}
-                    className="aspect-video w-full object-cover"
-                  />
-                </AnimatePresence>
-              </div>
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={slide.key}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={{ duration: 0.16 }}
-                >
-                  <h2 className="mt-4 text-lg font-semibold text-slate-100">
-                    {t(`whatsnew.${slide.key}.title`)}
-                  </h2>
-                  <p className="mt-1 text-sm leading-relaxed text-slate-400">
-                    {t(`whatsnew.${slide.key}.desc`)}
-                  </p>
-                </motion.div>
-              </AnimatePresence>
-            </div>
-
-            {/* footer: dots + nav */}
-            <div className="flex items-center justify-between gap-3 border-t border-slate-800 p-4">
-              <button
-                onClick={() => setI((n) => Math.max(0, n - 1))}
-                disabled={i === 0}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800 text-slate-300 transition-colors hover:bg-slate-900 disabled:opacity-30"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-
-              <div className="flex items-center gap-1.5">
-                {SLIDES.map((s, n) => (
-                  <button
-                    key={s.key}
-                    onClick={() => setI(n)}
-                    className={`h-1.5 rounded-full transition-all ${
-                      n === i ? "w-5 bg-sky-400" : "w-1.5 bg-slate-700 hover:bg-slate-600"
-                    }`}
-                  />
-                ))}
-              </div>
-
-              {i < last ? (
-                <button
-                  onClick={() => setI((n) => Math.min(last, n + 1))}
-                  className="inline-flex h-9 items-center gap-1 rounded-lg bg-slate-800 px-3 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-700"
-                >
-                  {t("whatsnew.next")}
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              ) : (
-                <button
-                  onClick={close}
-                  className="inline-flex h-9 items-center rounded-lg bg-sky-500 px-4 text-sm font-semibold text-sky-950 transition-colors hover:bg-sky-400"
-                >
-                  {t("whatsnew.cta")}
-                </button>
-              )}
-            </div>
+            <button
+              onClick={advance}
+              disabled={waiting}
+              className={`mt-5 inline-flex h-11 min-w-[150px] items-center justify-center rounded-full px-6 text-sm font-semibold transition-colors ${
+                waiting
+                  ? "cursor-not-allowed bg-slate-800 text-slate-500"
+                  : "bg-sky-500 text-sky-950 hover:bg-sky-400"
+              }`}
+            >
+              {btnLabel}
+            </button>
           </motion.div>
         </motion.div>
       )}

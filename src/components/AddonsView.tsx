@@ -4,6 +4,7 @@ import {
   CircleOff,
   Cog,
   GitBranch,
+  Globe2,
   HardDrive,
   LayoutGrid,
   Loader2,
@@ -96,6 +97,12 @@ export function AddonsView() {
   const updates = useCommunityStore((s) => s.updates);
   // (v6.2.60) Updates de addons descargados de flightsim.to (folderName → info).
   const flightsimUpdates = useFlightsimUpdateStore((s) => s.updates);
+  // (v6.2.72) TODOS los addons rastreados de flightsim.to → "Centro" (filtro).
+  const flightsimTracked = useFlightsimUpdateStore((s) => s.tracked);
+  const flightsimFolders = useMemo(
+    () => new Set(flightsimTracked.map((u) => u.folderName)),
+    [flightsimTracked],
+  );
   const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
   const openFlightsimUpdate = (u: FlightsimUpdate) => {
     ackFlightsimUpdate(u.folderName); // limpia el badge + avanza baseline
@@ -108,6 +115,9 @@ export function AddonsView() {
 
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState<PillFilter>("ALL");
+  // (v6.2.72) Centro de flightsim.to: al activarlo, el grid muestra SOLO los
+  // addons que bajaste de flightsim.to (rastreados), con su estado de update.
+  const [flightsimOnly, setFlightsimOnly] = useState(false);
   // (v4.33.0) Resultado activo del find-in-page del grid (1-based).
   const [searchActive, setSearchActive] = useState(1);
   // (v4.27.0) Vista activa: el Link Map es ahora la vista por defecto
@@ -179,6 +189,20 @@ export function AddonsView() {
     [allPackages],
   );
 
+  // (v6.2.72) Items del Centro de flightsim.to: TODOS los paquetes rastreados,
+  // INCLUIDOS los aeropuertos (que el grid normal excluye). Sin esto, un
+  // escenario bajado de flightsim.to no aparecía al filtrar.
+  const flightsimItems = useMemo(() => {
+    const base = allPackages.filter((p) => flightsimFolders.has(p.folderName));
+    const display = disambiguateTitles(base);
+    return base.map((p) => ({
+      p: display.has(p.folderName)
+        ? { ...p, title: display.get(p.folderName)! }
+        : p,
+      t: derivedType(p),
+    }));
+  }, [allPackages, flightsimFolders]);
+
   const counts = useMemo(() => {
     const m = new Map<DerivedType, number>();
     for (const { t } of addons) m.set(t, (m.get(t) ?? 0) + 1);
@@ -222,13 +246,16 @@ export function AddonsView() {
     // esto, buscar "fenix" sólo matcheaba el avión base (title "Fenix
     // Airbus A320") y NO sus liveries (folder "fnx-aircraft-320-…").
     const expanded = expandVendorQuery(q);
-    return addons.filter(({ p, t }) => {
+    // Fuente: con el Centro de flightsim.to activo usamos TODO lo rastreado
+    // (incluye aeropuertos); si no, el set normal de addons.
+    const source = flightsimOnly ? flightsimItems : addons;
+    return source.filter(({ p, t }) => {
       if (!pillMatches(typeFilter, t)) return false;
       if (!q) return true;
       const hay = `${p.title} ${p.creator ?? ""} ${p.folderName}`.toLowerCase();
       return expanded.some((term) => hay.includes(term));
     });
-  }, [addons, filter, typeFilter]);
+  }, [addons, flightsimItems, filter, typeFilter, flightsimOnly]);
 
   // (v4.33.0) Navegación del find-in-page: avanza el resultado activo
   // (con wrap) y hace scroll a esa card. Las cards llevan
@@ -493,6 +520,31 @@ export function AddonsView() {
           label={t("addons.chip.unclassified")}
           count={counts.get("UNKNOWN") ?? 0}
         />
+        {/* (v6.2.72) Centro de flightsim.to: filtra a lo que bajaste de ahí. */}
+        {flightsimFolders.size > 0 && (
+          <>
+            <span className="mx-0.5 h-5 w-px self-center bg-slate-800" aria-hidden />
+            <button
+              onClick={() => setFlightsimOnly((v) => !v)}
+              title={t("addons.fsto.tooltip")}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
+                flightsimOnly
+                  ? "border-sky-500 bg-sky-500/15 text-sky-100"
+                  : "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60"
+              }`}
+            >
+              <Globe2 className="h-3.5 w-3.5 text-sky-400" />
+              flightsim.to
+              <span
+                className={`ml-0.5 rounded-full px-1.5 text-[10px] font-medium ${
+                  flightsimOnly ? "bg-sky-500/30 text-sky-100" : "bg-slate-800 text-slate-400"
+                }`}
+              >
+                {flightsimFolders.size}
+              </span>
+            </button>
+          </>
+        )}
       </div>
       )}
 
@@ -504,14 +556,24 @@ export function AddonsView() {
         <LinkMapView addons={addons} airports={airports} />
       ) : (
         <>
-          {/* (v6.2.57) Banner de flightsim.to MOVIDO a Search (botón dedicado
-              en el header). El usuario lo pidió fuera de Addons. */}
+          {/* (v6.2.72) Centro de flightsim.to: resumen cuando el filtro está on. */}
+          {flightsimOnly && (
+            <div className="mb-3 flex items-center gap-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-2 text-xs text-slate-300">
+              <Globe2 className="h-4 w-4 shrink-0 text-sky-400" />
+              <span>
+                {t("addons.fsto.summary", {
+                  n: String(flightsimFolders.size),
+                  u: String(flightsimUpdates.size),
+                })}
+              </span>
+            </div>
+          )}
           {visible.length === 0 ? (
             <EmptyState
               hasAny={addons.length > 0}
-              hasFilter={!!filter || typeFilter !== "ALL"}
+              hasFilter={!!filter || typeFilter !== "ALL" || flightsimOnly}
             />
-          ) : typeFilter !== "ALL" || filter.trim() !== "" ? (
+          ) : typeFilter !== "ALL" || filter.trim() !== "" || flightsimOnly ? (
             // Lista plana — el usuario ya filtró, no agrupamos.
             <CardsGrid
               items={visible}
@@ -1121,6 +1183,9 @@ function PackageCard({
   // PNG gris "PLACEHOLDER" en esos casos.
   const skipThumb = looksLikePlaceholderTitle(pkg.title);
   const thumb = useThumbnail(pkg.folderName, skipThumb);
+  // (v6.2.75) Si el addon vino de flightsim.to, preferimos SU imagen.
+  const fstoThumb = useFlightsimUpdateStore((s) => s.thumbs).get(pkg.folderName);
+  const shownThumb = fstoThumb ?? thumb;
   const sizeLabel =
     pkg.sizeBytes != null ? formatStorage(pkg.sizeBytes) : null;
   const { enabled, busy, toggle } = usePackageToggle(pkg);
@@ -1141,9 +1206,9 @@ function PackageCard({
         {/* Thumbnail rectangular arriba (16:9). Cuando el addon está
             apagado, la imagen se apaga con él (grayscale + dim). */}
         <div className="relative aspect-[16/9] w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
-          {thumb ? (
+          {shownThumb ? (
             <img
-              src={thumb}
+              src={shownThumb}
               alt=""
               loading="lazy"
               decoding="async"

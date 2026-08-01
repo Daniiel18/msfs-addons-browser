@@ -19,7 +19,6 @@ use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::AppState;
@@ -72,6 +71,10 @@ pub struct AppSettings {
     /// (v6 #3) Live VS — credenciales de Supabase Realtime (multiplayer).
     /// Vacío = función desactivada. Se guardan en `settings`, NO en código.
     pub vs_supabase_url: String,
+    /// (v7) Discord Rich Presence: mostrar en Discord qué estás volando.
+    pub discord_rpc_enabled: bool,
+    /// (v7) Application ID del portal de Discord (por máquina, no se sincroniza).
+    pub discord_app_id: String,
     pub vs_supabase_key: String,
 }
 
@@ -99,6 +102,8 @@ impl Default for AppSettings {
             app_data_path: None,
             sim_version: String::new(),
             vs_supabase_url: String::new(),
+            discord_rpc_enabled: false,
+            discord_app_id: String::new(),
             vs_supabase_key: String::new(),
         }
     }
@@ -119,18 +124,12 @@ pub async fn get_app_settings(
     // que `init_state`. Si falla cae al `app_data_dir` del SO como
     // último recurso. Esto refleja en UI dónde están realmente los
     // datos (la carpeta de instalación, no `%APPDATA%`).
-    let app_data_path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("data")))
-        .filter(|p| p.is_dir())
-        .or_else(|| app.path().app_data_dir().ok())
-        .map(|p| p.to_string_lossy().into_owned());
-    let logs_path = app_data_path.as_ref().map(|p| {
-        std::path::Path::new(p)
-            .join("logs")
-            .to_string_lossy()
-            .into_owned()
-    });
+    // (v7 fix) Fuente de verdad ÚNICA: el `data_dir` real resuelto en
+    // `init_state` (con prueba de escritura + fallback a %LOCALAPPDATA%). Antes
+    // se re-derivaba aquí con lógica distinta y en el caso fallback reportaba un
+    // path equivocado (una carpeta vacía) — el usuario no encontraba sus logs.
+    let app_data_path = Some(state.data_dir.to_string_lossy().into_owned());
+    let logs_path = Some(state.data_dir.join("logs").to_string_lossy().into_owned());
     Ok(AppSettings {
         show_simconnect_lines: as_bool(&kv, "pref_show_simconnect_lines", true),
         check_updates_on_start: as_bool(&kv, "pref_check_updates_on_start", true),
@@ -171,6 +170,8 @@ pub async fn get_app_settings(
         app_data_path,
         sim_version: kv.get("pref_sim_version").cloned().unwrap_or_default(),
         vs_supabase_url: kv.get("vs_supabase_url").cloned().unwrap_or_default(),
+        discord_rpc_enabled: as_bool(&kv, "pref_discord_rpc_enabled", false),
+        discord_app_id: kv.get("discord_app_id").cloned().unwrap_or_default(),
         vs_supabase_key: kv.get("vs_supabase_key").cloned().unwrap_or_default(),
     })
 }
@@ -288,6 +289,9 @@ fn is_valid_key(key: &str) -> bool {
             // (v6.2.18) Se retiraron rec_clip_seconds / rec_unlimited /
             // rec_monitor_index / rec_source_type / rec_ffmpeg_path /
             // rec_audio_device — settings de motores viejos que nada lee ya.
+            // (v7) Discord Rich Presence: toggle + Application ID.
+            | "pref_discord_rpc_enabled"
+            | "discord_app_id"
             | "rec_enabled"
             | "rec_osd_position"
             | "rec_output_path"

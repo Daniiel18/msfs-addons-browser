@@ -52,6 +52,9 @@ pub struct FlightStatus {
     /// matrícula (`ATC ID`) y aerolínea (`ATC AIRLINE`). Sólo con SimConnect.
     pub aircraft_registration: Option<String>,
     pub aircraft_airline: Option<String>,
+    /// (v7) Título/modelo del avión en vuelo (del sim) — lo usa el Rich
+    /// Presence de Discord para mostrar en qué avión estás volando.
+    pub aircraft_title: Option<String>,
     pub distance_nm: Option<i64>,
     /// Posición actual del user aircraft (sólo cuando SimConnect
     /// está conectado). Se actualiza cada segundo aprox.
@@ -2325,6 +2328,8 @@ mod windows_simconnect {
                         if let Ok(mut guard) = state.try_lock() {
                             guard.status.aircraft_registration = registration.clone();
                             guard.status.aircraft_airline = airline.clone();
+                            guard.status.aircraft_title =
+                                model.clone().or_else(|| title.clone());
                         }
                         aircraft_meta_cache = Some(meta);
 
@@ -3434,14 +3439,22 @@ mod windows_simconnect {
         // Update max altitude tracking.
         let alt_int = alt as i64;
         if alt_int > *max_alt_ft {
+            let prev = *max_alt_ft;
             *max_alt_ft = alt_int;
-            let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
-            if let Some(id) = id_opt {
-                let pool_c = pool.clone();
-                let alt_c = *max_alt_ft;
-                tokio::spawn(async move {
-                    let _ = crate::flight_log::touch_max_altitude(&pool_c, id, alt_c).await;
-                });
+            // (fix) Throttle de escritura: sólo persistimos al CRUZAR cada banda
+            // de 100 ft, no en cada tick. Antes, a ~4 Hz, un ascenso disparaba
+            // miles de UPDATE flight_log (contención en el pool + desgaste de
+            // disco). El max en memoria sigue exacto; la DB queda a ±100 ft, que
+            // es de sobra para un dato de "altitud máxima".
+            if alt_int / 100 > prev / 100 {
+                let id_opt = current_flight_id.lock().ok().and_then(|g| *g);
+                if let Some(id) = id_opt {
+                    let pool_c = pool.clone();
+                    let alt_c = *max_alt_ft;
+                    tokio::spawn(async move {
+                        let _ = crate::flight_log::touch_max_altitude(&pool_c, id, alt_c).await;
+                    });
+                }
             }
         }
 
@@ -4290,7 +4303,13 @@ mod windows_simconnect {
                 let light_landing_c = data.light_landing >= 0.5;
                 let light_strobe_c = data.light_strobe >= 0.5;
                 let parking_brake_c = parking_brake_set;
-                let transponder_c = data.transponder_code as i64;
+                // (fix) `TRANSPONDER CODE:1` es BCD16 (0x7000 = squawk 7000),
+                // no un entero — antes se guardaba 28672 en vez de 7000.
+                let raw_xpdr = data.transponder_code as i64;
+                let transponder_c = ((raw_xpdr >> 12) & 0xF) * 1000
+                    + ((raw_xpdr >> 8) & 0xF) * 100
+                    + ((raw_xpdr >> 4) & 0xF) * 10
+                    + (raw_xpdr & 0xF);
                 // (v4.0.0 — P4) Snapshot de motor por slot 1..4. Para
                 // aviones con menos motores los slots sobrantes leen
                 // ~0 desde SimConnect — el frontend (P5) los descarta

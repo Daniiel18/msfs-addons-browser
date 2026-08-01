@@ -35,6 +35,19 @@ pub struct DownloadMethod {
     pub kind: DownloadKind,
     pub name: String,
     pub url: String,
+    /// (v7) URLs ADICIONALES de un archivo multi-parte (parte 2, 3, …). Vacío
+    /// para el caso normal de un solo archivo. Cuando trae partes, `url` es la
+    /// parte 1 y el navegador embebido baja todas EN ORDEN y las une antes de
+    /// instalar (RAR multi-volumen o concatenación 7z/zip). Sólo Skybound las
+    /// produce hoy; ride a través del frontend sin que éste tenga que saberlo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<String>,
+    /// (v7) Contraseña del archivo (Skybound la indica en la ficha del addon,
+    /// p.ej. "https://skybound.cx"). Se pasa a la extracción para que NO pida
+    /// clave. Ride por el frontend como `parts`. `None` = sin clave conocida
+    /// (igual se prueban las contraseñas conocidas al extraer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -43,6 +56,32 @@ pub enum DownloadKind {
     Torrent,
     Mirror,
     Direct,
+}
+
+/// (v7) Ordena los métodos de descarga poniendo primero los que FUNCIONAN en el
+/// navegador embebido (torrent con auto-install → modsfire → mixdrop → resto) y
+/// ESCONDE rapidgator: su anti-bot (Cloudflare) bloquea a propósito la descarga
+/// embebida para empujar a premium, así que nunca completa. Se aplica a los
+/// métodos de todas las fuentes antes de mandarlos al frontend.
+pub fn prioritize_methods(mut methods: Vec<DownloadMethod>) -> Vec<DownloadMethod> {
+    methods.retain(|m| {
+        let s = format!("{} {}", m.name, m.url).to_ascii_lowercase();
+        !(s.contains("rapidgator") || s.contains("rg.to"))
+    });
+    methods.sort_by_key(|m| {
+        if matches!(m.kind, DownloadKind::Torrent) {
+            return 0u8;
+        }
+        let s = format!("{} {}", m.name, m.url).to_ascii_lowercase();
+        if s.contains("modsfire") {
+            1
+        } else if s.contains("mixdrop") {
+            2
+        } else {
+            3
+        }
+    });
+    methods
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

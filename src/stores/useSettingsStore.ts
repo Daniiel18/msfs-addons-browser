@@ -74,7 +74,8 @@ interface SettingsState {
   setBoolean: (
     key:
       | "showSimconnectLines"
-      | "checkUpdatesOnStart",
+      | "checkUpdatesOnStart"
+      | "discordRpcEnabled",
     value: boolean,
   ) => Promise<void>;
   setDefaultView: (view: string) => Promise<void>;
@@ -87,6 +88,8 @@ interface SettingsState {
   /** (v5.1.0) Fija la versión de MSFS activa. NO reinicia: el caller
    *  decide pedir confirmación + recargar para reaplicar todo. */
   setSimVersion: (v: "msfs2020" | "msfs2024") => Promise<void>;
+  /** (v7) Application ID de Discord (Rich Presence). */
+  setDiscordAppId: (id: string) => Promise<void>;
   clearCaches: () => Promise<number>;
   resetSettings: () => Promise<number>;
 }
@@ -114,6 +117,8 @@ const DEFAULTS: AppSettings = {
   simVersion: "",
   vsSupabaseUrl: "",
   vsSupabaseKey: "",
+  discordRpcEnabled: false,
+  discordAppId: "",
 };
 
 const KEY_MAP: Record<string, string> = {
@@ -130,6 +135,7 @@ const KEY_MAP: Record<string, string> = {
   unitDistance: "pref_unit_distance",
   unitPressure: "pref_unit_pressure",
   tempUnit: "pref_temp_unit",
+  discordRpcEnabled: "pref_discord_rpc_enabled",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -307,6 +313,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     } catch (e) {
       set({ lastError: String(e) });
       throw e;
+    }
+  },
+
+  async setDiscordAppId(id) {
+    const prev = get().settings;
+    set({ settings: { ...prev, discordAppId: id } });
+    try {
+      await api.setAppSetting("discord_app_id", id);
+    } catch (e) {
+      set({ settings: prev, lastError: String(e) });
     }
   },
 

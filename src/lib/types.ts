@@ -4,6 +4,13 @@ export interface DownloadMethod {
   kind: DownloadKind;
   name: string;
   url: string;
+  /** (v7) Partes ADICIONALES de un archivo multi-parte (Skybound). Cuando
+   *  está presente, `url` es la parte 1 y el resto se baja/une en el backend.
+   *  El frontend sólo lo transporta de vuelta a `start_download`. */
+  parts?: string[];
+  /** (v7) Clave del archivo (Skybound la indica en la ficha). El frontend sólo
+   *  la transporta; el backend la usa al extraer para no pedir contraseña. */
+  password?: string | null;
 }
 
 export interface Addon {
@@ -423,6 +430,10 @@ export interface AppSettings {
   /** (v6 #3) Live VS — credenciales de Supabase Realtime (multiplayer). */
   vsSupabaseUrl: string;
   vsSupabaseKey: string;
+  /** (v7) Discord Rich Presence activo. */
+  discordRpcEnabled: boolean;
+  /** (v7) Application ID del portal de Discord. */
+  discordAppId: string;
 }
 
 /** Vuelo registrado por el watcher de SimConnect. A diferencia de
@@ -1183,6 +1194,40 @@ export interface GsxProfileUpdate {
   link: string;
 }
 
+/** (v7) Progreso de un logro. Espejo de `achievements::AchievementProgress`.
+ *  El nombre/descripción salen de i18n (`ach.<id>.name` / `ach.<id>.desc`). */
+export interface AchievementProgress {
+  id: string;
+  /** flights | landings | exploration | aircraft | airline | milestones */
+  category: string;
+  /** Clave del icono para la medalla. */
+  icon: string;
+  current: number;
+  tiers: number[];
+  /** Índice del nivel alcanzado (0 = bronce…), null si aún no desbloquea. */
+  tier: number | null;
+  nextThreshold: number | null;
+  unlocked: boolean;
+}
+
+/** (v6.2.74) Compatibilidad 2020/2024 de una descarga de flightsim.to. */
+export interface FlightsimMeta {
+  fileId: string;
+  title: string | null;
+  msfs2020: boolean | null;
+  msfs2024: boolean | null;
+  link: string;
+}
+
+/** (v6.2.74) Destinos Community por versión de MSFS + versión activa. */
+export interface CommunityTargets {
+  currentIs2024: boolean;
+  has2020: boolean;
+  has2024: boolean;
+  folder2020: string | null;
+  folder2024: string | null;
+}
+
 /** (v6.2.60) Update de un addon descargado de flightsim.to por el embebido.
  *  Espejo de `flightsim_track::FlightsimUpdate`. Indexado por `folderName`
  *  (= carpeta de Community) para casar el badge en Addons. */
@@ -1197,6 +1242,8 @@ export interface FlightsimUpdate {
   latestVersion: string | null;
   /** URL de la página del addon (para re-descargar). */
   link: string;
+  /** (v6.2.75) Imagen del addon en flightsim.to (para la card/modal). */
+  thumbnail: string | null;
 }
 
 /** (v2.0.0) Resultado de instalar perfil(es) GSX. Espejo de

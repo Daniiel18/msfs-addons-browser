@@ -158,9 +158,14 @@ pub async fn uninstall_by_folder(
         // macros de `tracing` (lo interpreta como helper formatter
         // en vez de variable local), por eso usamos `path_str`.
         let path_str = candidate.to_string_lossy().to_string();
-        if !candidate.exists() {
+        // (fix) `exists()` SIGUE el reparse point de un junction cross-link a su
+        // target; si el target ya se borró (la carpeta REAL va primero), da
+        // false y el junction quedaba HUÉRFANO. `symlink_metadata` no lo sigue →
+        // detecta el junction colgante para poder borrarlo.
+        let Ok(link_meta) = std::fs::symlink_metadata(candidate) else {
             continue;
-        }
+        };
+        let is_junction = link_meta.file_type().is_symlink();
         if let Err(reason) = sanity_check(candidate, folder_name) {
             tracing::warn!(
                 target: "install",
@@ -174,7 +179,14 @@ pub async fn uninstall_by_folder(
             });
             continue;
         }
-        match std::fs::remove_dir_all(candidate) {
+        // Un junction/symlink se borra con remove_dir (quita SÓLO el reparse
+        // point, nunca su target); una carpeta real con remove_dir_all.
+        let removal = if is_junction {
+            std::fs::remove_dir(candidate).or_else(|_| std::fs::remove_file(candidate))
+        } else {
+            std::fs::remove_dir_all(candidate)
+        };
+        match removal {
             Ok(()) => {
                 tracing::info!(
                     target: "install",
@@ -466,14 +478,23 @@ async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<u64, P
         .await?;
     // Quitar de installed_addons — buscamos por nombre. Manuales
     // tienen `name = folder` o el archivo, así que un LIKE razonable.
+    // (fix) Antes: `install_path LIKE '%folder%'` — borraba filas de OTROS
+    // addons cuyo path CONTUVIERA este folder como subcadena, y `_`/`%` (muy
+    // comunes en nombres MSFS: FNX_320) actuaban como comodines LIKE sin
+    // escapar. Ahora: escapamos los comodines y anclamos al SEPARADOR de path
+    // final (`\folder`), así sólo casa el paquete exacto, no `FNX_320_liveries`.
+    let esc = folder_name
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_");
     let r2 = sqlx::query(
         r#"
         DELETE FROM installed_addons
-        WHERE name = ?1 OR install_path LIKE ?2
+        WHERE name = ?1 OR install_path LIKE ?2 ESCAPE '!'
         "#,
     )
     .bind(folder_name)
-    .bind(format!("%{}%", folder_name))
+    .bind(format!("%\\{}", esc))
     .execute(pool)
     .await?;
     // (v6.2.63) Quitar el tracking de updates de flightsim.to de esta carpeta:

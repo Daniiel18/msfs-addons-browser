@@ -13,30 +13,23 @@
     <rect width="340" height="240" rx="16" fill="#0b1220" stroke="#1e293b"/>
     <!-- thumbnail -->
     <rect width="340" height="150" rx="16" fill="#243043"/><rect y="130" width="340" height="20" fill="#243043"/>
-    <!-- airliner, side view (nose right) with a livery -->
-    <g transform="translate(0,-2)">
-      <!-- wing (behind), swept back -->
-      <path d="M172 84 L126 116 L192 90 Z" fill="#aab6c6"/>
-      <!-- fuselage capsule -->
-      <path d="M42 78 Q42 62 66 62 L262 62 Q302 62 306 78 Q302 94 262 94 L66 94 Q42 94 42 78 Z" fill="#eef2f7"/>
-      <!-- vertical tail fin (livery color) -->
-      <path d="M50 80 L38 42 L82 66 Z" fill="#a855f7"/>
-      <!-- horizontal stabilizer -->
-      <path d="M54 72 L32 64 L62 70 Z" fill="#cbd5e1"/>
-      <!-- livery cheatline -->
-      <path d="M62 82 L298 80 L298 88 L62 90 Z" fill="#a855f7"/>
-      <!-- cockpit window -->
-      <path d="M286 71 Q300 72 303 79 Q292 80 282 76 Z" fill="#1e293b"/>
-      <!-- passenger windows -->
-      <g fill="#334155">
-        <circle cx="92" cy="74" r="2.6"/><circle cx="110" cy="74" r="2.6"/><circle cx="128" cy="74" r="2.6"/>
-        <circle cx="146" cy="74" r="2.6"/><circle cx="164" cy="74" r="2.6"/><circle cx="182" cy="74" r="2.6"/>
-        <circle cx="200" cy="74" r="2.6"/><circle cx="218" cy="74" r="2.6"/><circle cx="236" cy="74" r="2.6"/><circle cx="254" cy="74" r="2.6"/>
-      </g>
-      <!-- engine pod under the wing -->
-      <path d="M150 92 L162 92 L160 100 L152 100 Z" fill="#aab6c6"/>
-      <ellipse cx="156" cy="103" rx="18" ry="8" fill="#9aa7b8"/>
-      <ellipse cx="174" cy="103" rx="3.5" ry="8" fill="#5b6b7d"/>
+    <!-- airliner from ABOVE (nose right), with a livery accent -->
+    <g transform="translate(6,3)">
+      <!-- main wings, swept back (livery purple) -->
+      <path d="M170 66 L92 30 L122 32 L214 64 Z" fill="#a855f7"/>
+      <path d="M170 80 L92 116 L122 114 L214 82 Z" fill="#a855f7"/>
+      <!-- tail stabilizers -->
+      <path d="M66 69 L40 50 L58 51 L96 67 Z" fill="#c084fc"/>
+      <path d="M66 77 L40 96 L58 95 L96 79 Z" fill="#c084fc"/>
+      <!-- fuselage (nose pointed right) -->
+      <path d="M46 73 Q46 62 62 62 L268 63 L310 73 L268 83 L62 84 Q46 84 46 73 Z" fill="#eef2f7"/>
+      <!-- engines on the wings -->
+      <ellipse cx="150" cy="52" rx="6" ry="11" fill="#9aa7b8"/>
+      <ellipse cx="150" cy="94" rx="6" ry="11" fill="#9aa7b8"/>
+      <!-- cockpit windows near nose -->
+      <path d="M280 70 L300 73 L280 76 Z" fill="#1e293b"/>
+      <!-- livery stripe along fuselage -->
+      <rect x="60" y="71" width="226" height="4" rx="2" fill="#7c3aed"/>
     </g>
     <!-- LIVERY tag (correct) -->
     <g transform="translate(14,14)">

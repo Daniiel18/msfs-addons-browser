@@ -155,93 +155,392 @@ impl SkyboundSource {
         }
     }
 
-    /// Añade un método de descarga a partir de una URL suelta.
-    fn push_url(url: &str, out: &mut Vec<DownloadMethod>, seen: &mut std::collections::HashSet<String>) {
-        let url = url.trim().trim_end_matches(['\\', '"', ')', ',', ' ']);
-        if url.is_empty() {
-            return;
+    /// ¿La URL/label es algo que NO es el archivo instalable del addon? Skybound
+    /// mezcla en la misma lista manuales PDF, visores de SharePoint, páginas de
+    /// docs y pastebins. Filtrarlos evita ofrecer un botón que baja un PDF o abre
+    /// un visor en lugar del addon.
+    fn is_junk_download(url: &str, label: &str, mime: Option<&str>) -> bool {
+        let u = url.trim().to_ascii_lowercase();
+        if u.is_empty() || u == "/blank" || u == "#" {
+            return true;
         }
-        let low = url.to_lowercase();
-        // Descartar lo que NO es una descarga (página de contraseña / origen).
-        if low.contains("skybound.cx") || low.contains("flightsim.to") {
-            return;
+        if u.ends_with(".pdf") {
+            return true;
         }
-        let is_magnet = low.starts_with("magnet:");
-        if !is_magnet && !low.starts_with("http") {
-            return;
+        if mime.map(|m| m.to_ascii_lowercase().contains("pdf")).unwrap_or(false) {
+            return true;
         }
-        let dedup_key = if is_magnet {
-            low.split('&').next().unwrap_or(&low).to_string()
-        } else {
-            low.clone()
-        };
-        if !seen.insert(dedup_key) {
-            return;
+        // Denylist contra el HOST (no la URL entera) para no descartar una
+        // descarga real cuya RUTA contenga por casualidad "docs"/"milviz".
+        let host = u
+            .split("://")
+            .nth(1)
+            .unwrap_or(&u)
+            .split('/')
+            .next()
+            .unwrap_or("");
+        const JUNK_HOSTS: &[&str] = &[
+            "sharepoint.com",
+            "pastebin.com",
+            "milviz.com",
+            "tfdidesign.com",
+            "onedrive.live.com",
+        ];
+        if JUNK_HOSTS.iter().any(|h| host.contains(h))
+            || host.starts_with("docs.")
+            || host.contains(".docs.")
+        {
+            return true;
         }
-        out.push(DownloadMethod {
-            kind: if is_magnet {
-                DownloadKind::Torrent
-            } else {
-                DownloadKind::Mirror
-            },
-            name: Self::host_name(url),
-            url: url.to_string(),
-        });
+        // Etiquetas de documentación. Palabra FINAL (no substring crudo), así
+        // "Pilot Manual" es junk pero "Manual Install" (el addon) NO lo es.
+        let l = label.trim().to_ascii_lowercase();
+        matches!(
+            l.as_str(),
+            "manual"
+                | "pilot manual"
+                | "pilot's manual"
+                | "checklist"
+                | "documentation"
+                | "readme"
+                | "changelog"
+                | "pilot notes"
+                | "pilot's notes"
+        ) || l.ends_with(" manual")
+            || l.ends_with(" checklist")
+            || l.ends_with(" notes")
     }
 
-    /// Extrae los métodos de descarga de las VERSIONES compatibles con
-    /// MSFS2024. TODOS los addons publican el enlace en la API (con
-    /// depth=2): `versions[].url` (cualquier host: modsfire, buzzheavier,
-    /// magnet…), `additionalDownloads[].url`, o un `file` alojado en
-    /// Skybound. Aceptamos CUALQUIER host — NO hace falta login.
-    fn extract_downloads(doc: &serde_json::Value) -> Vec<DownloadMethod> {
-        let mut out: Vec<DownloadMethod> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let Some(comp) = doc.get("compatibility").and_then(|c| c.as_array()) else {
-            return out;
-        };
-        for entry in comp {
-            let is_2024 = entry
-                .get("simulator")
-                .and_then(|s| s.get("slug"))
-                .and_then(|s| s.as_str())
-                .map(|s| s.eq_ignore_ascii_case(SIM_SLUG_2024))
-                .unwrap_or(false);
-            if !is_2024 {
-                continue;
-            }
-            let Some(versions) = entry.get("versions").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            for v in versions {
-                if let Some(u) = v.get("url").and_then(|u| u.as_str()) {
-                    Self::push_url(u, &mut out, &mut seen);
-                }
-                if let Some(add) = v.get("additionalDownloads").and_then(|a| a.as_array()) {
-                    for a in add {
-                        if let Some(u) = a.get("url").and_then(|u| u.as_str()) {
-                            Self::push_url(u, &mut out, &mut seen);
-                        }
+    /// Parsea una etiqueta "… Part N" → (base normalizada, N). `None` si no es
+    /// de una parte. Ej: "v1.0.0 - Part 2" → ("1.0.0", 2); "Liveries - Part 3" →
+    /// ("liveries", 3); "2.3 - Steam - Part 1" → ("2.3 - steam", 1).
+    fn part_info(label: &str) -> Option<(String, u32)> {
+        let low = label.to_ascii_lowercase();
+        // `to_ascii_lowercase` no cambia longitudes de bytes → `pos` sirve para
+        // indexar tanto `low` como `label`.
+        let pos = low.rfind("part")?;
+        let after = low[pos + 4..].trim_start_matches([' ', ':', '-', '#', '.']);
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        let n: u32 = digits.parse().ok()?;
+        let base_raw = label[..pos]
+            .trim()
+            .trim_end_matches(['-', '·', '—', ' ', ':'])
+            .trim();
+        let base = base_raw
+            .strip_prefix('v')
+            .or_else(|| base_raw.strip_prefix('V'))
+            .unwrap_or(base_raw)
+            .trim()
+            .to_ascii_lowercase();
+        Some((base, n))
+    }
+
+    /// Nombre legible para un grupo multi-parte a partir de su base. Toma el
+    /// último segmento que NO sea un número de versión: "2.3 - steam" → "Steam";
+    /// "1.0.0" → "Completo"; "liveries" → "Liveries".
+    fn pretty_part_base(base: &str) -> String {
+        let is_ver = |s: &str| s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true);
+        // `str::Split` no es reversible → coleccionamos antes de mirar del final.
+        let segs: Vec<&str> = base
+            .split(" - ")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let seg = segs.iter().rev().find(|s| !is_ver(s)).copied();
+        match seg {
+            None => "Completo".to_string(),
+            Some(s) => match s.to_ascii_lowercase().as_str() {
+                "ms store" | "msstore" => "MS Store".to_string(),
+                "steam" => "Steam".to_string(),
+                other => {
+                    let mut c = other.chars();
+                    match c.next() {
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        None => "Completo".to_string(),
                     }
                 }
-                // Archivo alojado en Skybound (downloadType "file").
-                if let Some(fu) = v.get("file").and_then(|f| f.get("url")).and_then(|u| u.as_str()) {
-                    let abs = if fu.starts_with("http") {
-                        fu.to_string()
-                    } else {
-                        format!("{BASE}{fu}")
-                    };
-                    if seen.insert(abs.to_lowercase()) {
-                        out.push(DownloadMethod {
-                            kind: DownloadKind::Direct,
-                            name: "Skybound".into(),
-                            url: abs,
-                        });
+            },
+        }
+    }
+
+    /// Extrae los métodos de descarga de la versión MÁS NUEVA compatible con
+    /// MSFS2024 (una sola, como una página de SceneryAddons), en vez del
+    /// histórico entero. Clasifica cada entrada por su `label`/`versionNumber`:
+    ///   · **junk** (manuales PDF, SharePoint, docs, pastebin, `/blank`) → fuera.
+    ///   · **magnet** → torrent.
+    ///   · **"Part N"** de una misma base → se AGRUPAN en UN método multi-parte
+    ///     (`url` = parte 1, `parts` = resto) que el navegador embebido baja EN
+    ///     ORDEN y une antes de instalar.
+    ///   · **mirror/backup** → método suelto marcado "(mirror)".
+    ///   · **archivo de Skybound** (downloadType direct) → "Skybound (directo)".
+    /// Así los mirrors de Skybound se comportan como los de SceneryAddons: un
+    /// botón limpio por descarga real, sin ruido ni partes sueltas que fallan.
+    fn extract_downloads(doc: &serde_json::Value) -> Vec<DownloadMethod> {
+        struct Raw {
+            label: String,
+            url: String,
+            kind: DownloadKind,
+            host: String,
+            is_skybound_file: bool,
+        }
+
+        // 1. La versión más nueva compatible con 2024 (última del array).
+        let mut version: Option<&serde_json::Value> = None;
+        if let Some(comp) = doc.get("compatibility").and_then(|c| c.as_array()) {
+            for entry in comp {
+                let is_2024 = entry
+                    .get("simulator")
+                    .and_then(|s| s.get("slug"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.eq_ignore_ascii_case(SIM_SLUG_2024))
+                    .unwrap_or(false);
+                if !is_2024 {
+                    continue;
+                }
+                if let Some(vs) = entry.get("versions").and_then(|v| v.as_array()) {
+                    if let Some(v) = vs.last() {
+                        version = Some(v);
                     }
                 }
             }
         }
+        let Some(v) = version else {
+            return Vec::new();
+        };
+
+        // 2. Normaliza cada entrada (primary + additionalDownloads) a `Raw`.
+        //    `downloadType` decide si mandan la `url` externa o el `file` de
+        //    Skybound (una entrada puede traer ambos).
+        let mk = |label: &str,
+                  dt: &str,
+                  url_field: Option<&serde_json::Value>,
+                  file_field: Option<&serde_json::Value>|
+         -> Option<Raw> {
+            let as_file = || -> Option<Raw> {
+                let f = file_field?.as_object()?;
+                let fu = f.get("url").and_then(|u| u.as_str())?;
+                let mime = f.get("mimeType").and_then(|m| m.as_str());
+                if Self::is_junk_download(fu, label, mime) {
+                    return None;
+                }
+                let abs = if fu.starts_with("http") {
+                    fu.to_string()
+                } else {
+                    format!("{BASE}{fu}")
+                };
+                Some(Raw {
+                    label: label.to_string(),
+                    url: abs,
+                    kind: DownloadKind::Direct,
+                    host: "Skybound".into(),
+                    is_skybound_file: true,
+                })
+            };
+            let as_url = || -> Option<Raw> {
+                let u = url_field?.as_str()?.trim();
+                if u.is_empty() {
+                    return None;
+                }
+                let low = u.to_ascii_lowercase();
+                if low.contains("skybound.cx") || low.contains("flightsim.to") {
+                    return None;
+                }
+                if low.starts_with("magnet:") {
+                    return Some(Raw {
+                        label: label.to_string(),
+                        url: u.to_string(),
+                        kind: DownloadKind::Torrent,
+                        host: "Torrent".into(),
+                        is_skybound_file: false,
+                    });
+                }
+                if !low.starts_with("http") {
+                    return None;
+                }
+                if Self::is_junk_download(u, label, None) {
+                    return None;
+                }
+                Some(Raw {
+                    label: label.to_string(),
+                    url: u.to_string(),
+                    kind: DownloadKind::Mirror,
+                    host: Self::host_name(u),
+                    is_skybound_file: false,
+                })
+            };
+            if matches!(dt, "direct" | "file") {
+                as_file().or_else(as_url)
+            } else {
+                as_url().or_else(as_file)
+            }
+        };
+
+        let mut raws: Vec<Raw> = Vec::new();
+        {
+            let dt = v.get("downloadType").and_then(|x| x.as_str()).unwrap_or("");
+            let label = v.get("versionNumber").and_then(|x| x.as_str()).unwrap_or("");
+            if let Some(r) = mk(label, dt, v.get("url"), v.get("file")) {
+                raws.push(r);
+            }
+        }
+        if let Some(adds) = v.get("additionalDownloads").and_then(|a| a.as_array()) {
+            for a in adds {
+                let dt = a.get("downloadType").and_then(|x| x.as_str()).unwrap_or("");
+                let label = a.get("label").and_then(|x| x.as_str()).unwrap_or("");
+                if let Some(r) = mk(label, dt, a.get("url"), a.get("file")) {
+                    raws.push(r);
+                }
+            }
+        }
+        if raws.is_empty() {
+            return Vec::new();
+        }
+
+        // 3. Agrupa multi-parte (misma base, >=2 partes). Dedup por URL.
+        let mut groups: std::collections::BTreeMap<String, Vec<(u32, usize)>> =
+            std::collections::BTreeMap::new();
+        for (i, r) in raws.iter().enumerate() {
+            if let Some((base, n)) = Self::part_info(&r.label) {
+                groups.entry(base).or_default().push((n, i));
+            }
+        }
+
+        let mut out: Vec<DownloadMethod> = Vec::new();
+        let mut used: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut seen_url: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // 3a. Grupos multi-parte reales (>=2 partes), ordenados por N.
+        for (base, mut items) in groups {
+            items.sort_by_key(|(n, _)| *n);
+            // Índices de TODOS los miembros ANTES de dedup — para marcarlos usados
+            // si aceptamos el grupo (así los mirrors duplicados NO reaparecen como
+            // fragmentos sueltos en 3b).
+            let all_idxs: Vec<usize> = items.iter().map(|(_, i)| *i).collect();
+            // Dedup por número de parte: si el mismo set está espejado en dos
+            // mirrors con labels iguales ("Part 1"/"Part 2" en A y en B), la base
+            // colapsa y quedan [1,1,2,2] → nos quedamos con UNA URL por N (la
+            // primera, que suele ser el primary/modsfire). Sin esto se
+            // interleavan A1,B1,A2,B2 → archivo corrupto al unir.
+            items.dedup_by_key(|(n, _)| *n);
+            // Deben ser partes CONTIGUAS 1..=k; si no (faltan/saltan números),
+            // NO las unimos (dato roto) — caen a métodos sueltos abajo.
+            let contiguous = items
+                .iter()
+                .enumerate()
+                .all(|(k, (n, _))| *n as usize == k + 1);
+            if items.len() < 2 || !contiguous {
+                continue;
+            }
+            // Aceptado → marca TODOS los miembros originales (incl. los mirrors
+            // duplicados que dedupeamos) como usados.
+            for i in &all_idxs {
+                used.insert(*i);
+            }
+            let part_urls: Vec<String> = items.iter().map(|(_, i)| raws[*i].url.clone()).collect();
+            let host = raws[items[0].1].host.clone();
+            let pretty = Self::pretty_part_base(&base);
+            let name = if pretty == "Completo" {
+                format!("{host} · descargar ({} partes)", part_urls.len())
+            } else {
+                format!("{host} · {pretty} ({} partes)", part_urls.len())
+            };
+            let (first, rest) = part_urls.split_first().unwrap();
+            seen_url.insert(first.to_ascii_lowercase());
+            out.push(DownloadMethod {
+                kind: DownloadKind::Mirror,
+                name,
+                url: first.clone(),
+                parts: rest.to_vec(),
+                password: None,
+            });
+        }
+
+        // 3b. Métodos sueltos (no parte). Nombre por rol/host.
+        for (i, r) in raws.iter().enumerate() {
+            if used.contains(&i) {
+                continue;
+            }
+            if !seen_url.insert(r.url.to_ascii_lowercase()) {
+                continue;
+            }
+            let l = r.label.to_ascii_lowercase();
+            let starts_digit = l.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true);
+            let name = if r.is_skybound_file {
+                "Skybound (directo)".to_string()
+            } else if matches!(r.kind, DownloadKind::Torrent) {
+                "Torrent".to_string()
+            } else if l.contains("mirror") || l.contains("backup") {
+                format!("{} (mirror)", r.host)
+            } else if !r.label.trim().is_empty() && !starts_digit {
+                // Etiqueta con nombre propio (Liveries, Update…) → mostrarla.
+                format!("{} · {}", r.host, r.label.trim())
+            } else {
+                r.host.clone()
+            };
+            out.push(DownloadMethod {
+                kind: r.kind,
+                name,
+                url: r.url.clone(),
+                parts: Vec::new(),
+                password: None,
+            });
+        }
+
         out
+    }
+
+    /// Extrae la clave del archivo de la `description` (rich-text de Payload/
+    /// Lexical). Skybound la escribe como "File password: https://skybound.cx".
+    /// Junta todo el texto, busca "password" y toma el primer token siguiente.
+    fn extract_password(doc: &serde_json::Value) -> Option<String> {
+        fn collect_text(node: &serde_json::Value, out: &mut String) {
+            if let Some(t) = node.get("text").and_then(|t| t.as_str()) {
+                out.push_str(t);
+                out.push(' ');
+            }
+            if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+                for c in children {
+                    collect_text(c, out);
+                }
+            }
+            if let Some(root) = node.get("root") {
+                collect_text(root, out);
+            }
+        }
+        let desc = doc.get("description")?;
+        let mut text = String::new();
+        collect_text(desc, &mut text);
+        // `to_ascii_lowercase` conserva las posiciones de bytes → `pos` sirve
+        // para indexar el texto original.
+        let low = text.to_ascii_lowercase();
+        let pos = low.find("password")?;
+        let after = &text[pos + "password".len()..];
+        // Salta separadores (":", "-", "="), espacios y un "is"/"es" opcional.
+        let sep = |c: char| c.is_whitespace() || matches!(c, ':' | '-' | '=' | '\u{a0}');
+        let after = after.trim_start_matches(sep);
+        // Salta un "is"/"es" SÓLO si es palabra suelta (fin de cadena o seguido de
+        // separador) — si no, una clave que empiece por "is"/"es" (p.ej. "island")
+        // se mutilaría a "land".
+        let after = ["is", "es"]
+            .iter()
+            .find_map(|w| {
+                after
+                    .strip_prefix(*w)
+                    .filter(|rest| rest.is_empty() || rest.starts_with(sep))
+            })
+            .unwrap_or(after);
+        let after = after.trim_start_matches(sep);
+        let token: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+        let token = token
+            .trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ')' | '(' | '"' | '\''))
+            .to_string();
+        if token.is_empty() || token.len() > 128 {
+            return None;
+        }
+        Some(token)
     }
 
     fn map_addon(&self, doc: &serde_json::Value) -> Option<Addon> {
@@ -289,8 +588,20 @@ impl SkyboundSource {
                     kind: DownloadKind::Direct,
                     name: "Abrir en Skybound".into(),
                     url: page_url,
+                    parts: Vec::new(),
+                    password: None,
                 });
-                m
+                // (v7) Clave del archivo indicada en la ficha ("File password:
+                // https://skybound.cx") → la adjuntamos a cada método para que la
+                // extracción NO pida contraseña.
+                let pw = Self::extract_password(doc);
+                if pw.is_some() {
+                    for method in &mut m {
+                        method.password = pw.clone();
+                    }
+                }
+                // (v7) Prioriza modsfire/mixdrop y esconde rapidgator.
+                super::prioritize_methods(m)
             },
             image_url,
             released_at,

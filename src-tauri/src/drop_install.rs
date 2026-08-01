@@ -232,6 +232,31 @@ pub fn inspect(
         ext, temp_path.display()
     );
 
+    // (v7) Chequeo de ESPACIO en disco ANTES de extraer. Un addon de alta
+    // fidelidad puede pesar >12 GB descomprimido (p.ej. el TFDi MD-11); si no
+    // cabe, la extracción muere a mitad con un críptico "rar extract: Write
+    // error". Estimamos el tamaño real (suma sin comprimir, sólo lee headers)
+    // y, si falta espacio, avisamos claro con un sentinela que el frontend
+    // formatea a GB. Sólo RAR/ZIP se estiman barato; .7z se salta el proactivo.
+    if let Some(needed) = estimate_uncompressed(archive_path, &ext, password) {
+        if let Some(free) = free_disk_bytes(&temp_path) {
+            let margin: u64 = 1024 * 1024 * 1024; // 1 GB de colchón (FS + copia a Community)
+            if free < needed.saturating_add(margin) {
+                tracing::warn!(
+                    target: "drop",
+                    "sin espacio para extraer: necesita {} bytes, libres {}",
+                    needed, free
+                );
+                anyhow::bail!("NO_SPACE:{needed}:{free}");
+            }
+            tracing::info!(
+                target: "drop",
+                "espacio OK: necesita {} bytes, libres {}",
+                needed, free
+            );
+        }
+    }
+
     let do_extract = |pw: Option<&str>| match ext.as_str() {
         "zip" => extract_zip(archive_path, &temp_path, pw),
         "rar" => extract_rar(archive_path, &temp_path, pw),
@@ -239,12 +264,17 @@ pub fn inspect(
         _ => unreachable!(),
     };
     let mut extract_result = do_extract(password);
-    // (v6.2.42) Si falló por contraseña y el usuario NO dio una, probamos
-    // AUTOMÁTICAMENTE las contraseñas conocidas (p.ej. la de Skybound,
-    // "https://skybound.cx") antes de pedirla — así arrastrar un RAR de
-    // Skybound se instala sin fricción.
-    if extract_result.is_err() && password.is_none() {
+    // (v6.2.42 / v7) Si falló por contraseña, probamos AUTOMÁTICAMENTE las
+    // contraseñas conocidas (p.ej. la de Skybound, "https://skybound.cx") antes
+    // de pedirla. Ahora corre TAMBIÉN cuando ya vino una `password` (la que
+    // Skybound lee de la ficha): si esa falla, la lista conocida es el fallback
+    // — así una descarga del navegador embebido se instala sin pedir clave.
+    if extract_result.is_err() {
         for pw in crate::install::known_archive_passwords() {
+            // No re-intentes la MISMA clave que ya falló.
+            if password == Some(pw) {
+                continue;
+            }
             // Limpia lo extraído a medias antes de reintentar.
             if let Ok(rd) = std::fs::read_dir(&temp_path) {
                 for e in rd.flatten() {
@@ -265,9 +295,40 @@ pub fn inspect(
         }
     }
     if let Err(e) = extract_result {
+        let msg = e.to_string().to_lowercase();
+        // (v7) Fallo de escritura a mitad de extracción → backstop del chequeo
+        // proactivo (que se salta .7z o si no pudo listar, como el MD-11). Cubre
+        // unrar ("Write error"), y el io StorageFull de Windows que emiten zip/7z
+        // ("not enough space" / "os error 112"). CLAVE: sólo lo llamamos "disco
+        // lleno" si el espacio libre AHORA es realmente insuficiente — así un
+        // fallo de escritura por OTRA causa (antivirus que bloquea un archivo
+        // recién escrito, permiso, IO transitorio) con disco de sobra NO se
+        // reporta como falta de espacio (evita el mensaje contradictorio
+        // "necesita 3 GB y tienes 200 GB"). Al llenarse el disco, `free` ≈ 0 en
+        // el momento del fallo, así que el gate lo distingue de forma fiable.
+        let looks_write = msg.contains("write error")
+            || msg.contains("write failed")
+            || msg.contains("no space")
+            || msg.contains("not enough space")
+            || msg.contains("storagefull")
+            || msg.contains("disk full")
+            || msg.contains("os error 112"); // ERROR_DISK_FULL (Windows)
+        if looks_write {
+            let free = free_disk_bytes(&temp_path);
+            let needed = estimate_uncompressed(archive_path, &ext, password);
+            let margin: u64 = 1024 * 1024 * 1024; // 1 GB
+            // Confirma disco lleno: libre < necesario+margen. Con needed=None
+            // (no se pudo estimar) colapsa a libre < 1 GB, que sólo se cumple
+            // cuando el disco está de verdad lleno. Si no pudimos leer el disco
+            // (free=None) NO afirmamos "sin espacio".
+            let is_full = free.map_or(false, |f| f < needed.unwrap_or(0).saturating_add(margin));
+            if is_full {
+                tracing::warn!(target: "drop", "extracción falló por disco lleno: {}", msg);
+                anyhow::bail!("NO_SPACE:{}:{}", needed.unwrap_or(0), free.unwrap_or(0));
+            }
+        }
         // (v5.2.0) Si el fallo es por contraseña, devolvemos un sentinela
         // que el frontend reconoce para pedirla (o avisar que es errónea).
-        let msg = e.to_string().to_lowercase();
         let pw_related = msg.contains("password")
             || msg.contains("encrypted")
             || msg.contains("decrypt")
@@ -539,6 +600,74 @@ fn extract_zip(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Resul
     Ok(())
 }
 
+/// Bytes libres en el volumen donde vive `path`. El path puede no existir aún
+/// (subimos al ancestro existente — lo que importa es el volumen). `None` si no
+/// se pudo consultar (no bloqueamos la extracción por eso).
+#[cfg(windows)]
+fn free_disk_bytes(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut dir = path.to_path_buf();
+    while !dir.exists() {
+        if !dir.pop() {
+            return None;
+        }
+    }
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut free_avail: u64 = 0;
+    // SAFETY: `wide` es NUL-terminado y vive durante la llamada; `free_avail`
+    // es un u64 válido en el stack.
+    unsafe { GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut free_avail), None, None).ok()? };
+    Some(free_avail)
+}
+#[cfg(not(windows))]
+fn free_disk_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// Tamaño TOTAL sin comprimir del archivo (para chequear espacio antes de
+/// extraer). RAR y ZIP se listan barato (sólo headers, sin descomprimir); .7z
+/// no expone la suma fácilmente → `None` (se salta el chequeo proactivo, pero
+/// el backstop reactivo sobre "Write error" igual cubre el disco lleno).
+fn estimate_uncompressed(archive: &Path, ext: &str, password: Option<&str>) -> Option<u64> {
+    match ext {
+        "rar" => {
+            let opened = match password {
+                Some(pw) => unrar::Archive::with_password(archive, pw).open_for_listing(),
+                None => unrar::Archive::new(archive).open_for_listing(),
+            }
+            .ok()?;
+            let mut total: u64 = 0;
+            for e in opened {
+                match e {
+                    Ok(h) => total = total.saturating_add(h.unpacked_size),
+                    // Un header ilegible corta el conteo; devolvemos lo sumado
+                    // (mejor una estimación parcial que ninguna).
+                    Err(_) => break,
+                }
+            }
+            Some(total)
+        }
+        "zip" => {
+            let f = std::fs::File::open(archive).ok()?;
+            let mut z = zip::ZipArchive::new(f).ok()?;
+            let mut total: u64 = 0;
+            for i in 0..z.len() {
+                if let Ok(e) = z.by_index(i) {
+                    total = total.saturating_add(e.size());
+                }
+            }
+            Some(total)
+        }
+        _ => None,
+    }
+}
+
 fn extract_rar(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
     let mut iter = match password {
         Some(pw) => unrar::Archive::with_password(src, pw)
@@ -562,14 +691,20 @@ fn extract_rar(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Resul
 }
 
 fn extract_7z(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    // (v7) Usa el guard anti "7z-slip" compartido (rechaza entradas `..`/
+    // absolutas/con drive) — el extractor por defecto del crate no valida rutas.
     match password {
-        Some(pw) => sevenz_rust2::decompress_file_with_password(
-            src,
-            dest,
-            sevenz_rust2::Password::from(pw),
-        )
-        .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?,
-        None => sevenz_rust2::decompress_file(src, dest)
+        Some(pw) => {
+            let file = std::fs::File::open(src).map_err(|e| anyhow::anyhow!("7z open: {e}"))?;
+            sevenz_rust2::decompress_with_extract_fn_and_password(
+                file,
+                dest,
+                sevenz_rust2::Password::from(pw),
+                crate::install::safe_7z_entry,
+            )
+            .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?;
+        }
+        None => sevenz_rust2::decompress_file_with_extract_fn(src, dest, crate::install::safe_7z_entry)
             .map_err(|e| anyhow::anyhow!("7z extract: {e}"))?,
     }
     Ok(())
@@ -1378,6 +1513,24 @@ fn install_community_package(src_dir: &Path, community_path: &Path) -> anyhow::R
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("carpeta sin nombre"))?;
     let dest = community_path.join(folder_name);
+    // (v7) Guard "src == dest": si arrastran una carpeta que YA vive en Community
+    // (o la propia carpeta Community), `src_dir` y `dest` resuelven al MISMO
+    // directorio. Sin este chequeo, el `remove_dir_all(dest)` de abajo BORRA el
+    // addon y `copy_dir_recursive` lo recrea VACÍO → pérdida silenciosa e
+    // irreversible (reportada como instalación exitosa). No-op en ese caso.
+    if let (Ok(cs), Ok(cd)) = (
+        std::fs::canonicalize(src_dir),
+        std::fs::canonicalize(&dest),
+    ) {
+        if cs == cd {
+            tracing::info!(
+                target: "drop",
+                "Community package ya está en destino (src==dest) — no-op: {}",
+                dest.display()
+            );
+            return Ok(dest.to_string_lossy().into_owned());
+        }
+    }
     tracing::info!(
         target: "drop",
         "copiando Community {} → {}",

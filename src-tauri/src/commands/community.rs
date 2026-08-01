@@ -24,6 +24,45 @@ pub async fn get_installed_sims() -> Result<InstalledSims, String> {
     Ok(InstalledSims { has2020, has2024 })
 }
 
+/// (v6.2.74) Destinos Community por versión de MSFS + la versión activa, para
+/// decidir dónde instalar un addon según su compatibilidad 2020/2024.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityTargets {
+    pub current_is2024: bool,
+    pub has2020: bool,
+    pub has2024: bool,
+    pub folder2020: Option<String>,
+    pub folder2024: Option<String>,
+}
+
+#[tauri::command]
+pub async fn community_targets() -> Result<CommunityTargets, String> {
+    let (has2020, has2024) = community::detect_installed_sims();
+    let current_is2024 = crate::sim::is_2024();
+    let mut folder2020 = None;
+    let mut folder2024 = None;
+    if let Ok(folders) = community::detect_all_community_folders() {
+        for f in folders {
+            if !f.exists {
+                continue;
+            }
+            if f.variant.contains("2024") {
+                folder2024.get_or_insert(f.path);
+            } else if f.variant.contains("2020") {
+                folder2020.get_or_insert(f.path);
+            }
+        }
+    }
+    Ok(CommunityTargets {
+        current_is2024,
+        has2020,
+        has2024,
+        folder2020,
+        folder2024,
+    })
+}
+
 /// (v6.1) Lista las liveries de un pack (parsea sus aircraft.cfg). La usa el
 /// modal de liverypack en Addons y Link Map.
 #[tauri::command]

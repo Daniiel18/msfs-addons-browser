@@ -496,19 +496,51 @@ fn extract_rar(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::R
     Ok(())
 }
 
-/// Extrae un archivo .7z (incluidos volúmenes `.7z.001`, `.7z.002`…).
-///
-/// `sevenz-rust2` expone una API de nivel alto que hace todo en una
-/// sola llamada y maneja solid blocks + multi-volumen internamente.
+/// (v7) Guard anti **"7z-slip"**: `sevenz-rust2` NO valida los nombres de
+/// entrada (a diferencia de zip vía `enclosed_name` y rar vía chequeo de
+/// componentes), así que un `.7z` malicioso con rutas `..`/absolutas/con drive
+/// podría escribir FUERA del tempdir (p.ej. la carpeta Startup). Rechazamos esas
+/// entradas y dejamos pasar el resto al extractor por defecto del crate.
+/// Compartido con `drop_install::extract_7z`.
+pub(crate) fn safe_7z_entry(
+    entry: &sevenz_rust2::SevenZArchiveEntry,
+    reader: &mut dyn std::io::Read,
+    path: &std::path::PathBuf,
+) -> Result<bool, sevenz_rust2::Error> {
+    let name = entry.name();
+    let rel = std::path::Path::new(name);
+    // `is_absolute()` en Windows es FALSE para rutas con raíz pero sin drive
+    // (`\foo`, `/foo`) — y `dest.join("\\foo")` salta a la raíz del volumen. Por
+    // eso chequeamos también `has_root()`. Y `:` cubre drive-relative/ADS.
+    let unsafe_path = rel.is_absolute()
+        || rel.has_root()
+        || name.contains(':')
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    if unsafe_path {
+        tracing::warn!(target: "install", "7z: entrada insegura ignorada: {}", name);
+        return Ok(true);
+    }
+    sevenz_rust2::default_entry_extract_fn(entry, reader, path)
+}
+
+/// Extrae un archivo .7z (incluidos volúmenes `.7z.001`, `.7z.002`…) con el
+/// guard anti-traversal [`safe_7z_entry`].
 fn extract_7z(archive: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
     match password {
-        Some(pw) => sevenz_rust2::decompress_file_with_password(
-            archive,
-            dest,
-            sevenz_rust2::Password::from(pw),
-        )
-        .with_context(|| format!("no se pudo extraer {}", archive.display()))?,
-        None => sevenz_rust2::decompress_file(archive, dest)
+        Some(pw) => {
+            let file = std::fs::File::open(archive)
+                .with_context(|| format!("no se pudo abrir {}", archive.display()))?;
+            sevenz_rust2::decompress_with_extract_fn_and_password(
+                file,
+                dest,
+                sevenz_rust2::Password::from(pw),
+                safe_7z_entry,
+            )
+            .with_context(|| format!("no se pudo extraer {}", archive.display()))?;
+        }
+        None => sevenz_rust2::decompress_file_with_extract_fn(archive, dest, safe_7z_entry)
             .with_context(|| format!("no se pudo extraer {}", archive.display()))?,
     }
     Ok(())

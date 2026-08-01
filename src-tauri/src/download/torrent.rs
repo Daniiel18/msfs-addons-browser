@@ -337,22 +337,35 @@ impl TorrentEngine {
     ) -> anyhow::Result<TorrentResult> {
         let session = self.ensure_session().await?.clone();
 
-        let add_response = session
-            .add_torrent(
-                AddTorrent::from_url(magnet),
-                Some(AddTorrentOptions {
-                    // `overwrite: true` lets librqbit resume over pre-existing
-                    // partial files — important when a job is retried after
-                    // a cancellation or crash.
-                    overwrite: true,
-                    // Route every job into its own folder; simpler cleanup
-                    // and avoids cross-job filename collisions.
-                    sub_folder: Some(job_subfolder.to_string()),
-                    ..Default::default()
-                }),
-            )
-            .await
-            .context("librqbit add_torrent failed")?;
+        let add_fut = session.add_torrent(
+            AddTorrent::from_url(magnet),
+            Some(AddTorrentOptions {
+                // `overwrite: true` lets librqbit resume over pre-existing
+                // partial files — important when a job is retried after
+                // a cancellation or crash.
+                overwrite: true,
+                // Route every job into its own folder; simpler cleanup
+                // and avoids cross-job filename collisions.
+                sub_folder: Some(job_subfolder.to_string()),
+                ..Default::default()
+            }),
+        );
+        // (v7) La resolución de metadata del magnet (DENTRO de `add_torrent`) se
+        // cuelga PARA SIEMPRE si ningún peer sirve el info-dict (DHT sigue dando
+        // candidatos y el stream nunca termina) y NO observa el `cancel` token.
+        // Como el permit del slot de torrents se sostiene durante toda la llamada,
+        // un cuelgue dejaría los torrents muertos hasta reiniciar. La acotamos con
+        // cancel + timeout para que el permit SIEMPRE se libere.
+        let add_response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                anyhow::bail!("cancelado mientras se resolvía la metadata del magnet");
+            }
+            r = tokio::time::timeout(std::time::Duration::from_secs(120), add_fut) => {
+                r.map_err(|_| anyhow!("timeout resolviendo la metadata del magnet (¿sin seeds?)"))?
+                    .context("librqbit add_torrent failed")?
+            }
+        };
 
         let handle = add_response
             .into_handle()
@@ -535,8 +548,16 @@ fn find_primary_archive(root: &Path) -> Option<PathBuf> {
                 stack.push(path);
                 continue;
             }
-            let Some(ext) = path.extension().and_then(|s| s.to_str()) else { continue };
-            if !ARCHIVE_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+            let ext_l = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            // (fix) Aceptar también volúmenes multiparte 7z (.7z.001/.002…): su
+            // extensión literal es "001", NO está en ARCHIVE_EXTS, así que antes
+            // nunca entraban a `archives` y las reglas de 7z multivolumen de más
+            // abajo eran código muerto → el torrent terminaba en Error.
+            if !ARCHIVE_EXTS.contains(&ext_l.as_str()) && !is_sevenz_volume(&path) {
                 continue;
             }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);

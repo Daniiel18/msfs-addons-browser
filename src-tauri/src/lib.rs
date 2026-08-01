@@ -1,3 +1,4 @@
+pub mod achievements;
 pub mod airac;
 pub mod aircraft_maintenance;
 pub mod airline_economy;
@@ -11,6 +12,7 @@ pub mod cross_link;
 pub mod damage;
 pub mod db;
 pub mod diagnostics;
+pub mod discord_rpc;
 pub mod drop_install;
 pub mod download;
 pub mod flight_log;
@@ -85,6 +87,12 @@ pub struct AppState {
     /// (`download_path → file_id`). Se escribe en `on_download` y se lee en
     /// `drop_commit` para registrar el tracking de updates de esos addons.
     pub livery_downloads: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// (v7 fix) Dir de datos REAL resuelto en `init_state` (portable junto al
+    /// exe, o el fallback `%LOCALAPPDATA%\SimFleet\data` si el exe no es
+    /// escribible). Única fuente de verdad: `get_app_settings` lo lee de aquí
+    /// para reportar `appDataPath`/`logsPath` correctos (antes los re-derivaba
+    /// con lógica distinta y en el caso fallback mostraba un path equivocado).
+    pub data_dir: std::path::PathBuf,
 }
 
 impl AppState {
@@ -211,7 +219,7 @@ pub fn run() {
             commands::livery::save_installer_to,
             commands::livery::flightsim_check_updates,
             commands::livery::flightsim_ack_update,
-            commands::livery::flightsim_debug_force_update,
+            commands::livery::flightsim_download_meta,
             commands::gsx::gsx_install_profile,
             commands::gsx::read_text_file,
             gsx_update::gsx_check_update,
@@ -227,6 +235,7 @@ pub fn run() {
             commands::airports::lookup_airports,
             commands::community::scan_community,
             commands::community::get_installed_sims,
+            commands::community::community_targets,
             commands::community::pack_liveries,
             commands::community::is_safe_mode,
             commands::community::is_watcher_active,
@@ -268,6 +277,7 @@ pub fn run() {
             commands::flight_log::list_flight_log,
             commands::flight_log::hangar_analytics,
             commands::flight_log::pilot_profile,
+            commands::flight_log::list_achievements,
             commands::economy::airline_economy,
             commands::economy::airline_balance_history,
             commands::economy::airline_policy,
@@ -422,6 +432,63 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// (v7) Extrae uBlock Origin Lite (bundleado como `resources/ublock-lite.zip`)
+/// a `<data>/extensions/ublock-lite/` y registra el dir padre para que las
+/// ventanas de descarga carguen la extensión (mata anuncios de mixdrop/hosters
+/// con EasyList). Best-effort e idempotente: si algo falla, la app sigue sin
+/// uBOL; si ya está extraído, sólo registra el dir.
+fn prepare_ubol(app: &tauri::AppHandle, app_data_dir: &std::path::Path) {
+    use tauri::Manager;
+    let ext_parent = app_data_dir.join("extensions");
+    let ext_dir = ext_parent.join("ublock-lite");
+    if ext_dir.join("manifest.json").is_file() {
+        crate::commands::livery::set_extensions_dir(ext_parent);
+        return;
+    }
+    let zip_path = match app.path().resource_dir() {
+        Ok(rd) => rd.join("resources").join("ublock-lite.zip"),
+        Err(e) => {
+            tracing::warn!("ubol: resource_dir no disponible: {e}");
+            return;
+        }
+    };
+    if !zip_path.is_file() {
+        tracing::warn!("ubol: no se encontró {}", zip_path.display());
+        return;
+    }
+    let Ok(file) = std::fs::File::open(&zip_path) else {
+        tracing::warn!("ubol: no se pudo abrir {}", zip_path.display());
+        return;
+    };
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("ubol: zip inválido: {e}");
+            return;
+        }
+    };
+    if std::fs::create_dir_all(&ext_dir).is_err() {
+        return;
+    }
+    for i in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(i) else { continue };
+        let Some(rel) = entry.enclosed_name() else { continue };
+        let out = ext_dir.join(rel);
+        if entry.is_dir() {
+            let _ = std::fs::create_dir_all(&out);
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::File::create(&out) {
+            let _ = std::io::copy(&mut entry, &mut f);
+        }
+    }
+    tracing::info!("ubol: extensión lista en {}", ext_dir.display());
+    crate::commands::livery::set_extensions_dir(ext_parent);
+}
+
 async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // (v3.2.0) Data dir PORTABLE al lado del ejecutable. Todo lo que
     // genere la app (DB, logs, OFPs, descargas, temp del drag-drop)
@@ -452,7 +519,16 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         let _ = std::fs::create_dir_all(&temp_dir);
         std::env::set_var("TMP", &temp_dir);
         std::env::set_var("TEMP", &temp_dir);
+        // (v7 fix) Purga de descargas del navegador embebido que hayan quedado
+        // de una sesión anterior (descarga cancelada / no instalable / cierre
+        // sin instalar). Sólo nuestras carpetas — se recrean en la próxima
+        // descarga. Evita que se acumulen temporales huérfanos en disco.
+        let _ = std::fs::remove_dir_all(temp_dir.join("simfleet-mirror-dl"));
+        let _ = std::fs::remove_dir_all(temp_dir.join("simfleet-livery-dl"));
     }
+
+    // (v7) uBlock Origin Lite para el navegador de descargas (best-effort).
+    prepare_ubol(app, &app_data_dir);
 
     logger::init(&app_data_dir)?;
     tracing::info!("app starting; data dir = {} (portable)", app_data_dir.display());
@@ -658,6 +734,10 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         landing_recorder::spawn_controller(db.clone(), app.clone(), app_data_dir.clone());
     }
 
+    // (v7) Discord Rich Presence — hilo propio, opt-in desde Ajustes. Lee el
+    // estado en vivo del watcher; si Discord no está abierto no hace nada.
+    discord_rpc::spawn(db.clone(), app.clone());
+
     // (v3.1.0) Auto-sync con la nube — silencioso, una vez al día.
     // Sólo dispara si:
     //   · Hay refresh_token guardado (usuario ya autorizó OAuth).
@@ -754,6 +834,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         drop_sessions: drop_install::DropSessions::default(),
         skybound_auth,
         livery_downloads: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        data_dir: app_data_dir.clone(),
     })
 }
 

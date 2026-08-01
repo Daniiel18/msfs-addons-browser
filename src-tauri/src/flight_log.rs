@@ -2046,7 +2046,10 @@ pub async fn delete_junk_flights(pool: &SqlitePool) -> anyhow::Result<u64> {
     let r = sqlx::query(
         r#"
         DELETE FROM flight_log
-        WHERE (ABS(origin_lat) < 0.01 AND ABS(origin_lon) < 0.01)
+        WHERE (
+                source IS NOT 'msfs-logbook'
+                AND ABS(origin_lat) < 0.01 AND ABS(origin_lon) < 0.01
+              )
            OR (
                 origin_icao IS NULL
                 AND COALESCE(distance_nm, 0) < 2

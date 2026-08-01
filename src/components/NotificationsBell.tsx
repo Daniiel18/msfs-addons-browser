@@ -6,7 +6,6 @@ import {
   CheckCheck,
   Download,
   ExternalLink,
-  FlaskConical,
   Map as MapIcon,
   RefreshCw,
   Sparkles,
@@ -90,7 +89,6 @@ export function NotificationsBell() {
   // sólo lo descarta (también avanza el baseline).
   const flightsimUpdatesMap = useFlightsimUpdateStore((s) => s.updates);
   const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
-  const refreshFlightsimUpdates = useFlightsimUpdateStore((s) => s.refreshUpdates);
 
   // (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir → aviso en la campana;
   // clic reabre el modal, X descarta.
@@ -263,23 +261,6 @@ export function NotificationsBell() {
                 </h3>
               </div>
               <div className="flex items-center gap-1.5">
-                {/* (DEBUG v6.2.60, temporal) Fuerza updates de prueba de
-                    flightsim.to para verificar el flujo campana/badge. */}
-                <button
-                  onClick={() => {
-                    void api
-                      .flightsimDebugForceUpdate()
-                      .then((n) => {
-                        console.info(`[debug] flightsim force-update: ${n} filas`);
-                        return refreshFlightsimUpdates();
-                      })
-                      .catch((e) => console.warn("debug force-update failed:", e));
-                  }}
-                  title="DEBUG: forzar update de prueba de flightsim.to"
-                  className="rounded-md border border-sky-800 p-1.5 text-sky-300 hover:border-sky-500/40 hover:bg-sky-900/30"
-                >
-                  <FlaskConical className="h-3.5 w-3.5" />
-                </button>
                 <button
                   onClick={() => {
                     void api

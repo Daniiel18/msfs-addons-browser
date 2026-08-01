@@ -853,7 +853,9 @@ fn parse_payload(payload: &[u8]) -> Option<ParsedFields> {
                 let (ln, np) = read_varint(payload, pos)?;
                 pos = np;
                 let ln = ln as usize;
-                if pos + ln > payload.len() {
+                // (fix) Comparación a prueba de overflow: `pos + ln` podía
+                // wrapear con una longitud ~u64::MAX y pasar el guard → slice OOB.
+                if ln > payload.len().saturating_sub(pos) {
                     return if fields_seen > 0 { Some(out) } else { None };
                 }
                 let chunk = &payload[pos..pos + ln];
@@ -1188,7 +1190,9 @@ fn parse_track_payload(data: &[u8]) -> Option<VasFlightTrack> {
                     }
                 };
                 let ln = ln as usize;
-                if np2 + ln > data.len() {
+                // (fix) `np2 + ln` podía wrapear con longitud ~u64::MAX y pasar
+                // el guard → slice OOB que panica y abortaba TODO el import.
+                if ln > data.len().saturating_sub(np2) {
                     // Length-delim sale del buffer — corrupción.
                     // Resync.
                     flush_sample!(cur, track, last_field);
@@ -1823,9 +1827,9 @@ async fn import_one(
         // promover partial → completed si el data.db ahora trae OOOI.
         sqlx::query(
             "UPDATE flight_log SET
-                origin_lat = ?2,
-                origin_lon = ?3,
-                origin_icao = ?4,
+                origin_lat = COALESCE(?2, origin_lat),
+                origin_lon = COALESCE(?3, origin_lon),
+                origin_icao = COALESCE(?4, origin_icao),
                 destination_lat = COALESCE(?5, destination_lat),
                 destination_lon = COALESCE(?6, destination_lon),
                 destination_icao = COALESCE(?7, destination_icao),

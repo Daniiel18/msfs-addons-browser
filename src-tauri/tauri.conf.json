@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SimFleet",
   "mainBinaryName": "simfleet",
-  "version": "6.2.70",
+  "version": "7.0.0",
   "identifier": "org.n0xful.msfsaddonsbrowser",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -26,7 +26,8 @@
         "center": true,
         "skipTaskbar": false,
         "shadow": true,
-        "theme": "Dark"
+        "theme": "Dark",
+        "browserExtensionsEnabled": true
       },
       {
         "label": "osd",
@@ -41,7 +42,8 @@
         "skipTaskbar": true,
         "focus": false,
         "visible": false,
-        "shadow": false
+        "shadow": false,
+        "browserExtensionsEnabled": true
       }
     ],
     "security": {
@@ -68,7 +70,8 @@
     ],
     "resources": {
       "resources/airports.csv": "resources/airports.csv",
-      "resources/SimConnect.dll": "./SimConnect.dll"
+      "resources/SimConnect.dll": "./SimConnect.dll",
+      "resources/ublock-lite.zip": "resources/ublock-lite.zip"
     }
   }
 }

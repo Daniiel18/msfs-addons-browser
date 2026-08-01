@@ -46,7 +46,11 @@ import { LiveVsManager } from "./components/LiveVsManager";
 import { GsxUpdateGate } from "./components/GsxUpdateGate";
 import { GsxOfferModal } from "./components/GsxOfferModal";
 import { useGsxOfferStore } from "./stores/useGsxOfferStore";
-import { WhatsNewModal } from "./components/WhatsNewModal";
+import {
+  WhatsNewModal,
+  isWhatsNewPending,
+  WHATS_NEW_CLOSED_EVENT,
+} from "./components/WhatsNewModal";
 import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
@@ -673,8 +677,21 @@ export default function App() {
           // siguiente bump.
           // (v6.2.55) What's New ELIMINADO por completo (pedido del usuario).
 
-          // Tour de bienvenida sólo para usuarios nuevos.
-          if (firstRun) setTourOpen(true);
+          // Tour de bienvenida sólo para usuarios nuevos. Si el modal BLOQUEANTE
+          // de novedades va a salir (instalación nueva), el tour ESPERA a que se
+          // cierre — si no, su backdrop taparía el botón «Continuar» del modal y
+          // dejaría la app en soft-lock.
+          if (firstRun) {
+            if (isWhatsNewPending()) {
+              window.addEventListener(
+                WHATS_NEW_CLOSED_EVENT,
+                () => setTourOpen(true),
+                { once: true },
+              );
+            } else {
+              setTourOpen(true);
+            }
+          }
         }, 600);
       }
     };
@@ -874,9 +891,9 @@ export default function App() {
                   void api.openLiveryBrowser("https://flightsim.to")
                 }
                 title={t("flightsimto.tooltip")}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/10 px-2.5 py-2 text-fuchsia-300 hover:border-fuchsia-500/50 hover:text-fuchsia-200"
+                className="group inline-flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-2 text-slate-300 transition-colors hover:border-brand-500/40 hover:bg-slate-900 hover:text-slate-100"
               >
-                <Globe2 className="h-4 w-4" />
+                <Globe2 className="h-4 w-4 text-sky-400 transition-colors group-hover:text-sky-300" />
                 <span className="hidden text-xs font-medium sm:inline">
                   flightsim.to
                 </span>

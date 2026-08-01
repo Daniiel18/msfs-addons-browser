@@ -1082,6 +1082,15 @@ fn snake_to_camel(s: &str) -> String {
 }
 
 async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<RestoreReport> {
+    // (v7 fix) ¿La DB estaba vacía antes del restore? Solo entonces el cleanup
+    // de "phantom in-flight" es seguro: si hay datos locales, un UPDATE global
+    // que cierra ended_at=NULL cerraría también un vuelo LOCAL en curso (que
+    // aún no registró su primer punto). En ese caso NO barremos la tabla.
+    let was_empty: bool = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM flight_log")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+        == 0;
     let mut tx = pool.begin().await?;
     let mut flights = 0;
     let mut tracks = 0;
@@ -1351,20 +1360,22 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
     // imported desde otra máquina — si nunca tuvieron last_position
     // local, no son vuelos que estemos volando AHORA. Sin este cleanup,
     // el FlightBook los mostraba como "FLYING NOW".
-    let closed = sqlx::query(
-        r#"UPDATE flight_log
-           SET ended_at = started_at
-           WHERE ended_at IS NULL
-             AND last_position_at IS NULL"#,
-    )
-    .execute(pool)
-    .await?;
-    if closed.rows_affected() > 0 {
-        tracing::info!(
-            target: "cloud",
-            "restore cleanup: auto-cerrados {} vuelos phantom (sin last_position)",
-            closed.rows_affected()
-        );
+    if was_empty {
+        let closed = sqlx::query(
+            r#"UPDATE flight_log
+               SET ended_at = started_at
+               WHERE ended_at IS NULL
+                 AND last_position_at IS NULL"#,
+        )
+        .execute(pool)
+        .await?;
+        if closed.rows_affected() > 0 {
+            tracing::info!(
+                target: "cloud",
+                "restore cleanup: auto-cerrados {} vuelos phantom (sin last_position)",
+                closed.rows_affected()
+            );
+        }
     }
 
     Ok(RestoreReport {
@@ -1697,41 +1708,66 @@ pub async fn test_connection(
     }
 }
 
+/// (v7 fix) Lock GLOBAL de las operaciones read-modify-write del snapshot en
+/// la nube. `sync_now` (auto-sync diario), `upload_all` (auto-subida al
+/// importar VAS/scoring) y `download_missing`/`load_from_folder` se disparan
+/// como tareas tokio independientes; sin serializar, dos subidas solapadas
+/// bajan el mismo snapshot base, mergean por separado y la última pisa a la
+/// primera (lost update). Este mutex las serializa. NO es reentrante: cuidar
+/// de no anidar (sync_now llama a download_missing/upload_all, que lo toman
+/// ellos mismos — sync_now no lo toma en ese camino).
+static CLOUD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn sync_now(
     pool: &SqlitePool,
     http: &reqwest::Client,
 ) -> anyhow::Result<SyncReport> {
-    let access_token = fresh_access_token(pool, http).await?;
     let mut report = SyncReport::default();
 
-    if let Some(text) = download_sync_file(http, &access_token, None).await? {
-        match serde_json::from_str::<Snapshot>(&text) {
-            Ok(remote) => {
-                let r = restore_snapshot(pool, &remote).await?;
-                report.downloaded_flights = r.flights;
-                report.downloaded_tracks = r.tracks;
-                report.downloaded_settings = r.settings;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "cloud",
-                    "snapshot remota corrupta — la sobreescribimos con la local: {e:#}"
-                );
+    // (v7 fix, pérdida de datos) NO usar restore_snapshot (upsert POR id) para
+    // mergear: el id de flight_log es un autoincrement LOCAL, así que el id=5
+    // de una máquina y el id=5 de otra son vuelos DISTINTOS → el upsert pisaba
+    // vuelos locales con los del cloud que casualmente comparten id.
+    //   · DB vacía (reinstalación) → restore completo por id es seguro.
+    //   · DB con datos → merge por CLAVES ESTABLES (download_missing), que
+    //     inserta con id fresco y remapea tracks. Es el mismo camino probado
+    //     del botón "Bajar".
+    let local_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM flight_log")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+    if local_count == 0 {
+        let _guard = CLOUD_LOCK.lock().await;
+        let access_token = fresh_access_token(pool, http).await?;
+        if let Some(text) = download_sync_file(http, &access_token, None).await? {
+            match serde_json::from_str::<Snapshot>(&text) {
+                Ok(remote) => {
+                    let r = restore_snapshot(pool, &remote).await?;
+                    report.downloaded_flights = r.flights;
+                    report.downloaded_tracks = r.tracks;
+                    report.downloaded_settings = r.settings;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "cloud",
+                        "snapshot remota corrupta — la sobreescribimos con la local: {e:#}"
+                    );
+                }
             }
         }
-    }
-
-    let local = build_snapshot(pool).await?;
-    let payload = serde_json::to_string(&local)?;
-    report.uploaded_flights = local.flight_log.len();
-    report.uploaded_tracks = local.flight_log_track.len();
-    report.uploaded_settings = local.settings.len();
-
-    if let Some(file_id) = find_sync_file(http, &access_token).await? {
-        update_sync_file(http, &access_token, &file_id, &payload, None).await?;
     } else {
-        create_sync_file(http, &access_token, &payload, None).await?;
+        let dl = download_missing(pool, http, None).await?;
+        report.downloaded_flights = dl.new_flights;
+        report.downloaded_tracks = dl.new_tracks;
+        report.downloaded_settings = dl.new_settings;
     }
+
+    // Subida: merge incremental local → nube (idempotente, con su propio lock).
+    let up = upload_all(pool, http, None).await?;
+    report.uploaded_flights = up.uploaded_flights;
+    report.uploaded_tracks = up.uploaded_tracks;
+    report.uploaded_settings = up.uploaded_settings;
 
     set_setting(
         pool,
@@ -1775,6 +1811,8 @@ pub async fn upload_all(
     http: &reqwest::Client,
     app: Option<&AppHandle>,
 ) -> anyhow::Result<UploadReport> {
+    // (v7 fix, race) Serializa con las demás operaciones RMW del snapshot cloud.
+    let _cloud_guard = CLOUD_LOCK.lock().await;
     use std::collections::{HashMap, HashSet};
     tracing::info!(target: "cloud", "upload_all: merge incremental local → nube…");
     // (v6.2.16) Marca el subsistema "cloud" como ocupado mientras dura la
@@ -1980,6 +2018,8 @@ pub async fn download_missing(
     http: &reqwest::Client,
     app: Option<&AppHandle>,
 ) -> anyhow::Result<DownloadReport> {
+    // (v7 fix, race) Serializa con las demás operaciones RMW del snapshot cloud.
+    let _cloud_guard = CLOUD_LOCK.lock().await;
     let access_token = fresh_access_token(pool, http).await?;
     let mut report = DownloadReport::default();
 
@@ -2447,6 +2487,24 @@ pub async fn load_from_folder(
     let bytes_read = text.len() as u64;
     let snap: Snapshot = serde_json::from_str(&text)
         .with_context(|| "Archivo corrupto o de una versión incompatible")?;
+    // (v7 fix, pérdida de datos) `restore_snapshot` hace upsert POR id, y el id
+    // de flight_log es un autoincrement LOCAL: el id=5 de esta PC y el id=5 del
+    // backup son vuelos DISTINTOS → restaurar por id sobre una DB con datos
+    // PISARÍA vuelos locales. Sólo es seguro en una DB vacía (reinstalación). Si
+    // ya hay vuelos, no arriesgamos: el merge por CLAVES estables va por el sync
+    // de nube ("Bajar"). (TODO v7.x: merge por clave también para carga desde
+    // carpeta.)
+    let local_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM flight_log")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    if local_count > 0 {
+        anyhow::bail!(
+            "Ya tenés {local_count} vuelos en esta PC. Cargar el backup por carpeta \
+             los sobreescribiría por id. Usá la sincronización de nube (botón «Bajar»), \
+             que mergea por claves sin pisar nada."
+        );
+    }
     let restored = restore_snapshot(pool, &snap).await?;
     // Marcamos el path como activo y registramos last sync (incluso si
     // fue un load, el merge es bidireccional desde el punto de vista

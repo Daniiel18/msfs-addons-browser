@@ -385,9 +385,13 @@ pub fn find_nearest_parking(icao: &str, lat: f64, lon: f64) -> Option<GsxParking
     }
 
     let mut best: Option<(f64, GsxParking)> = None;
+    // (fix) 1° de longitud vale 111.32·cos(lat) km, no 111.32 constante. Sin la
+    // corrección, la componente E-O pesaba de más (×1.4 a 45°, ×2 a 60°) →
+    // elegía el gate equivocado y el umbral de 75 m salía inflado.
+    let cos_lat = lat.to_radians().cos();
     for p in parkings {
         let dlat = p.lat - lat;
-        let dlon = p.lon - lon;
+        let dlon = (p.lon - lon) * cos_lat;
         let d = dlat * dlat + dlon * dlon;
         if best.as_ref().map(|(b, _)| d < *b).unwrap_or(true) {
             best = Some((d, p));

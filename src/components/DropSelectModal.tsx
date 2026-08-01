@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/tauri";
 import type { DropCommitReport, DropInspection, DropItem } from "../lib/types";
+import type { DropRouting } from "./DragDropOverlay";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
@@ -39,18 +40,23 @@ import { useToastStore } from "../stores/useToastStore";
  */
 interface Props {
   inspections: DropInspection[];
+  /** (v6.2.74) Ruteo 2020/2024 por sessionId para descargas del embebido. */
+  routing?: Map<string, DropRouting>;
   onClose: () => void;
   onDone: (reports: DropCommitReport[]) => void;
 }
 
-/** (v6.2.56) ¿El archivo viene del navegador embebido de flightsim.to? Esos
- *  caen en la carpeta temporal `simfleet-livery-dl` y se auto-borran tras
- *  instalar (sin confirmación). Los que arrastra el usuario, sí preguntan. */
+/** (v6.2.56) ¿El archivo viene de un navegador embebido de SimFleet? Caen en
+ *  una carpeta temporal propia (`simfleet-livery-dl` para liveries de
+ *  flightsim.to; `simfleet-mirror-dl` (v7) para descargas de hosters como
+ *  modsfire/mixdrop) y se auto-borran tras instalar, sin preguntar. Los que
+ *  arrastra el usuario, sí preguntan. */
 export function isEmbeddedDownload(path: string): boolean {
-  return path.replace(/\\/g, "/").includes("simfleet-livery-dl");
+  const p = path.replace(/\\/g, "/");
+  return p.includes("simfleet-livery-dl") || p.includes("simfleet-mirror-dl");
 }
 
-export function DropSelectModal({ inspections, onClose, onDone }: Props) {
+export function DropSelectModal({ inspections, routing, onClose, onDone }: Props) {
   const pushToast = useToastStore((s) => s.push);
   const [pageIdx, setPageIdx] = useState(0);
   const inspection = inspections[pageIdx];
@@ -125,6 +131,19 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
       ...prev,
       [inspection.sessionId]: new Set(),
     }));
+  // (v7) Marca/desmarca un subconjunto de paths (usado por los grupos GSX
+  // por carpeta: "seleccionar todo el FULL", etc.).
+  const selectPaths = (paths: string[], on: boolean) =>
+    setSelectionsBySession((prev) => {
+      const next = { ...prev };
+      const cur = new Set(next[inspection.sessionId] ?? []);
+      for (const p of paths) {
+        if (on) cur.add(p);
+        else cur.delete(p);
+      }
+      next[inspection.sessionId] = cur;
+      return next;
+    });
 
   // Conteo total para el footer.
   const totalSelected = useMemo(() => {
@@ -176,7 +195,11 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
           continue;
         }
         try {
-          const r = await api.dropCommit(insp.sessionId, commitPaths, null);
+          const r = await api.dropCommit(
+            insp.sessionId,
+            commitPaths,
+            routing?.get(insp.sessionId)?.communityPath ?? null,
+          );
           reports.push(r);
           const installedSomething =
             r.installedGsx.length > 0 ||
@@ -245,6 +268,9 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
 
   // Agrupamos por tipo para mostrar secciones.
   const gsxItems = inspection.items.filter((i) => i.kind === "gsx_profile");
+  // (v7) Sub-agrupar los perfiles GSX por su CARPETA de variante (FULL, LIGHT,
+  // "GSX VDGS", "Aerosoft VDGS"… cada dev nombra distinto) → no una lista plana.
+  const gsxGroups = groupGsxByFolder(gsxItems);
   const communityItems = inspection.items.filter(
     (i) => i.kind === "community_package",
   );
@@ -327,6 +353,25 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
                 </button>
               </header>
 
+              {/* (v6.2.74) Aviso de compatibilidad 2020/2024: dónde se instala
+                  o advertencia si el addon es para otra versión del sim. */}
+              {(() => {
+                const note = routing?.get(inspection.sessionId)?.note;
+                if (!note) return null;
+                return (
+                  <div
+                    className={`flex items-start gap-2 border-b px-5 py-2.5 text-[12px] ${
+                      note.level === "warn"
+                        ? "border-amber-500/25 bg-amber-500/10 text-amber-200"
+                        : "border-sky-500/25 bg-sky-500/10 text-sky-200"
+                    }`}
+                  >
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{note.text}</span>
+                  </div>
+                );
+              })()}
+
               {/* (v2.2.0) Paginación cuando hay varios archivos. */}
               {inspections.length > 1 && (
                 <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/30 px-5 py-2">
@@ -403,16 +448,43 @@ export function DropSelectModal({ inspections, onClose, onDone }: Props) {
                   </div>
                 )}
 
-                {gsxItems.length > 0 && (
-                  <Section
-                    title={t("drop.tab.gsx")}
-                    icon={<Plane className="h-3 w-3 text-violet-300" />}
-                    items={gsxItems}
-                    selected={selected}
-                    toggle={toggle}
-                    destinationHint="%APPDATA%\Virtuali\GSX\MSFS"
-                  />
-                )}
+                {gsxItems.length > 0 &&
+                  (gsxGroups.length <= 1 ? (
+                    <Section
+                      title={t("drop.tab.gsx")}
+                      icon={<Plane className="h-3 w-3 text-violet-300" />}
+                      items={gsxItems}
+                      selected={selected}
+                      toggle={toggle}
+                      destinationHint="%APPDATA%\Virtuali\GSX\MSFS"
+                    />
+                  ) : (
+                    gsxGroups.map((g, gi) => (
+                      <Section
+                        key={g.key}
+                        title={`${t("drop.tab.gsx")} · ${g.label}`}
+                        icon={<Plane className="h-3 w-3 text-violet-300" />}
+                        items={g.items}
+                        selected={selected}
+                        toggle={toggle}
+                        destinationHint={
+                          gi === 0 ? "%APPDATA%\\Virtuali\\GSX\\MSFS" : ""
+                        }
+                        onSelectAll={() =>
+                          selectPaths(
+                            g.items.map((it) => it.sourcePath),
+                            true,
+                          )
+                        }
+                        onSelectNone={() =>
+                          selectPaths(
+                            g.items.map((it) => it.sourcePath),
+                            false,
+                          )
+                        }
+                      />
+                    ))
+                  ))}
                 {communityItems.length > 0 && (
                   <Section
                     title={t("drop.tab.community")}
@@ -616,6 +688,8 @@ function Section({
   selected,
   toggle,
   destinationHint,
+  onSelectAll,
+  onSelectNone,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -623,12 +697,36 @@ function Section({
   selected: Set<string>;
   toggle: (path: string) => void;
   destinationHint: string;
+  /** (v7) Si se pasan, muestra "todo/nada" por-sección (usado en los grupos
+   *  GSX por carpeta: FULL/LIGHT/…). */
+  onSelectAll?: () => void;
+  onSelectNone?: () => void;
 }) {
   return (
     <section className="mb-4 last:mb-0">
       <h3 className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
         {icon}
         {title} ({items.length})
+        {(onSelectAll || onSelectNone) && (
+          <span className="flex gap-1">
+            {onSelectAll && (
+              <button
+                onClick={onSelectAll}
+                className="rounded border border-slate-800 px-1.5 py-0.5 text-[9px] normal-case text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              >
+                {t("drop.modal.select_all")}
+              </button>
+            )}
+            {onSelectNone && (
+              <button
+                onClick={onSelectNone}
+                className="rounded border border-slate-800 px-1.5 py-0.5 text-[9px] normal-case text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              >
+                {t("drop.modal.select_none")}
+              </button>
+            )}
+          </span>
+        )}
         {destinationHint && (
           <span className="ml-auto font-mono text-[9px] text-slate-600">
             → {destinationHint}
@@ -712,6 +810,35 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** (v7) Etiqueta de la CARPETA de variante de un perfil GSX (FULL, LIGHT,
+ *  "GSX VDGS", "Aerosoft VDGS"…) = carpeta contenedora dentro del archivo. */
+function gsxFolderLabelOf(it: DropItem): string {
+  const parts = it.relativePath.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : "";
+}
+
+/** (v7) Agrupa perfiles GSX por su carpeta de variante para no mostrarlos en
+ *  una lista plana. Con 0/1 grupo el modal cae al render de siempre. */
+function groupGsxByFolder(
+  items: DropItem[],
+): Array<{ key: string; label: string; items: DropItem[] }> {
+  const map = new Map<string, DropItem[]>();
+  for (const it of items) {
+    const label = gsxFolderLabelOf(it);
+    const key = label || "__root__";
+    const arr = map.get(key);
+    if (arr) arr.push(it);
+    else map.set(key, [it]);
+  }
+  return Array.from(map.entries())
+    .map(([key, groupItems]) => ({
+      key,
+      label: key === "__root__" ? t("drop.gsx.group_default") : key,
+      items: groupItems,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /** (v2.1.1) Colorea los chips de variantes según su semántica.

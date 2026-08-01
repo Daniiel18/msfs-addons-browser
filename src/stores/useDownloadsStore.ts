@@ -127,7 +127,16 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     // Toasts en transiciones a estados terminales. Comprobamos el
     // delta `prev?.phase` para no spamear si llegan varios eventos
     // con el mismo estado (race entre invoke-return y onDownloadUpdate).
-    if (job.phase === "completed" && prev?.phase !== "completed") {
+    // (v7 fix) Sólo los TORRENT instalan de verdad por este job. Las descargas
+    // Mirror/Direct del navegador embebido pasan a `completed` apenas se abre/
+    // captura, y la instalación real la hace (y la reporta) el instalador de
+    // drop en su propio modal. Mostrar aquí "Instalación completada" + rescan
+    // para mirror/direct era un falso positivo (toast y refresh prematuros).
+    if (
+      job.phase === "completed" &&
+      prev?.phase !== "completed" &&
+      job.methodKind === "torrent"
+    ) {
       useToastStore.getState().push({
         kind: "success",
         title: t("toast.download.installed"),

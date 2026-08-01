@@ -125,6 +125,22 @@ pub async fn install_update(
         asset_url, auto_restart
     );
 
+    // (v7 fix, security) Defensa en profundidad: sólo descargamos/ejecutamos
+    // assets alojados en GitHub. `asset_url` llega desde el frontend; sin esta
+    // validación de host, una URL a otro dominio (release/asset comprometido o
+    // redirigido) terminaría en ejecución SILENCIOSA (/S) de un binario
+    // arbitrario tras cerrar la app. (El ideal — verificar SHA-256/firma —
+    // requiere publicar el hash en el release; esto es el mínimo self-contained.)
+    let host_ok = tauri::Url::parse(&asset_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .map(|h| h == "github.com" || h.ends_with(".githubusercontent.com"))
+        .unwrap_or(false);
+    if !host_ok {
+        tracing::error!(target: "updater", "asset_url con host NO confiable: {asset_url}");
+        return Err("La URL de actualización no es de GitHub; cancelado por seguridad.".into());
+    }
+
     let resp = state
         .http
         .get(&asset_url)

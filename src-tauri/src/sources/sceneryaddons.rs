@@ -70,9 +70,10 @@ impl SceneryAddonsSource {
                 href
             };
 
-            out.push(DownloadMethod { kind, name, url });
+            out.push(DownloadMethod { kind, name, url, parts: Vec::new(), password: None });
         }
-        out
+        // (v7) Prioriza modsfire/mixdrop (que funcionan) y esconde rapidgator.
+        super::prioritize_methods(out)
     }
 }
 

@@ -25,6 +25,8 @@ import {
   FileSpreadsheet,
   FileText,
   FolderOpen,
+  ExternalLink,
+  MessageCircle,
   HardDrive,
   Info,
   Link2,
@@ -67,6 +69,7 @@ const SECTION_META: Array<{ key: string; labelKey: string }> = [
   { key: "general", labelKey: "settings.section.general" },
   { key: "flights", labelKey: "settings.section.flights" },
   { key: "map_display", labelKey: "settings.section.map_display" },
+  { key: "discord", labelKey: "settings.section.discord" },
   { key: "folders", labelKey: "settings.section.folders" },
   { key: "gsx", labelKey: "settings.section.gsx" },
   { key: "skybound", labelKey: "settings.section.skybound" },
@@ -101,7 +104,7 @@ const SETTINGS_GROUPS: Array<{
     id: "flight",
     labelKey: "settings.group.flight",
     icon: <Plane className="h-4 w-4" />,
-    sections: ["flights", "map_display", "gsx", "skybound"],
+    sections: ["flights", "map_display", "discord", "gsx", "skybound"],
   },
   {
     id: "data",
@@ -126,6 +129,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const settings = useSettingsStore((s) => s.settings);
   const lastError = useSettingsStore((s) => s.lastError);
   const setBoolean = useSettingsStore((s) => s.setBoolean);
+  const setDiscordAppId = useSettingsStore((s) => s.setDiscordAppId);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const setMinimizeToTray = useSettingsStore((s) => s.setMinimizeToTray);
   const setUnitPref = useSettingsStore((s) => s.setUnitPref);
@@ -141,6 +145,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const refreshSimBrief = useSimBriefStore((s) => s.refresh);
 
   const [pilotDraft, setPilotDraft] = useState("");
+  // (v7) Borrador del Application ID de Discord (se guarda con el botón).
+  const [discordDraft, setDiscordDraft] = useState("");
   const [savingPilot, setSavingPilot] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -214,6 +220,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (open) setPilotDraft(pilotId ?? "");
   }, [open, pilotId]);
+
+  // (v7) Al abrir, precargar el Application ID de Discord ya guardado.
+  useEffect(() => {
+    if (open) setDiscordDraft(settings.discordAppId ?? "");
+  }, [open, settings.discordAppId]);
 
   useEffect(() => {
     if (!open) return;
@@ -701,6 +712,46 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   checked={settings.showSimconnectLines}
                   onChange={(v) => setBoolean("showSimconnectLines", v)}
                 />
+              </Section>
+
+              {/* (v7) Discord Rich Presence — opt-in. Necesita un Application
+                  ID del portal de Discord (se explica en el hint). */}
+              <Section navKey="discord" title={t("settings.section.discord")} icon={<MessageCircle className="h-3.5 w-3.5" />}>
+                <Toggle
+                  label={t("settings.discord.enabled")}
+                  hint={t("settings.discord.enabled.hint")}
+                  checked={settings.discordRpcEnabled}
+                  onChange={(v) => setBoolean("discordRpcEnabled", v)}
+                />
+                <div className="mt-2 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+                  <div className="text-xs text-slate-200">{t("settings.discord.app_id")}</div>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    {t("settings.discord.app_id.hint")}
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={discordDraft}
+                      onChange={(e) => setDiscordDraft(e.target.value)}
+                      placeholder="1234567890123456789"
+                      className="flex-1 rounded-md border border-slate-800 bg-slate-950/80 px-2 py-1.5 font-mono text-xs text-slate-100 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+                    />
+                    <button
+                      onClick={() => void setDiscordAppId(discordDraft.trim())}
+                      disabled={discordDraft.trim() === settings.discordAppId}
+                      className="rounded-md bg-brand-500/80 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-brand-500 disabled:opacity-40"
+                    >
+                      {t("common.save")}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => api.openExternal("https://discord.com/developers/applications")}
+                    className="mt-2 inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    {t("settings.discord.portal")}
+                  </button>
+                </div>
               </Section>
 
               <Section navKey="folders" title={t("settings.section.folders")} icon={<FolderOpen className="h-3.5 w-3.5" />} tourId="settings-folders">

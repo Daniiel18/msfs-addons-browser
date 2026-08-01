@@ -497,30 +497,43 @@ enum Size {
 fn classify(model: Option<&str>) -> (Size, u32) {
     let m = model.unwrap_or("").to_ascii_uppercase();
     let has = |t: &str| m.contains(t);
-    // ── Widebody ──
-    if has("747") {
+    // ── Widebody ── (fix) reconocer TAMBIÉN los designadores ICAO de tipo
+    // (B789, B77W, A359, A339…), que NO contienen "787"/"777"/"A350"/"A330":
+    // antes caían al default Narrow/150 y arruinaban el P&L (combustible,
+    // tasas, asientos, valor de flota).
+    if has("747") || has("B74") {
         return (Size::Wide, 410);
     }
-    if has("777") {
-        return (Size::Wide, if has("300") { 365 } else { 310 });
+    if has("777") || has("B77") {
+        // 777-300ER (B77W) ~365; 777-200/LR (B772/B77L) ~310.
+        return (Size::Wide, if has("300") || has("77W") { 365 } else { 310 });
     }
-    if has("787") {
-        return (Size::Wide, if has("10") { 330 } else if has("9") { 290 } else { 242 });
+    if has("787") || has("B78") {
+        return (
+            Size::Wide,
+            if has("10") || has("78X") {
+                330
+            } else if has("9") || has("789") {
+                290
+            } else {
+                242
+            },
+        );
     }
-    if has("767") {
+    if has("767") || has("B76") {
         return (Size::Wide, 245);
     }
-    if has("A380") || has("380") {
+    if has("A380") || has("380") || has("A388") {
         return (Size::Wide, 525);
     }
-    if has("A350") || has("350") && has("A3") {
-        return (Size::Wide, if has("1000") { 370 } else { 315 });
+    if has("A350") || has("A35") {
+        return (Size::Wide, if has("1000") || has("35K") { 370 } else { 315 });
     }
-    if has("A340") {
+    if has("A340") || has("A34") {
         return (Size::Wide, 300);
     }
-    if has("A330") {
-        return (Size::Wide, if has("200") { 247 } else { 287 });
+    if has("A330") || has("A33") {
+        return (Size::Wide, if has("200") || has("332") { 247 } else { 287 });
     }
     if has("A300") || has("A310") || has("MD-11") || has("MD11") || has("DC-10") || has("DC10") {
         return (Size::Wide, 250);
@@ -742,6 +755,7 @@ fn gsx_for_flight(receipts: &[GsxReceipt], e: &FlightLogEntry) -> GsxCosts {
         .flatten()
         .map(|s| s.to_ascii_uppercase())
         .collect();
+    let origin_up = e.origin_icao.as_deref().map(|s| s.to_ascii_uppercase());
 
     let start = parse_dt(&e.started_at);
     let end = e
@@ -749,8 +763,10 @@ fn gsx_for_flight(receipts: &[GsxReceipt], e: &FlightLogEntry) -> GsxCosts {
         .as_deref()
         .and_then(parse_dt)
         .or(start);
+    // (fix) Ventana más estrecha (±4h vs ±6h) para reducir que un mismo recibo
+    // caiga en dos vuelos de la misma aeronave en el día (turnaround).
     let window = match (start, end) {
-        (Some(s), Some(en)) => Some((s - Duration::hours(6), en + Duration::hours(6))),
+        (Some(s), Some(en)) => Some((s - Duration::hours(4), en + Duration::hours(4))),
         _ => None, // sin tiempos fiables: casa sólo por matrícula + aeropuerto
     };
 
@@ -758,7 +774,16 @@ fn gsx_for_flight(receipts: &[GsxReceipt], e: &FlightLogEntry) -> GsxCosts {
         if r.reg != reg {
             continue;
         }
-        if !airports.is_empty() && !airports.contains(&r.airport) {
+        // (fix) El COMBUSTIBLE es un servicio de SALIDA → sólo cuenta en el
+        // aeropuerto de ORIGEN del tramo. Antes, un recibo de fuel en el DESTINO
+        // (que es la salida del tramo SIGUIENTE de la misma aeronave) se cargaba
+        // por duplicado a este vuelo y al siguiente. Catering/handling siguen
+        // casando por origen o destino.
+        let airport_ok = match r.kind {
+            GsxKind::Fuel => origin_up.as_deref() == Some(r.airport.as_str()),
+            _ => airports.is_empty() || airports.contains(&r.airport),
+        };
+        if !airport_ok {
             continue;
         }
         if let Some((lo, hi)) = window {

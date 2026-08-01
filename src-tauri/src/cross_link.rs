@@ -198,14 +198,21 @@ fn make_junction(link: &Path, target: &Path) -> anyhow::Result<()> {
     use std::process::Command;
     // CREATE_NO_WINDOW — evita el parpadeo de una consola al invocar cmd.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let link_s = link.to_string_lossy();
+    let target_s = target.to_string_lossy();
+    // (v7) Anti command-injection: `cmd /C mklink` RE-PARSEA sus argumentos, así
+    // que un nombre de carpeta con metacaracteres de shell (& | < > ^ " %)
+    // ejecutaría comandos arbitrarios (p.ej. una carpeta `addon & calc`). Los
+    // rechazamos — no aparecen en nombres de paquete MSFS válidos.
+    let bad = |c: char| matches!(c, '&' | '|' | '<' | '>' | '^' | '"' | '%');
+    if link_s.contains(bad) || target_s.contains(bad) {
+        anyhow::bail!(
+            "nombre de carpeta con caracteres no permitidos para junction: {}",
+            link.display()
+        );
+    }
     let out = Command::new("cmd")
-        .args([
-            "/C",
-            "mklink",
-            "/J",
-            &link.to_string_lossy(),
-            &target.to_string_lossy(),
-        ])
+        .args(["/C", "mklink", "/J", &link_s, &target_s])
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if out.status.success() {

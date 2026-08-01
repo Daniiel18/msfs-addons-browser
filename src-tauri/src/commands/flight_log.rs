@@ -777,3 +777,13 @@ pub async fn vas_acars_import(
 
     Ok(report)
 }
+
+/// (v7) Progreso de todos los logros, calculado del historial de vuelos.
+#[tauri::command]
+pub async fn list_achievements(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::achievements::AchievementProgress>, String> {
+    crate::achievements::compute_achievements(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}

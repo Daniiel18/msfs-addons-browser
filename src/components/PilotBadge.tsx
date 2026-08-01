@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, ChevronDown } from "lucide-react";
+import { Camera, ChevronDown, Trophy } from "lucide-react";
 import type { PilotProfile } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
@@ -8,6 +8,7 @@ import {
   saveAvatar,
   subscribeAvatar,
 } from "../lib/avatarStore";
+import { AchievementsModal } from "./AchievementsModal";
 
 /**
  * (v6.1 #30) Insignia del piloto — vive en el header GLOBAL (a la derecha del
@@ -28,6 +29,8 @@ export function PilotBadge() {
 
 function PilotMenu({ profile }: { profile: PilotProfile }) {
   const [open, setOpen] = useState(false);
+  // (v7) Panel de Logros abierto desde el perfil.
+  const [achOpen, setAchOpen] = useState(false);
   const [avatar, setAvatar] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -162,8 +165,22 @@ function PilotMenu({ profile }: { profile: PilotProfile }) {
               </div>
             </div>
           </div>
+
+          {/* (v7) Acceso a los Logros — el sitio natural: el perfil del piloto. */}
+          <button
+            onClick={() => {
+              setOpen(false);
+              setAchOpen(true);
+            }}
+            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 transition-colors hover:border-amber-500/50 hover:bg-amber-500/15"
+          >
+            <Trophy className="h-4 w-4" />
+            {t("ach.open")}
+          </button>
         </div>
       )}
+
+      {achOpen && <AchievementsModal onClose={() => setAchOpen(false)} />}
     </div>
   );
 }

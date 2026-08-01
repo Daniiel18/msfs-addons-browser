@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_opener::OpenerExt;
 use tokio::sync::{RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -142,8 +141,14 @@ impl DownloadManager {
 
         match method.kind {
             DownloadKind::Mirror | DownloadKind::Direct => {
-                // Synchronous: hand off to the system browser.
-                self.run_open_url(&id, method.url).await;
+                // (v7) En vez de abrir el navegador del sistema y que el
+                // usuario baje + instale a mano, abrimos un navegador
+                // EMBEBIDO (con ad blocker + bloqueo de popups) que captura la
+                // descarga y la auto-instala en la Community correcta. Si el
+                // método trae `parts` (Skybound multi-parte), baja todas en
+                // orden y las une antes de instalar.
+                self.run_embedded_download(&id, method.url, method.parts, method.password)
+                    .await;
             }
             DownloadKind::Torrent => {
                 // Asynchronous: the torrent flow runs in the background so
@@ -421,25 +426,67 @@ impl DownloadManager {
         }
     }
 
-    /// Mirror & Direct handler: hand the URL to the user's default
-    /// browser. Matches legacy `Process.Start(ShellExecute)` behaviour,
-    /// but through the Tauri opener plugin (cross-platform, sandboxed).
-    async fn run_open_url(&self, id: &str, url: String) {
+    /// (v7) Mirror & Direct handler: abre la descarga en un navegador
+    /// EMBEBIDO de SimFleet (no el del sistema). Ese navegador tiene ad
+    /// blocker + bloqueo de popups, captura la descarga y emite
+    /// `embedded-download://finished` → el instalador de drop la instala sola
+    /// en la Community correcta y borra el temporal.
+    ///
+    /// El `DownloadJob` sólo refleja "abierta": no podemos seguir el progreso
+    /// dentro del WebView (WebView2 no expone bytes), y la instalación la
+    /// reporta el propio instalador de drop en la ventana principal. Por eso
+    /// marcamos `Completed` con un mensaje claro en cuanto la ventana abre —
+    /// igual que el viejo flujo, pero ahora todo ocurre dentro de la app.
+    async fn run_embedded_download(
+        &self,
+        id: &str,
+        url: String,
+        parts: Vec<String>,
+        password: Option<String>,
+    ) {
         self.update(id, |j| {
             j.phase = DownloadPhase::Downloading;
-            j.message = Some("Abriendo en tu navegador…".into());
+            j.message = Some(if parts.is_empty() {
+                "Abriendo la descarga dentro de SimFleet…".into()
+            } else {
+                format!(
+                    "Abriendo la descarga dentro de SimFleet ({} partes)…",
+                    parts.len() + 1
+                )
+            });
         })
         .await;
 
-        let result = self.inner.app.opener().open_url(url, None::<&str>);
+        let win_label = format!("hoster-dl-{id}");
+        let title = "Descarga — SimFleet".to_string();
+        // Idioma de la app para los textos del overlay.
+        let lang: String = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM settings WHERE key='pref_language'",
+        )
+        .fetch_optional(&self.inner.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.0)
+        .unwrap_or_default();
+        let result = crate::commands::livery::open_hoster_download(
+            &self.inner.app,
+            win_label,
+            url,
+            title,
+            &lang,
+            parts,
+            password,
+        );
 
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Completed;
                     j.message = Some(
-                        "Abierto en el navegador. Completa la descarga ahí y luego usa \
-                         «Instalar desde archivo…» con el archivo descargado."
+                        "Descarga abierta dentro de SimFleet. Si el sitio pide un clic o \
+                         un captcha, complétalo en la ventana; el archivo se instalará \
+                         solo al terminar."
                             .into(),
                     );
                 })
@@ -448,7 +495,7 @@ impl DownloadManager {
             Err(e) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;
-                    j.error = Some(format!("No se pudo abrir la URL: {}", e));
+                    j.error = Some(format!("No se pudo abrir la descarga: {e}"));
                 })
                 .await;
             }
@@ -737,12 +784,28 @@ impl DownloadManager {
                 // visible en DB.
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Completed;
-                    j.message = Some(format!(
-                        "Se instalaron {} paquete{} ({:.1} MB)",
-                        res.packages.len(),
-                        if res.packages.len() == 1 { "" } else { "s" },
-                        (res.total_bytes as f64) / (1024.0 * 1024.0),
-                    ));
+                    if res.packages.is_empty() && res.installer_payload.is_some() {
+                        // (fix) El torrent traía un INSTALADOR (.exe/.msi), no un
+                        // paquete auto-instalable. Antes reportaba "Se instalaron
+                        // 0 paquetes" (parecía éxito) y el instalador se borraba
+                        // con la limpieza. Ahora se avisa claro y se redirige al
+                        // método Mirror/Direct, que SÍ maneja instaladores (los
+                        // abre en SimFleet y te deja guardarlos/ejecutarlos).
+                        j.message = Some(
+                            "El torrent contiene un instalador (.exe/.msi), no un \
+                             paquete auto-instalable. Descárgalo por el método \
+                             Mirror/Direct: SimFleet lo abre y te deja guardarlo \
+                             para ejecutarlo."
+                                .into(),
+                        );
+                    } else {
+                        j.message = Some(format!(
+                            "Se instalaron {} paquete{} ({:.1} MB)",
+                            res.packages.len(),
+                            if res.packages.len() == 1 { "" } else { "s" },
+                            (res.total_bytes as f64) / (1024.0 * 1024.0),
+                        ));
+                    }
                     j.install_path = primary.map(|p| p.install_path);
                 })
                 .await;

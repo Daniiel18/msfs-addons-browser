@@ -80,7 +80,7 @@ fn parse_download_methods(html: &str) -> Vec<DownloadMethod> {
             _ => format!("{} Download", prettify_hoster(&hoster)),
         };
 
-        out.push(DownloadMethod { kind, name, url: href });
+        out.push(DownloadMethod { kind, name, url: href, parts: Vec::new(), password: None });
     }
 
     // Dedupe identical URLs (Simplaza sometimes duplicates a link in nearby
@@ -359,6 +359,8 @@ impl Source for SimplazaSource {
                         kind: DownloadKind::Direct,
                         name: "Abrir en Simplaza".to_string(),
                         url: page_url.clone(),
+                        parts: Vec::new(),
+                        password: None,
                     });
                 }
                 Addon {
@@ -370,7 +372,7 @@ impl Source for SimplazaSource {
                     version: parsed.version,
                     icao: parsed.icao,
                     simulator: "MSFS 2020".to_string(),
-                    download_methods: methods,
+                    download_methods: super::prioritize_methods(methods),
                     page_url,
                     image_url,
                     released_at,
@@ -422,6 +424,8 @@ impl Source for SimplazaSource {
                         kind: DownloadKind::Direct,
                         name: "Abrir en Simplaza".to_string(),
                         url: page_url.clone(),
+                        parts: Vec::new(),
+                        password: None,
                     });
                 }
                 Addon {
@@ -433,7 +437,7 @@ impl Source for SimplazaSource {
                     version: parsed.version,
                     icao: parsed.icao,
                     simulator: "MSFS 2020".to_string(),
-                    download_methods: methods,
+                    download_methods: super::prioritize_methods(methods),
                     page_url,
                     image_url,
                     released_at,

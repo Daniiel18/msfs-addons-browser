@@ -10,12 +10,14 @@ import {
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { DropCommitReport, DropInspection } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
 import { playLandingSound } from "../lib/landingSound";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useToastStore } from "../stores/useToastStore";
 import { DropSelectModal, DeleteConfirm, isEmbeddedDownload } from "./DropSelectModal";
 import { t } from "../lib/i18n";
 
@@ -50,11 +52,89 @@ async function notifyDownloadReady() {
   }
 }
 
+/** (v7) Traduce sentinelas de error del backend a mensajes legibles.
+ *  `NO_SPACE:<needed_bytes>:<free_bytes>` → aviso claro con GB (el addon no
+ *  cabía al descomprimirse). El resto de errores pasan tal cual. */
+function formatDropError(err: string): string {
+  const m = err.match(/NO_SPACE:(\d+):(\d+)/);
+  if (m) {
+    const gb = (b: string) => (Number(b) / 1073741824).toFixed(1);
+    const needed = Number(m[1]);
+    // `needed=0` → no se pudo estimar el tamaño (archivo bloqueado/cifrado que
+    // no lista); mensaje genérico sin cifra falsa. Si sí se estimó, la damos.
+    if (needed > 0) {
+      return t("drop.no_space", { needed: gb(m[1]), free: gb(m[2]) });
+    }
+    return t("drop.no_space_generic", { free: gb(m[2]) });
+  }
+  return err;
+}
+
+/** (v6.2.74) Ruteo 2020/2024 de una descarga del embebido según la
+ *  compatibilidad que reporta flightsim.to (msfs2020/msfs2024). */
+export type DropRouting = {
+  communityPath: string | null;
+  note: { level: "info" | "warn"; text: string } | null;
+  forceModal: boolean;
+};
+
+async function computeRoutingFor(insp: DropInspection): Promise<DropRouting> {
+  const none: DropRouting = { communityPath: null, note: null, forceModal: false };
+  if (!isEmbeddedDownload(insp.archivePath)) return none;
+  try {
+    const [meta, targets] = await Promise.all([
+      api.flightsimDownloadMeta(insp.archivePath),
+      api.communityTargets(),
+    ]);
+    if (!meta) return none;
+    const only2020 = meta.msfs2020 === true && meta.msfs2024 !== true;
+    const only2024 = meta.msfs2024 === true && meta.msfs2020 !== true;
+    // Compatible con ambos, o sin flags → comportamiento normal (versión actual
+    // + oferta de cross-link como hoy).
+    if (!only2020 && !only2024) return none;
+    if (only2020) {
+      if (targets.folder2020) {
+        const mismatch = targets.currentIs2024;
+        return {
+          communityPath: targets.folder2020,
+          note: mismatch ? { level: "info", text: t("drop.compat.route_2020") } : null,
+          forceModal: mismatch,
+        };
+      }
+      return {
+        communityPath: null,
+        note: { level: "warn", text: t("drop.compat.missing_2020") },
+        forceModal: true,
+      };
+    }
+    // only2024
+    if (targets.folder2024) {
+      const mismatch = !targets.currentIs2024;
+      return {
+        communityPath: targets.folder2024,
+        note: mismatch ? { level: "info", text: t("drop.compat.route_2024") } : null,
+        forceModal: mismatch,
+      };
+    }
+    return {
+      communityPath: null,
+      note: { level: "warn", text: t("drop.compat.missing_2024") },
+      forceModal: true,
+    };
+  } catch {
+    return none;
+  }
+}
+
 export function DragDropOverlay() {
   const [hovering, setHovering] = useState(false);
   const [activeInspections, setActiveInspections] = useState<
     DropInspection[] | null
   >(null);
+  // (v6.2.74) Ruteo por sessionId (2020/2024) para las descargas del embebido.
+  const [dropRouting, setDropRouting] = useState<Map<string, DropRouting>>(
+    new Map(),
+  );
   const [results, setResults] = useState<DropFlowResult[]>([]);
   // (v4.23.0) Confirmación de borrado del archivo origen para el
   // FAST-PATH (archivos de 1 solo item, p.ej. liveries): antes ese
@@ -105,6 +185,46 @@ export function DragDropOverlay() {
         // procesar), sino cuando el MODAL está LISTO — se dispara dentro de
         // processDropBatch justo antes de mostrarlo / instalar.
         await processDropBatch([path]);
+      }),
+      // (v7) Descarga capturada del navegador de HOSTERS (modsfire, mixdrop,
+      // get.php de sceneryaddons). Mismo pipeline que las liveries: inspect →
+      // modal/instalación → auto-borrado del temporal (`simfleet-mirror-dl`).
+      // El payload trae {path, window}: instalamos y LUEGO cerramos la ventana
+      // del hoster (cuando el modal ya está listo, no antes).
+      listen<
+        { path?: string; window?: string; password?: string | null } | string
+      >(
+        "embedded-download://finished",
+        async (event) => {
+          const payload = event.payload;
+          const path = typeof payload === "string" ? payload : payload?.path;
+          const win = typeof payload === "string" ? undefined : payload?.window;
+          // (v7) La clave la manda el backend (Skybound la lee de la ficha) →
+          // la pasamos a la extracción para que NO pida contraseña.
+          const password =
+            typeof payload === "string" ? undefined : payload?.password ?? undefined;
+          if (!path) return;
+          await processDropBatch([path], password);
+          if (win) {
+            try {
+              const w = await WebviewWindow.getByLabel(win);
+              await w?.close();
+            } catch {
+              /* la ventana ya no existe / cierre manual */
+            }
+          }
+        },
+      ),
+      // (v7) La descarga ARRANCÓ en el navegador embebido (liveries de
+      // flightsim.to, mirrors, modsfire, rapidgator…) → toast de SimFleet para
+      // que el usuario sepa que sí inició (antes no había feedback ninguno).
+      listen<string>("embedded-download://started", (event) => {
+        const name = (event.payload ?? "").split(/[\\/]/).pop() ?? "";
+        useToastStore.getState().push({
+          kind: "success",
+          title: t("toast.download.started"),
+          message: name || undefined,
+        });
       }),
     );
 
@@ -162,7 +282,7 @@ export function DragDropOverlay() {
           ) {
             return { path: r.path, state: "awaiting_password" };
           }
-          return { path: r.path, state: "error", error: m.error };
+          return { path: r.path, state: "error", error: formatDropError(m.error) };
         }
         if (m.inspection && m.inspection.items.length === 0) {
           void api.dropCancel(m.inspection.sessionId).catch(() => {});
@@ -190,16 +310,28 @@ export function DragDropOverlay() {
       isEmbeddedDownload(i.archivePath),
     );
 
+    // (v6.2.74) Ruteo 2020/2024: por cada descarga del embebido decidimos en qué
+    // Community va según su compatibilidad. Si hay desajuste de versión (o falta
+    // la versión requerida), forzamos el modal para AVISAR.
+    const routingMap = new Map<string, DropRouting>();
+    for (const insp of validInspections) {
+      routingMap.set(insp.sessionId, await computeRoutingFor(insp));
+    }
+    const anyForceModal = [...routingMap.values()].some((r) => r.forceModal);
+
     const allSingle =
       validInspections.length > 0 &&
       validInspections.every(
         (i) => i.items.length === 1 && i.items[0].kind !== "installer_exe",
       );
 
-    if (validInspections.length > 0 && allSingle) {
+    if (validInspections.length > 0 && allSingle && !anyForceModal && !fromEmbedded) {
       // FAST-PATH: todo de 1 item (liveries, aviones sueltos…). Commit
       // directo, marca instalado YA y acumula los archivos para ofrecer
       // su borrado al final (cuando no quede ninguna clave pendiente).
+      // (v7) Las descargas del navegador embebido SIEMPRE pasan por el modal
+      // (aunque sean 1 item) — el usuario pidió ver qué se instala antes de
+      // instalarlo, incluso para escenarios/addons de un solo paquete.
       const reports: DropCommitReport[] = [];
       const committed: string[] = [];
       for (const insp of validInspections) {
@@ -207,7 +339,7 @@ export function DragDropOverlay() {
           const r = await api.dropCommit(
             insp.sessionId,
             [insp.items[0].sourcePath],
-            null,
+            routingMap.get(insp.sessionId)?.communityPath ?? null,
           );
           reports.push(r);
           const installedSomething =
@@ -240,6 +372,7 @@ export function DragDropOverlay() {
       // Multi-item → modal de selección paginado. Sonamos + traemos al frente
       // AHORA que el modal está listo (no al empezar a procesar).
       if (fromEmbedded) void notifyDownloadReady();
+      setDropRouting(routingMap);
       setActiveInspections(validInspections);
     }
 
@@ -333,7 +466,13 @@ export function DragDropOverlay() {
 
       {activeInspections && (
         <DropSelectModal
+          /* (v7) key por-lote: si el set de inspecciones cambia (encoge), el
+             modal se REMONTA fresco reseteando pageIdx y re-inicializando las
+             selecciones — si no, un pageIdx viejo apuntaría a un índice que ya
+             no existe y `inspections[pageIdx].sessionId` reventaría (TypeError). */
+          key={activeInspections.map((i) => i.sessionId).join(",")}
           inspections={activeInspections}
+          routing={dropRouting}
           onClose={onModalClose}
           onDone={(reports) => onDoneBatch(activeInspections, reports)}
         />
@@ -398,9 +537,22 @@ export function DragDropOverlay() {
         />
       )}
 
-      {results.length > 0 && (
-        <DropResultsToast results={results} onClear={() => setResults([])} />
-      )}
+      {/* (v7) El progreso EN CURSO de las descargas del navegador embebido se
+          muestra DENTRO del WebView (que tapa a SimFleet), así que ocultamos sólo
+          esas filas en-progreso ('inspecting'/'awaiting_modal'). Los estados
+          TERMINALES (error, pide-clave) SÍ se muestran: para cuando aparecen, el
+          WebView ya se cerró, así que el usuario debe ver el fallo (si no, una
+          descarga que falla la extracción desaparecería en silencio). */}
+      {(() => {
+        const visible = results.filter(
+          (r) =>
+            !isEmbeddedDownload(r.path) ||
+            (r.state !== "inspecting" && r.state !== "awaiting_modal"),
+        );
+        return visible.length > 0 ? (
+          <DropResultsToast results={visible} onClear={() => setResults([])} />
+        ) : null;
+      })()}
     </>
   );
 }

@@ -117,8 +117,25 @@ fn zip_directory(src: &Path, dest: &Path) -> anyhow::Result<u64> {
         .unix_permissions(0o755);
 
     let mut total: u64 = 0;
-    for entry in walkdir::WalkDir::new(src) {
-        let entry = entry?;
+    // (fix) Backup ROBUSTO: un archivo bloqueado por MSFS/antivirus (sharing
+    // violation) o sin permiso NO debe abortar el backup entero ni dejar un
+    // .zip corrupto. Se saltan los que fallan (logueados) y se sigue. Justo el
+    // momento del backup suele ser con MSFS abierto bloqueando scenery.
+    let mut skipped: u64 = 0;
+    // (v7) `follow_links(true)`: muchos usuarios enlazan addons a Community con
+    // junctions/symlinks (el propio cross-link de la app). Sin esto walkdir los
+    // ve como un "link" y NO desciende → el backup omitiría esos addons en
+    // silencio. Siguiendo links, se respaldan sus archivos reales.
+    for entry in walkdir::WalkDir::new(src).follow_links(true) {
+        // Una entrada ilegible (permiso en una subcarpeta) → saltar, no abortar.
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(target: "backup", "entrada ilegible saltada: {e}");
+                skipped += 1;
+                continue;
+            }
+        };
         let path = entry.path();
         let rel = match path.strip_prefix(src) {
             Ok(p) => p,
@@ -128,9 +145,22 @@ fn zip_directory(src: &Path, dest: &Path) -> anyhow::Result<u64> {
             continue;
         }
         if entry.file_type().is_file() {
+            // Leemos ANTES de empezar la entrada del zip: si falla, saltamos
+            // limpio sin dejar una entrada vacía/corrupta.
+            let bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "backup",
+                        "archivo bloqueado/ilegible saltado: {} ({e})",
+                        path.display()
+                    );
+                    skipped += 1;
+                    continue;
+                }
+            };
             let name = rel.to_string_lossy().replace('\\', "/");
             zip.start_file(name, opts)?;
-            let bytes = std::fs::read(path)?;
             zip.write_all(&bytes)?;
             total += bytes.len() as u64;
         } else if entry.file_type().is_dir() {
@@ -139,6 +169,12 @@ fn zip_directory(src: &Path, dest: &Path) -> anyhow::Result<u64> {
         }
     }
     zip.finish()?;
+    if skipped > 0 {
+        tracing::warn!(
+            target: "backup",
+            "backup terminado con {skipped} archivo(s) omitido(s) por bloqueo/permiso"
+        );
+    }
     Ok(total)
 }
 

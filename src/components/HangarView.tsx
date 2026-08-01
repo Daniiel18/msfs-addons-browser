@@ -2346,10 +2346,6 @@ function LandingCard({ l }: { l: HangarLanding }) {
         >
           {l.fpm} fpm · {gradeLabel}
         </span>
-        <span className="absolute bottom-2 right-2 inline-flex items-center gap-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-[9px] text-slate-400">
-          <Film className="h-2.5 w-2.5" />
-          {t("hangar.clip_soon")}
-        </span>
       </div>
       <div className="p-2.5">
         <div className="truncate text-xs font-medium text-slate-200">

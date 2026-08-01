@@ -26,6 +26,7 @@ import { useToastStore } from "../stores/useToastStore";
 import { derivedType, looksLikePlaceholderTitle } from "../lib/packageType";
 import { useThumbnail } from "../lib/thumbnails";
 import { AddonFallbackArt } from "./AddonArt";
+import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
 import { t } from "../lib/i18n";
 
 interface Props {
@@ -63,6 +64,10 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
   // aeropuertos. Si no hay thumbnail (ni el web fallback la trajo), se
   // muestra la silueta tipada (avión/livery/…).
   const thumb = useThumbnail(pkg.folderName, looksLikePlaceholderTitle(pkg.title));
+  // (v6.2.75) Addon de flightsim.to → preferimos SU imagen (en vez del
+  // placeholder que muchos packs traen).
+  const fstoThumb = useFlightsimUpdateStore((s) => s.thumbs).get(pkg.folderName);
+  const shownThumb = fstoThumb ?? thumb;
   const derived = useMemo(() => derivedType(pkg), [pkg]);
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
@@ -249,9 +254,9 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
           {/* (v5.0.0) Vista previa del addon arriba — igual que la card
               de aeropuertos. Thumbnail local / web, o silueta tipada. */}
           <div className="relative h-36 w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
-            {thumb ? (
+            {shownThumb ? (
               <img
-                src={thumb}
+                src={shownThumb}
                 alt=""
                 className="h-full w-full object-cover"
                 onError={(e) => {

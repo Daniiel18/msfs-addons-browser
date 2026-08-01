@@ -28,6 +28,22 @@ struct RawDetail {
     updated_at: Option<String>,
     #[serde(default)]
     link: Option<String>,
+    /// (v6.2.74) Compatibilidad de sim reportada por flightsim.to.
+    #[serde(default)]
+    msfs2020: Option<bool>,
+    #[serde(default)]
+    msfs2024: Option<bool>,
+    /// (v6.2.75) Galería de imágenes del addon.
+    #[serde(default)]
+    images: Vec<RawImage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawImage {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default, rename = "isMain")]
+    is_main: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +52,23 @@ struct FileMeta {
     version: Option<String>,
     updated_at: Option<String>,
     link: Option<String>,
+    msfs2020: Option<bool>,
+    msfs2024: Option<bool>,
+    /// (v6.2.75) URL de la imagen principal (con `?width` para tamaño razonable).
+    thumbnail: Option<String>,
+}
+
+/// (v6.2.74) Metadata de compatibilidad de un archivo de flightsim.to, para
+/// decidir en qué Community (2020/2024) instalar lo que se descargó.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlightsimMeta {
+    pub file_id: String,
+    pub title: Option<String>,
+    /// true/false si flightsim.to lo declara; None si no reporta el flag.
+    pub msfs2020: Option<bool>,
+    pub msfs2024: Option<bool>,
+    pub link: String,
 }
 
 /// Update disponible de un addon rastreado (uno por carpeta de Community).
@@ -52,6 +85,8 @@ pub struct FlightsimUpdate {
     pub latest_version: Option<String>,
     /// URL de la página del addon (para abrir en el embebido y re-descargar).
     pub link: String,
+    /// (v6.2.75) Imagen del addon en flightsim.to (para la card/modal en Addons).
+    pub thumbnail: Option<String>,
 }
 
 /// Extrae el `file_id` numérico de una URL de flightsim.to
@@ -89,11 +124,39 @@ async fn fetch_detail(http: &reqwest::Client, file_id: &str) -> Option<FileMeta>
     }
     let raw: RawDetail = resp.json().await.ok()?;
     let clean = |o: Option<String>| o.filter(|s| !s.trim().is_empty());
+    // Imagen principal (isMain) o la primera; añadimos `?width=800` para no
+    // bajar el PNG a resolución completa (pueden ser varios MB).
+    let thumbnail = raw
+        .images
+        .iter()
+        .find(|i| i.is_main == Some(true))
+        .or_else(|| raw.images.first())
+        .and_then(|i| i.url.clone())
+        .filter(|u| !u.trim().is_empty())
+        .map(|u| if u.contains('?') { u } else { format!("{u}?width=800") });
     Some(FileMeta {
         title: clean(raw.title),
         version: clean(raw.version),
         updated_at: clean(raw.updated_at),
         link: clean(raw.link),
+        msfs2020: raw.msfs2020,
+        msfs2024: raw.msfs2024,
+        thumbnail,
+    })
+}
+
+/// (v6.2.74) Metadata de compatibilidad de un `file_id` (para el routing 2020/
+/// 2024 al instalar lo descargado del embebido).
+pub async fn fetch_meta(http: &reqwest::Client, file_id: &str) -> Option<FlightsimMeta> {
+    let m = fetch_detail(http, file_id).await?;
+    Some(FlightsimMeta {
+        file_id: file_id.to_string(),
+        title: m.title,
+        msfs2020: m.msfs2020,
+        msfs2024: m.msfs2024,
+        link: m
+            .link
+            .unwrap_or_else(|| format!("https://flightsim.to/addon/{file_id}")),
     })
 }
 
@@ -122,14 +185,15 @@ pub async fn record_tracked(
         let res = sqlx::query(
             r#"
             INSERT INTO flightsim_tracked_files
-                (folder_name, file_id, title, known_version, known_updated, link, tracked_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                (folder_name, file_id, title, known_version, known_updated, link, thumbnail, tracked_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
             ON CONFLICT(folder_name) DO UPDATE SET
                 file_id       = excluded.file_id,
                 title         = excluded.title,
                 known_version = excluded.known_version,
                 known_updated = excluded.known_updated,
                 link          = excluded.link,
+                thumbnail     = excluded.thumbnail,
                 tracked_at    = excluded.tracked_at
             "#,
         )
@@ -139,6 +203,7 @@ pub async fn record_tracked(
         .bind(&meta.version)
         .bind(&meta.updated_at)
         .bind(&meta.link)
+        .bind(&meta.thumbnail)
         .execute(db)
         .await;
         match res {
@@ -161,20 +226,27 @@ pub async fn record_tracked(
 /// al baseline. Devuelve una entrada por carpeta rastreada (el front filtra por
 /// `has_update` y por carpetas realmente instaladas).
 pub async fn check_updates(db: &SqlitePool, http: &reqwest::Client) -> Vec<FlightsimUpdate> {
-    let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT folder_name, file_id, title, known_version, known_updated, link \
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT folder_name, file_id, title, known_version, known_updated, link, thumbnail \
              FROM flightsim_tracked_files",
-        )
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
 
     // Cache por file_id: varias carpetas pueden venir del mismo archivo.
     let mut cache: std::collections::HashMap<String, Option<FileMeta>> =
         std::collections::HashMap::new();
     let mut out = Vec::with_capacity(rows.len());
-    for (folder, file_id, title, known_version, known_updated, link) in rows {
+    for (folder, file_id, title, known_version, known_updated, link, stored_thumb) in rows {
         let meta = match cache.get(&file_id) {
             Some(m) => m.clone(),
             None => {
@@ -197,11 +269,16 @@ pub async fn check_updates(db: &SqlitePool, http: &reqwest::Client) -> Vec<Fligh
         let link = latest_link
             .or(link)
             .unwrap_or_else(|| format!("https://flightsim.to/addon/{file_id}"));
+        // (v6.2.75) Thumbnail: el guardado, o el del detail (backfill de filas
+        // viejas grabadas antes de la columna).
+        let thumbnail =
+            stored_thumb.or_else(|| meta.as_ref().and_then(|m| m.thumbnail.clone()));
         let _ = sqlx::query(
-            "UPDATE flightsim_tracked_files SET last_checked_at = datetime('now') \
-             WHERE folder_name = ?1",
+            "UPDATE flightsim_tracked_files SET last_checked_at = datetime('now'), \
+             thumbnail = COALESCE(thumbnail, ?2) WHERE folder_name = ?1",
         )
         .bind(&folder)
+        .bind(&thumbnail)
         .execute(db)
         .await;
         out.push(FlightsimUpdate {
@@ -212,6 +289,7 @@ pub async fn check_updates(db: &SqlitePool, http: &reqwest::Client) -> Vec<Fligh
             current_version: known_version,
             latest_version,
             link,
+            thumbnail,
         });
     }
     out
@@ -240,19 +318,6 @@ pub async fn ack_update(db: &SqlitePool, http: &reqwest::Client, folder_name: &s
         .execute(db)
         .await;
     }
-}
-
-/// (DEBUG) Fuerza que TODOS los addons rastreados aparezcan con update:
-/// rebobina su baseline (`known_updated`) a epoch 0, de modo que cualquier
-/// `updatedAt` actual sea "más nuevo". Ayuda TEMPORAL para probar el flujo del
-/// badge/campana sin esperar a una actualización real. Devuelve cuántas filas
-/// tocó (0 = todavía no descargaste nada por el embebido).
-pub async fn debug_force_update(db: &SqlitePool) -> u64 {
-    sqlx::query("UPDATE flightsim_tracked_files SET known_updated = '1970-01-01T00:00:00Z'")
-        .execute(db)
-        .await
-        .map(|r| r.rows_affected())
-        .unwrap_or(0)
 }
 
 /// ISO-8601 (`2026-07-26T21:28:01Z`) → epoch secs.

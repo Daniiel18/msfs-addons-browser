@@ -54,6 +54,9 @@ import type {
   GsxProfile,
   GsxProfileUpdate,
   FlightsimUpdate,
+  FlightsimMeta,
+  CommunityTargets,
+  AchievementProgress,
   InstallResult,
   InstalledAddon,
   CrossLinkOffer,
@@ -212,9 +215,13 @@ interface Api {
   /** (v6.2.60) Marca un addon de flightsim.to como manejado: avanza su
    *  baseline para que el badge no reaparezca (se llama al pulsar el badge). */
   flightsimAckUpdate: (folderName: string) => Promise<void>;
-  /** (DEBUG v6.2.60) Fuerza updates de prueba en los addons rastreados
-   *  (rebobina el baseline). Devuelve cuántos afectó. Ayuda temporal. */
-  flightsimDebugForceUpdate: () => Promise<number>;
+  /** (v7) Progreso de todos los logros, calculado del historial de vuelos. */
+  listAchievements: () => Promise<AchievementProgress[]>;
+  /** (v6.2.74) Compatibilidad 2020/2024 de una descarga del embebido (por su
+   *  path temporal). null si ese path no vino de una descarga de flightsim.to. */
+  flightsimDownloadMeta: (path: string) => Promise<FlightsimMeta | null>;
+  /** (v6.2.74) Destinos Community por versión de MSFS + la versión activa. */
+  communityTargets: () => Promise<CommunityTargets>;
   /** (v6.2.52) Vigila la carpeta de Descargas: cuando bajes una livery de
    *  flightsim.to (en tu navegador real, con tu cuenta), la detecta y la
    *  instala automáticamente. Se llama al abrir flightsim.to. */
@@ -729,8 +736,10 @@ const realApi: Api = {
     invoke<FlightsimUpdate[]>("flightsim_check_updates"),
   flightsimAckUpdate: (folderName) =>
     invoke<void>("flightsim_ack_update", { folderName }),
-  flightsimDebugForceUpdate: () =>
-    invoke<number>("flightsim_debug_force_update"),
+  listAchievements: () => invoke<AchievementProgress[]>("list_achievements"),
+  flightsimDownloadMeta: (path) =>
+    invoke<FlightsimMeta | null>("flightsim_download_meta", { path }),
+  communityTargets: () => invoke<CommunityTargets>("community_targets"),
   startLiveryDownloadWatch: () => invoke<void>("start_livery_download_watch"),
   openLiveryBrowser: (url) => invoke<void>("open_livery_browser", { url: url ?? null }),
   saveInstallerTo: (src, destFolder) =>
@@ -1328,8 +1337,20 @@ const demoApi: Api = {
     return [];
   },
   async flightsimAckUpdate() {},
-  async flightsimDebugForceUpdate() {
-    return 0;
+  async listAchievements() {
+    return [];
+  },
+  async flightsimDownloadMeta() {
+    return null;
+  },
+  async communityTargets() {
+    return {
+      currentIs2024: false,
+      has2020: false,
+      has2024: false,
+      folder2020: null,
+      folder2024: null,
+    };
   },
   async startLiveryDownloadWatch() {
     return;
@@ -1797,6 +1818,8 @@ const demoApi: Api = {
       simVersion: "msfs2020", // demo: skip el modal de elección
       vsSupabaseUrl: "",
       vsSupabaseKey: "",
+      discordRpcEnabled: true,
+      discordAppId: "",
     };
   },
   async setAppSetting() {
