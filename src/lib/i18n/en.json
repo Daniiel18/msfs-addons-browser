@@ -946,6 +946,7 @@
   "notifications.update_all.hint": "Launch the wizard to update every package with pending updates",
   "notifications.empty": "All up to date. The app checks for updates automatically on startup and on focus.",
   "downloads.reopen_link": "Reopen link",
+  "downloads.msg.opened_in_browser": "Download opened inside SimFleet. Complete it in the window if needed; it installs itself when it finishes.",
   "downloads.forget_history.tooltip": "Remove from history (does not delete from disk)",
   "downloads.msg.installed.one": "Installed {count} package ({mb} MB)",
   "downloads.msg.installed.many": "Installed {count} packages ({mb} MB)",

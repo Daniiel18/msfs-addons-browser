@@ -526,5 +526,16 @@ function translateJobMessage(msg: string): string {
     const key = count === "1" ? "downloads.msg.installed.one" : "downloads.msg.installed.many";
     return t(key, { count, mb: installedMatch[2] });
   }
+  // (v7.1) Mensajes en español CRUDO persistidos en la DB por versiones viejas
+  // (de cuando el backend no localizaba). Los descargas que hoy usan `tr!` ya
+  // llegan traducidas, pero los jobs viejos guardados quedan con el texto de
+  // antes. Re-mapeamos los conocidos al estado localizado actual.
+  if (
+    msg.startsWith("Abierto en el navegador") ||
+    msg.includes("Instalar desde archivo…»") ||
+    msg.includes("Instalar desde archivo...»")
+  ) {
+    return t("downloads.msg.opened_in_browser");
+  }
   return msg;
 }

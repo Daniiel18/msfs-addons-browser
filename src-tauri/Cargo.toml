@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "7.1.0"
+version = "7.1.1"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"

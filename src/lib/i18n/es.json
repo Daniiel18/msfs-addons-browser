@@ -946,6 +946,7 @@
   "notifications.update_all.hint": "Lanza el asistente para actualizar todos los paquetes con update pendiente",
   "notifications.empty": "Todo al día. La app comprueba updates automáticamente al arrancar y al ganar foco.",
   "downloads.reopen_link": "Reabrir enlace",
+  "downloads.msg.opened_in_browser": "Descarga abierta dentro de SimFleet. Complétala en la ventana si hace falta; se instala sola al terminar.",
   "downloads.forget_history.tooltip": "Quitar del historial (no borra el disco)",
   "downloads.msg.installed.one": "Se instaló {count} paquete ({mb} MB)",
   "downloads.msg.installed.many": "Se instalaron {count} paquetes ({mb} MB)",
