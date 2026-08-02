@@ -526,15 +526,19 @@ function translateJobMessage(msg: string): string {
     const key = count === "1" ? "downloads.msg.installed.one" : "downloads.msg.installed.many";
     return t(key, { count, mb: installedMatch[2] });
   }
-  // (v7.1) Mensajes en español CRUDO persistidos en la DB por versiones viejas
-  // (de cuando el backend no localizaba). Los descargas que hoy usan `tr!` ya
-  // llegan traducidas, pero los jobs viejos guardados quedan con el texto de
-  // antes. Re-mapeamos los conocidos al estado localizado actual.
+  // (v7.1.1) `job.message` se PERSISTE en la DB en el idioma en que se generó.
+  // Un download abierto cuando el backend estaba en español queda con el texto
+  // español guardado, y sigue saliendo así aunque la app esté en inglés. Los
+  // re-mapeamos al estado localizado actual por su contenido conocido.
   if (
+    msg.startsWith("Descarga abierta dentro de SimFleet") ||
     msg.startsWith("Abierto en el navegador") ||
-    msg.includes("Instalar desde archivo…»") ||
-    msg.includes("Instalar desde archivo...»")
+    msg.includes("Instalar desde archivo")
   ) {
+    return t("downloads.msg.opened_in_browser");
+  }
+  // "Abriendo la descarga…" (fase inicial, español persistido)
+  if (msg.startsWith("Abriendo la descarga") || msg.startsWith("Extrayendo archivo")) {
     return t("downloads.msg.opened_in_browser");
   }
   return msg;
