@@ -146,12 +146,14 @@ pub async fn open_livery_browser(
     let mut builder = WebviewWindowBuilder::new(&app, LIVERY_WIN, WebviewUrl::External(parsed))
         .initialization_script(livery_init.as_str())
         .title(crate::tr!("livery.windowTitle"))
-        // (v7) Ventana FLOTANTE más chica que la principal (que se ve detrás),
-        // siempre al frente y con foco.
+        // (v7.1) Ventana FLOTANTE más chica que la principal. Es OWNED de la
+        // ventana `main` (se setea abajo, antes de `build`) → queda SIEMPRE
+        // encima de SimFleet pero NO encima del resto de apps de Windows, así el
+        // usuario puede seguir usando su PC mientras la descarga corre. (Antes
+        // era `always_on_top` = se ponía sobre TODO y bloqueaba el monitor.)
         .inner_size(1024.0, 720.0)
         .min_inner_size(820.0, 560.0)
         .center()
-        .always_on_top(true)
         .focused(true)
         .user_agent(CHROME_UA)
         // (v6.2.53) HIPÓTESIS del blanco: el drag&drop handler que Tauri instala
@@ -250,6 +252,11 @@ pub async fn open_livery_browser(
     // extensión; si no cargó, se ignora).
     if let Some(dir) = UBOL_DIR.get() {
         builder = builder.browser_extensions_enabled(true).extensions_path(dir);
+    }
+    // (v7.1) OWNED de la ventana principal → encima de SimFleet pero NO encima
+    // del resto de apps de Windows (el usuario puede usar su PC mientras baja).
+    if let Some(main_win) = app.get_webview_window("main") {
+        builder = builder.parent(&main_win).map_err(|e| e.to_string())?;
     }
     let win = builder.build().map_err(|e| e.to_string())?;
 
@@ -600,12 +607,14 @@ pub(crate) fn open_hoster_download(
     let mut builder = WebviewWindowBuilder::new(app, &win_label, WebviewUrl::External(parsed))
         .initialization_script(hoster_init.as_str())
         .title(title)
-        // (v7) Ventana FLOTANTE más chica que la principal (que se ve detrás),
-        // siempre al frente y con foco.
+        // (v7.1) Ventana FLOTANTE más chica que la principal. Es OWNED de la
+        // ventana `main` (se setea abajo, antes de `build`) → queda SIEMPRE
+        // encima de SimFleet pero NO encima del resto de apps de Windows, así el
+        // usuario puede seguir usando su PC mientras la descarga corre. (Antes
+        // era `always_on_top` = se ponía sobre TODO y bloqueaba el monitor.)
         .inner_size(1024.0, 720.0)
         .min_inner_size(820.0, 560.0)
         .center()
-        .always_on_top(true)
         .focused(true)
         // (v7) SIN decoraciones → sin botones de minimizar/maximizar/cerrar del
         // sistema; se maneja como un popout de SimFleet (se cierra con el ✕ del
@@ -776,6 +785,11 @@ pub(crate) fn open_hoster_download(
     // mucho mejor que la lista de dominios a mano.
     if let Some(dir) = UBOL_DIR.get() {
         builder = builder.browser_extensions_enabled(true).extensions_path(dir);
+    }
+    // (v7.1) OWNED de la ventana principal → encima de SimFleet pero NO encima
+    // del resto de apps de Windows (el usuario puede usar su PC mientras baja).
+    if let Some(main_win) = app.get_webview_window("main") {
+        builder = builder.parent(&main_win).map_err(|e| e.to_string())?;
     }
     let win = builder.build().map_err(|e| e.to_string())?;
 
