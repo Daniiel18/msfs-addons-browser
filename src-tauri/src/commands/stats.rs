@@ -88,12 +88,16 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
     #[derive(sqlx::FromRow)]
     struct RawRow {
         content_type: Option<String>,
+        #[allow(dead_code)]
         dependencies_count: i64,
         icao: Option<String>,
         size_bytes: Option<i64>,
         icao_resolvable: bool,
         title: String,
         folder_name: String,
+        base_containers_json: Option<String>,
+        simobject_dirs_json: Option<String>,
+        has_flight_model: bool,
     }
     let raws: Vec<RawRow> = sqlx::query_as(
         r#"
@@ -103,13 +107,25 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
                cp.size_bytes,
                (a.icao IS NOT NULL) AS icao_resolvable,
                cp.title,
-               cp.folder_name
+               cp.folder_name,
+               cp.base_containers_json,
+               cp.simobject_dirs_json,
+               cp.has_flight_model
         FROM community_packages cp
         LEFT JOIN airports a ON a.icao = UPPER(cp.icao)
         "#,
     )
     .fetch_all(pool)
     .await?;
+
+    // Helper: parsea un JSON array de strings a Vec<String> minúsculas.
+    fn parse_str_array(raw: Option<&str>) -> Vec<String> {
+        raw.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.trim().to_lowercase())
+            .collect()
+    }
 
     // Buckets — usamos `Vec<(label, count, bytes)>` para preservar
     // orden de aparición. Pasamos a Vec<TypeStat> al final.
@@ -162,15 +178,46 @@ async fn compute_stats(pool: &SqlitePool) -> anyhow::Result<DashboardStats> {
                 0
             }
             "AIRCRAFT" => {
-                if r.dependencies_count > 0 {
-                    liveries_count += 1;
-                    2
-                } else {
+                // (v7.2.2) content_type=AIRCRAFT lo declaran TANTO los aviones
+                // como sus liveries y sus mods (cabina/luces/texturas). La señal
+                // DEFINITIVA de avión es `has_flight_model` (trae flight_model.cfg
+                // / .air) — igual que derivedType en el front. Sirve para los
+                // ENCRIPTADOS (PMDG/Fenix, has_own_model=false) y excluye mods
+                // que traen geometría sin ser aviones.
+                if r.has_flight_model {
                     aircraft_count += 1;
-                    1
+                    1 // Aviones
+                } else {
+                    // Sin modelo de vuelo → livery o mod. Señal de livery
+                    // (título "livery/liveries/repaint" o base_container FUERA
+                    // de los containers propios) → Liveries; si no, es un mod →
+                    // Sonido/Misc. Aproximación: no replica el match por
+                    // aerolínea del front.
+                    let hay = format!("{} {}", r.title, r.folder_name).to_lowercase();
+                    let own: std::collections::HashSet<String> =
+                        parse_str_array(r.simobject_dirs_json.as_deref())
+                            .into_iter()
+                            .collect();
+                    let base_outside = parse_str_array(r.base_containers_json.as_deref())
+                        .iter()
+                        .any(|b| !own.contains(b));
+                    let is_livery = hay.contains("livery")
+                        || hay.contains("liveries")
+                        || hay.contains("repaint")
+                        || base_outside;
+                    if is_livery {
+                        liveries_count += 1;
+                        2 // Liveries
+                    } else {
+                        4 // Sonido / Misc (mod de cabina/luces/texturas)
+                    }
                 }
             }
-            "INSTRUMENT" => 3,
+            "LIVERY" | "PAINT" | "REPAINT" | "PAINTKIT" | "TEXTURE" => {
+                liveries_count += 1;
+                2
+            }
+            "INSTRUMENT" | "INSTRUMENTS" => 3,
             "MISC" => 4,
             _ => 5,
         };

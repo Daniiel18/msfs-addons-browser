@@ -521,8 +521,14 @@ pub mod repo {
         #[sqlx(default)]
         pub base_containers_json: String,
         /// (v4.31.0) true si tiene geometría 3D propia (avión real vs
-        /// modificación de texturas/cabina).
+        /// modificación de texturas/cabina). ⚠️ Poco fiable para clasificar:
+        /// falso en aviones encriptados, verdadero en mods de cabina.
         pub has_own_model: bool,
+        /// (v7.2.2) true si algún container trae su modelo de vuelo
+        /// (flight_model.cfg / .air). Señal DEFINITIVA de avión — vale para los
+        /// encriptados (PMDG/Fenix/iniBuilds) y excluye liveries/mods.
+        #[sqlx(default)]
+        pub has_flight_model: bool,
         /// (v4.31.0) false si el paquete no trae manifest.json (3rd-party).
         pub has_manifest: bool,
         /// (v4.29.0) Ruta absoluta del thumbnail resuelto durante el
@@ -564,6 +570,7 @@ pub mod repo {
                    cp.base_containers_json,
                    cp.thumbnail_path,
                    cp.has_own_model,
+                   cp.has_flight_model,
                    cp.has_manifest,
                    ap.name      AS airport_name,
                    ap.latitude  AS latitude,

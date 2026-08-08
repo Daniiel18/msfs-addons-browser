@@ -70,6 +70,13 @@ pub struct ScannedPackage {
     /// una modificación (texturas de cabina, etc.) aunque el manifest
     /// diga content_type=AIRCRAFT.
     pub has_own_model: bool,
+    /// (v7.2.2) true si algún container trae su MODELO DE VUELO
+    /// (flight_model.cfg o un .air). Señal DEFINITIVA de "esto es un avión":
+    /// vale para los aviones encriptados (PMDG/Fenix/iniBuilds) donde
+    /// has_own_model es false, y excluye liveries y mods (cabina/luces/
+    /// texturas) que declaran content_type=AIRCRAFT pero heredan el vuelo del
+    /// avión base.
+    pub has_flight_model: bool,
     /// (v4.31.0) false si el paquete NO trae manifest.json — 3rd-party
     /// no estándar (badge en la UI).
     pub has_manifest: bool,
@@ -153,7 +160,8 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
         // (v4.26.0) Contenedores SimObjects propios + base_container
         // referenciados — alimentan el auto-link del Link Map.
         // (v4.31.0) + has_own_model: ¿hay geometría 3D propia?
-        let (simobject_dirs, base_containers, has_own_model) = scan_simobjects(&path);
+        let (simobject_dirs, base_containers, has_own_model, has_flight_model) =
+            scan_simobjects(&path);
         // (v4.29.0) Thumbnail resuelto UNA vez (no en runtime por la
         // UI). Persistido en DB para que `package_thumbnail` sea O(1).
         let thumbnail_path = resolve_thumbnail(&path);
@@ -188,6 +196,7 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
                 base_containers,
                 thumbnail_path,
                 has_own_model,
+                has_flight_model,
                 false, // has_manifest
                 size_cache,
             ));
@@ -205,6 +214,7 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
                     base_containers,
                     thumbnail_path.clone(),
                     has_own_model,
+                    has_flight_model,
                     size_cache,
                 ));
             }
@@ -227,6 +237,7 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
                     base_containers,
                     thumbnail_path,
                     has_own_model,
+                    has_flight_model,
                     true, // tiene manifest pero está corrupto
                     size_cache,
                 ));
@@ -246,7 +257,7 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
 /// paquete: nombres de contenedores propios + los `base_container`
 /// que referencian sus aircraft.cfg. Barato: lista 1-2 dirs y lee
 /// los primeros KB de cada aircraft.cfg.
-fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool) {
+fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool, bool) {
     let mut dirs: Vec<String> = Vec::new();
     let mut bases: Vec<String> = Vec::new();
     // (v4.31.0) ¿Algún container tiene geometría 3D propia? Un AVIÓN
@@ -254,6 +265,15 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool) {
     // modificación (texturas de cabina, sonido) sólo trae `texture.*`
     // o `panel/` y reusa el modelo del avión base.
     let mut has_own_model = false;
+    // (v7.2.2) Señal DEFINITIVA de avión: ¿algún container trae su MODELO DE
+    // VUELO (flight_model.cfg o un archivo .air)? Los aviones de verdad —
+    // incluidos los ENCRIPTADOS (PMDG/Fenix/iniBuilds), que no exponen
+    // geometría .gltf y por eso tienen has_own_model=false— SIEMPRE lo traen.
+    // Las liveries y los mods (texturas de cabina, luces, cabina) NUNCA lo
+    // traen: heredan el del avión base. Es mucho más fiable que has_own_model,
+    // que da falsos NEGATIVOS (encriptados) y falsos POSITIVOS (un mod de
+    // cabina puede traer geometría sin ser un avión).
+    let mut has_flight_model = false;
     for kind in ["Airplanes", "Rotorcraft"] {
         let so = root.join("SimObjects").join(kind);
         let Ok(entries) = std::fs::read_dir(&so) else {
@@ -267,25 +287,46 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool) {
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                 dirs.push(name.to_string());
             }
-            // Buscar una subcarpeta model* con geometría real.
-            if !has_own_model {
+            // Escaneo del contenido del container UNA sola vez: (a) geometría
+            // 3D propia (model*/ con .gltf/.bin) y (b) señal de avión de verdad.
+            // Señal de avión — cubre AMBOS sims:
+            //   · MSFS 2020 y aviones de modelo abierto (iFly/FBW/FSS): traen su
+            //     modelo de vuelo en claro → `flight_model.cfg` o un `.air`.
+            //   · MSFS 2024 aviones ENCRIPTADOS (PMDG/Fenix/iniBuilds/TFDi): NO
+            //     exponen flight_model.cfg (va cifrado), pero su container trae
+            //     una carpeta `presets` (loadouts del avión) que las liveries y
+            //     los mods NO tienen. (`attachments` sola NO vale: los módulos
+            //     AICopilot la traen; por eso usamos `presets`.)
+            if !has_own_model || !has_flight_model {
                 if let Ok(subs) = std::fs::read_dir(&path) {
                     for sub in subs.flatten() {
                         let sp = sub.path();
-                        if !sp.is_dir() {
-                            continue;
-                        }
                         let sname = sp
                             .file_name()
                             .and_then(|s| s.to_str())
                             .unwrap_or("")
                             .to_lowercase();
-                        // `model`, `model.300ER`, `model.WL`, etc.
-                        if sname == "model" || sname.starts_with("model.") {
-                            if dir_has_geometry(&sp) {
+                        if sp.is_dir() {
+                            // `model`, `model.300ER`, `model.WL`, etc.
+                            if !has_own_model
+                                && (sname == "model" || sname.starts_with("model."))
+                                && dir_has_geometry(&sp)
+                            {
                                 has_own_model = true;
-                                break;
                             }
+                            // `presets` → avión encriptado de MSFS 2024.
+                            if !has_flight_model && sname == "presets" {
+                                has_flight_model = true;
+                            }
+                        } else if !has_flight_model
+                            && (sname == "flight_model.cfg"
+                                || sp
+                                    .extension()
+                                    .and_then(|s| s.to_str())
+                                    .map(|e| e.eq_ignore_ascii_case("air"))
+                                    .unwrap_or(false))
+                        {
+                            has_flight_model = true;
                         }
                     }
                 }
@@ -318,7 +359,7 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool) {
     }
     bases.sort();
     bases.dedup();
-    (dirs, bases, has_own_model)
+    (dirs, bases, has_own_model, has_flight_model)
 }
 
 /// ¿La carpeta `model*` contiene geometría 3D real? Un avión trae
@@ -531,6 +572,7 @@ fn materialize(
     base_containers: Vec<String>,
     thumbnail_path: Option<String>,
     has_own_model: bool,
+    has_flight_model: bool,
     size_cache: &SizeCache,
 ) -> ScannedPackage {
     let title = raw
@@ -607,6 +649,7 @@ fn materialize(
         base_containers,
         thumbnail_path,
         has_own_model,
+        has_flight_model,
         has_manifest: true,
     }
 }
@@ -619,6 +662,7 @@ fn materialize_fallback(
     base_containers: Vec<String>,
     thumbnail_path: Option<String>,
     has_own_model: bool,
+    has_flight_model: bool,
     has_manifest: bool,
     size_cache: &SizeCache,
 ) -> ScannedPackage {
@@ -645,6 +689,7 @@ fn materialize_fallback(
         base_containers,
         thumbnail_path,
         has_own_model,
+        has_flight_model,
         has_manifest,
     }
 }
@@ -827,6 +872,113 @@ fn extract_icao(text: &str) -> Option<String> {
     Some(candidates.into_iter().next().unwrap().1)
 }
 
+/// (v7.2.6) Extrae el ICAO REAL de un escenario leyendo su ESTRUCTURA DE
+/// ARCHIVOS — la fuente definitiva cuando el `manifest.json` no trae el ICAO
+/// (muchos packs, sobre todo de MSFS 2024, sólo ponen el nombre "Taiyuan Wusu
+/// International Airport" y el regex de nombre pesca una palabra de 4 letras
+/// como "WUSU", que NO es el ICAO — el real es ZBYN). MSFS SIEMPRE nombra la
+/// carpeta y el BGL del aeropuerto por su ICAO:
+///     Scenery/airport-<icao>-<hash>/scenery/<ICAO>.bgl
+/// Busca primero una carpeta `airport-<ICAO>-…` (señal fuerte) y, si no, un
+/// archivo `<ICAO>.bgl`.
+fn icao_from_scenery_files(root: &Path) -> Option<String> {
+    let scenery = root.join("Scenery");
+    if !scenery.is_dir() {
+        return None;
+    }
+    // Recolectamos los ICAO candidatos de BGL: sólo confiamos en ellos si hay
+    // UNO ÚNICO (un scenery suele traer varios BGL de 4 letras — objetos,
+    // exclusiones, librerías — y elegir "el primero" da falsos positivos como
+    // BALI/MYNN). La carpeta `airport-<icao>` sí es señal fuerte por sí sola.
+    let mut bgl_icaos: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in walkdir::WalkDir::new(&scenery)
+        .max_depth(4)
+        .into_iter()
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy();
+        if entry.file_type().is_dir() {
+            // `airport-ZBYN-…` → la carpeta lleva el ICAO.
+            if let Some(icao) = icao_from_airport_folder(&name) {
+                return Some(icao);
+            }
+        } else if let Some(icao) = icao_from_bgl_filename(&name) {
+            bgl_icaos.insert(icao);
+        }
+    }
+    if bgl_icaos.len() == 1 {
+        bgl_icaos.into_iter().next()
+    } else {
+        None
+    }
+}
+
+/// Igual que `extract_icao` pero devuelve SÓLO el candidato precedido por
+/// `airport-`/`airports-` (la convención `dev-airport-<ICAO>-nombre`), sin
+/// caer al primer token de 4 letras. Es la señal MÁS fiable del ICAO y tiene
+/// prioridad sobre la estructura de archivos (que puede traer un template con
+/// otro ICAO, p. ej. un `airport-MYNN` bundleado).
+fn extract_icao_airport_prefixed(text: &str) -> Option<String> {
+    let upper = text.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    if bytes.len() < 4 {
+        return None;
+    }
+    for i in 0..=bytes.len() - 4 {
+        let cand = &bytes[i..i + 4];
+        if !cand.iter().all(|b| b.is_ascii_alphabetic()) {
+            continue;
+        }
+        let after_ok = i + 4 == bytes.len() || !bytes[i + 4].is_ascii_alphanumeric();
+        if !after_ok {
+            continue;
+        }
+        if i >= 8 {
+            let p = &bytes[i - 8..i];
+            if p.starts_with(b"AIRPORT") && matches!(p[7], b'-' | b'_' | b' ') {
+                return String::from_utf8(cand.to_vec()).ok();
+            }
+        }
+        if i >= 9 {
+            let p = &bytes[i - 9..i];
+            if p.starts_with(b"AIRPORTS") && matches!(p[8], b'-' | b'_' | b' ') {
+                return String::from_utf8(cand.to_vec()).ok();
+            }
+        }
+    }
+    None
+}
+
+/// `airport-zbyn---` → `Some("ZBYN")`. Requiere el prefijo `airport-` y 4
+/// letras ASCII a continuación.
+fn icao_from_airport_folder(name: &str) -> Option<String> {
+    let rest = name.to_ascii_lowercase();
+    let rest = rest.strip_prefix("airport-")?;
+    let icao: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    if icao.len() == 4 {
+        Some(icao.to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
+/// `ZBYN.bgl` → `Some("ZBYN")`; `ZBYN_OBJ.bgl` → `Some("ZBYN")`. Sólo acepta un
+/// stem de EXACTAMENTE 4 letras o 4 letras seguidas de separador (evita
+/// `objects.bgl`, `vegetation.bgl`, etc.).
+fn icao_from_bgl_filename(name: &str) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".bgl")?;
+    let bytes = stem.as_bytes();
+    if bytes.len() < 4 || !bytes[..4].iter().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    if bytes.len() == 4 || matches!(bytes[4], b'-' | b'_' | b' ' | b'.') {
+        Some(stem[..4].to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
 /// (v6.2.25) Carga el cache de tamaños del scan anterior desde la DB
 /// (`folder_name → (folder_modified_at, size_bytes)`). Alimenta el
 /// arranque incremental: los folders cuya firma de mtime no cambió
@@ -882,6 +1034,19 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         q.execute(&mut *tx).await?;
     }
 
+    // (v7.2.6) Set de ICAOs REALES (OurAirports) para validar el candidato de
+    // nombre y NO persistir una palabra de 4 letras que no es un aeropuerto
+    // (p. ej. "WUSU" del título "Taiyuan Wusu International Airport"). Si el
+    // dataset aún no cargó (set vacío), no validamos.
+    let valid_icaos: std::collections::HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT icao FROM airports")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.trim().to_ascii_uppercase())
+            .collect();
+
     // Upsert por folder_name. Reemplazamos todos los campos en cada
     // scan — más simple que diff incremental y suficientemente rápido.
     for pkg in &report.packages {
@@ -893,7 +1058,31 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         let icao_to_persist = if matches_scenery(&pkg.content_type)
             && !is_library_pack(&pkg.title, &pkg.folder_name)
         {
-            pkg.icao.clone()
+            // (v7.2.6) Orden de confianza para el ICAO (cada paso validado
+            // contra el dataset de aeropuertos reales salvo que aún no cargó):
+            //  1. Nombre con convención `…-airport-<ICAO>-…` — la señal más
+            //     fiable (KMSP, OEJN, KAUS…).
+            //  2. ESTRUCTURA del escenario: carpeta `airport-<icao>` o un ÚNICO
+            //     BGL `<ICAO>.bgl` — resuelve los packs cuyo nombre NO trae el
+            //     ICAO (p. ej. "millet2732s-taiyuanwusu" → ZBYN del BGL, en vez
+            //     de "WUSU" que es sólo una palabra del título).
+            //  3. Cualquier token de 4 letras del nombre/título, pero SÓLO si es
+            //     un aeropuerto real (evita persistir "WUSU").
+            let validate = |ic: Option<String>| -> Option<String> {
+                let up = ic?.trim().to_ascii_uppercase();
+                if up.is_empty() {
+                    None
+                } else if valid_icaos.is_empty() || valid_icaos.contains(&up) {
+                    Some(up)
+                } else {
+                    None
+                }
+            };
+            let path = std::path::Path::new(&pkg.install_path);
+            validate(extract_icao_airport_prefixed(&pkg.folder_name))
+                .or_else(|| validate(extract_icao_airport_prefixed(&pkg.title)))
+                .or_else(|| validate(icao_from_scenery_files(path)))
+                .or_else(|| validate(pkg.icao.clone()))
         } else {
             None
         };
@@ -908,9 +1097,9 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 package_version, minimum_game_version, icao, size_bytes,
                 folder_modified_at, dependencies_count, scanned_at, enabled,
                 simobject_dirs_json, base_containers_json, thumbnail_path,
-                has_own_model, has_manifest
+                has_own_model, has_flight_model, has_manifest
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15, ?16, ?17)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             ON CONFLICT(folder_name) DO UPDATE SET
                 install_path = excluded.install_path,
                 title = excluded.title,
@@ -928,6 +1117,7 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 base_containers_json = excluded.base_containers_json,
                 thumbnail_path = excluded.thumbnail_path,
                 has_own_model = excluded.has_own_model,
+                has_flight_model = excluded.has_flight_model,
                 has_manifest = excluded.has_manifest
             "#,
         )
@@ -947,6 +1137,7 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         .bind(&base_containers_json)
         .bind(&pkg.thumbnail_path)
         .bind(pkg.has_own_model)
+        .bind(pkg.has_flight_model)
         .bind(pkg.has_manifest)
         .execute(&mut *tx)
         .await?;

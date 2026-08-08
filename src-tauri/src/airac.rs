@@ -8,7 +8,7 @@
 //! `airac_installed_cycle`). El frontend lo muestra en Notificaciones + Dashboard
 //! y, al actualizar, abre Navigraph Hub y guarda el ciclo nuevo.
 
-use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use serde::Serialize;
 use sqlx::SqlitePool;
 
@@ -70,7 +70,12 @@ async fn read_installed(pool: &SqlitePool, latest: &str, today: NaiveDate) -> St
 pub async fn airac_check_update(
     state: tauri::State<'_, AppState>,
 ) -> Result<AiracUpdateInfo, String> {
-    let today = Utc::now().date_naive();
+    // (v7.2.4) Fecha LOCAL, no UTC: los ciclos AIRAC son efectivos a las 0000Z,
+    // pero el usuario compara contra SU calendario. Con UTC, un usuario en
+    // UTC-4 (Rep. Dominicana) veía el ciclo nuevo la noche ANTERIOR a la fecha
+    // efectiva impresa (a las 20:00 locales ya era el día siguiente en UTC).
+    // Usando la fecha local, el aviso aparece el mismo día que la fecha mostrada.
+    let today = Local::now().date_naive();
     let (latest_cycle, eff) = airac_for(today);
     let installed = read_installed(&state.db, &latest_cycle, today).await;
     // "Más nuevo" = distinto y con ciclo numéricamente mayor (los YYNN crecen

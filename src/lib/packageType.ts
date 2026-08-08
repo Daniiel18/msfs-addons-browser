@@ -51,30 +51,17 @@ const SOUND_RE =
 const TEXTURE_MOD_RE =
   /\b(downscaled|improve\s*fps|new\s*cockpit|cockpit\s*texture|texture\s*(?:pack|mod|overhaul)|retexture|4k\s*texture|cockpit\s*overhaul)\b/i;
 
-/** (v6.2.58) Mods de cabina/texturas PMDG/iFly que NO son liveries de
- *  aerolínea (zHUES, "new cockpit", cabina sucia/desgastada). Se quedan en
- *  MISC aunque el paquete sea PMDG/iFly. */
-const COCKPIT_MOD_RE =
-  /\b(hues|cockpit|panel\s*mod|instrument\s*mod|weathered|dirty|used\s*look|worn)\b/i;
-
-/** (v6.2.58) Livery de PMDG/iFly: un paquete de sólo-texturas (containers
- *  pero SIN modelo propio) que referencia un avión PMDG o iFly es casi
- *  siempre una LIVERY de aerolínea — antes caía en MISC por declarar
- *  content_type=AIRCRAFT sin modelo. Excluimos los mods de cabina. */
-function looksLikePmdgIflyLivery(p: CommunityPackage): boolean {
-  const t = `${p.title} ${p.folderName}`.toLowerCase();
-  if (!/\b(pmdg|ifly)\b/.test(t)) return false;
-  if (COCKPIT_MOD_RE.test(t)) return false;
-  return true;
-}
-
 /** Señales TEXTUALES explícitas de livery (no deps>0, que es engañoso). */
 function looksLikeLivery(p: CommunityPackage): boolean {
   const t = `${p.title} ${p.folderName}`;
   if (/\b(liver(?:y|ies)|repaint|skin|paintkit|paint\s*kit)\b/i.test(t))
     return true;
-  // Matrículas reales: G-BAEK, D-AIxx, EC-NTO, B-XXXX, JA8089, N12345…
-  if (/\b[A-Z]{1,3}-[A-Z0-9]{2,6}\b/.test(p.title)) return true;
+  // Matrículas reales tipo ICAO: prefijo de 1-2 LETRAS, guion, y una LETRA
+  // seguida de 1-4 alfanuméricos (G-DHLV, D-AIMA, EC-NTO, PR-XMM, XA-MAG…).
+  // (v7.2.1) Exigimos que tras el guion venga una LETRA para NO confundir
+  // designaciones de MODELO (MD-11, DC-10, CRJ-900, 737-800) con matrículas —
+  // eso mandaba el TFDi MD-11 a LIVERY. Los modelos llevan DÍGITOS tras el guion.
+  if (/\b[A-Z]{1,2}-[A-Z][A-Z0-9]{1,4}\b/.test(p.title)) return true;
   if (/\bN\d{1,5}[A-Z]{0,2}\b/.test(p.title)) return true;
   // Aerolíneas: keywords genéricas + lista corta de operadores frecuentes.
   if (
@@ -89,21 +76,6 @@ function looksLikeLivery(p: CommunityPackage): boolean {
     )
   )
     return true;
-  return false;
-}
-
-/** Detector estricto de "esto es un avión": folder con `aircraft` o
- *  título con modelo conocido. Llamado SOLO si no hay señales de
- *  livery — sino un livery de A350 caería como aircraft. */
-function looksLikeAircraft(p: CommunityPackage): boolean {
-  // El folder con `aircraft` es la señal más fuerte: PMDG, FBW,
-  // iniBuilds, Fenix, etc. siguen `<vendor>-aircraft-<model>`.
-  if (/\baircraft\b/i.test(p.folderName)) return true;
-  const aircraftModelRegex =
-    /\b(a3(?:1[89]|2[01]|30|40|50|80)|b73[6789]|b74[78]|b75[7]|b76[7]|b77[7]|b78[7]|crj|md[-_ ]?(?:11|80|90)|tbm[-_ ]?9(?:30|40)|c1?7[2358]|c20[8]|atr[-_ ]?(?:42|72)|q400|dh[c]?[-_ ]?8|cj4|king\s*air|cessna|piper|mooney)\b/i;
-  if (aircraftModelRegex.test(p.title)) return true;
-  if (aircraftModelRegex.test(p.folderName)) return true;
-  if (/\b(aircraft|airplane|jet|airliner)\b/i.test(p.title)) return true;
   return false;
 }
 
@@ -193,36 +165,37 @@ export function derivedType(p: CommunityPackage): DerivedType {
   // 5) SCENERY no-airport → MISC.
   if (ct === "SCENERY") return "MISC";
 
-  // 6) INSTRUMENTS explícitos del manifest.
-  if (ct === "INSTRUMENT") return "INSTRUMENT";
+  // 6) INSTRUMENTS explícitos del manifest. Los manifests reales de MSFS
+  //    usan el plural "INSTRUMENTS" (EFB, gauges); aceptamos ambas formas.
+  //    "TOOL" son companion apps/herramientas (SimBridge de FBW) → Utilities.
+  if (ct === "INSTRUMENT" || ct === "INSTRUMENTS" || ct === "TOOL")
+    return "INSTRUMENT";
 
   // 7) base_container apuntando FUERA ⇒ LIVERY (spec MSFS).
   const diag = diagnosePackage(p);
   if (diag.isLivery) return "LIVERY";
 
-  // 8) (v4.31.0) SEÑAL MAESTRA — ¿tiene geometría 3D propia?
-  //    Un AVIÓN real trae model/ con .gltf bajo SimObjects/Airplanes.
-  //    Las "texturas de cabina" (zHUES PMDG, A330 New Cockpit) tienen
-  //    carpeta SimObjects pero SOLO texture.* — NO model. Declaran
-  //    content_type=AIRCRAFT pero NO son aviones → MISC.
-  const hasContainers =
-    parseJsonArray(p.simobjectDirsJson).length > 0;
+  // 8) (v7.2.2) SEÑAL DEFINITIVA DE AVIÓN — `hasFlightModel`: el paquete trae
+  //    su MODELO DE VUELO (flight_model.cfg / .air) en algún container
+  //    SimObjects/Airplanes. Un avión de verdad SIEMPRE lo trae, INCLUSO los
+  //    ENCRIPTADOS (PMDG, Fenix, iniBuilds). Las liveries y los mods NUNCA lo
+  //    traen — heredan el vuelo del avión base, aunque declaren
+  //    content_type=AIRCRAFT.
+  //    NO usamos `hasOwnModel` (geometría .gltf): daba FALSOS NEGATIVOS (los
+  //    encriptados no exponen .gltf → borraba PMDG/Fenix de Aircraft) y FALSOS
+  //    POSITIVOS (un mod de CABINA trae geometría de asientos/revistas y un mod
+  //    de luces/HUES referencia el container, sin ser aviones).
   if (ct === "AIRCRAFT") {
-    if (p.hasOwnModel) return "AIRCRAFT"; // avión de verdad
-    if (hasContainers) {
-      // (v6.2.58) Un paquete de sólo-texturas (containers, sin modelo) puede
-      // ser una LIVERY de aerolínea, NO un mod de cabina. Lo mandamos a
-      // LIVERY si hay señal de livery (aerolínea/matrícula) o si es un livery
-      // de PMDG/iFly. Si no, es una mod de cabina/texturas → MISC.
-      if (!TEXTURE_MOD_RE.test(hay) && (looksLikeLivery(p) || looksLikePmdgIflyLivery(p)))
-        return "LIVERY";
-      return "MISC"; // modifica un avión (texturas/cabina)
-    }
-    // AIRCRAFT sin containers ni modelo: keywords de textura → MISC,
-    // si no, lo dejamos como AIRCRAFT (manifest correcto sin SimObjects
-    // parseable — raro pero posible).
-    if (TEXTURE_MOD_RE.test(hay)) return "MISC";
-    return "AIRCRAFT";
+    if (p.hasFlightModel) return "AIRCRAFT"; // trae modelo de vuelo → avión real
+    // content_type=AIRCRAFT SIN modelo de vuelo → NO es un avión: es una livery
+    // o un mod (zHUES cabina, B748-ImproveLights luces, A320 Cabin). Orden:
+    //  1. Señal de LIVERY (aerolínea/matrícula/"livery"; el base_container-fuera
+    //     ya se capturó en el paso 7) → LIVERY. Un repintado "weathered" de
+    //     aerolínea entra acá.
+    if (looksLikeLivery(p)) return "LIVERY";
+    //  2. Todo lo demás que declara AIRCRAFT sin modelo de vuelo es un MOD
+    //     (cabina/luces/texturas) o contenido mal etiquetado → MISC.
+    return "MISC";
   }
 
   // 9) Texturas/mods por keyword aunque no declaren AIRCRAFT.
@@ -231,9 +204,12 @@ export function derivedType(p: CommunityPackage): DerivedType {
   // 10) Señales textuales de livery (manifest mal declarado).
   if (looksLikeLivery(p)) return "LIVERY";
 
-  // 11) Sin content_type: si tiene modelo propio es avión.
-  if (p.hasOwnModel) return "AIRCRAFT";
-  if (looksLikeAircraft(p)) return "AIRCRAFT";
+  // 11) Sin content_type declarado: si trae su MODELO DE VUELO
+  //     (flight_model.cfg / .air) es un avión de verdad (manifest ausente/
+  //     ilegible pero estructura de avión presente). Ya NO promovemos por
+  //     hasOwnModel (falla en encriptados y en mods de cabina) ni por regex de
+  //     nombre (un título con "A320"/"737" sin vuelo es una livery o un mod).
+  if (p.hasFlightModel) return "AIRCRAFT";
   if (ct === "MISC") return "MISC";
   return "UNKNOWN";
 }

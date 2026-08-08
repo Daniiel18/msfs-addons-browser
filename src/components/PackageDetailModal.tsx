@@ -24,6 +24,7 @@ import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
 import { derivedType, looksLikePlaceholderTitle } from "../lib/packageType";
+import { liveryUrlFor } from "../lib/liveryslugs";
 import { useThumbnail } from "../lib/thumbnails";
 import { AddonFallbackArt } from "./AddonArt";
 import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
@@ -380,6 +381,20 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               <Folder className="h-3.5 w-3.5" />
               {t("pkg.open_folder")}
             </button>
+            {/* (v7.2.0) Solo para AVIONES de verdad (regla estricta de
+                derivedType): abre el WebView de flightsim.to en la página de
+                liveries de este avión. Reusa el mismo esquema/ventana que el
+                resto de la app (open_livery_browser). */}
+            {derived === "AIRCRAFT" && (
+              <button
+                onClick={() => api.openLiveryBrowser(liveryUrlFor(pkg))}
+                disabled={busy !== "none"}
+                title={t("pkg.get_liveries_hint")}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 hover:border-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
+              >
+                {t("pkg.get_liveries")}
+              </button>
+            )}
             <button
               onClick={openRepairPicker}
               disabled={busy !== "none" || !canRepair}

@@ -973,6 +973,8 @@
   "pkg.gsx_installed": "Installed",
   "pkg.gsx_not_detected": "Not detected",
   "pkg.open_folder": "Open folder",
+  "pkg.get_liveries": "Get Liveries ✈️",
+  "pkg.get_liveries_hint": "Browse flightsim.to liveries for this aircraft",
   "pkg.reinstall": "Reinstall",
   "pkg.reinstall_picker": "Pick a method and reinstall fresh",
   "pkg.reinstall_by_name": "We'll search matches in Simplaza by name",

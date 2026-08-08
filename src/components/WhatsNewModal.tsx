@@ -11,6 +11,10 @@ import {
   Medal,
   Gamepad2,
   CloudDownload,
+  Palette,
+  PlaneTakeoff,
+  Layers,
+  MapPin,
   type LucideIcon,
 } from "lucide-react";
 import { getActiveLocale } from "../lib/i18n";
@@ -18,13 +22,16 @@ import { getActiveLocale } from "../lib/i18n";
 /**
  * (v7) "Novedades" — modal BLOQUEANTE que se muestra UNA vez por versión al
  * arrancar. A diferencia del carrusel viejo: NO tiene X ni se cierra al hacer
- * clic afuera ni con Esc — el usuario DEBE leerlo. Las 8 novedades se reparten
- * en 2 páginas (4 + 4) y cada página tiene una cuenta atrás corta antes de
- * poder avanzar, para que no se salte de un solo clic. Contenido bilingüe
- * embebido (sin claves i18n, para iterar rápido).
+ * clic afuera ni con Esc — el usuario DEBE leerlo. Las novedades se reparten en
+ * páginas de 4 (paginado dinámico) y cada página tiene una cuenta atrás corta
+ * antes de poder avanzar, para que no se salte de un solo clic. Contenido
+ * bilingüe embebido (sin claves i18n, para iterar rápido).
+ *
+ * (v7.2.0) Se AÑADEN las novedades nuevas al final, conservando las anteriores
+ * — el usuario ve todo lo nuevo hasta ahora.
  */
-const WHATS_NEW_VERSION = "7.1.0";
-const SEEN_KEY = "simfleet.whatsnew.seen.v3";
+const WHATS_NEW_VERSION = "7.2.0";
+const SEEN_KEY = "simfleet.whatsnew.seen.v4";
 const PER_PAGE_SECONDS = 3;
 
 type Feat = { Icon: LucideIcon; es: [string, string]; en: [string, string] };
@@ -70,9 +77,34 @@ const FEATURES: Feat[] = [
     es: ["Integración con flightsim desde SimFleet", "Tus addons de flightsim.to dentro de SimFleet, con aviso cuando hay actualización."],
     en: ["flightsim.to integration inside SimFleet", "Your flightsim.to addons inside SimFleet, with update alerts."],
   },
+  // ---- (v7.2.0) Novedades nuevas ----
+  {
+    Icon: Palette,
+    es: ["Get Liveries por avión", "Cada avión tiene un botón que abre sus liveries en flightsim.to — detecta el modelo automáticamente, hasta para aviones nuevos."],
+    en: ["Get Liveries per aircraft", "Every aircraft has a button that opens its liveries on flightsim.to — it detects the model automatically, even for new aircraft."],
+  },
+  {
+    Icon: PlaneTakeoff,
+    es: ["Filtro Aircraft más preciso", "Aircraft muestra solo aviones de verdad — incluidos los de estudio encriptados (PMDG, Fenix, iniBuilds) — y separa liveries y mods a su categoría."],
+    en: ["Sharper Aircraft filter", "Aircraft shows only real aircraft — even encrypted study-level ones (PMDG, Fenix, iniBuilds) — and moves liveries and mods to their own category."],
+  },
+  {
+    Icon: Layers,
+    es: ["Compatibilidad MSFS 2020 / 2024", "Al instalar respeta si el addon es para 2020, 2024 o ambos — sin ofrecerte el simulador equivocado."],
+    en: ["MSFS 2020 / 2024 compatibility", "When installing, it respects whether an add-on is for 2020, 2024 or both — no wrong-sim offers."],
+  },
+  {
+    Icon: MapPin,
+    es: ["Aeropuertos mejor detectados", "El ICAO se lee de la estructura real del escenario (BGL/carpeta), no de una palabra del nombre — perfiles GSX correctos."],
+    en: ["Airports detected right", "The ICAO is read from the scenery's real structure (BGL/folder), not from a word in its name — correct GSX profiles."],
+  },
 ];
 
-const PAGES: Feat[][] = [FEATURES.slice(0, 4), FEATURES.slice(4)];
+// Paginado dinámico: 4 novedades por página.
+const PAGES: Feat[][] = [];
+for (let i = 0; i < FEATURES.length; i += 4) {
+  PAGES.push(FEATURES.slice(i, i + 4));
+}
 
 /** (v7) ¿El usuario todavía no vio las novedades de esta versión? Lo usa
  *  `App.tsx` para que el tour de bienvenida ESPERE a que este modal bloqueante

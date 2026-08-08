@@ -520,8 +520,12 @@ export function AddonsView() {
           label={t("addons.chip.unclassified")}
           count={counts.get("UNKNOWN") ?? 0}
         />
-        {/* (v6.2.72) Centro de flightsim.to: filtra a lo que bajaste de ahí. */}
-        {flightsimFolders.size > 0 && (
+        {/* (v6.2.72) Centro de flightsim.to: filtra a lo que bajaste de ahí.
+            (v7.2.1) Basamos el chip en los items REALMENTE instalados
+            (flightsimItems), no en el nº de filas rastreadas: si una fila quedó
+            huérfana (el addon se desinstaló fuera de la app) el filtro no la
+            puede mostrar → antes el chip decía "2" pero el grid salía vacío. */}
+        {flightsimItems.length > 0 && (
           <>
             <span className="mx-0.5 h-5 w-px self-center bg-slate-800" aria-hidden />
             <button
@@ -540,7 +544,7 @@ export function AddonsView() {
                   flightsimOnly ? "bg-sky-500/30 text-sky-100" : "bg-slate-800 text-slate-400"
                 }`}
               >
-                {flightsimFolders.size}
+                {flightsimItems.length}
               </span>
             </button>
           </>

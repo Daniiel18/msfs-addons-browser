@@ -799,9 +799,14 @@ export interface CommunityPackage {
    *  AIRCRAFT self-contained; si apuntan fuera → LIVERY. */
   baseContainersJson?: string;
   /** (v4.31.0) true si tiene geometría 3D propia bajo
-   *  SimObjects/Airplanes (avión real). false = modificación de
-   *  texturas/cabina aunque declare content_type AIRCRAFT. */
+   *  SimObjects/Airplanes (avión real). ⚠️ Poco fiable para clasificar:
+   *  falso en aviones encriptados (PMDG/Fenix), verdadero en mods de cabina. */
   hasOwnModel?: boolean;
+  /** (v7.2.2) true si algún container trae su MODELO DE VUELO
+   *  (flight_model.cfg / .air). Señal DEFINITIVA de avión: vale para los
+   *  encriptados (PMDG/Fenix/iniBuilds) y excluye liveries/mods (cabina,
+   *  luces, texturas) que declaran content_type=AIRCRAFT sin serlo. */
+  hasFlightModel?: boolean;
   /** (v4.31.0) false si el paquete no trae manifest.json → 3rd-party. */
   hasManifest?: boolean;
 }

@@ -98,13 +98,17 @@ pub async fn drop_commit(
             .ok()
             .and_then(|mut m| m.remove(&ap));
         if let Some(file_id) = file_id {
-            // `installed_packages` trae rutas completas; el tracking se indexa
-            // por NOMBRE de carpeta (= `CommunityPackage.folderName`) para casar
-            // el badge en Addons. (Las liveries PMDG/iFly se fusionan en el avión
-            // base, no son carpeta propia → no se rastrean por ahora.)
+            // `installed_packages` + `installed_livery_packages` traen rutas
+            // completas; el tracking se indexa por NOMBRE de carpeta
+            // (= `CommunityPackage.folderName`) para casar el badge en Addons.
+            // (v7.2.0) Las liveries instaladas por SimFleet son su PROPIO paquete
+            // Community (`pmdg-livery-*` / `ifly-livery-*`, doguer27 addon linker),
+            // así que se rastrean igual que cualquier otro paquete — con su
+            // file_id de flightsim.to (fiable, sólo descargas del embebido).
             let folders: Vec<String> = report
                 .installed_packages
                 .iter()
+                .chain(report.installed_livery_packages.iter())
                 .filter_map(|p| {
                     std::path::Path::new(p)
                         .file_name()

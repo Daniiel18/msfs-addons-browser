@@ -98,6 +98,13 @@ pub struct DropCommitReport {
     /// (v6.2.45) Liveries PMDG/iFly instaladas en Community (formato abierto).
     #[serde(default)]
     pub installed_liveries: Vec<String>,
+    /// (v7.2.0) Rutas absolutas de los PAQUETES Community creados para las
+    /// liveries (`pmdg-livery-*` / `ifly-livery-*`), una por paquete tocado.
+    /// A diferencia de `installed_liveries` (labels humanos), esto trae la
+    /// carpeta real → lo usa el tracking de updates de flightsim.to para
+    /// registrar cada livery por su `folder_name` (igual que installed_packages).
+    #[serde(default)]
+    pub installed_livery_packages: Vec<String>,
     pub errors: Vec<String>,
 }
 
@@ -415,6 +422,7 @@ pub fn commit(
         installed_packages: Vec::new(),
         installed_configs: Vec::new(),
         installed_liveries: Vec::new(),
+        installed_livery_packages: Vec::new(),
         errors: Vec::new(),
     };
 
@@ -526,6 +534,14 @@ pub fn commit(
                 .push(format!("layout.json {}: {}", pkg.display(), e));
         }
     }
+
+    // (v7.2.0) Exponemos las carpetas de paquete de las liveries (ya
+    // deduplicadas en `livery_pkgs_to_relayout`) para que el tracking de
+    // updates de flightsim.to las registre por `folder_name`.
+    report.installed_livery_packages = livery_pkgs_to_relayout
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
 
     // (v2.2.0) Cleanup explícito del tempdir + sesión tras commit.
     // El TempDir se elimina del filesystem cuando hacemos drop() de él

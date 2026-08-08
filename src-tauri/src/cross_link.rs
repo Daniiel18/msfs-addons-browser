@@ -51,6 +51,39 @@ pub fn is_dual_compat(title: &str) -> bool {
     t.contains("2020") && t.contains("2024")
 }
 
+/// (v7.2.3) Umbral de `minimum_game_version` que separa los tracks de versión de
+/// los dos sims. MSFS **2020** va por ~1.10–1.40; MSFS **2024** empezó en 1.0 y
+/// hoy ronda ~1.6 (visto en manifests reales: Fenix A320 = "1.39.9" en el build
+/// 2020 vs "1.6.34" en el build 2024). Así, `major==1 && minor < 10` ⇒ el
+/// paquete fue COMPILADO para 2024 (track 2024), y por tanto NO carga en 2020.
+/// Heurística — puede fallar con addons MUY viejos de 2020 (1.7–1.9); esos
+/// quedarían marcados como "sólo 2024" y no se ofrecería enlazarlos a 2020.
+const MSFS2024_MINOR_CEILING: u32 = 10;
+
+/// Lee `minimum_game_version` del `manifest.json` del paquete y devuelve
+/// `(major, minor)`. None si no hay manifest o no se puede parsear.
+fn read_min_game_version(pkg_path: &str) -> Option<(u32, u32)> {
+    let manifest = Path::new(pkg_path).join("manifest.json");
+    let raw = std::fs::read_to_string(manifest).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let v = json.get("minimum_game_version")?.as_str()?;
+    let mut parts = v.trim().split('.');
+    let major: u32 = parts.next()?.trim().parse().ok()?;
+    let minor: u32 = parts.next().unwrap_or("0").trim().parse().ok()?;
+    Some((major, minor))
+}
+
+/// ¿Este paquete fue COMPILADO nativamente para MSFS 2024 (y por tanto NO
+/// carga en MSFS 2020)? Se decide por el track de `minimum_game_version`. Si no
+/// hay dato, devolvemos `false` (asumimos compatible — el junction es
+/// reversible y el usuario decide en el modal).
+pub fn is_msfs2024_native_pkg(pkg_path: &str) -> bool {
+    match read_min_game_version(pkg_path) {
+        Some((1, minor)) => minor < MSFS2024_MINOR_CEILING,
+        _ => false,
+    }
+}
+
 /// Construye una oferta de cross-link SI:
 ///   · hay 2020 **y** 2024 instalados, y
 ///   · `compat_label` marca doble compatibilidad, y
@@ -75,16 +108,33 @@ pub fn build_offer(compat_label: &str, packages: &[InstalledPackage]) -> Option<
     build_offer_inner(pkgs)
 }
 
-/// (v6.1 #37) Variante para drag&drop: los archivos soltados NO traen etiqueta
-/// de compatibilidad (a diferencia de SceneryAddons), así que NO hay gate por
-/// `compat_label` — se ofrece el cross-link siempre que el usuario tenga AMBOS
-/// sims (el junction es inocuo y reversible; el usuario decide en el modal).
+/// (v6.1 #37) Variante para drag&drop + descargas de flightsim.to (vía drop):
+/// los archivos soltados NO traen etiqueta de compatibilidad de SceneryAddons,
+/// así que la deducimos del `minimum_game_version` del propio `manifest.json`.
+///
+/// (v7.2.3) La OTRA Community (destino del enlace) = la que NO es la activa.
+/// MSFS 2024 es RETROCOMPATIBLE con addons de 2020, pero MSFS 2020 NO carga
+/// addons nativos de 2024. Por eso, si el destino es 2020, EXCLUIMOS de la
+/// oferta los paquetes compilados para 2024 (no cargarían ahí). Si el destino
+/// es 2024, se ofrecen todos (los de 2020 funcionan en 2024). Para un addon de
+/// flightsim.to esto respeta el sim para el que el usuario bajó el build.
+///
 /// `install_paths` son rutas absolutas de los paquetes recién instalados en la
 /// Community activa; el nombre del junction se deriva del último componente.
 pub fn build_offer_for_paths(install_paths: &[String]) -> Option<CrossLinkOffer> {
+    let other_is_2020 = crate::sim::is_2024();
     let pkgs: Vec<CrossLinkPkg> = install_paths
         .iter()
         .filter_map(|p| {
+            // Destino 2020 + paquete nativo de 2024 → no ofrecer (no carga).
+            if other_is_2020 && is_msfs2024_native_pkg(p) {
+                tracing::info!(
+                    target: "cross_link",
+                    "omito cross-link a 2020 de paquete nativo 2024: {}",
+                    p
+                );
+                return None;
+            }
             let name = Path::new(p).file_name()?.to_string_lossy().into_owned();
             Some(CrossLinkPkg {
                 name,

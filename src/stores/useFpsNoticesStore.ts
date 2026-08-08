@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "./useCommunityStore";
+import { useSettingsStore } from "./useSettingsStore";
 
 /**
  * (v6.2.20 · v6.2.23) Avisos de "FPS Optimization" para la campanita:
@@ -16,7 +17,12 @@ import { useCommunityStore } from "./useCommunityStore";
  */
 
 const KNOWN_V1_KEY = "simfleet.fps.known.v1"; // legado: array de folders
-const KNOWN_KEY = "simfleet.fps.known.v2"; // mapa folder → packageVersion
+const KNOWN_V2_KEY = "simfleet.fps.known.v2"; // legado: folder → version (sin sim)
+// (v7.2.4) mapa "sim::folder" → packageVersion. La clave lleva el SIM porque el
+// MISMO aeropuerto tiene versiones distintas en 2020 vs 2024; sin separarlo,
+// cambiar de simulador se leía como "update" y disparaba avisos de re-optimizar
+// en CADA cambio de sim / arranque (bug reportado).
+const KNOWN_KEY = "simfleet.fps.known.v3";
 const NOTICES_KEY = "simfleet.fps.notices.v1";
 
 export interface FpsNotice {
@@ -75,42 +81,42 @@ export const useFpsNoticesStore = create<FpsNoticesState>((set, get) => ({
       if (checking) return;
       const pkgs = useCommunityStore.getState().packages;
       if (pkgs.length === 0) return;
+      // (v7.2.4) Baseline POR SIM: el mismo aeropuerto tiene distinta
+      // packageVersion en 2020 vs 2024, así que la clave lleva el sim activo.
+      const sim = useSettingsStore.getState().settings.simVersion || "unknown";
       checking = true;
       try {
         const verOf = (v: string | null | undefined) => v ?? "";
-        let known = loadJson<Record<string, string> | null>(KNOWN_KEY, null);
+        const keyFor = (folder: string) => `${sim}::${folder}`;
+        const known = loadJson<Record<string, string>>(KNOWN_KEY, {});
+        const simPrefix = `${sim}::`;
+        const simSeen = Object.keys(known).some((k) => k.startsWith(simPrefix));
 
-        if (known == null) {
-          // Migración desde v1 (array sin versiones): sembramos el mapa con
-          // las versiones ACTUALES — sin avisar (no sabemos qué cambió).
-          const v1 = loadJson<string[] | null>(KNOWN_V1_KEY, null);
-          const seeded: Record<string, string> = {};
-          if (v1 && v1.length > 0) {
-            for (const p of pkgs) {
-              seeded[p.folderName] = verOf(p.packageVersion);
-            }
-          } else {
-            // Primera vez total: sembrar todo lo instalado sin avisar.
-            for (const p of pkgs) {
-              seeded[p.folderName] = verOf(p.packageVersion);
-            }
+        // Primera vez que vemos ESTE sim (arranque inicial o el PRIMER cambio a
+        // él) → sembramos su baseline SIN avisar. Lo ya instalado no es "nuevo",
+        // y las versiones distintas entre sims NO son un update real.
+        if (!simSeen) {
+          const seeded = { ...known };
+          for (const p of pkgs) {
+            seeded[keyFor(p.folderName)] = verOf(p.packageVersion);
           }
           saveJson(KNOWN_KEY, seeded);
           try {
             localStorage.removeItem(KNOWN_V1_KEY);
+            localStorage.removeItem(KNOWN_V2_KEY);
           } catch {
             /* ignore */
           }
           return;
         }
 
-        // Diff: carpetas nuevas (instalado) o con versión distinta (update —
-        // la reinstalación borró las optimizaciones aplicadas).
+        // Diff dentro de ESTE sim: carpetas nuevas (instalado) o con versión
+        // distinta (update — la reinstalación borró las optimizaciones).
         const fresh: { pkg: (typeof pkgs)[number]; reason: FpsNotice["reason"] }[] =
           [];
         for (const p of pkgs) {
           if (!p.folderName || !p.installPath) continue;
-          const prev = known[p.folderName];
+          const prev = known[keyFor(p.folderName)];
           if (prev === undefined) {
             fresh.push({ pkg: p, reason: "installed" });
           } else if (prev !== verOf(p.packageVersion)) {
@@ -122,7 +128,7 @@ export const useFpsNoticesStore = create<FpsNoticesState>((set, get) => ({
           // optimizables, no queremos re-procesarlos).
           const nextKnown = { ...known };
           for (const f of fresh) {
-            nextKnown[f.pkg.folderName] = verOf(f.pkg.packageVersion);
+            nextKnown[keyFor(f.pkg.folderName)] = verOf(f.pkg.packageVersion);
           }
           saveJson(KNOWN_KEY, nextKnown);
 
