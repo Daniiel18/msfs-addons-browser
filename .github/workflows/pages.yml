@@ -1,0 +1,48 @@
+name: Deploy demo to GitHub Pages
+
+# Rebuilds the UI-only browser demo and publishes it to the gh-pages
+# branch on every push to main that touches the frontend. The app
+# auto-detects that it is not running inside Tauri and falls back to the
+# in-memory demo API, so downloads and installs are inert here. Built with
+# VITE_DEMO=1 so asset URLs are prefixed with /<repo>/.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "index.html"
+      - "vite.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build demo (UI-only)
+        run: npm run build
+        env:
+          VITE_DEMO: "1"
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: gh-pages
+          enable_jekyll: false
