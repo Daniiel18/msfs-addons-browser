@@ -46,6 +46,7 @@ const PAYWARE_VENDORS: VendorRule[] = [
   { match: ["carenado"], vendor: { name: "Carenado", url: "https://www.carenado.com/" } },
   { match: ["milviz", "blackbird"], vendor: { name: "Blackbird (MilViz)", url: "https://www.blackbirdsim.com/" } },
   { match: ["tfdi", "tfdidesign"], vendor: { name: "TFDi Design", url: "https://www.tfdidesign.com/" } },
+  { match: ["flybywire", "fly by wire", "fbw"], vendor: { name: "FlyByWire", url: "https://flybywiresim.com/" } },
   { match: ["ifly"], vendor: { name: "iFly Simulations", url: "https://www.iflysimsoft.com/" } },
   { match: ["flightfactor", "flight factor"], vendor: { name: "FlightFactor", url: "https://www.flightfactor.aero/" } },
   { match: ["latinvfr", "lvfr", "latin vfr"], vendor: { name: "LatinVFR", url: "https://www.latinvfr.com/" } },
@@ -63,9 +64,6 @@ const PAYWARE_VENDORS: VendorRule[] = [
  * a "dev de pago"). Fuerza `flightsimto` en vez de payware.
  */
 const FREEWARE_ONLINE = [
-  "flybywire",
-  "fly by wire",
-  "fbw",
   "salty",
   "headwind",
   "working title",

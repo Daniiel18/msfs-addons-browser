@@ -233,15 +233,65 @@ struct ExportRow {
     icao: Option<String>,
     size_bytes: Option<i64>,
     folder_modified_at: Option<String>,
+    // (v7.5) ORIGEN real registrado al descargar — para la re-descarga
+    // selectiva al importar (así el import NO adivina, sabe de dónde vino).
+    // flightsim.to guarda su link directo; los catálogos su fuente + page_url.
+    // Si SimFleet no lo bajó (instalado a mano / externo) → todo None.
+    fs_link: Option<String>,
+    fs_file_id: Option<String>,
+    ia_source: Option<String>,
+    ia_page_url: Option<String>,
+}
+
+impl ExportRow {
+    /// Origen normalizado: "flightsimto" | "sceneryaddons" | "simplaza" |
+    /// "skybound" | "unknown".
+    fn origin(&self) -> &str {
+        if self.fs_link.is_some() || self.fs_file_id.is_some() {
+            "flightsimto"
+        } else if let Some(s) = self.ia_source.as_deref() {
+            s
+        } else {
+            "unknown"
+        }
+    }
+    /// URL para re-bajarlo: link directo de flightsim.to, o page_url del catálogo.
+    fn origin_url(&self) -> Option<&str> {
+        if self.fs_link.is_some() || self.fs_file_id.is_some() {
+            self.fs_link.as_deref()
+        } else {
+            self.ia_page_url.as_deref()
+        }
+    }
 }
 
 async fn fetch_export_rows(pool: &SqlitePool) -> anyhow::Result<Vec<ExportRow>> {
     let rows = sqlx::query_as::<_, ExportRow>(
         r#"
-        SELECT folder_name, title, creator, content_type, package_version,
-               icao, size_bytes, folder_modified_at
-        FROM community_packages
-        ORDER BY title COLLATE NOCASE ASC
+        SELECT
+            cp.folder_name        AS folder_name,
+            cp.title              AS title,
+            cp.creator            AS creator,
+            cp.content_type       AS content_type,
+            cp.package_version    AS package_version,
+            cp.icao               AS icao,
+            cp.size_bytes         AS size_bytes,
+            cp.folder_modified_at AS folder_modified_at,
+            ftf.link              AS fs_link,
+            ftf.file_id           AS fs_file_id,
+            ia.source             AS ia_source,
+            a.page_url            AS ia_page_url
+        FROM community_packages cp
+        LEFT JOIN flightsim_tracked_files ftf
+            ON ftf.folder_name = cp.folder_name
+        LEFT JOIN installed_addons ia
+            ON ia.id = (
+                SELECT i2.id FROM installed_addons i2
+                WHERE i2.name = cp.folder_name AND i2.source IS NOT NULL
+                ORDER BY i2.installed_at DESC LIMIT 1
+            )
+        LEFT JOIN addons a ON a.id = ia.addon_id
+        ORDER BY cp.title COLLATE NOCASE ASC
         "#,
     )
     .fetch_all(pool)
@@ -251,10 +301,10 @@ async fn fetch_export_rows(pool: &SqlitePool) -> anyhow::Result<Vec<ExportRow>> 
 
 fn serialize_csv(rows: &[ExportRow]) -> String {
     let mut out = String::new();
-    out.push_str("folder_name,title,creator,content_type,version,icao,size_bytes,modified_at\n");
+    out.push_str("folder_name,title,creator,content_type,version,icao,size_bytes,modified_at,origin,origin_url\n");
     for r in rows {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             csv_escape(&r.folder_name),
             csv_escape(&r.title),
             csv_escape(r.creator.as_deref().unwrap_or("")),
@@ -263,6 +313,8 @@ fn serialize_csv(rows: &[ExportRow]) -> String {
             csv_escape(r.icao.as_deref().unwrap_or("")),
             r.size_bytes.unwrap_or(0),
             csv_escape(r.folder_modified_at.as_deref().unwrap_or("")),
+            csv_escape(r.origin()),
+            csv_escape(r.origin_url().unwrap_or("")),
         ));
     }
     out
@@ -288,9 +340,13 @@ fn serialize_txt(rows: &[ExportRow]) -> String {
         "------------------------------------------------------------------------------\n",
     );
     for r in rows {
+        let origin_disp = match r.origin_url() {
+            Some(u) => format!("{} — {}", r.origin(), u),
+            None => r.origin().to_string(),
+        };
         out.push_str(&format!("· {}\n", r.title));
         out.push_str(&format!(
-            "    Folder:   {}\n    Creator:  {}\n    Tipo:     {}\n    Versión:  {}\n    ICAO:     {}\n    Tamaño:   {}\n    Modific.: {}\n\n",
+            "    Folder:   {}\n    Creator:  {}\n    Tipo:     {}\n    Versión:  {}\n    ICAO:     {}\n    Tamaño:   {}\n    Modific.: {}\n    Origen:   {}\n\n",
             r.folder_name,
             r.creator.as_deref().unwrap_or("(desconocido)"),
             r.content_type.as_deref().unwrap_or("—"),
@@ -298,6 +354,7 @@ fn serialize_txt(rows: &[ExportRow]) -> String {
             r.icao.as_deref().unwrap_or("—"),
             human_bytes(r.size_bytes.unwrap_or(0)),
             r.folder_modified_at.as_deref().unwrap_or("—"),
+            origin_disp,
         ));
     }
     out
@@ -314,6 +371,9 @@ fn serialize_json(rows: &[ExportRow]) -> anyhow::Result<String> {
         icao: Option<&'a str>,
         size_bytes: i64,
         folder_modified_at: Option<&'a str>,
+        // (v7.5) Origen para re-descarga selectiva al importar.
+        origin: &'a str,
+        origin_url: Option<&'a str>,
     }
     let mapped: Vec<_> = rows
         .iter()
@@ -326,6 +386,8 @@ fn serialize_json(rows: &[ExportRow]) -> anyhow::Result<String> {
             icao: r.icao.as_deref(),
             size_bytes: r.size_bytes.unwrap_or(0),
             folder_modified_at: r.folder_modified_at.as_deref(),
+            origin: r.origin(),
+            origin_url: r.origin_url(),
         })
         .collect();
     Ok(serde_json::to_string_pretty(&mapped)?)

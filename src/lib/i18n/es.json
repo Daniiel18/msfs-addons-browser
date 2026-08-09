@@ -1082,6 +1082,7 @@
   "import.route_label": "Fuente",
   "import.route_skip": "No descargar",
   "import.finalize": "Finalizar y descargar",
+  "import.skip_current": "Saltar este →",
   "import.restoring": "Restaurando {i}/{total}…",
   "import.status.searching": "buscando…",
   "import.status.no_match": "Sin match en catálogos",

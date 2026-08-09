@@ -41,6 +41,10 @@ interface InventoryItem {
   icao?: string;
   developer?: string;
   version?: string;
+  /** (v7.5) Origen REAL del export: "flightsimto" | "<catalog>" | "unknown". */
+  origin?: string;
+  /** URL directa para re-bajar (link de flightsim.to o page_url del catálogo). */
+  originUrl?: string;
 }
 
 /** Ruta elegida para un item: id de fuente de catálogo, o pseudo-fuentes. */
@@ -106,7 +110,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
           alternatives: [],
           status: "pending",
           payware: paywareVendorFor(p.developer, p.rawTitle),
-          route: "skip",
+          route: initialRoute(p),
         }));
         setItems(initial);
         setResolving(true);
@@ -209,17 +213,40 @@ export function ImportInventoryModal({ path, onClose }: Props) {
     return opts;
   };
 
-  /** Espera a que el modal de instalación de un addon termine (o se cancele). */
-  const waitForDropFlowDone = (): Promise<void> =>
+  /** Espera a que un addon termine su flujo: instalado (`drop-flow-done`),
+   *  saltado a mano (`restore-skip`), webview CERRADO sin bajar (si conocemos
+   *  su label), o timeout de seguridad. Esto evita que "restaurando N/M" se
+   *  quede trabado cuando cerrás el webview sin descargar. */
+  const awaitItemDone = (webviewLabel?: string): Promise<void> =>
     new Promise((resolve) => {
-      const done = () => {
-        window.removeEventListener("msfs-addons:drop-flow-done", done);
-        clearTimeout(timer);
+      let done = false;
+      let seen = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        window.removeEventListener("msfs-addons:drop-flow-done", finish);
+        window.removeEventListener("msfs-addons:restore-skip", finish);
+        window.clearInterval(poll);
+        window.clearTimeout(timer);
         resolve();
       };
-      // Safety net: si algo falla y nunca llega el evento, seguimos tras 15 min.
-      const timer = window.setTimeout(done, 15 * 60 * 1000);
-      window.addEventListener("msfs-addons:drop-flow-done", done);
+      window.addEventListener("msfs-addons:drop-flow-done", finish);
+      window.addEventListener("msfs-addons:restore-skip", finish);
+      const poll = window.setInterval(async () => {
+        if (!webviewLabel || abortRef.current) {
+          if (abortRef.current) finish();
+          return;
+        }
+        try {
+          const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+          const w = await WebviewWindow.getByLabel(webviewLabel);
+          if (w) seen = true;
+          else if (seen) finish();
+        } catch {
+          /* demo/browser: sin webview nativo */
+        }
+      }, 900);
+      const timer = window.setTimeout(finish, 10 * 60 * 1000);
     });
 
   const finalize = async () => {
@@ -250,12 +277,15 @@ export function ImportInventoryModal({ path, onClose }: Props) {
 
       if (route === "flightsimto") {
         try {
-          await api.openLiveryBrowser(
-            flightsimSearchUrl(it.raw.rawTitle, it.raw.developer),
-          );
-          // El usuario baja (o auto) → modal de install → esperamos a que
-          // termine antes de abrir el siguiente para no pisar el webview.
-          await waitForDropFlowDone();
+          // Con el link directo del export abrimos el archivo EXACTO en
+          // flightsim.to (countdown + auto-download). Sin él, la búsqueda.
+          const url =
+            it.raw.origin === "flightsimto" && it.raw.originUrl
+              ? it.raw.originUrl
+              : flightsimSearchUrl(it.raw.rawTitle, it.raw.developer);
+          await api.openLiveryBrowser(url);
+          // Avanza al instalar, al saltar, o si CERRÁS el webview sin bajar.
+          await awaitItemDone("livery-browser");
         } catch (e) {
           console.warn("flightsim.to route failed:", e);
         }
@@ -282,7 +312,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
         // Mirror/direct abren webview + modal → secuencial (esperamos).
         // Torrent baja en background → seguimos sin esperar.
         if (method.kind !== "torrent") {
-          await waitForDropFlowDone();
+          await awaitItemDone();
         }
       } catch (e) {
         console.warn("catalog route failed:", e);
@@ -464,25 +494,35 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                   )}
                 </div>
                 <div className="flex gap-2">
-                  <button
-                    onClick={onClose}
-                    disabled={restoring}
-                    className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-30"
-                  >
-                    {t("common.cancel")}
-                  </button>
-                  <button
-                    onClick={finalize}
-                    disabled={eligible === 0 || resolving || restoring}
-                    className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-40"
-                  >
-                    {restoring ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Download className="h-3.5 w-3.5" />
-                    )}
-                    {t("import.finalize")}
-                  </button>
+                  {restoring ? (
+                    <button
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent("msfs-addons:restore-skip"),
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20"
+                    >
+                      {t("import.skip_current")}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={onClose}
+                        className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700"
+                      >
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        onClick={finalize}
+                        disabled={eligible === 0 || resolving}
+                        className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-40"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {t("import.finalize")}
+                      </button>
+                    </>
+                  )}
                 </div>
               </footer>
             </>
@@ -493,12 +533,24 @@ export function ImportInventoryModal({ path, onClose }: Props) {
   );
 }
 
-/** Ruta por defecto: payware > mejor match de catálogo > flightsim.to. */
+/** Ruta por defecto tras resolver: ORIGEN REAL > payware > match > flightsim.to. */
 function defaultRoute(it: ResolvedItem, candidates: Addon[]): Route {
+  const origin = it.raw.origin;
+  if (origin === "flightsimto") return "flightsimto";
   if (it.payware) return "payware";
+  if (origin && origin !== "unknown" && candidates.some((a) => a.source === origin)) {
+    return origin;
+  }
   if (it.match) return it.match.source;
   if (candidates.length > 0) return candidates[0].source;
   return "flightsimto";
+}
+
+/** Ruta inicial (antes de la búsqueda) según el origen exportado. */
+function initialRoute(p: InventoryItem): Route {
+  if (p.origin === "flightsimto") return "flightsimto";
+  if (paywareVendorFor(p.developer, p.rawTitle)) return "payware";
+  return "skip";
 }
 
 function sourceLabel(id: string, sources: SourceDescriptor[]): string {
@@ -573,6 +625,8 @@ function parseJson(content: string): InventoryItem[] {
       icao: row.icao ? String(row.icao).toUpperCase() : undefined,
       developer: row.creator || row.developer || undefined,
       version: row.packageVersion || row.package_version || row.version || undefined,
+      origin: row.origin ? String(row.origin) : undefined,
+      originUrl: row.origin_url || row.originUrl || undefined,
     }))
     .filter((r) => r.rawTitle);
 }
@@ -585,6 +639,8 @@ function parseCsv(content: string): InventoryItem[] {
   const idxIcao = header.findIndex((h) => h === "icao");
   const idxCreator = header.findIndex((h) => h === "creator" || h === "developer");
   const idxVersion = header.findIndex((h) => h === "version" || h === "packageversion");
+  const idxOrigin = header.findIndex((h) => h === "origin");
+  const idxOriginUrl = header.findIndex((h) => h === "origin_url" || h === "originurl");
   const out: InventoryItem[] = [];
   for (let i = 1; i < lines.length; i++) {
     const cells = splitCsv(lines[i]);
@@ -596,6 +652,8 @@ function parseCsv(content: string): InventoryItem[] {
       icao: idxIcao >= 0 && cells[idxIcao] ? cells[idxIcao].toUpperCase() : undefined,
       developer: idxCreator >= 0 ? cells[idxCreator] : undefined,
       version: idxVersion >= 0 ? cells[idxVersion] : undefined,
+      origin: idxOrigin >= 0 && cells[idxOrigin] ? cells[idxOrigin] : undefined,
+      originUrl: idxOriginUrl >= 0 && cells[idxOriginUrl] ? cells[idxOriginUrl] : undefined,
     });
   }
   return out;
@@ -637,10 +695,12 @@ function pickBest(raw: InventoryItem, results: Addon[]): Addon | null {
   if (results.length === 0) return null;
   const rawDev = (raw.developer || "").toLowerCase();
   const rawIcao = (raw.icao || "").toUpperCase();
+  const rawOrigin = raw.origin;
   let best: Addon | null = null;
   let bestScore = 0; // (fix) exigir score > 0 — antes aceptaba cualquier hit.
   for (const r of results) {
     let score = 0;
+    if (rawOrigin && rawOrigin !== "unknown" && r.source === rawOrigin) score += 3;
     if (rawIcao && r.icao?.toUpperCase() === rawIcao) score += 4;
     if (rawDev && r.developer?.toLowerCase().includes(rawDev)) score += 2;
     if (raw.rawTitle && r.name.toLowerCase().includes(raw.rawTitle.toLowerCase())) {
