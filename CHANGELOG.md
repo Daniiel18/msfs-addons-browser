@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [7.4.0] - Unreleased
 
 ### Added
-- Native Windows desktop notifications: download finished, download failed, install done, and update-available alerts now surface in the Windows Action Center when the app is running in the background.
+- Native Windows desktop notifications: when a download finishes or fails while SimFleet is minimized to the tray, an alert surfaces in the Windows Action Center — so you can keep flying and still know when your addon is ready.
 - Addon Health Center on the dashboard: sim-compatibility checks (flags 2024-built addons sitting in a 2020 Community folder), orphaned-livery detection, and leftover-artifact cleanup, each with one-click fix/move/remove actions. This release also ships the previously local-only 7.3.0 Health Center work.
 - Public browser demo of the UI (downloads and installs disabled by design).
 
