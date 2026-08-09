@@ -1,0 +1,63 @@
+name: "✨ Feature request"
+description: Suggest a new feature or improvement for SimFleet
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve **SimFleet** — the all-in-one companion for MSFS 2020 & 2024.
+
+        Please describe the problem you're trying to solve before jumping to a specific solution;
+        it helps us find the best fix. The more concrete detail you give (workflow, addon,
+        simulator version), the easier it is to act on.
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Preliminary checks
+      options:
+        - label: I searched existing issues and this feature hasn't been requested yet.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what's getting in the way today? Describe the pain point, not just the feature.
+      placeholder: "e.g. When I install a 2024-built airport into my 2020 Community folder, I don't notice it's incompatible until the sim fails to load it."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like SimFleet to do? Describe the behavior or workflow you have in mind.
+      placeholder: "e.g. Warn me during install and offer to move the addon to the correct simulator's Community folder."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches, workarounds, or existing tools you've tried or thought about?
+      placeholder: "e.g. I currently sort addons manually by checking each package's manifest."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of SimFleet does this relate to?
+      options:
+        - Addons/Downloads
+        - Liveries
+        - FlightBook
+        - Hangar/Economy
+        - Health Center
+        - Integrations
+        - Other
+    validations:
+      required: true

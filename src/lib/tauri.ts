@@ -23,6 +23,7 @@ import type {
   CommunityPackage,
   PackLivery,
   DashboardStats,
+  AddonHealth,
   DownloadJob,
   ExportFormat,
   ExportResult,
@@ -531,6 +532,9 @@ interface Api {
 
   // Dashboard
   getDashboardStats: () => Promise<DashboardStats>;
+  getAddonHealth: () => Promise<AddonHealth>;
+  healthMoveToSim: (installPath: string, targetSim: string) => Promise<string>;
+  healthPruneTracked: (folderName: string) => Promise<void>;
 
   // Settings
   getAppSettings: () => Promise<AppSettings>;
@@ -927,6 +931,11 @@ const realApi: Api = {
   clearDismissedUpdates: () => invoke<void>("clear_dismissed_updates"),
 
   getDashboardStats: () => invoke<DashboardStats>("get_dashboard_stats"),
+  getAddonHealth: () => invoke<AddonHealth>("get_addon_health"),
+  healthMoveToSim: (installPath, targetSim) =>
+    invoke<string>("health_move_to_sim", { installPath, targetSim }),
+  healthPruneTracked: (folderName) =>
+    invoke<void>("health_prune_tracked", { folderName }),
 
   listFlightLog: () => invoke<FlightLogEntry[]>("list_flight_log"),
   getFlightTrack: (flightId) =>
@@ -2281,7 +2290,7 @@ const demoApi: Api = {
     return {
       identity: "daniel",
       name: "Capitán Daniel",
-      email: "jose.daniel031899@gmail.com",
+      email: "pilot@simfleet.app",
       totalXp: 4820,
       level: 12,
       xpInLevel: 180,
@@ -2323,6 +2332,22 @@ const demoApi: Api = {
   },
   async onScoreUploadError() {
     return async () => {};
+  },
+  async getAddonHealth() {
+    return {
+      totalPackages: demoCommunity.length,
+      issueCount: 0,
+      reclaimableBytes: 0,
+      orphanedLiveries: [],
+      simCompatMismatches: [],
+      artifacts: [],
+    };
+  },
+  async healthMoveToSim() {
+    return "";
+  },
+  async healthPruneTracked() {
+    return;
   },
   async getDashboardStats() {
     await sleep(120);

@@ -717,6 +717,43 @@ export interface DashboardStats {
   aircraftCount: number;
 }
 
+/** (v7.3.0) Centro de salud de addons — reporte read-only para el Dashboard. */
+export interface SimCompatMismatch {
+  folderName: string;
+  title: string;
+  /** "2020" | "2024" — la Community donde está instalado. */
+  communitySim: string;
+  /** "2020" | "2024" — el sim para el que fue compilado (campo `builder`). */
+  builderSim: string;
+  installPath: string;
+}
+
+export interface HealthArtifact {
+  /** "cvt" | "orphan_tracked" */
+  kind: string;
+  folderName: string;
+  title: string | null;
+  sizeBytes: number;
+  detail: string;
+}
+
+export interface OrphanLivery {
+  folderName: string;
+  title: string;
+  sizeBytes: number;
+  /** Container del avión base que referencia (el que falta). */
+  base: string | null;
+}
+
+export interface AddonHealth {
+  totalPackages: number;
+  issueCount: number;
+  reclaimableBytes: number;
+  orphanedLiveries: OrphanLivery[];
+  simCompatMismatches: SimCompatMismatch[];
+  artifacts: HealthArtifact[];
+}
+
 export interface TypeStat {
   label: string;
   count: number;

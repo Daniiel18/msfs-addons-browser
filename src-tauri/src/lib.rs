@@ -5,6 +5,7 @@ pub mod airline_economy;
 pub mod airport_thumbs;
 pub mod airports;
 pub mod cloud_sync;
+pub mod owner_ids;
 pub mod commands;
 pub mod community;
 pub mod community_scanner;
@@ -142,6 +143,8 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // (v7.4.0) Notificaciones nativas del Action Center de Windows.
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle_for_init = app.handle().clone();
             let handle_for_tray = app.handle().clone();
@@ -275,6 +278,9 @@ pub fn run() {
             commands::simbrief::link_simbrief_ofp,
             commands::simbrief::flight_route_fixes,
             commands::stats::get_dashboard_stats,
+            commands::stats::get_addon_health,
+            commands::stats::health_move_to_sim,
+            commands::stats::health_prune_tracked,
             commands::flight_log::list_flight_log,
             commands::flight_log::hangar_analytics,
             commands::flight_log::pilot_profile,

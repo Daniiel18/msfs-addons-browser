@@ -9,6 +9,7 @@ import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useCommunityStore } from "./useCommunityStore";
 import { useToastStore } from "./useToastStore";
+import { nativeNotify } from "../lib/nativeNotify";
 
 /** Pestañas dentro del panel lateral. La de descargas activas es la
  *  que ya existía; «installed» es la nueva pestaña con el historial
@@ -170,6 +171,12 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
         message: job.addonTitle,
         onClick: () => useDownloadsStore.getState().openPanelAt("installed"),
       });
+      // (v7.4.0) Aviso nativo del SO — sobre todo si la app está en la
+      // bandeja mientras el usuario vuela. No-op si la ventana tiene foco.
+      void nativeNotify({
+        title: t("toast.download.installed"),
+        body: job.addonTitle,
+      });
       get()
         .refreshInstalled()
         .catch((e) => console.warn("refreshInstalled failed:", e));
@@ -206,6 +213,13 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
           message: job.error ?? job.addonTitle,
           onClick: () => useDownloadsStore.getState().openPanelAt("active"),
           ttlMs: null, // los errores se quedan hasta que el usuario los cierra
+        });
+        // (v7.4.0) Aviso nativo del SO. `force`: un fallo importa aunque
+        // la ventana esté enfocada.
+        void nativeNotify({
+          title: t("toast.download.failed"),
+          body: job.error ?? job.addonTitle,
+          force: true,
         });
       }
     }

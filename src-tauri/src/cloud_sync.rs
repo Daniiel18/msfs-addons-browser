@@ -114,15 +114,10 @@ const HARDCODED_CLIENT_ID: Option<&str> =
 const HARDCODED_CLIENT_SECRET: Option<&str> =
     option_env!("SIMFLEET_GOOGLE_CLIENT_SECRET");
 
-/// (v3.1.0 / v3.1.1) Lista blanca de emails Gmail autorizados a hacer
-/// sync. La app rechaza el OAuth si el email del usuario no está
-/// aquí. Hardcodeado por diseño: ESTE NO ES SOFTWARE PÚBLICO — son
-/// dos usuarios. Cambiar la lista requiere recompilar.
-const WHITELIST_EMAILS: &[&str] = &[
-    "hectorvelez1012@gmail.com",
-    "jose.daniel0318@gmail.com",
-    "jose.daniel031899@gmail.com",
-];
+// (v7.4.0) La allowlist de correos autorizados a sync ya NO vive en claro
+// aquí (el repo es público): sus hashes SHA-256 están en `crate::owner_ids`.
+// La comparación por hash preserva el mismo comportamiento sin exponer las
+// direcciones. Añadir una cuenta = añadir su hash allí y recompilar.
 
 const KEY_CLIENT_ID: &str = "google_client_id";
 const KEY_CLIENT_SECRET: &str = "google_client_secret";
@@ -148,22 +143,11 @@ async fn resolve_credentials(
     Ok((cid, secret))
 }
 
-/// (v3.1.0) Verifica que el email esté en la whitelist. Si la lista
-/// está vacía, lo loguea como warning y rechaza por seguridad
-/// (better safe than allowing all).
+/// (v3.1.0) Verifica que el email esté autorizado a sync. La lista de
+/// cuentas vive hasheada (SHA-256) en `crate::owner_ids` porque el repo
+/// es público — comparar hashes es equivalente a comparar los correos.
 fn is_whitelisted(email: &str) -> bool {
-    let lower = email.trim().to_lowercase();
-    if WHITELIST_EMAILS.is_empty() {
-        tracing::warn!(
-            target: "cloud",
-            "WHITELIST_EMAILS está vacía — rechazando '{}'. Recompila con la lista de emails autorizados.",
-            email
-        );
-        return false;
-    }
-    WHITELIST_EMAILS
-        .iter()
-        .any(|w| w.eq_ignore_ascii_case(&lower))
+    crate::owner_ids::is_sync_authorized(email)
 }
 
 /// (v2.0.1) Folder sync — alternativa simple a OAuth. Apunta a una

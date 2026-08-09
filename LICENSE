@@ -1,0 +1,58 @@
+SimFleet — Proprietary Software License
+Copyright (c) 2026 Daniel Espinal (@Daniiel18). All Rights Reserved.
+
+ALL RIGHTS RESERVED
+
+The source code of SimFleet (the "Software") is published on GitHub for the
+sole purposes of transparency, review, and learning. Making the source code
+publicly viewable does NOT place it in the public domain and does NOT grant any
+license to use it beyond viewing.
+
+No permission is granted to any person to use, copy, modify, merge, publish,
+distribute, sublicense, sell, or create derivative works from the Software, in
+whole or in part, in source or binary form, without the prior written
+permission of the author, Daniel Espinal (@Daniiel18). Any use not expressly
+permitted in writing by the author is prohibited and reserved.
+
+The pre-built installer distributed through the project's official GitHub
+Releases is provided for personal use of the end-user application only. This
+grant does not include any right to redistribute, repackage, resell, or
+reverse-engineer the Software, nor to reuse its source code.
+
+DISCLAIMER OF WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT. THE AUTHOR DOES
+NOT WARRANT THAT THE SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE, OR FREE OF
+HARMFUL COMPONENTS, OR THAT ANY DEFECTS WILL BE CORRECTED. YOU USE THE SOFTWARE
+ENTIRELY AT YOUR OWN RISK.
+
+LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM,
+OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE. THIS INCLUDES, WITHOUT LIMITATION, ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES; LOSS OF DATA, PROFITS, OR
+GOODWILL; OR DAMAGE TO SIMULATORS, ADDONS, HARDWARE, OR OTHER SOFTWARE, EVEN IF
+THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+UNOFFICIAL / NOT AFFILIATED
+
+SimFleet is an independent, unofficial fan project. It is NOT affiliated with,
+endorsed by, sponsored by, or associated with Microsoft, Asobo Studio, Xbox
+Game Studios, FSDreamTeam/GSX, flightsim.to, SceneryAddons, SimPlaza, or any
+addon developer. Microsoft Flight Simulator and all related names, logos, and
+trademarks are the property of their respective owners. All other product
+names, brands, and trademarks referenced in the Software or its documentation
+are the property of their respective owners and are used for identification
+purposes only.
+
+Users are solely responsible for complying with the terms of service of any
+third-party websites or services the Software accesses, and with the licenses
+of any addons they download, install, or manage using the Software.
+
+For licensing inquiries or permission requests, contact the author,
+Daniel Espinal (@Daniiel18), via the project's GitHub repository:
+https://github.com/Daniiel18/msfs-addons-browser

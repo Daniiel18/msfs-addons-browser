@@ -1,511 +1,178 @@
 # SimFleet
 
-Desktop companion app for Microsoft Flight Simulator. It started as
-`MSFS Addons Browser`, but the current product is broader: addon catalog,
-Community manager, update checker, installer, GSX helper, SimBrief/ACARS
-integration, and FlightBook telemetry.
+**All-in-one companion for Microsoft Flight Simulator 2020 & 2024 — browse, download and install addons straight into your Community folder, then track your flying with a logbook, achievements, an airline economy and more.**
 
-Current app version: `6.2.11`.
+[![Version](https://img.shields.io/github/v/release/Daniiel18/msfs-addons-browser?label=version&color=2563eb)](https://github.com/Daniiel18/msfs-addons-browser/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Daniiel18/msfs-addons-browser/total?color=2563eb)](https://github.com/Daniiel18/msfs-addons-browser/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)](#requirements)
+[![MSFS](https://img.shields.io/badge/MSFS-2020%20%7C%202024-1e88e5)](#requirements)
+[![License](https://img.shields.io/badge/license-Proprietary-8b5cf6)](#license--disclaimer)
+[![Live Demo](https://img.shields.io/badge/%F0%9F%8C%90-Live%20Demo-22c55e)](https://daniiel18.github.io/msfs-addons-browser/)
 
-## What It Does
+SimFleet is a Windows desktop companion for Microsoft Flight Simulator 2020 and 2024. It combines a full addon browser — with in-app downloads and one-click installation into the right Community folder — with a suite of pilot tools: a real-time logbook, per-aircraft and fleet analytics, an airline economy derived from your flights, achievements, and integrations for GSX Pro, SimBrief, Discord and more. Everything lives in a single native app, so you can go from finding a scenery to flying to it without leaving SimFleet.
 
-SimFleet helps manage a local MSFS setup:
+<p align="center">
+  <a href="https://github.com/Daniiel18/msfs-addons-browser/releases/latest"><b>⬇️ Download</b></a> ·
+  <a href="https://daniiel18.github.io/msfs-addons-browser/"><b>🌐 Live Demo</b></a> ·
+  <a href="https://github.com/Daniiel18/msfs-addons-browser/issues/new/choose"><b>🐛 Report a bug</b></a>
+</p>
 
-- Search public addon catalogs from SceneryAddons and Simplaza.
-- Browse recent catalog entries without typing a query.
-- Cache catalog metadata locally in SQLite.
-- Detect the MSFS Community folder for MSFS 2020/2024, Steam/MS Store.
-- Scan installed Community packages and classify airports, aircraft, liveries,
-  instruments, sound/misc, and unknown packages.
-- Show installed airports on a MapLibre world map.
-- Detect addon updates by comparing local package versions against cached
-  catalog versions.
-- Install `.zip`, `.rar`, and `.7z` archives into Community.
-- Reject `.ptp` PMDG liveries explicitly because the format is encrypted and
-  must be installed with PMDG Operations Center.
-- Manage torrent downloads with progress, pause/resume, persistence across app
-  restarts, and automatic install after download.
-- Open mirror/direct downloads in the system browser.
-- Look up and install GSX profiles, plus detect local GSX profile ICAOs.
-- Track real flights through SimConnect on Windows.
-- Fall back to process detection plus SimBrief when SimConnect is unavailable.
-- Store a FlightBook with routes, tracks, landing metrics, fuel, pax/cargo,
-  gates, aircraft metadata, scoring, and weather samples.
-- Import VAS-ACARS flights and MSFS logbook data where available.
-- Sync app data through Google Drive `appDataFolder` or a user-selected folder.
-- Backup and export the Community inventory as ZIP, CSV, TXT, or JSON.
-- Check GitHub Releases for app updates and install Windows release assets.
+> The **Live Demo** is a public, UI-only build of the interface. Downloading and installing addons are disabled by design — it's there to explore the look and feel, not to install anything.
 
-## Tech Stack
+---
 
-- Desktop shell: Tauri v2
-- Frontend: React 18, TypeScript, Vite, Tailwind, Zustand, Framer Motion
-- Maps: MapLibre GL
-- Charts: Recharts
-- Icons: lucide-react
-- Backend: Rust 2021
-- Database: SQLite through `sqlx`
-- HTTP and scraping: `reqwest`, `scraper`
-- Torrents: `librqbit`
-- Archives: `zip`, `unrar`, `sevenz-rust2`
-- Flight telemetry: custom SimConnect FFI loaded from `SimConnect.dll`
-- Logging: `tracing`
+## Table of contents
 
-## Main Screens
+- [See it in action](#see-it-in-action)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Try the demo](#try-the-demo)
+- [Building from source](#building-from-source)
+- [How it works](#how-it-works)
+- [Reporting bugs & requesting features](#reporting-bugs--requesting-features)
+- [Contributing](#contributing)
+- [License & disclaimer](#license--disclaimer)
 
-- Dashboard: totals, disk usage, package breakdown, top creators, largest
-  packages, recent installs, and update count.
-- Search: SceneryAddons/Simplaza search and browse, download methods, GSX
-  summary, changelog, install/download actions.
-- Map: installed scenery airports, update markers, GSX/no-GSX markers, airport
-  sidebar, package detail modal.
-- Addons: non-airport packages grouped by type, aircraft livery scanner,
-  thumbnails, updates, package detail modal.
-- FlightBook: real and imported flight history, route map, live/preflight
-  status, airline filters, score checklist, performance charts, weather modal.
-- Hangar: per-aircraft analytics (telemetry, landing-FPM health), fleet
-  overview (most-flown aircraft/airlines/destinations/regions), Best Landings.
-- Finance: airline economy built from your flight history. One canonical airline
-  per flight (livery names collapse to the real carrier; cargo vs passenger told
-  apart by callsign/pax). Per airline: market value ("bank"), revenue (tickets or
-  freight + ancillaries) vs costs (fuel, catering, handling, maintenance, taxes,
-  plus real GSX `Receipts` invoices when matched), net/margin/balance, and a
-  holistic passenger-satisfaction score (landings, reliability, services, load
-  factor). Management ecosystem: pick a maintenance level and toggle onboard
-  services (snacks, meals, wifi, seats, priority, baggage) — each with adoption,
-  cost and possible loss, recomputed live. Click an airline in the Hangar
-  "Most Flown Airlines" to jump straight to its Finance detail.
-- Settings: theme/language, autostart, tray behavior, SimBrief, display toggles,
-  folders, backup/export/import, GSX tools, cloud/folder sync, cache reset.
+---
 
-## How It Works
+## See it in action
 
-### Startup
+🌐 **[Open the live demo →](https://daniiel18.github.io/msfs-addons-browser/)** — the real interface running in your browser with sample data.
 
-`src/App.tsx` runs a splash bootstrap:
+Click through the dashboard and Addon Health Center, the addon browser, FlightBook and the Hangar. Downloading and installing are disabled in the demo; everything that touches your PC only runs in the desktop app.
 
-1. Check app version/update.
-2. Load sources.
-3. Load settings.
-4. Bootstrap SimBrief, FlightBook, downloads, and GSX local state.
-5. Scan Community.
-6. Refresh update notifications.
-7. Preload catalog page 1 for each source.
-8. Resize the Tauri window into the normal app layout.
+<!-- Static screenshots will be added under docs/screenshots/ and embedded here. -->
 
-The backend startup lives in `src-tauri/src/lib.rs`:
+---
 
-- Resolve a portable data directory.
-- Migrate legacy app data when possible.
-- Initialize logging.
-- Open SQLite and run migrations.
-- Create the shared HTTP client.
-- Register source scrapers.
-- Restore persisted download jobs.
-- Load airport data in the background.
-- Spawn the SimConnect watcher.
-- Start daily best-effort cloud sync if configured.
+## Features
 
-### Data Location
+### Addons — browse, download, install
 
-The app tries to store generated data beside the executable:
+- **Addon browser.** Search and browse MSFS addons across built-in sources (SceneryAddons, SimPlaza, Skybound) with thumbnails, developer, version, ICAO and release date.
+- **In-app downloads.** An embedded BitTorrent client (librqbit) with progress, pause/resume and persistence, plus auto-install when a download completes. Web hosters (modsfire, mixdrop and others) are handled through an embedded browser with uBlock Origin Lite ad-blocking, a cancel button, multi-part file chaining, auto-password from the addon page, and automatic torrent→mirror recovery when a torrent has no seeds.
+- **Installer.** Extracts RAR (including multi-volume), 7z and ZIP (including AES-encrypted) straight into the MSFS Community folder, with MSFS 2020/2024 compatibility detection so it targets the right simulator. Supports drag-and-drop install of local archives and runs a pre-flight disk-space check.
+- **Installed-addons manager.** Scan the Community folder, classify packages (airport / aircraft / livery / instrument / sound / misc), enable or disable them, uninstall, and check for updates.
 
-```text
-<install-dir>/data/
-  msfs-addons.db
-  logs/
-  temp/
-  torrents/
-```
+### Liveries & Health
 
-If that directory is not writable, it falls back to:
+- **Liveries.** A PMDG/iFly livery installer, plus a per-aircraft **Get Liveries** button that opens the matching liveries on flightsim.to — it auto-detects the model, even for encrypted study-level aircraft like PMDG and Fenix. Downloaded liveries are tracked for updates.
+- **Addon Health Center.** A dashboard section with sim-compatibility checks (it flags 2024-built addons sitting in a 2020 Community folder), orphaned-livery detection and leftover-artifact cleanup, all with one-click fix / move / remove actions.
 
-```text
-%LOCALAPPDATA%/SimFleet/data/
-```
+### Flying — FlightBook, Hangar, Economy, Achievements
 
-Older data from `%APPDATA%/org.n0xful.msfsaddonsbrowser` is migrated
-best-effort on startup.
+- **FlightBook / logbook.** Real-time SimConnect flight tracking, logbook import (MSFS logbook + VAS-ACARS), flight tracks, METAR capture, damage analysis, landing scoring, and a Landing OSD overlay.
+- **Best Landings recorder.** Records your landings using Windows Graphics Capture with hardware H.264 encoding and system-audio capture.
+- **Hangar.** Per-aircraft and fleet analytics, maintenance tracking and alerts, and your Best Landings.
+- **Airline economy.** A profit-and-loss ledger derived from your flights, reading real GSX fuel, catering and handling receipts.
+- **Achievements.** 23 tiered medal badges (bronze → diamond) earned from your flight history.
 
-### Frontend To Backend
+### Integrations — GSX, SimBrief, Discord, Cloud, Maps
 
-The frontend never calls Rust directly. It uses `src/lib/tauri.ts`, which wraps
-Tauri `invoke()` calls and event listeners.
+- **GSX Pro profile management.** Install profiles, group them by variant, look them up per airport by ICAO, and check for updates.
+- **SimBrief integration.** Store your pilot ID, fetch OFP/briefing, list flights, link an OFP to a logbook entry, and pull route fixes.
+- **Discord Rich Presence.** Shows your current flight (optional, off by default).
+- **AIRAC cycle tracking** with update checks, and **flightsim.to integration** with update alerts for your tracked files.
+- **Cloud sync (optional).** Sync your flight log and preferences to a private Google Drive `appDataFolder` using your own OAuth credentials, plus a folder-sync option.
+- **Maps.** A MapLibre GL world map of your installed airport and scenery addons, and a routes map of the flights you've flown.
 
-The Rust command facade is under:
+### Quality of life
 
-```text
-src-tauri/src/commands/
-```
+- **Native Windows desktop notifications (NEW in 7.4.0).** When a download finishes or fails while SimFleet is minimized to the tray, an alert lands in the Windows Action Center — so you can keep flying and still know when your addon is ready.
+- **Backup & export.** Export your Community inventory to ZIP, CSV, TXT or JSON, and import an inventory back.
+- **Bilingual UI** (English / Spanish), an onboarding tour, a per-version What's New, and a command palette.
+- **Desktop niceties.** Optional autostart with Windows, single-instance, and minimize-to-tray.
 
-The shared backend state is `AppState` in:
-
-```text
-src-tauri/src/lib.rs
-```
-
-### Catalog Sources
-
-Sources implement the `Source` trait in:
-
-```text
-src-tauri/src/sources/
-```
-
-Current sources:
-
-- `sceneryaddons.rs`
-- `simplaza.rs`
-
-Both are public-site scrapers, not official APIs. They search WordPress pages,
-parse result articles, fetch detail pages with bounded concurrency, and extract
-download methods.
-
-Because they depend on third-party HTML, selector changes on those sites can
-break search or download extraction.
-
-### Community Scan
-
-The scanner reads immediate subfolders of the Community directory. A valid MSFS
-package is identified by `manifest.json`. Installed package data is persisted in
-the `community_packages` table.
-
-Important behavior:
-
-- ICAO extraction is conservative and only applied to `SCENERY`.
-- `AIRCRAFT` packages with dependencies are treated as liveries.
-- Invalid manifests fall back to folder-derived metadata when possible.
-- Coordinates come from the local airport dataset joined by ICAO.
-
-### Install And Download
-
-Manual install:
-
-1. User selects an archive.
-2. Rust extracts to a temporary folder.
-3. The installer searches for directories containing `manifest.json` and
-   `layout.json`.
-4. Each package is copied into Community.
-5. The install is recorded in SQLite.
-6. Temporary extraction is cleaned automatically.
-
-Torrent download:
-
-1. Download job is created and persisted.
-2. Hoster URL is resolved to a magnet when needed.
-3. `librqbit` downloads into `data/torrents/job-<uuid>`.
-4. Progress is emitted through `download://update`.
-5. On completion, the primary archive is installed.
-6. The torrent job folder is cleaned.
-
-Mirror/direct downloads are opened in the user's browser.
-
-### FlightBook
-
-The preferred tracker is SimConnect:
-
-- Loads `SimConnect.dll` at runtime.
-- Subscribes to user-aircraft simvars.
-- Emits live status through `flight://current`.
-- Creates a flight row at block-out/takeoff fallback.
-- Inserts track samples during flight.
-- Closes the flight on arrival/engine shutdown/fallback timeout.
-- Emits `flightlog://changed` when the UI should refresh.
-
-Fallback mode:
-
-- Detects `FlightSimulator.exe` / `FlightSimulator2024.exe`.
-- Uses recent SimBrief OFP data to show "flying now" context.
-- Does not provide live position/telemetry if SimConnect is unavailable.
-
-Scoring:
-
-- Rules live in `src-tauri/src/scoring/`.
-- Scores are persisted into `flight_log_score_item`.
-- Summary score is stored on `flight_log`.
-- Finished flights trigger scoring and best-effort cloud upload.
-
-### Sync
-
-Google Drive sync stores one JSON snapshot named:
-
-```text
-msfs-addons-data.json
-```
-
-It uses Google Drive `appDataFolder`, so the file is app-private and not shown
-in the user's normal Drive files. OAuth uses a loopback callback.
-
-Folder sync is a simpler alternative: write/read the same JSON snapshot from a
-folder selected by the user, such as OneDrive, Dropbox, iCloud, or Google Drive
-Desktop.
-
-## Repository Layout
-
-```text
-.
-|-- src/                         Frontend React app
-|   |-- App.tsx                  App shell, bootstrap, routing between views
-|   |-- components/              UI views, modals, panels, maps
-|   |-- stores/                  Zustand stores
-|   |-- lib/                     Tauri API wrapper, shared types, i18n
-|   `-- styles/                  Tailwind/global CSS
-|
-|-- src-tauri/                   Rust backend and Tauri config
-|   |-- src/
-|   |   |-- lib.rs               App bootstrap, AppState, plugins, handlers
-|   |   |-- commands/            Tauri command facade
-|   |   |-- db/                  SQLite init and repository helpers
-|   |   |-- sources/             SceneryAddons/Simplaza scrapers
-|   |   |-- download/            Download manager and torrent engine
-|   |   |-- install/             Archive extraction and Community install
-|   |   |-- community*.rs        Community detection and package scanner
-|   |   |-- simconnect*.rs       SimConnect FFI and watcher
-|   |   |-- flight_log.rs        FlightBook persistence/domain logic
-|   |   |-- scoring/             Virtual-airline-style scoring rubric
-|   |   |-- cloud_sync.rs        Google Drive and folder sync
-|   |   |-- simbrief.rs          SimBrief import/matching
-|   |   |-- gsx*.rs              GSX lookup, install, parking helpers
-|   |   `-- updater.rs           GitHub Releases updater
-|   |-- migrations/              SQLite migrations
-|   |-- resources/               Bundled airports CSV and SimConnect.dll
-|   `-- tauri.conf.json          Tauri window, bundle, resources
-|
-|-- package.json                 Node scripts and frontend deps
-|-- Cargo.toml                   Rust deps inside src-tauri/
-`-- README.md
-```
+---
 
 ## Requirements
 
-- Windows 10/11.
-- WebView2 runtime.
-- Node.js 20 or newer.
-- Rust 1.77 or newer.
-- Visual Studio C++ build tools for native Rust dependencies.
-- Microsoft Flight Simulator for live tracking and Community folder detection.
-- SimConnect support for full live telemetry. A `SimConnect.dll` resource is
-  bundled for production builds.
+- **Windows 10 or 11 (x64).** Core features — SimConnect flight tracking, the Best Landings recorder, GSX support and registry access — are Windows-only.
+- **Microsoft Edge WebView2 Runtime.** Ships with modern Windows; the Tauri shell and the embedded download browser both need it.
+- **Microsoft Flight Simulator 2020 and/or 2024** installed, to install addons and for SimConnect flight tracking.
+- **Free disk space** for downloading and extracting large scenery and aircraft archives.
+- **Optional:** GSX Pro (FSDreamTeam) for the GSX features; your own Google OAuth desktop credentials for Drive cloud sync.
 
-## Development
+---
 
-Install frontend dependencies:
+## Installation
+
+1. Go to the [latest release](https://github.com/Daniiel18/msfs-addons-browser/releases/latest).
+2. Download **`SimFleet_<version>_x64-setup.exe`** (an MSI package is also produced if you prefer it).
+3. Run the installer, then launch SimFleet.
+
+If Windows prompts about **WebView2**, install the Microsoft Edge WebView2 Runtime — it ships with modern Windows, so most systems already have it.
+
+**Where your data lives.** App data is stored portably in a `data/` folder next to the executable. If that location isn't writable, SimFleet falls back to `%LOCALAPPDATA%\SimFleet\data`.
+
+---
+
+## Try the demo
+
+Prefer to look before you install? Open the **[Live Demo](https://daniiel18.github.io/msfs-addons-browser/)** — a public browser build of the UI.
+
+It renders the full interface so you can explore the layout and screens, but **downloads and installs are disabled by design**. Anything that touches your PC — installing into a Community folder, SimConnect tracking, GSX, the recorder — only runs in the desktop app.
+
+---
+
+## Building from source
+
+**Prerequisites**
+
+- Node.js 20+
+- Rust 1.77+ (stable)
+- The Tauri v2 prerequisites: Microsoft Edge WebView2 + the MSVC build tools
+
+**Build the desktop app**
 
 ```bash
 npm install
-```
-
-Run the Tauri app:
-
-```bash
-npm run start
-```
-
-Run only the Vite frontend demo:
-
-```bash
-npm run dev
-```
-
-Build frontend:
-
-```bash
-npm run build
-```
-
-Build desktop bundle:
-
-```bash
 npm run tauri:build
 ```
 
-Run Rust tests:
+The installer is written to:
+
+```
+src-tauri/target/release/bundle/nsis/SimFleet_<version>_x64-setup.exe
+```
+
+**Development**
 
 ```bash
-cd src-tauri
-cargo test
+npm run tauri:dev   # run the full desktop app in dev mode
+npm run dev         # run only the web / demo UI
 ```
 
-## Useful Entry Points
+---
 
-- App bootstrap and view routing: `src/App.tsx`
-- Tauri API wrapper: `src/lib/tauri.ts`
-- Shared frontend types: `src/lib/types.ts`
-- Main backend bootstrap: `src-tauri/src/lib.rs`
-- Command list: `src-tauri/src/commands/mod.rs`
-- Search commands: `src-tauri/src/commands/search.rs`
-- Source trait: `src-tauri/src/sources/mod.rs`
-- SceneryAddons scraper: `src-tauri/src/sources/sceneryaddons.rs`
-- Simplaza scraper: `src-tauri/src/sources/simplaza.rs`
-- Community detection: `src-tauri/src/community.rs`
-- Community scanner: `src-tauri/src/community_scanner.rs`
-- Installer: `src-tauri/src/install/mod.rs`
-- Download manager: `src-tauri/src/download/manager.rs`
-- SimConnect watcher: `src-tauri/src/simconnect_watcher.rs`
-- FlightBook DB/domain: `src-tauri/src/flight_log.rs`
-- Scoring: `src-tauri/src/scoring/mod.rs`
-- Cloud sync: `src-tauri/src/cloud_sync.rs`
-- Updater: `src-tauri/src/updater.rs`
+## How it works
 
-## Known Limits
+SimFleet runs as a **Tauri v2** desktop shell hosting a **React + TypeScript** frontend (Vite, Tailwind CSS, Zustand, Framer Motion, Recharts, MapLibre GL) inside a WebView2 window. The UI talks to a **Rust** backend through Tauri commands, which handle everything that touches the system: scanning the Community folder, extracting archives, SimConnect flight tracking, GSX and registry access, and the recorder. Addon metadata and app state are cached in a local **SQLite** database (via `sqlx`, with migrations). Downloads run through an embedded **librqbit** BitTorrent client, while web hosters are driven through an **embedded browser** with ad-blocking, so multi-part and password-protected downloads complete automatically and hand off to the installer.
 
-- SceneryAddons and Simplaza are scraped from public HTML. No API contract.
-- Mirror/direct downloads are opened in the browser and completed by the user.
-- Torrent auto-install only works when the downloaded payload contains a
-  supported archive with valid MSFS package folders.
-- `.ptp` is not supported.
-- Full live FlightBook data requires Windows and SimConnect.
-- Some imported VAS/MSFS logbook flights have partial telemetry, so scoring and
-  charts may hide unavailable series instead of inventing values.
-- Update detection is heuristic for non-scenery addons because aircraft and
-  misc packages usually do not have ICAO identifiers.
-- The updater is custom GitHub Releases logic, not `tauri-plugin-updater`.
+---
 
-## Working With AI Agents Without Burning Context
+## Reporting bugs & requesting features
 
-This repo is large enough that "read the whole project" wastes model context.
-Use small, targeted prompts and make the agent prove what it read.
+Found a bug or have an idea? Open an issue using the templates at
+**[github.com/Daniiel18/msfs-addons-browser/issues/new/choose](https://github.com/Daniiel18/msfs-addons-browser/issues/new/choose)**.
 
-### Recommended Prompt Pattern
+Helpful details for bug reports: your Windows version, whether you're on MSFS 2020 or 2024, the SimFleet version (see **What's New** or the About screen), and steps to reproduce.
 
-Use prompts like this:
+---
 
-```text
-Context budget is important. Do not read the whole repo.
-Goal: <one concrete task>.
-First inspect only:
-- README.md
-- package.json
-- src/App.tsx
-- src/lib/tauri.ts
-- files directly related to <feature>
-Use rg to find symbols. Summarize what you learned before editing.
-Do not paste whole files back to me.
-```
+## Contributing
 
-For bug fixing:
+Interested in helping out? Please read [CONTRIBUTING.md](CONTRIBUTING.md) first — it covers how to file good issues, the scope of contributions the project accepts, and what to expect given the license below.
 
-```text
-Find the smallest path from UI action to Rust command for <bug>.
-Use rg for the command/event/store names.
-Read only the relevant files.
-Give me the exact files you will edit before changing them.
-```
+---
 
-For code review:
+## License & disclaimer
 
-```text
-Review only this diff. Do not rescan the repo unless a symbol is unknown.
-Prioritize bugs, regressions, and missing tests.
-```
+**Proprietary — All Rights Reserved.** © Daniel Espinal ([@Daniiel18](https://github.com/Daniiel18)).
 
-### Token-Saving Rules
+The source is published publicly for transparency and learning. It is **not** licensed for reuse, redistribution, or derivative works. Please do not copy, redistribute, or build derivative products from this code.
 
-- Start each new Claude/Codex thread with a short goal and 5-10 relevant files,
-  not the entire project.
-- Prefer `rg "symbol_or_command"` over opening folders manually.
-- Ask for file summaries first, then deeper reads only where needed.
-- Ask the model to cite file paths and line numbers so you can verify quickly.
-- Do not paste full `README`, `Cargo.lock`, `package-lock.json`, generated
-  output, or giant components unless the task is specifically about them.
-- Use `git diff -- <file>` or a small copied diff instead of sending whole
-  files for review.
-- Keep one thread per task. Long mixed threads accumulate stale context.
-- When a task is done, start a fresh thread with the result summary and the
-  current problem.
-- Tell the model about dirty files up front if they matter.
-- For frontend work, ask it to inspect the existing component and CSS pattern
-  before proposing new UI.
-- For backend work, ask it to trace `frontend action -> api wrapper -> Tauri
-  command -> domain module -> DB`.
-- For performance or crash bugs, provide logs and reproduction steps first.
-- For broad planning, request a short plan only; do implementation in a fresh
-  follow-up thread.
+**Unofficial / not affiliated.** SimFleet is an independent, unofficial fan project. It is **not** affiliated with, endorsed by, or associated with Microsoft, Asobo Studio, Xbox Game Studios, FSDreamTeam / GSX, flightsim.to, SceneryAddons, SimPlaza, or any addon developer. All trademarks belong to their respective owners.
 
-### Good Files To Give An Agent First
-
-For app identity or architecture:
-
-- `README.md`
-- `package.json`
-- `src-tauri/Cargo.toml`
-- `src/App.tsx`
-- `src-tauri/src/lib.rs`
-- `src/lib/tauri.ts`
-
-For search/catalog bugs:
-
-- `src/stores/useAppStore.ts`
-- `src/components/SearchBar.tsx`
-- `src/components/ResultsList.tsx`
-- `src/lib/tauri.ts`
-- `src-tauri/src/commands/search.rs`
-- `src-tauri/src/sources/sceneryaddons.rs`
-- `src-tauri/src/sources/simplaza.rs`
-
-For Community/addon management:
-
-- `src/stores/useCommunityStore.ts`
-- `src/components/MapView.tsx`
-- `src/components/AddonsView.tsx`
-- `src-tauri/src/commands/community.rs`
-- `src-tauri/src/community.rs`
-- `src-tauri/src/community_scanner.rs`
-- `src-tauri/src/package_ops.rs`
-
-For install/download:
-
-- `src/components/DownloadsPanel.tsx`
-- `src/stores/useDownloadsStore.ts`
-- `src-tauri/src/commands/downloads.rs`
-- `src-tauri/src/download/manager.rs`
-- `src-tauri/src/download/torrent.rs`
-- `src-tauri/src/install/mod.rs`
-
-For FlightBook:
-
-- `src/stores/useFlightLogStore.ts`
-- `src/components/FlightBookView.tsx`
-- `src/components/RoutesMapView.tsx`
-- `src/components/PerformanceModal.tsx`
-- `src/components/WeatherModal.tsx`
-- `src-tauri/src/commands/flight_log.rs`
-- `src-tauri/src/flight_log.rs`
-- `src-tauri/src/simconnect_watcher.rs`
-- `src-tauri/src/scoring/mod.rs`
-
-For settings/sync:
-
-- `src/components/SettingsModal.tsx`
-- `src/stores/useSettingsStore.ts`
-- `src-tauri/src/commands/settings.rs`
-- `src-tauri/src/commands/cloud.rs`
-- `src-tauri/src/cloud_sync.rs`
-
-### Tiny Agent Brief
-
-This repo includes a short `CLAUDE.md` for Claude/Codex-style agents. Keep it
-short. If that file becomes long, it will also start wasting context.
-
-The intended shape is:
-
-```text
-Do not read the whole repo. Start from CLAUDE.md and the current task.
-Use rg to locate symbols.
-Read only files related to the current task.
-Do not open package-lock.json, Cargo.lock, dist, node_modules, or target unless asked.
-Before edits, state the exact files to change.
-After edits, summarize files changed and tests run.
-```
-
-Keep the agent brief under 40 lines.
-
-## Legal And Safety Notes
-
-SimFleet queries public pages from SceneryAddons, Simplaza, flightsim.to, GitHub,
-Google, OpenStreetMap, OurAirports, Open-Meteo, SimBrief, and local MSFS files
-depending on the feature used.
-
-Downloads and installs are user-initiated. Mirror/direct links open in the
-browser. Torrent and archive installs write to the detected or selected
-Community folder. Back up your Community folder before large batch changes.
+You are responsible for complying with the terms of service of any third-party sites the app accesses and with the licenses of any addons you download or install.

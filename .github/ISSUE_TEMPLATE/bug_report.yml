@@ -1,0 +1,100 @@
+name: "🐛 Bug report"
+description: Report a problem with SimFleet so it can be fixed.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! 🙏
+
+        SimFleet is an independent, unofficial fan project for Microsoft Flight Simulator 2020 & 2024. It is not affiliated with Microsoft, Asobo, FSDreamTeam/GSX, flightsim.to, or any addon developer.
+
+        Please fill out the form below as completely as you can. The more detail you provide, the faster the issue can be reproduced and resolved.
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Preliminary checks
+      options:
+        - label: I searched existing issues and this bug has not already been reported.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug and the actual behavior you observed.
+      placeholder: When I tried to install a scenery addon, the app...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Step-by-step instructions to trigger the bug.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+      placeholder: I expected the addon to install into my Community folder.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: SimFleet version
+      description: Shown in the app's About / What's New screen.
+      placeholder: 7.4.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: simulator
+    attributes:
+      label: Simulator
+      description: Which simulator were you using when the bug occurred?
+      options:
+        - MSFS 2024
+        - MSFS 2020
+        - Both
+        - N/A
+    validations:
+      required: false
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: e.g. Windows 11 23H2, or the build number from `winver`.
+      placeholder: Windows 11 23H2 (build 22631)
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste any relevant log output. Logs live in the app's `data/` folder next to the executable, e.g. `data/logs` (falling back to `%LOCALAPPDATA%\SimFleet\data\logs`).
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If applicable, add screenshots or a screen recording to help explain the problem. You can drag and drop images directly into this field.
+    validations:
+      required: false

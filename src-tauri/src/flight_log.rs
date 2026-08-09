@@ -1941,7 +1941,7 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
 // (v6 #2a) Perfil del piloto + sistema de niveles.
 //
 // La IDENTIDAD se deriva del correo del Drive conectado (`google_user_email`):
-//   · contiene "jose.daniel" → Capitán Daniel (el dueño)
+//   · hash del correo ∈ owner_ids → Capitán Daniel (el dueño)
 //   · cualquier otro / sin correo → Capitán Héctor
 //
 // El NIVEL se basa en los puntos de scoring acumulados por vuelo. Para que
@@ -1987,7 +1987,7 @@ pub async fn pilot_profile(pool: &SqlitePool) -> anyhow::Result<PilotProfile> {
             .filter(|s| !s.trim().is_empty());
     let is_daniel = email
         .as_deref()
-        .map(|e| e.to_lowercase().contains("jose.daniel"))
+        .map(|e| crate::owner_ids::is_owner(e))
         .unwrap_or(false);
     let (identity, name) = if is_daniel {
         ("daniel", "Capitán Daniel")

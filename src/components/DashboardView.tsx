@@ -1,21 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  CheckCircle2,
   Download,
   HardDrive,
+  HeartPulse,
   Landmark,
+  Layers,
   Loader2,
   Package,
   Plane,
   Rocket,
   Sparkles,
+  Trash2,
   Trophy,
   Truck,
   Navigation,
+  Unlink,
   Users,
   X,
 } from "lucide-react";
-import type { DashboardStats } from "../lib/types";
+import type { AddonHealth, DashboardStats } from "../lib/types";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import {
@@ -27,6 +32,7 @@ import {
   airacUpdateVisible,
 } from "../stores/useAiracUpdateStore";
 import { useNewSceneryStore } from "../stores/useNewSceneryStore";
+import { useToastStore } from "../stores/useToastStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { usePreflight } from "../lib/usePreflight";
@@ -53,6 +59,7 @@ const RADAR_THROTTLE_MS = 30 * 60 * 1000;
  */
 export function DashboardView() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [health, setHealth] = useState<AddonHealth | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -169,9 +176,11 @@ export function DashboardView() {
   const load = () => {
     setLoading(true);
     setError(null);
-    api
-      .getDashboardStats()
-      .then((s) => setStats(s))
+    Promise.all([api.getDashboardStats(), api.getAddonHealth()])
+      .then(([s, h]) => {
+        setStats(s);
+        setHealth(h);
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   };
@@ -432,9 +441,377 @@ export function DashboardView() {
               </ul>
             </Card>
           )}
+
+          {health && <HealthCenter health={health} onChanged={load} />}
         </>
       )}
     </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (v7.3.0) Centro de salud de addons
+// ----------------------------------------------------------------------------
+
+type HealthTone = "rose" | "amber" | "violet";
+
+const healthTone: Record<
+  HealthTone,
+  { tile: string; icon: string; badge: string }
+> = {
+  rose: {
+    tile: "bg-rose-500/15",
+    icon: "text-rose-300",
+    badge: "bg-rose-500/15 text-rose-200",
+  },
+  amber: {
+    tile: "bg-amber-500/15",
+    icon: "text-amber-300",
+    badge: "bg-amber-500/15 text-amber-200",
+  },
+  violet: {
+    tile: "bg-violet-500/15",
+    icon: "text-violet-300",
+    badge: "bg-violet-500/15 text-violet-200",
+  },
+};
+
+function HealthGroup({
+  tone,
+  icon,
+  title,
+  desc,
+  count,
+  children,
+}: {
+  tone: HealthTone;
+  icon: React.ReactNode;
+  title: string;
+  desc?: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  const c = healthTone[tone];
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-2.5">
+        <div
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${c.tile}`}
+        >
+          <span className={c.icon}>{icon}</span>
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-slate-100">{title}</span>
+            <span
+              className={`rounded-full px-1.5 text-[10px] font-medium ${c.badge}`}
+            >
+              {count}
+            </span>
+          </div>
+          {desc && (
+            <div className="truncate text-[11px] leading-snug text-slate-500">
+              {desc}
+            </div>
+          )}
+        </div>
+      </div>
+      <ul className="space-y-1">{children}</ul>
+    </div>
+  );
+}
+
+function HealthRow({
+  icon,
+  title,
+  subtitle,
+  badge,
+  tone,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  tone: HealthTone;
+  action?: React.ReactNode;
+}) {
+  const c = healthTone[tone];
+  return (
+    <li className="flex items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-950/40 px-2.5 py-1.5 text-xs">
+      <span className={`shrink-0 ${c.icon}`}>{icon}</span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-slate-200">{title}</div>
+        {subtitle && (
+          <div className="truncate text-[10px] text-slate-500">{subtitle}</div>
+        )}
+      </div>
+      {badge && (
+        <span
+          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${c.badge}`}
+        >
+          {badge}
+        </span>
+      )}
+      {action && <div className="shrink-0">{action}</div>}
+    </li>
+  );
+}
+
+/** Botón de acción con confirmación inline (se transforma en ✓ / ✗). */
+function RowAction({
+  label,
+  danger,
+  busy,
+  confirming,
+  onAsk,
+  onConfirm,
+  onCancel,
+}: {
+  label: string;
+  danger?: boolean;
+  busy: boolean;
+  confirming: boolean;
+  onAsk: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (busy) {
+    return <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />;
+  }
+  if (confirming) {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          onClick={onConfirm}
+          className="rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-medium text-rose-200 hover:bg-rose-500/25"
+        >
+          {t("dashboard.health.confirm")}
+        </button>
+        <button
+          onClick={onCancel}
+          className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800"
+        >
+          {t("common.cancel")}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={onAsk}
+      className={`rounded border px-2 py-0.5 text-[10px] font-medium ${
+        danger
+          ? "border-rose-500/30 text-rose-300 hover:bg-rose-500/15"
+          : "border-slate-700 text-slate-300 hover:bg-slate-800"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function HealthCenter({
+  health,
+  onChanged,
+}: {
+  health: AddonHealth;
+  onChanged: () => void;
+}) {
+  const { orphanedLiveries: orphans, simCompatMismatches: compat, artifacts } =
+    health;
+  const ok = health.issueCount === 0;
+  const pushToast = useToastStore((s) => s.push);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const run = async (
+    key: string,
+    fn: () => Promise<unknown>,
+    okMsg: string,
+  ) => {
+    setBusyKey(key);
+    setConfirmKey(null);
+    try {
+      await fn();
+      pushToast({ kind: "success", title: okMsg });
+      onChanged();
+    } catch (e) {
+      pushToast({
+        kind: "error",
+        title: t("dashboard.health.action_failed"),
+        message: String(e),
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const action = (
+    key: string,
+    label: string,
+    danger: boolean,
+    needsConfirm: boolean,
+    exec: () => void,
+  ) => (
+    <RowAction
+      label={label}
+      danger={danger}
+      busy={busyKey === key}
+      confirming={confirmKey === key}
+      onAsk={() => (needsConfirm ? setConfirmKey(key) : exec())}
+      onConfirm={exec}
+      onCancel={() => setConfirmKey(null)}
+    />
+  );
+
+  return (
+    <Card
+      title={t("dashboard.health.title")}
+      icon={<HeartPulse className="h-3.5 w-3.5" />}
+    >
+      {ok ? (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-6 text-center">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/15">
+            <CheckCircle2 className="h-6 w-6 text-emerald-300" />
+          </div>
+          <div className="text-sm font-medium text-emerald-200">
+            {t("dashboard.health.all_good")}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3.5">
+          {/* Franja resumen */}
+          <div className="flex items-center gap-3 rounded-xl border border-rose-500/15 bg-rose-500/[0.06] px-3 py-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-rose-500/15">
+              <AlertCircle className="h-5 w-5 text-rose-300" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-slate-100">
+                {t("dashboard.health.to_review", { n: String(health.issueCount) })}
+              </div>
+              {health.reclaimableBytes > 0 && (
+                <div className="text-[11px] text-slate-400">
+                  {formatBytes(health.reclaimableBytes)}{" "}
+                  {t("dashboard.health.reclaimable")}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {orphans.length > 0 && (
+            <HealthGroup
+              tone="rose"
+              icon={<Unlink className="h-4 w-4" />}
+              title={t("dashboard.health.orphans_title")}
+              desc={t("dashboard.health.orphans_desc")}
+              count={orphans.length}
+            >
+              {orphans.map((o) => (
+                <HealthRow
+                  key={o.folderName}
+                  tone="rose"
+                  icon={<Plane className="h-3.5 w-3.5" />}
+                  title={o.title || o.folderName}
+                  subtitle={
+                    o.base
+                      ? `${t("dashboard.health.missing_base")}: ${o.base}`
+                      : t("dashboard.health.missing_base")
+                  }
+                  badge={o.sizeBytes > 0 ? formatBytes(o.sizeBytes) : undefined}
+                  action={action(
+                    `orphan:${o.folderName}`,
+                    t("dashboard.health.delete"),
+                    true,
+                    true,
+                    () =>
+                      run(
+                        `orphan:${o.folderName}`,
+                        () => api.uninstallCommunityPackage(o.folderName),
+                        t("dashboard.health.deleted"),
+                      ),
+                  )}
+                />
+              ))}
+            </HealthGroup>
+          )}
+
+          {compat.length > 0 && (
+            <HealthGroup
+              tone="violet"
+              icon={<Layers className="h-4 w-4" />}
+              title={t("dashboard.health.compat_title")}
+              desc={t("dashboard.health.compat_desc")}
+              count={compat.length}
+            >
+              {compat.map((m) => (
+                <HealthRow
+                  key={m.folderName}
+                  tone="violet"
+                  icon={<Plane className="h-3.5 w-3.5" />}
+                  title={m.title || m.folderName}
+                  subtitle={`${t("dashboard.health.built_for")} MSFS ${m.builderSim} · ${t("dashboard.health.installed_in")} MSFS ${m.communitySim}`}
+                  badge={`MSFS ${m.builderSim}`}
+                  action={action(
+                    `compat:${m.folderName}`,
+                    `${t("dashboard.health.move_to")} ${m.builderSim}`,
+                    false,
+                    true,
+                    () =>
+                      run(
+                        `compat:${m.folderName}`,
+                        () => api.healthMoveToSim(m.installPath, m.builderSim),
+                        t("dashboard.health.moved"),
+                      ),
+                  )}
+                />
+              ))}
+            </HealthGroup>
+          )}
+
+          {artifacts.length > 0 && (
+            <HealthGroup
+              tone="amber"
+              icon={<Trash2 className="h-4 w-4" />}
+              title={t("dashboard.health.artifacts_title")}
+              count={artifacts.length}
+            >
+              {artifacts.map((a) => (
+                <HealthRow
+                  key={a.folderName}
+                  tone="amber"
+                  icon={<Package className="h-3.5 w-3.5" />}
+                  title={a.title || a.folderName}
+                  subtitle={
+                    a.sizeBytes > 0
+                      ? `${a.detail} · ${formatBytes(a.sizeBytes)}`
+                      : a.detail
+                  }
+                  action={action(
+                    `art:${a.folderName}`,
+                    a.kind === "orphan_tracked"
+                      ? t("dashboard.health.remove")
+                      : t("dashboard.health.delete"),
+                    a.kind !== "orphan_tracked",
+                    a.kind !== "orphan_tracked",
+                    () =>
+                      run(
+                        `art:${a.folderName}`,
+                        a.kind === "orphan_tracked"
+                          ? () => api.healthPruneTracked(a.folderName)
+                          : () => api.uninstallCommunityPackage(a.folderName),
+                        a.kind === "orphan_tracked"
+                          ? t("dashboard.health.removed")
+                          : t("dashboard.health.deleted"),
+                      ),
+                  )}
+                />
+              ))}
+            </HealthGroup>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 

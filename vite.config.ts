@@ -4,6 +4,11 @@ import react from "@vitejs/plugin-react";
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(async () => ({
+  // (v7.4.0) En el build de DEMO para GitHub Pages la app se sirve bajo
+  // /<repo>/, así que las URLs de assets tienen que llevar ese prefijo.
+  // El workflow de Pages compila con VITE_DEMO=1. El build de Tauri NO
+  // define VITE_DEMO → base "/" (lo correcto para el protocolo tauri://).
+  base: process.env.VITE_DEMO === "1" ? "/msfs-addons-browser/" : "/",
   plugins: [react()],
   clearScreen: false,
   server: {

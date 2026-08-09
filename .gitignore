@@ -5,8 +5,6 @@ src-tauri/target
 # Target aislado para `cargo check` (evita el lock de SimConnect.dll del build normal)
 src-tauri/target_check
 src-tauri/gen
-# Artefactos del worktree de Claude
-.claude/
 *.log
 .DS_Store
 *.tsbuildinfo

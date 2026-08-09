@@ -15,6 +15,8 @@ import {
   PlaneTakeoff,
   Layers,
   MapPin,
+  HeartPulse,
+  Bell,
   type LucideIcon,
 } from "lucide-react";
 import { getActiveLocale } from "../lib/i18n";
@@ -30,8 +32,8 @@ import { getActiveLocale } from "../lib/i18n";
  * (v7.2.0) Se AÑADEN las novedades nuevas al final, conservando las anteriores
  * — el usuario ve todo lo nuevo hasta ahora.
  */
-const WHATS_NEW_VERSION = "7.2.0";
-const SEEN_KEY = "simfleet.whatsnew.seen.v4";
+const WHATS_NEW_VERSION = "7.4.0";
+const SEEN_KEY = "simfleet.whatsnew.seen.v5";
 const PER_PAGE_SECONDS = 3;
 
 type Feat = { Icon: LucideIcon; es: [string, string]; en: [string, string] };
@@ -97,6 +99,17 @@ const FEATURES: Feat[] = [
     Icon: MapPin,
     es: ["Aeropuertos mejor detectados", "El ICAO se lee de la estructura real del escenario (BGL/carpeta), no de una palabra del nombre — perfiles GSX correctos."],
     en: ["Airports detected right", "The ICAO is read from the scenery's real structure (BGL/folder), not from a word in its name — correct GSX profiles."],
+  },
+  // ---- (v7.3.0 / v7.4.0) Novedades nuevas ----
+  {
+    Icon: HeartPulse,
+    es: ["Centro de salud de addons", "El Dashboard detecta addons en el simulador equivocado, liveries huérfanas y restos de instalación — y los limpia con un clic."],
+    en: ["Addon Health Center", "The dashboard spots add-ons in the wrong simulator, orphaned liveries and leftover files — and cleans them up in one click."],
+  },
+  {
+    Icon: Bell,
+    es: ["Notificaciones de Windows", "Cuando SimFleet corre en la bandeja mientras vuelas, te avisa en el Centro de actividades al terminar o fallar una descarga."],
+    en: ["Windows notifications", "When SimFleet runs in the tray while you fly, it pings the Action Center when a download finishes or fails."],
   },
 ];
 

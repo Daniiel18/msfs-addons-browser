@@ -675,12 +675,8 @@ pub fn ofp_digits(ofp: &SimBriefFlight) -> String {
 //     CONSERVA SOLO el 357 (lo demás es del otro).
 // Si Hector cambiara de número algún día, basta editar FRIEND_FLIGHT_NUMBER.
 
-/// Correos del dueño (Jose). Hardcodeado por diseño — app privada de 2
-/// usuarios, no software público (igual que la whitelist del cloud).
-const OWNER_EMAILS: &[&str] = &[
-    "jose.daniel0318@gmail.com",
-    "jose.daniel031899@gmail.com",
-];
+// (v7.4.0) Los correos del dueño ya no van en claro aquí (repo público);
+// su hash SHA-256 vive en `crate::owner_ids::is_owner`.
 /// Número de vuelo que SIEMPRE usa el amigo (Hector).
 const FRIEND_FLIGHT_NUMBER: &str = "357";
 
@@ -709,10 +705,7 @@ pub async fn ownership_filter(pool: &SqlitePool) -> OwnershipFilter {
     let email = get_cloud_email(pool).await;
     let is_owner = email
         .as_deref()
-        .map(|e| {
-            let l = e.trim().to_lowercase();
-            OWNER_EMAILS.iter().any(|o| *o == l)
-        })
+        .map(|e| crate::owner_ids::is_owner(e))
         .unwrap_or(false);
     if is_owner {
         // Soy Jose → el amigo (Hector) usa 357 → excluirlo.
