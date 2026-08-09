@@ -378,6 +378,17 @@ export default function App() {
   // sin instalar; el banner global (`UpdateBanner`) le seguirá
   // ofreciendo el update dentro de la app.
   const handleSkipUpdate = () => {
+    // (fix) Persistir la versión saltada para que el modal BLOQUEANTE del
+    // splash NO reaparezca en cada arranque. Antes sólo se descartaba por
+    // sesión → volvía a salir siempre (el banner in-app `UpdateBanner`
+    // sigue ofreciendo el update dentro de la app).
+    try {
+      if (appUpdate?.latestVersion) {
+        localStorage.setItem("sf_splash_update_skipped", appUpdate.latestVersion);
+      }
+    } catch {
+      /* ignore */
+    }
     updateDecision?.resolve();
     setUpdateDecision(null);
   };
@@ -462,6 +473,15 @@ export default function App() {
         const u = await api.checkForUpdate().catch(() => null);
         if (cancelled) return;
         if (!u) return; // estamos al día
+        // (fix) Si el usuario ya SALTÓ esta versión en el splash, no volver
+        // a bloquear en cada arranque — el banner in-app sigue disponible.
+        try {
+          if (localStorage.getItem("sf_splash_update_skipped") === u.latestVersion) {
+            return;
+          }
+        } catch {
+          /* ignore */
+        }
         // Mostrar el banner y bloquear hasta que el usuario decida.
         setAppUpdate(u);
         await new Promise<void>((resolve) => {

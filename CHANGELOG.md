@@ -5,7 +5,12 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [7.4.0] - Unreleased
+## [7.4.1]
+
+### Fixed
+- **Update loop.** The "new version available" prompt kept reappearing on every launch even after installing. Two root causes: (1) the crate version in `Cargo.toml` was not bumped in 7.4.0, so the app reported itself as 7.3.0 and never matched the published release; (2) locally-built binaries (run from `target/`) were offered a GitHub update the installer cannot apply. Now all version files are kept in sync, local/development builds no longer check for updates, and the startup "Skip" persists per version.
+
+## [7.4.0]
 
 ### Added
 - Native Windows desktop notifications: when a download finishes or fails while SimFleet is minimized to the tray, an alert surfaces in the Windows Action Center — so you can keep flying and still know when your addon is ready.

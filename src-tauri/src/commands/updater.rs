@@ -62,10 +62,43 @@ fn updater_cache_dir() -> PathBuf {
 /// nada nuevo (o si la consulta falló en silencio). Diseñado para
 /// invocarse al arrancar la app — la UI muestra el banner sólo si
 /// devolvemos `Some`.
+/// ¿Estamos en un build LOCAL de desarrollo (no una instalación real)?
+/// En ese caso NO ofrecemos updates: el instalador NSIS reemplaza el exe
+/// en la ruta de instalación REGISTRADA, nunca un binario que corre desde
+/// `target\debug` o `target\release`. Así que "Instalar" jamás actualiza
+/// ese binario y el banner reaparece en cada arranque — el loop infinito
+/// que reportó el usuario ("por más que le doy a install vuelve a salir").
+/// Sólo las instalaciones reales pueden auto-actualizarse.
+///
+/// Para probar el flujo de update desde un build local: exportá
+/// `SIMFLEET_FORCE_UPDATE_CHECK=1`.
+fn is_local_dev_build() -> bool {
+    if std::env::var_os("SIMFLEET_FORCE_UPDATE_CHECK").is_some() {
+        return false;
+    }
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let p = exe.to_string_lossy().to_lowercase().replace('\\', "/");
+        if p.contains("/target/debug/") || p.contains("/target/release/") {
+            return true;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 pub async fn check_for_update(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<UpdateInfo>, String> {
+    if is_local_dev_build() {
+        tracing::info!(
+            target: "updater",
+            "build local de desarrollo (target/ o debug) — se omite el chequeo de updates para evitar el loop de 'actualización pendiente'; usá SIMFLEET_FORCE_UPDATE_CHECK=1 para forzarlo"
+        );
+        return Ok(None);
+    }
     match updater::check_latest(&state.http).await {
         Ok(info) => Ok(info),
         Err(e) => {
