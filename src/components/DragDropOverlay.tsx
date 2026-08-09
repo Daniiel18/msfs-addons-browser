@@ -425,6 +425,9 @@ export function DragDropOverlay() {
     );
     setActiveInspections(null);
     await refreshUis();
+    // (v7.5) Señal para el re-descargador secuencial del import: este addon
+    // terminó de instalarse → la cola puede avanzar al siguiente.
+    window.dispatchEvent(new CustomEvent("msfs-addons:drop-flow-done"));
   };
 
   const onModalClose = () => {
@@ -438,6 +441,9 @@ export function DragDropOverlay() {
       ),
     );
     setActiveInspections(null);
+    // (v7.5) Señal para el re-descargador secuencial: el usuario cerró/canceló
+    // este addon → la cola avanza igual al siguiente.
+    window.dispatchEvent(new CustomEvent("msfs-addons:drop-flow-done"));
   };
 
   return (

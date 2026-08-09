@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { t } from "../lib/i18n";
 import {
@@ -83,6 +83,22 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
   const [pendingReports, setPendingReports] = useState<DropCommitReport[]>([]);
 
   const selected = selectionsBySession[inspection.sessionId] ?? new Set();
+
+  // (v7.5) Auto-instalar SIN intervención (opt-in). Si el usuario marcó la
+  // casilla, al abrirse el modal se dispara "Install" solo — todo viene
+  // seleccionado por default. Es la pieza "autoinstall" del re-descargador
+  // del import: hace el flujo de flightsim.to totalmente manos-libres.
+  const installBtnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem("sf_auto_install_drops") === "1"
+    ) {
+      const id = window.setTimeout(() => installBtnRef.current?.click(), 250);
+      return () => window.clearTimeout(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ESC cierra (con cancel de TODAS las sesiones).
   useEffect(() => {
@@ -538,9 +554,32 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
               </div>
 
               <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
-                <span className="text-[11px] text-slate-500">
-                  {t("drop.modal.footer_hint")}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] text-slate-500">
+                    {t("drop.modal.footer_hint")}
+                  </span>
+                  <label className="flex cursor-pointer items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300">
+                    <input
+                      type="checkbox"
+                      defaultChecked={
+                        typeof localStorage !== "undefined" &&
+                        localStorage.getItem("sf_auto_install_drops") === "1"
+                      }
+                      onChange={(e) => {
+                        try {
+                          localStorage.setItem(
+                            "sf_auto_install_drops",
+                            e.target.checked ? "1" : "0",
+                          );
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                      className="accent-emerald-500"
+                    />
+                    {t("drop.auto_install")}
+                  </label>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={onCancel}
@@ -550,6 +589,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                     {t("drop.modal.cancel")}
                   </button>
                   <button
+                    ref={installBtnRef}
                     onClick={onInstall}
                     disabled={installing || totalSelected === 0}
                     className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-400 disabled:opacity-40"

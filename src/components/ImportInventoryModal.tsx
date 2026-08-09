@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
   CheckCircle2,
   Download,
+  ExternalLink,
   FileText,
   Loader2,
   Search as SearchIcon,
@@ -13,44 +14,47 @@ import { api } from "../lib/tauri";
 import type { Addon, SourceDescriptor } from "../lib/types";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { t } from "../lib/i18n";
+import {
+  flightsimSearchUrl,
+  paywareVendorFor,
+  type PaywareVendor,
+} from "../lib/addonOrigin";
 
 /**
- * (v1.1.4) Modal para importar un inventario exportado y elegir
- * qué descargar. El usuario pidió: tras formatear el PC, importa
- * el inventario y selecciona los addons que quiere re-instalar.
+ * (v7.5) Import de inventario + RE-DESCARGA SELECTIVA. El usuario, tras
+ * formatear el PC, importa el JSON exportado y por cada addon elige DÓNDE
+ * buscarlo (la app detecta y sugiere la fuente):
  *
- * Flujo:
- *   1. Lee el archivo (CSV/TXT/JSON) y extrae títulos/ICAOs/desarrolladores.
- *   2. Para cada item, busca en SceneryAddons y Simplaza el match
- *      más cercano (por ICAO si existe, sino por título).
- *   3. Lista los matches agrupados por categoría (Aeropuertos /
- *      Aviones / Otros) con checkbox para seleccionar.
- *   4. "Continuar" muestra los métodos de descarga disponibles y
- *      añade todo a la cola.
+ *   · Fuente de catálogo (SceneryAddons/Simplaza/Skybound) → baja por la app.
+ *   · flightsim.to → abre el webview embebido (auto o manual) → modal install.
+ *   · Payware (PMDG/Fenix/iniBuilds/…) → abre la página OFICIAL del dev.
+ *   · No descargar → lo salta.
  *
- * Limitaciones:
- *   · El match no es exacto; el usuario puede destildar items que
- *     no coincidan.
- *   · Si la búsqueda devuelve 0 resultados para un item, se muestra
- *     en gris como "No encontrado".
+ * Al "Finalizar" procesa los addons 1×1 (secuencial): los torrent se encolan
+ * en background; los que abren webview se hacen de a uno, esperando a que el
+ * modal de instalación de cada uno termine (evento `msfs-addons:drop-flow-done`
+ * que emite `DragDropOverlay`) antes de pasar al siguiente.
  */
 
 interface InventoryItem {
-  /** Nombre original tal como aparece en el export. */
   rawTitle: string;
   icao?: string;
   developer?: string;
   version?: string;
 }
 
+/** Ruta elegida para un item: id de fuente de catálogo, o pseudo-fuentes. */
+type Route = string; // <sourceId> | "flightsimto" | "payware" | "skip"
+
 interface ResolvedItem {
   raw: InventoryItem;
-  /** Mejor match encontrado en la búsqueda. null si no se halló. */
   match: Addon | null;
-  /** Otros resultados que el usuario puede preferir. */
   alternatives: Addon[];
-  /** Estado de la resolución. */
   status: "pending" | "resolving" | "resolved" | "not_found" | "error";
+  /** Vendor payware detectado por el creator (si aplica). */
+  payware: PaywareVendor | null;
+  /** Ruta elegida por el usuario (o el default calculado). */
+  route: Route;
 }
 
 interface Props {
@@ -64,7 +68,17 @@ export function ImportInventoryModal({ path, onClose }: Props) {
   const [resolving, setResolving] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [sources, setSources] = useState<SourceDescriptor[]>([]);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreAt, setRestoreAt] = useState<{ i: number; total: number } | null>(null);
   const startDownload = useDownloadsStore((s) => s.start);
+  const abortRef = useRef(false);
+
+  useEffect(() => {
+    abortRef.current = false;
+    return () => {
+      abortRef.current = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,43 +105,50 @@ export function ImportInventoryModal({ path, onClose }: Props) {
           match: null,
           alternatives: [],
           status: "pending",
+          payware: paywareVendorFor(p.developer, p.rawTitle),
+          route: "skip",
         }));
         setItems(initial);
         setResolving(true);
-        // Resolver de a uno para no inundar la red. Cada item tarda
-        // ~300-800ms; con 30 items eso es ~10-25s. No bloqueamos
-        // el render porque los items van apareciendo conforme se
-        // resuelven.
+        const srcList = await api.listSources();
         for (let i = 0; i < initial.length; i++) {
           if (cancelled) return;
           const item = initial[i];
           const query = (item.raw.icao || item.raw.rawTitle).trim();
           if (!query) {
-            updateItem(i, (it) => ({ ...it, status: "not_found" }));
+            updateItem(i, (it) => ({
+              ...it,
+              status: "not_found",
+              route: defaultRoute(it, []),
+            }));
             continue;
           }
           updateItem(i, (it) => ({ ...it, status: "resolving" }));
           try {
             const results: Addon[] = [];
-            for (const src of (await api.listSources())) {
+            for (const src of srcList) {
               const r = await api.search(query, src.id);
               results.push(...r);
             }
             if (cancelled) return;
             const best = pickBest(item.raw, results);
-            updateItem(i, (it) => ({
-              ...it,
-              match: best,
-              alternatives: results.filter((a) => a.id !== best?.id).slice(0, 5),
-              status: best ? "resolved" : "not_found",
-            }));
-            if (best) {
-              setSelected((prev) => {
-                const next = new Set(prev);
-                next.add(i);
-                return next;
-              });
-            }
+            const alts = results.filter((a) => a.id !== best?.id).slice(0, 5);
+            updateItem(i, (it) => {
+              const next: ResolvedItem = {
+                ...it,
+                match: best,
+                alternatives: alts,
+                status: best ? "resolved" : "not_found",
+              };
+              next.route = defaultRoute(next, best ? [best, ...alts] : alts);
+              return next;
+            });
+            // Auto-seleccionar todo lo que tenga una ruta útil (no "skip").
+            setSelected((prev) => {
+              const next = new Set(prev);
+              next.add(i);
+              return next;
+            });
           } catch (e) {
             updateItem(i, (it) => ({ ...it, status: "error" }));
             console.warn("import resolve item failed:", e);
@@ -170,38 +191,112 @@ export function ImportInventoryModal({ path, onClose }: Props) {
       return next;
     });
 
-  const enqueueAll = () => {
-    let queued = 0;
-    for (const i of selected) {
-      const it = items[i];
-      const match = it.match;
-      if (!match) continue;
-      // Tomamos el primer método disponible (preferencia torrent → mirror).
-      const method =
-        match.downloadMethods.find((m) => m.kind === "torrent") ??
-        match.downloadMethods[0];
-      if (!method) continue;
-      startDownload({
-        addonId: match.id,
-        addonTitle: match.name,
-        source: match.source,
-        method,
-        addonSimulator: match.simulator,
-      });
-      queued++;
+  const setRoute = (i: number, route: Route) =>
+    updateItem(i, (it) => ({ ...it, route }));
+
+  /** Fuentes candidatas para un item (para el <select>). */
+  const routeOptions = (it: ResolvedItem): { value: Route; label: string }[] => {
+    const opts: { value: Route; label: string }[] = [];
+    const seen = new Set<string>();
+    for (const a of [it.match, ...it.alternatives].filter(Boolean) as Addon[]) {
+      if (seen.has(a.source)) continue;
+      seen.add(a.source);
+      opts.push({ value: a.source, label: sourceLabel(a.source, sources) });
     }
-    onClose();
-    if (queued > 0) {
-      window.dispatchEvent(
-        new CustomEvent("msfs-addons:toast", {
-          detail: {
-            kind: "info",
-            message: t("import.queued_toast", { count: String(queued) }),
-          },
-        }),
-      );
-    }
+    opts.push({ value: "flightsimto", label: "flightsim.to" });
+    if (it.payware) opts.push({ value: "payware", label: `Payware — ${it.payware.name}` });
+    opts.push({ value: "skip", label: t("import.route_skip") });
+    return opts;
   };
+
+  /** Espera a que el modal de instalación de un addon termine (o se cancele). */
+  const waitForDropFlowDone = (): Promise<void> =>
+    new Promise((resolve) => {
+      const done = () => {
+        window.removeEventListener("msfs-addons:drop-flow-done", done);
+        clearTimeout(timer);
+        resolve();
+      };
+      // Safety net: si algo falla y nunca llega el evento, seguimos tras 15 min.
+      const timer = window.setTimeout(done, 15 * 60 * 1000);
+      window.addEventListener("msfs-addons:drop-flow-done", done);
+    });
+
+  const finalize = async () => {
+    const order = [...selected].sort((a, b) => a - b);
+    if (order.length === 0) return;
+    setRestoring(true);
+    let idx = 0;
+    for (const i of order) {
+      if (abortRef.current) break;
+      idx++;
+      setRestoreAt({ i: idx, total: order.length });
+      const it = items[i];
+      const route = it.route;
+      if (route === "skip") continue;
+
+      if (route === "payware") {
+        const pw = it.payware ?? paywareVendorFor(it.raw.developer, it.raw.rawTitle);
+        if (pw) {
+          try {
+            await api.openExternal(pw.url);
+          } catch (e) {
+            console.warn("openExternal payware failed:", e);
+          }
+        }
+        // Payware = descarga/compra manual en su sitio; no esperamos install.
+        continue;
+      }
+
+      if (route === "flightsimto") {
+        try {
+          await api.openLiveryBrowser(
+            flightsimSearchUrl(it.raw.rawTitle, it.raw.developer),
+          );
+          // El usuario baja (o auto) → modal de install → esperamos a que
+          // termine antes de abrir el siguiente para no pisar el webview.
+          await waitForDropFlowDone();
+        } catch (e) {
+          console.warn("flightsim.to route failed:", e);
+        }
+        continue;
+      }
+
+      // Fuente de catálogo: buscamos el Addon de esa fuente.
+      const addon = [it.match, ...it.alternatives]
+        .filter(Boolean)
+        .find((a) => (a as Addon).source === route) as Addon | undefined;
+      if (!addon || addon.downloadMethods.length === 0) continue;
+      const method =
+        addon.downloadMethods.find((m) => m.kind === "torrent") ??
+        addon.downloadMethods[0];
+      try {
+        await startDownload({
+          addonId: addon.id,
+          addonTitle: addon.name,
+          source: addon.source,
+          method,
+          addonSimulator: addon.simulator,
+          allMethods: addon.downloadMethods,
+        });
+        // Mirror/direct abren webview + modal → secuencial (esperamos).
+        // Torrent baja en background → seguimos sin esperar.
+        if (method.kind !== "torrent") {
+          await waitForDropFlowDone();
+        }
+      } catch (e) {
+        console.warn("catalog route failed:", e);
+      }
+    }
+    setRestoring(false);
+    setRestoreAt(null);
+    if (!abortRef.current) onClose();
+  };
+
+  const eligible = useMemo(
+    () => [...selected].filter((i) => items[i] && items[i].route !== "skip").length,
+    [selected, items],
+  );
 
   return (
     <AnimatePresence>
@@ -210,7 +305,9 @@ export function ImportInventoryModal({ path, onClose }: Props) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        onClick={onClose}
+        onClick={() => {
+          if (!restoring) onClose();
+        }}
       >
         <motion.div
           className="relative w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
@@ -234,7 +331,8 @@ export function ImportInventoryModal({ path, onClose }: Props) {
             </div>
             <button
               onClick={onClose}
-              className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              disabled={restoring}
+              className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-30"
             >
               <X className="h-4 w-4" />
             </button>
@@ -283,6 +381,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                     <ul className="space-y-1.5">
                       {idxs.map((i) => {
                         const it = items[i];
+                        const opts = routeOptions(it);
                         return (
                           <li
                             key={i}
@@ -295,9 +394,8 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                             <input
                               type="checkbox"
                               checked={selected.has(i)}
-                              disabled={!it.match}
                               onChange={() => toggle(i)}
-                              className="mt-1 accent-brand-500 disabled:opacity-30"
+                              className="mt-1 accent-brand-500"
                             />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
@@ -317,6 +415,27 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                                 {statusLabel(it)}
                               </div>
                             </div>
+                            {/* Selector de FUENTE por-addon. */}
+                            <div className="flex shrink-0 items-center gap-1">
+                              <span className="text-[9px] uppercase tracking-wide text-slate-600">
+                                {t("import.route_label")}
+                              </span>
+                              <select
+                                value={it.route}
+                                onChange={(e) => setRoute(i, e.target.value)}
+                                disabled={restoring}
+                                className="max-w-[150px] rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[11px] text-slate-200 focus:border-brand-500 focus:outline-none disabled:opacity-40"
+                              >
+                                {opts.map((o) => (
+                                  <option key={o.value} value={o.value}>
+                                    {o.label}
+                                  </option>
+                                ))}
+                              </select>
+                              {it.route === "payware" && (
+                                <ExternalLink className="h-3 w-3 text-amber-400" />
+                              )}
+                            </div>
                           </li>
                         );
                       })}
@@ -326,26 +445,43 @@ export function ImportInventoryModal({ path, onClose }: Props) {
               </div>
               <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
                 <div className="text-[11px] text-slate-400">
-                  <CheckCircle2 className="mr-1 inline h-3 w-3 text-emerald-300" />
-                  {t("import.selected", {
-                    selected: String(selected.size),
-                    total: String(items.length),
-                  })}
+                  {restoreAt ? (
+                    <span className="inline-flex items-center gap-1 text-brand-300">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {t("import.restoring", {
+                        i: String(restoreAt.i),
+                        total: String(restoreAt.total),
+                      })}
+                    </span>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="mr-1 inline h-3 w-3 text-emerald-300" />
+                      {t("import.selected", {
+                        selected: String(eligible),
+                        total: String(items.length),
+                      })}
+                    </>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={onClose}
-                    className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700"
+                    disabled={restoring}
+                    className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-30"
                   >
                     {t("common.cancel")}
                   </button>
                   <button
-                    onClick={enqueueAll}
-                    disabled={selected.size === 0 || resolving}
+                    onClick={finalize}
+                    disabled={eligible === 0 || resolving || restoring}
                     className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-40"
                   >
-                    <Download className="h-3.5 w-3.5" />
-                    {t("import.download_selected")}
+                    {restoring ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    {t("import.finalize")}
                   </button>
                 </div>
               </footer>
@@ -355,6 +491,19 @@ export function ImportInventoryModal({ path, onClose }: Props) {
       </motion.div>
     </AnimatePresence>
   );
+}
+
+/** Ruta por defecto: payware > mejor match de catálogo > flightsim.to. */
+function defaultRoute(it: ResolvedItem, candidates: Addon[]): Route {
+  if (it.payware) return "payware";
+  if (it.match) return it.match.source;
+  if (candidates.length > 0) return candidates[0].source;
+  return "flightsimto";
+}
+
+function sourceLabel(id: string, sources: SourceDescriptor[]): string {
+  const s = sources.find((x) => x.id === id);
+  return s?.name ?? id;
 }
 
 function statusLabel(it: ResolvedItem): React.ReactNode {
@@ -373,7 +522,11 @@ function statusLabel(it: ResolvedItem): React.ReactNode {
         </span>
       );
     case "not_found":
-      return <span className="text-slate-500">{t("import.status.no_match")}</span>;
+      return it.payware ? (
+        <span className="text-amber-300">Payware — {it.payware.name}</span>
+      ) : (
+        <span className="text-slate-500">{t("import.status.no_match")}</span>
+      );
     case "error":
       return <span className="text-rose-300">{t("import.status.error")}</span>;
     default:
@@ -401,8 +554,6 @@ function categorize(it: ResolvedItem): CategoryKey {
 }
 
 async function readFile(path: string): Promise<string> {
-  // (v1.1.4) Lee del backend Rust via comando IPC para no añadir la
-  // dep `@tauri-apps/plugin-fs` (que pesa ~50KB de JS por sólo esto).
   return await api.readTextFile(path);
 }
 
@@ -416,12 +567,14 @@ function parseInventory(content: string, path: string): InventoryItem[] {
 function parseJson(content: string): InventoryItem[] {
   const arr = JSON.parse(content);
   if (!Array.isArray(arr)) throw new Error(t("import.error.json_not_array"));
-  return arr.map((row): InventoryItem => ({
-    rawTitle: String(row.title || row.name || row.folderName || ""),
-    icao: row.icao ? String(row.icao).toUpperCase() : undefined,
-    developer: row.creator || row.developer || undefined,
-    version: row.packageVersion || row.version || undefined,
-  })).filter((r) => r.rawTitle);
+  return arr
+    .map((row): InventoryItem => ({
+      rawTitle: String(row.title || row.name || row.folderName || row.folder_name || ""),
+      icao: row.icao ? String(row.icao).toUpperCase() : undefined,
+      developer: row.creator || row.developer || undefined,
+      version: row.packageVersion || row.package_version || row.version || undefined,
+    }))
+    .filter((r) => r.rawTitle);
 }
 
 function parseCsv(content: string): InventoryItem[] {
@@ -472,7 +625,6 @@ function parseTxt(content: string): InventoryItem[] {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"))
     .map((line): InventoryItem => {
-      // Buscar un ICAO de 4 letras al inicio.
       const m = line.match(/^([A-Z]{4})\b/);
       return {
         rawTitle: line,
@@ -483,19 +635,15 @@ function parseTxt(content: string): InventoryItem[] {
 
 function pickBest(raw: InventoryItem, results: Addon[]): Addon | null {
   if (results.length === 0) return null;
-  // Prioridad: matching ICAO + creator → matching ICAO → matching title.
   const rawDev = (raw.developer || "").toLowerCase();
   const rawIcao = (raw.icao || "").toUpperCase();
   let best: Addon | null = null;
-  let bestScore = -1;
+  let bestScore = 0; // (fix) exigir score > 0 — antes aceptaba cualquier hit.
   for (const r of results) {
     let score = 0;
     if (rawIcao && r.icao?.toUpperCase() === rawIcao) score += 4;
     if (rawDev && r.developer?.toLowerCase().includes(rawDev)) score += 2;
-    if (
-      raw.rawTitle &&
-      r.name.toLowerCase().includes(raw.rawTitle.toLowerCase())
-    ) {
+    if (raw.rawTitle && r.name.toLowerCase().includes(raw.rawTitle.toLowerCase())) {
       score += 1;
     }
     if (score > bestScore) {
