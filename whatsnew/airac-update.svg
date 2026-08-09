@@ -1,0 +1,43 @@
+<svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="ai-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e1b4b" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="#0f172a"/>
+  <rect width="640" height="360" fill="url(#ai-bg)"/>
+
+  <!-- header -->
+  <g transform="translate(28,26)">
+    <rect width="22" height="22" rx="5" fill="#6366f1" opacity="0.22"/>
+    <path d="M11 4 L18 18 L11 14 L4 18 Z" fill="none" stroke="#a5b4fc" stroke-width="1.6" stroke-linejoin="round"/>
+    <text x="32" y="12" fill="#e2e8f0" font-size="16" font-weight="700">Avisos de ciclo AIRAC</text>
+    <text x="32" y="29" fill="#64748b" font-size="11">Sabe qué ciclo toca y te avisa cuando hay uno nuevo</text>
+  </g>
+
+  <!-- cycle banner -->
+  <g transform="translate(64,80)">
+    <rect width="512" height="92" rx="14" fill="#0b1220" stroke="#3730a3"/>
+    <g transform="translate(20,18)">
+      <rect width="56" height="56" rx="12" fill="#6366f1" opacity="0.16"/>
+      <path d="M28 12 L48 52 L28 42 L8 52 Z" fill="none" stroke="#818cf8" stroke-width="2" stroke-linejoin="round"/>
+    </g>
+    <text x="96" y="38" fill="#e2e8f0" font-size="15" font-weight="700">AIRAC 2507 disponible</text>
+    <text x="96" y="60" fill="#94a3b8" font-size="11">Tu ciclo instalado es el 2506 · vigente desde el 26 jun</text>
+    <rect x="350" y="30" width="140" height="32" rx="9" fill="#6366f1"/>
+    <text x="420" y="51" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">Abrir Navigraph Hub</text>
+  </g>
+
+  <!-- cycle calendar strip -->
+  <g transform="translate(64,196)">
+    <text x="0" y="10" fill="#64748b" font-size="9" font-weight="700" letter-spacing="1">CALENDARIO DE 28 DÍAS — SIN CONSULTAS CADA HORA</text>
+    <g transform="translate(0,22)" font-size="10">
+      <rect width="96" height="40" rx="8" fill="#0f1a2e"/><text x="48" y="17" fill="#64748b" font-size="9" text-anchor="middle">2505</text><text x="48" y="31" fill="#94a3b8" text-anchor="middle">29 may</text>
+      <g transform="translate(108,0)"><rect width="96" height="40" rx="8" fill="#0f1a2e"/><text x="48" y="17" fill="#64748b" font-size="9" text-anchor="middle">2506</text><text x="48" y="31" fill="#94a3b8" text-anchor="middle">26 jun</text></g>
+      <g transform="translate(216,0)"><rect width="96" height="40" rx="8" fill="#312e81"/><rect width="96" height="40" rx="8" fill="none" stroke="#818cf8"/><text x="48" y="17" fill="#a5b4fc" font-size="9" font-weight="700" text-anchor="middle">2507 ·NUEVO</text><text x="48" y="31" fill="#c7d2fe" text-anchor="middle">24 jul</text></g>
+      <g transform="translate(324,0)" opacity="0.5"><rect width="96" height="40" rx="8" fill="#0f1a2e"/><text x="48" y="17" fill="#64748b" font-size="9" text-anchor="middle">2508</text><text x="48" y="31" fill="#64748b" text-anchor="middle">21 ago</text></g>
+      <g transform="translate(432,0)" opacity="0.35"><rect width="80" height="40" rx="8" fill="#0f1a2e"/><text x="40" y="17" fill="#64748b" font-size="9" text-anchor="middle">2509</text><text x="40" y="31" fill="#64748b" text-anchor="middle">18 sep</text></g>
+    </g>
+  </g>
+</svg>

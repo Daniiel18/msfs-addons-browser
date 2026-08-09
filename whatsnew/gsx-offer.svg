@@ -1,0 +1,60 @@
+<svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="go-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#083344" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0.95"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="#0f172a"/>
+  <rect width="640" height="360" fill="url(#go-bg)"/>
+
+  <!-- modal -->
+  <g transform="translate(90,30)">
+    <rect width="460" height="300" rx="16" fill="#0b1220" stroke="#1e293b"/>
+    <!-- header -->
+    <rect x="18" y="18" width="22" height="22" rx="6" fill="#06b6d4" opacity="0.2"/>
+    <path d="M29 24 a5 5 0 0 1 5 5 v2 l1.4 2 H22.6 L24 33 v-2 a5 5 0 0 1 5 -5 z" fill="none" stroke="#22d3ee" stroke-width="1.4" stroke-linejoin="round"/>
+    <text x="50" y="28" fill="#e2e8f0" font-size="14" font-weight="700">GSX profiles · WSSS</text>
+    <text x="50" y="43" fill="#64748b" font-size="10.5">Singapore Changi · 4 on flightsim.to</text>
+    <line x1="0" y1="58" x2="460" y2="58" stroke="#1e293b"/>
+
+    <!-- 2x2 grid of profile cards -->
+    <!-- card A: Compatible -->
+    <g transform="translate(20,72)">
+      <rect width="205" height="96" rx="10" fill="#0e1a2b" stroke="#233043"/>
+      <rect width="205" height="58" rx="10" fill="#1e3a5f"/><rect y="44" width="205" height="14" fill="#1e3a5f"/>
+      <path d="M24 44 l26 -22 l18 14 l30 -22 l40 30 z" fill="#2b5a8c"/>
+      <rect x="10" y="8" width="76" height="16" rx="5" fill="#10b981"/>
+      <text x="48" y="20" fill="#052e1a" font-size="9" font-weight="800" text-anchor="middle">COMPATIBLE</text>
+      <rect x="10" y="66" width="130" height="6" rx="3" fill="#475569"/>
+      <text x="10" y="88" fill="#94a3b8" font-size="9">⬇ 3,210   ★ 4.8</text>
+    </g>
+    <!-- card B: Most popular -->
+    <g transform="translate(235,72)">
+      <rect width="205" height="96" rx="10" fill="#0e1a2b" stroke="#233043"/>
+      <rect width="205" height="58" rx="10" fill="#243b2b"/><rect y="44" width="205" height="14" fill="#243b2b"/>
+      <path d="M18 46 l30 -24 l20 16 l28 -20 l44 32 z" fill="#3f6b34"/>
+      <rect x="10" y="8" width="92" height="16" rx="5" fill="#f59e0b"/>
+      <path d="M20 12 a4 4 0 0 1 3 6 a3 3 0 0 0 -6 0 a4 4 0 0 1 3 -6 z" fill="#7c2d12"/>
+      <text x="60" y="20" fill="#3a1d03" font-size="9" font-weight="800" text-anchor="middle">MOST POPULAR</text>
+      <rect x="10" y="66" width="120" height="6" rx="3" fill="#475569"/>
+      <text x="10" y="88" fill="#94a3b8" font-size="9">⬇ 18,540   ★ 4.9</text>
+    </g>
+    <!-- card C -->
+    <g transform="translate(20,176)">
+      <rect width="205" height="96" rx="10" fill="#0e1a2b" stroke="#233043"/>
+      <rect width="205" height="58" rx="10" fill="#3a2b40"/><rect y="44" width="205" height="14" fill="#3a2b40"/>
+      <path d="M22 46 l28 -22 l18 14 l30 -22 l42 30 z" fill="#5b3a66"/>
+      <rect x="10" y="66" width="110" height="6" rx="3" fill="#475569"/>
+      <text x="10" y="88" fill="#94a3b8" font-size="9">⬇ 940   ★ 4.5</text>
+    </g>
+    <!-- card D -->
+    <g transform="translate(235,176)">
+      <rect width="205" height="96" rx="10" fill="#0e1a2b" stroke="#233043"/>
+      <rect width="205" height="58" rx="10" fill="#2b3540"/><rect y="44" width="205" height="14" fill="#2b3540"/>
+      <path d="M20 46 l30 -24 l18 14 l30 -22 l44 32 z" fill="#3d4b5a"/>
+      <rect x="10" y="66" width="98" height="6" rx="3" fill="#475569"/>
+      <text x="10" y="88" fill="#94a3b8" font-size="9">⬇ 610   ★ 4.2</text>
+    </g>
+  </g>
+</svg>

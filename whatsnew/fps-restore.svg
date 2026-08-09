@@ -1,0 +1,51 @@
+<svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="fr-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a2508" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="#0f172a"/>
+  <rect width="640" height="360" fill="url(#fr-bg)"/>
+
+  <g transform="translate(28,26)">
+    <text x="0" y="12" fill="#e2e8f0" font-size="16" font-weight="700">Tus optimizaciones de FPS sobreviven a los updates</text>
+    <text x="0" y="31" fill="#64748b" font-size="11">Un update reinstala el escenario y las borraba en silencio · ahora se restauran en 1 clic</text>
+  </g>
+
+  <!-- banner ámbar restaurar -->
+  <g transform="translate(48,74)">
+    <rect width="544" height="72" rx="14" fill="#2b1c06" stroke="#b45309"/>
+    <path d="M28 30 l6 -6 M34 24 a6 6 0 1 1 -6 6" fill="none" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/>
+    <text x="56" y="30" fill="#fcd34d" font-size="13" font-weight="700">Optimizaciones borradas por un update</text>
+    <text x="56" y="50" fill="#cbd5e1" font-size="11">El escenario se reinstaló y se perdieron 4 optimizaciones que tenías puestas</text>
+    <rect x="430" y="20" width="96" height="32" rx="8" fill="#f59e0b"/>
+    <text x="478" y="41" fill="#1c1207" font-size="12" font-weight="800" text-anchor="middle">Restaurar</text>
+  </g>
+
+  <!-- lista de optimizaciones -->
+  <g transform="translate(48,168)">
+    <rect width="544" height="160" rx="14" fill="#0b1424" stroke="#1e293b"/>
+    <g transform="translate(20,22)">
+      <text x="0" y="0" fill="#94a3b8" font-size="11" font-weight="700">KJFK — John F. Kennedy Intl</text>
+      <g transform="translate(0,18)">
+        <rect width="504" height="34" rx="8" fill="#111c30"/>
+        <text x="14" y="22" fill="#e2e8f0" font-size="11">Quitar coches del parking</text>
+        <rect x="452" y="8" width="40" height="18" rx="9" fill="#16a34a"/><circle cx="483" cy="17" r="7" fill="#fff"/>
+        <text x="360" y="22" fill="#4ade80" font-size="10">+8 FPS</text>
+      </g>
+      <g transform="translate(0,58)">
+        <rect width="504" height="34" rx="8" fill="#111c30"/>
+        <text x="14" y="22" fill="#e2e8f0" font-size="11">Pasajeros 3D en terminal</text>
+        <rect x="452" y="8" width="40" height="18" rx="9" fill="#16a34a"/><circle cx="483" cy="17" r="7" fill="#fff"/>
+        <text x="360" y="22" fill="#4ade80" font-size="10">+5 FPS</text>
+      </g>
+      <g transform="translate(0,98)">
+        <rect width="504" height="34" rx="8" fill="#111c30"/>
+        <text x="14" y="22" fill="#e2e8f0" font-size="11">Vehículos GSE animados</text>
+        <rect x="452" y="8" width="40" height="18" rx="9" fill="#16a34a"/><circle cx="483" cy="17" r="7" fill="#fff"/>
+        <text x="360" y="22" fill="#4ade80" font-size="10">+3 FPS</text>
+      </g>
+    </g>
+  </g>
+</svg>
