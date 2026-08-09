@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// Si el repo se mueve, esta constante se actualiza y se compila.
 const OWNER_REPO: &str = "Daniiel18/msfs-addons-browser";
 
-const UA: &str = "SimFleet/3.0 (+https://github.com/n0xful)";
+const UA: &str = "SimFleet/3.0 (+https://github.com/Daniiel18/msfs-addons-browser)";
 
 /// Tiempo máximo aceptable para que la consulta de versión bloquee la
 /// pantalla de inicio. Subido de 8s → 20s en v0.1.12 porque algunos

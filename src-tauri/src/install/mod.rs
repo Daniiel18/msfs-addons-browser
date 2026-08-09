@@ -3,7 +3,7 @@
 //! Key differences vs. the legacy .NET `InstallerService`:
 //!
 //! * **Temp extraction dir is auto-cleaned.** The .NET version created
-//!   `%TEMP%\SceneryAddonsBrowser\extract\{guid}` and never deleted it,
+//!   a per-run folder under `%TEMP%` and never deleted it,
 //!   slowly filling the user's disk. We wrap the extract dir in
 //!   [`tempfile::TempDir`] which removes it on drop — success or
 //!   failure — so cleanup is a structural guarantee, not a TODO.

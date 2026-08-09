@@ -1536,7 +1536,7 @@ const demoApi: Api = {
     return {
       currentVersion: "0.1.0",
       latestVersion: "0.2.0",
-      releaseUrl: "https://github.com/n0xful/SceneryAddonsBrowser/releases/latest",
+      releaseUrl: "https://github.com/Daniiel18/msfs-addons-browser/releases/latest",
       assetUrl: null,
       notesMarkdown:
         "## What's new\n\n- **GSX integration**: badge en cada resultado con perfil disponible.\n- **World map**: vista de mundo con clustering verde.\n- Fix de varios crashes al cancelar torrents.\n",

@@ -592,7 +592,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     }
 
     let http = reqwest::Client::builder()
-        .user_agent("SimFleet/3.0 (+https://github.com/n0xful)")
+        .user_agent("SimFleet/3.0 (+https://github.com/Daniiel18/msfs-addons-browser)")
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
 
