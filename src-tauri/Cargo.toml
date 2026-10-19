@@ -133,7 +133,9 @@ windows-core = "=0.61.2"
 # SWP_NOACTIVATE) y que salga SIEMPRE sobre el sim sin robarle el foco.
 # (v6.2.17) + Win32_Media_Audio / Win32_System_Com para la captura WASAPI
 # loopback (audio del sistema) que alimenta al encoder del grabador nuevo.
-windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_Storage_FileSystem"] }
+# (19/10) + Foundation / Security_Credentials_UI / Win32_System_WinRT (Windows
+# Hello) y Win32_Security (LogonUserW) para el bloqueo de inicio (win_lock.rs).
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_Storage_FileSystem", "Foundation", "Security_Credentials", "Security_Credentials_UI", "Win32_System_WinRT", "Win32_Security"] }
 # (v6.2.17) Motor de grabación de "Best Landings": Windows Graphics Capture +
 # encoder H.264 por HARDWARE (Media Foundation) — el mismo stack que usa
 # ScreenRecorderLib (LandingToast). Reemplaza a windows-record 0.1, cuyo replay

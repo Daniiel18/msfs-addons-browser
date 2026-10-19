@@ -517,6 +517,16 @@ interface Api {
   simbriefBriefing: () => Promise<SimBriefBriefing>;
   listSimbriefFlights: () => Promise<SimBriefFlight[]>;
   deleteSimbriefFlight: (ofpId: string) => Promise<void>;
+  /** (19/10) Marca un OFP como "No es mío" (cuenta SimBrief compartida). */
+  simbriefExcludeOfp: (ofpId: string) => Promise<void>;
+  /** (19/10) Bloqueo de inicio con la cuenta de Windows. */
+  lockInfo: () => Promise<{ helloAvailable: boolean; username: string }>;
+  lockVerifyHello: (
+    message: string,
+  ) => Promise<"verified" | "canceled" | "unavailable" | "retriesExhausted" | "failed">;
+  lockVerifyPassword: (password: string) => Promise<boolean>;
+  /** (19/10) Todos los OFP de la cuenta (sólo para el rival de Crew VS). */
+  listSimbriefFlightsAll: () => Promise<SimBriefFlight[]>;
   /** (v4.17.0) Link manual de OFP con doble validación de matrícula.
    *  `force=true` salta la alerta de mismatch (última confirmación). */
   linkSimbriefOfp: (
@@ -939,6 +949,19 @@ const realApi: Api = {
   listSimbriefFlights: () => invoke<SimBriefFlight[]>("list_simbrief_flights"),
   deleteSimbriefFlight: (ofpId) =>
     invoke<void>("delete_simbrief_flight", { ofpId }),
+  simbriefExcludeOfp: (ofpId) =>
+    invoke<void>("simbrief_exclude_ofp", { ofpId }),
+  lockInfo: () =>
+    invoke<{ helloAvailable: boolean; username: string }>("lock_info"),
+  lockVerifyHello: (message) =>
+    invoke<"verified" | "canceled" | "unavailable" | "retriesExhausted" | "failed">(
+      "lock_verify_hello",
+      { message },
+    ),
+  lockVerifyPassword: (password) =>
+    invoke<boolean>("lock_verify_password", { password }),
+  listSimbriefFlightsAll: () =>
+    invoke<SimBriefFlight[]>("list_simbrief_flights_all"),
   linkSimbriefOfp: (flightId, ofpId, force) =>
     invoke<LinkOutcome>("link_simbrief_ofp", {
       flightId,
@@ -1810,6 +1833,19 @@ const demoApi: Api = {
     return [];
   },
   async deleteSimbriefFlight() {},
+  async simbriefExcludeOfp() {},
+  async lockInfo() {
+    return { helloAvailable: false, username: "demo" };
+  },
+  async lockVerifyHello() {
+    return "verified" as const;
+  },
+  async lockVerifyPassword() {
+    return true;
+  },
+  async listSimbriefFlightsAll() {
+    return [];
+  },
   async linkSimbriefOfp() {
     return { status: "linked", simbriefReg: null, simReg: null };
   },

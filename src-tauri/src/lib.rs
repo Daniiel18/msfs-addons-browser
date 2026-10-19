@@ -54,6 +54,8 @@ pub mod updater;
 pub mod updates;
 pub mod vas_acars;
 pub mod vas_summary;
+// (19/10) Bloqueo de inicio con la cuenta de Windows (Hello / contraseña).
+pub mod win_lock;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -318,6 +320,11 @@ pub fn run() {
             commands::simbrief::list_simbrief_flights,
             commands::simbrief::delete_simbrief_flight,
             commands::simbrief::link_simbrief_ofp,
+            commands::simbrief::simbrief_exclude_ofp,
+            commands::simbrief::list_simbrief_flights_all,
+            win_lock::lock_info,
+            win_lock::lock_verify_hello,
+            win_lock::lock_verify_password,
             commands::simbrief::flight_route_fixes,
             commands::stats::get_dashboard_stats,
             commands::stats::get_addon_health,

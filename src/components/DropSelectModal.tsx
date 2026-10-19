@@ -43,6 +43,9 @@ interface Props {
   /** (v6.2.74) Ruteo 2020/2024 por sessionId para descargas del embebido. */
   routing?: Map<string, DropRouting>;
   onClose: () => void;
+  /** (Ajustes 19/10) Clic fuera / Escape / X / "Más tarde": aparca el lote
+   *  en Notificaciones en vez de cancelarlo. Sin esta prop, cancela. */
+  onDefer?: () => void;
   onDone: (reports: DropCommitReport[]) => void;
 }
 
@@ -56,7 +59,7 @@ export function isEmbeddedDownload(path: string): boolean {
   return p.includes("simfleet-livery-dl") || p.includes("simfleet-mirror-dl");
 }
 
-export function DropSelectModal({ inspections, routing, onClose, onDone }: Props) {
+export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone }: Props) {
   const pushToast = useToastStore((s) => s.push);
   const [pageIdx, setPageIdx] = useState(0);
   const inspection = inspections[pageIdx];
@@ -84,7 +87,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
 
   const selected = selectionsBySession[inspection.sessionId] ?? new Set();
 
-  // ESC cierra (con cancel de TODAS las sesiones).
+  // ESC aparca el lote (Ajustes 19/10); sin onDefer, cancela TODAS las sesiones.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (
@@ -94,7 +97,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
         !deletePrompt &&
         !installedOk
       ) {
-        cancelAll();
+        deferOrCancel();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -266,6 +269,13 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
     await cancelAll();
   };
 
+  // (Ajustes 19/10) Cierre no destructivo: queda pendiente en Notificaciones.
+  function deferOrCancel() {
+    if (installing || deleting || deletePrompt || installedOk) return;
+    if (onDefer) onDefer();
+    else void cancelAll();
+  }
+
   // Agrupamos por tipo para mostrar secciones.
   const gsxItems = inspection.items.filter((i) => i.kind === "gsx_profile");
   // (v7) Sub-agrupar los perfiles GSX por su CARPETA de variante (FULL, LIGHT,
@@ -307,7 +317,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        onClick={onCancel}
+        onClick={deferOrCancel}
       >
         <motion.div
           initial={{ y: 16, opacity: 0 }}
@@ -345,8 +355,9 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                   </div>
                 </div>
                 <button
-                  onClick={onCancel}
+                  onClick={deferOrCancel}
                   disabled={installing}
+                  title={onDefer ? t("installq.later") : t("drop.modal.cancel")}
                   className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-50"
                 >
                   <X className="h-4 w-4" />
@@ -549,6 +560,16 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                   >
                     {t("drop.modal.cancel")}
                   </button>
+                  {onDefer && (
+                    <button
+                      onClick={deferOrCancel}
+                      disabled={installing}
+                      title={t("installq.later_tooltip")}
+                      className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:bg-sf-raised disabled:opacity-50"
+                    >
+                      {t("installq.later")}
+                    </button>
+                  )}
                   <button
                     onClick={onInstall}
                     disabled={installing || totalSelected === 0}

@@ -4,8 +4,6 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { AnimatePresence } from "framer-motion";
 import {
   AlertCircle,
-  ChevronLeft,
-  ChevronRight,
   MapPin,
   Search,
   Sparkles,
@@ -19,24 +17,12 @@ import { api } from "../lib/tauri";
 import { MapAirportCard } from "./MapAirportCard";
 import { t } from "../lib/i18n";
 
-// (v4.26.0) Colapso persistente del listado de aeropuertos — mismo
-// patrón que el sidebar del FlightBook: la vista se desmonta al
-// cambiar de pestaña, así que el estado vive en localStorage.
-const SIDEBAR_COLLAPSED_KEY = "simfleet.map.sidebarCollapsed";
 // (v4.28.0) Persistencia del FILTRO GSX y del texto de search del
 // sidebar — el usuario reportó: "el filtrado de gsx y no gsx se
 // pierde al cambiar de pantalla". Vive en localStorage como todo lo
 // demás de esta vista.
 const GSX_FILTER_KEY = "simfleet.map.gsxFilter";
 const SEARCH_FILTER_KEY = "simfleet.map.filter";
-
-function readSidebarCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
 
 function readGsxFilter(): "all" | "gsx" | "no-gsx" {
   try {
@@ -86,16 +72,8 @@ export function MapView() {
   const lastScanError = useCommunityStore((s) => s.lastScanError);
   // (v4.26.0) Tema de la app — el basemap lo sigue (oscuro/claro).
   const theme = useSettingsStore((s) => s.settings.theme);
-  // (v4.26.0) Colapso del listado, persistido en localStorage.
-  const [sidebarCollapsed, setSidebarCollapsedState] = useState(readSidebarCollapsed);
-  const setSidebarCollapsed = (v: boolean) => {
-    setSidebarCollapsedState(v);
-    try {
-      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, v ? "1" : "0");
-    } catch {
-      // localStorage lleno/deshabilitado — el estado en memoria sigue ok.
-    }
-  };
+  // (Ajustes 19/10) El listado de aeropuertos ya no se oculta (se quitó
+  // el botón "Ocultar listado" a pedido del usuario).
   // (v4.26.0) Tras un map.setStyle() hay que re-añadir el source y el
   // layer de markers (setStyle los borra). Este contador fuerza el
   // re-run del efecto del geojson cuando el estilo nuevo carga.
@@ -435,25 +413,8 @@ export function MapView() {
        espacio disponible exacto del main. `overflow-hidden` evita
        cualquier scroll residual; el wheel se queda en el mapa. */
     <div
-      className={`grid h-full min-h-[520px] gap-3 overflow-hidden ${
-        sidebarCollapsed
-          ? "grid-cols-[18px_1fr]"
-          : "grid-cols-[18px_360px_1fr] xl:grid-cols-[18px_400px_1fr]"
-      }`}
+      className="grid h-full min-h-[520px] grid-cols-[360px_1fr] gap-3 overflow-hidden xl:grid-cols-[400px_1fr]"
     >
-      <button
-        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-        title={sidebarCollapsed ? t("map.sidebar.expand") : t("map.sidebar.collapse")}
-        className="flex items-center justify-center rounded-2xl border border-sf-border bg-sf-surface text-sf-muted hover:bg-sf-raised hover:text-sf-text"
-      >
-        {sidebarCollapsed ? (
-          <ChevronRight className="h-4 w-4" />
-        ) : (
-          <ChevronLeft className="h-4 w-4" />
-        )}
-      </button>
-
-      {!sidebarCollapsed && (
         <Sidebar
           visible={visible}
           totalPackages={new Set(packages.map((p) => p.icao!.toUpperCase())).size}
@@ -469,7 +430,6 @@ export function MapView() {
           gsxCount={gsxCount}
           noGsxCount={noGsxCount}
         />
-      )}
 
       <div className="relative overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
         <div ref={containerRef} className="absolute inset-0" />

@@ -70,6 +70,9 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
   // mal parseado. El usuario corrige tipeando un ICAO (3-4 letras).
   const [originIcao, setOriginIcao] = useState(() => entry.originIcao ?? "");
   const [destIcao, setDestIcao] = useState(() => entry.destinationIcao ?? "");
+  // (19/10) Nº de vuelo y callsign: a veces se teclean mal en SimBrief.
+  const [flightNumber, setFlightNumber] = useState(() => entry.flightNumber ?? "");
+  const [callsign, setCallsign] = useState(() => entry.callsign ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -139,12 +142,25 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           destIcao.trim().toUpperCase() !== (entry.destinationIcao ?? "").toUpperCase()
             ? destIcao.trim()
             : undefined,
+        flightNumber:
+          flightNumber.trim().toUpperCase() !== (entry.flightNumber ?? "").toUpperCase()
+            ? flightNumber.trim()
+            : undefined,
+        callsign:
+          callsign.trim().toUpperCase() !== (entry.callsign ?? "").toUpperCase()
+            ? callsign.trim()
+            : undefined,
       };
       await api.updateFlightLogEntry(entry.id, input);
       onSaved();
       onClose();
     } catch (e) {
-      setError(String(e));
+      // (19/10) Mismo nº de vuelo que otro vuelo completado ese día.
+      setError(
+        String(e).includes("uq_flight_log_va_dedup_completed")
+          ? t("editflight.err_duplicate")
+          : String(e),
+      );
     } finally {
       setSaving(false);
     }
@@ -232,6 +248,31 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 Útil cuando el watcher detectó mal el spawn o cuando
                 un import VAS trae el ICAO con typo. El backend hace
                 .to_uppercase() antes de persistir. */}
+            {/* (19/10) Nº de vuelo + callsign (el callsign define la
+                aerolínea del vuelo en los chips del FlightBook). */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={t("editflight.flight_number")}>
+                <input
+                  type="text"
+                  value={flightNumber}
+                  onChange={(e) => setFlightNumber(e.target.value.toUpperCase())}
+                  placeholder={t("editflight.ph.flight_number")}
+                  maxLength={8}
+                  className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-sf-text focus:border-amber-400 focus:outline-none"
+                />
+              </Field>
+              <Field label={t("editflight.callsign")}>
+                <input
+                  type="text"
+                  value={callsign}
+                  onChange={(e) => setCallsign(e.target.value.toUpperCase())}
+                  placeholder={t("editflight.ph.callsign")}
+                  maxLength={10}
+                  className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-sf-text focus:border-amber-400 focus:outline-none"
+                />
+              </Field>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <Field label={t("editflight.origin")}>
                 <input

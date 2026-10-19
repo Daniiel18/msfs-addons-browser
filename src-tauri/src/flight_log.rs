@@ -350,15 +350,20 @@ pub async fn finish_flight(
             .ok()
             .flatten();
             if let Some(orig) = origin_icao_opt {
+                // (19/10) Primero el OFP ENLAZADO a este vuelo; si no hay,
+                // el más reciente con el mismo origen (como antes).
                 sqlx::query_scalar::<_, String>(
                     r#"
                     SELECT destination_icao FROM simbrief_flights
-                    WHERE origin_icao = ?1
-                    ORDER BY CAST(generated_at AS INTEGER) DESC
+                    WHERE ofp_id = (SELECT simbrief_ofp_id FROM flight_log WHERE id = ?2)
+                       OR origin_icao = ?1
+                    ORDER BY (ofp_id = (SELECT simbrief_ofp_id FROM flight_log WHERE id = ?2)) DESC,
+                             CAST(generated_at AS INTEGER) DESC
                     LIMIT 1
                     "#
                 )
                 .bind(&orig)
+                .bind(id)
                 .fetch_optional(pool)
                 .await
                 .ok()
@@ -458,6 +463,11 @@ pub struct UpdateEntryInput {
     /// futuro (autocomplete). Se uppercase-ean antes de persistir.
     pub origin_icao: Option<String>,
     pub destination_icao: Option<String>,
+    /// (19/10) Nº de vuelo / callsign corregidos a mano ("" = borrar). Al
+    /// cambiar el callsign se re-deriva la aerolínea (`airline_icao`), que
+    /// es la que agrupa los chips de aerolínea del FlightBook.
+    pub flight_number: Option<String>,
+    pub callsign: Option<String>,
 }
 
 pub async fn update_entry(
@@ -497,6 +507,29 @@ pub async fn update_entry(
     if input.destination_icao.is_some() {
         sets.push("destination_icao = ?");
     }
+    // (19/10) Cadena vacía → NULL; si no, recortada y en mayúsculas.
+    let clean = |v: &String| -> Option<String> {
+        let t = v.trim().to_uppercase();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    };
+    let flight_number = input.flight_number.as_ref().map(clean);
+    let callsign = input.callsign.as_ref().map(clean);
+    let airline_from_callsign: Option<String> = callsign
+        .as_ref()
+        .and_then(|c| derive_airline_icao(c.as_deref()));
+    if flight_number.is_some() {
+        sets.push("flight_number = ?");
+    }
+    if callsign.is_some() {
+        sets.push("callsign = ?");
+    }
+    if airline_from_callsign.is_some() {
+        sets.push("airline_icao = ?");
+    }
     if sets.is_empty() {
         return Ok(());
     }
@@ -533,6 +566,15 @@ pub async fn update_entry(
     }
     if let Some(v) = input.destination_icao.as_ref() {
         q = q.bind(v.to_uppercase());
+    }
+    if let Some(v) = flight_number {
+        q = q.bind(v);
+    }
+    if let Some(v) = callsign {
+        q = q.bind(v);
+    }
+    if let Some(v) = airline_from_callsign {
+        q = q.bind(v);
     }
     q = q.bind(id);
     q.execute(pool).await?;

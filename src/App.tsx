@@ -47,7 +47,7 @@ import { SimBriefConfirmModal } from "./components/SimBriefConfirmModal";
 import { IncompleteFlightModal } from "./components/IncompleteFlightModal";
 import { ReplayBanner } from "./components/ReplayBanner";
 import { GsxSearchSummary } from "./components/GsxSearchSummary";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsView } from "./components/SettingsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { PreflightHost } from "./components/PreflightHost";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
@@ -289,6 +289,71 @@ export default function App() {
     totalBytes: number | null;
   } | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+
+  // (19/10) BLOQUEO DE INICIO: la app no se abre hasta verificar al usuario
+  // de Windows (Windows Hello o su contraseña de Windows). La carga sigue en
+  // segundo plano; al terminar, el bootstrap espera aquí al desbloqueo.
+  // En el modo demo (navegador) no hay bloqueo.
+  const [unlocked, setUnlocked] = useState(!isTauri);
+  const unlockedRef = useRef(!isTauri);
+  const unlockWaiterRef = useRef<(() => void) | null>(null);
+  const [lockInfo, setLockInfo] = useState<{ helloAvailable: boolean; username: string } | null>(null);
+  const [lockBusy, setLockBusy] = useState(false);
+  const [lockError, setLockError] = useState<string | null>(null);
+  const [bootWaitingUnlock, setBootWaitingUnlock] = useState(false);
+  const helloAutoTriedRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    api
+      .lockInfo()
+      .then(setLockInfo)
+      .catch(() => setLockInfo({ helloAvailable: false, username: "" }));
+  }, []);
+  const markUnlocked = () => {
+    unlockedRef.current = true;
+    setUnlocked(true);
+    setLockError(null);
+    unlockWaiterRef.current?.();
+    unlockWaiterRef.current = null;
+  };
+  const unlockWithHello = async () => {
+    setLockBusy(true);
+    setLockError(null);
+    try {
+      const r = await api.lockVerifyHello(t("lock.hello_message"));
+      if (r === "verified") markUnlocked();
+      else if (r === "unavailable") {
+        setLockInfo((i) => (i ? { ...i, helloAvailable: false } : i));
+        setLockError(t("lock.err.hello_unavailable"));
+      } else if (r === "canceled") setLockError(t("lock.err.canceled"));
+      else if (r === "retriesExhausted") setLockError(t("lock.err.retries"));
+      else setLockError(t("lock.err.failed"));
+    } catch (e) {
+      setLockError(String(e));
+    } finally {
+      setLockBusy(false);
+    }
+  };
+  const unlockWithPassword = async (password: string) => {
+    setLockBusy(true);
+    setLockError(null);
+    try {
+      if (await api.lockVerifyPassword(password)) markUnlocked();
+      else setLockError(t("lock.err.wrong_password"));
+    } catch (e) {
+      setLockError(String(e));
+    } finally {
+      setLockBusy(false);
+    }
+  };
+  // Al terminar la carga, si sigue bloqueada, lanzamos Windows Hello una vez.
+  useEffect(() => {
+    if (!bootWaitingUnlock || unlocked || !lockInfo?.helloAvailable) return;
+    if (helloAutoTriedRef.current) return;
+    helloAutoTriedRef.current = true;
+    void unlockWithHello();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootWaitingUnlock, unlocked, lockInfo]);
   // Promesa que resuelve cuando el usuario decide qué hacer con la
   // update (instalar o saltar). El bootstrap espera por esto.
   const [updateDecision, setUpdateDecision] = useState<{
@@ -319,7 +384,8 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // (Ajustes 19/10) Ajustes es una vista (useAppStore.view === "settings").
+  const openSettings = () => useAppStore.getState().setView("settings");
   const [tourOpen, setTourOpen] = useState(false);
   // (v6 — #4) Modal de novedades "What's New" anti-skip. Se abre tras `ready`:
   // en la instancia principal sólo cuando la app SE ACTUALIZA (la versión
@@ -651,6 +717,15 @@ export default function App() {
       if (!cancelled) {
         await new Promise((r) => setTimeout(r, 350));
         if (cancelled) return;
+        // (19/10) Bloqueo de inicio: esperamos a que el usuario se verifique
+        // ANTES de agrandar la ventana y mostrar la app.
+        if (!unlockedRef.current) {
+          setBootWaitingUnlock(true);
+          await new Promise<void>((resolve) => {
+            unlockWaiterRef.current = resolve;
+          });
+          if (cancelled) return;
+        }
         if (isTauri) {
           try {
             const win = getCurrentWindow();
@@ -799,7 +874,9 @@ export default function App() {
     }
   };
 
-  if (!ready) {
+  // (19/10) Sin desbloquear no se muestra la app, ni siquiera si el
+  // bootstrap falló (su catch hace setReady(true)).
+  if (!ready || !unlocked) {
     return (
       <>
         <SplashScreen
@@ -810,6 +887,16 @@ export default function App() {
           updateProgress={updateProgress}
           onInstallUpdate={handleInstallUpdate}
           onSkipUpdate={handleSkipUpdate}
+          lock={{
+            required: !unlocked,
+            helloAvailable: lockInfo ? lockInfo.helloAvailable : null,
+            username: lockInfo?.username ?? "",
+            busy: lockBusy,
+            error: lockError,
+            waiting: bootWaitingUnlock,
+            onHello: () => void unlockWithHello(),
+            onPassword: (pw) => void unlockWithPassword(pw),
+          }}
         />
         {/* (v5.2.3) Elección de versión de MSFS en el splash, ANTES del
             scan de Community. Al elegir, fija el atómico del backend y
@@ -832,11 +919,7 @@ export default function App() {
        (Rediseño F1) Menú lateral a la izquierda y, a su derecha, una
        columna con la barra superior única + banners + contenido. */
     <div className="app-shell flex h-screen overflow-hidden bg-sf-bg text-sf-text">
-      <Sidebar
-        settingsOpen={settingsOpen}
-        onOpenSettings={() => setSettingsOpen(true)}
-        safeMode={safeMode}
-      />
+      <Sidebar safeMode={safeMode} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TitleBar
@@ -1017,20 +1100,24 @@ export default function App() {
           {view === "flightbook" && <FlightBookView />}
           {view === "hangar" && <HangarView />}
           {view === "economy" && <EconomyView />}
+          {view === "settings" && <SettingsView />}
         </main>
       </div>
 
       <DownloadsPanel open={isPanelOpen} onClose={() => setPanelOpen(false)} />
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {/* (v6.2.27 / R4) Paleta de comandos global — Ctrl/Cmd+K. */}
-      <CommandPalette onOpenSettings={() => setSettingsOpen(true)} />
+      <CommandPalette onOpenSettings={openSettings} />
       {/* (v6.2.34) Pre-vuelo "¿Listo para volar?" — auto-alerta al OFP del día. */}
       <PreflightHost />
       {tourOpen && (
         <OnboardingTour
           onClose={() => setTourOpen(false)}
-          onSettingsOpenChange={setSettingsOpen}
+          onSettingsOpenChange={(o) => {
+            const s = useAppStore.getState();
+            if (o) s.setView("settings");
+            else if (s.view === "settings") s.setView("dashboard");
+          }}
         />
       )}
       {importInventoryPath && (

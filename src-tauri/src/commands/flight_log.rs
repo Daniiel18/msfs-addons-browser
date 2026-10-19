@@ -201,6 +201,10 @@ pub struct UpdateEntryDto {
     /// con ICAOs anómalos. El usuario los corrige aquí.
     pub origin_icao: Option<String>,
     pub destination_icao: Option<String>,
+    /// (19/10) Nº de vuelo y callsign editables (a veces se teclean mal en
+    /// SimBrief). Cadena vacía = borrar.
+    pub flight_number: Option<String>,
+    pub callsign: Option<String>,
 }
 
 /// Edita campos manualmente — usado por el botón "Editar" del panel
@@ -223,6 +227,8 @@ pub async fn update_flight_log_entry(
         aircraft_registration: input.aircraft_registration,
         origin_icao: input.origin_icao,
         destination_icao: input.destination_icao,
+        flight_number: input.flight_number,
+        callsign: input.callsign,
     };
     flight_log::update_entry(&state.db, id, &mapped)
         .await

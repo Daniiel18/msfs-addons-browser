@@ -1,28 +1,47 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Download, Plane, Sparkles } from "lucide-react";
+import {
+  Download,
+  Fingerprint,
+  KeyRound,
+  Loader2,
+  Lock,
+  Plane,
+  Sparkles,
+} from "lucide-react";
 import type { UpdateInfo } from "../lib/types";
 import { t } from "../lib/i18n";
 
 /**
  * Splash screen — pantalla de carga inicial.
  *
- * Diseño: minimal, profesional, undecorated (sin botones de
- * cerrar/minimizar — la idea es que el usuario NO interactúe
- * mientras carga).
+ * (19/10) Rediseño con el estilo de la nueva UI (tokens sf-*, acento
+ * turquesa) + BLOQUEO DE INICIO: la app no se abre hasta verificar al
+ * usuario de Windows (Windows Hello o su contraseña de Windows). La carga
+ * sigue en segundo plano mientras tanto.
  *
  * Estados especiales:
- *   · `appUpdate` populado → muestra un banner "Hay v0.X.Y" con
- *     botones "Instalar / Saltar". Si el usuario pulsa Instalar,
- *     `onInstallUpdate` corre la descarga + lanzado del installer
- *     (la app se cierra sola tras eso). El splash entra en modo
- *     "actualizando" con barra de progreso real.
- *   · `updateProgress` populado → muestra una barra de descarga
- *     mientras el installer baja.
+ *   · `appUpdate` populado → banner "Hay vX.Y.Z" con Instalar / Saltar.
+ *   · `updateProgress` populado → barra de descarga del instalador.
+ *   · `lock.required` → tarjeta de desbloqueo.
  *
  * El componente NO inicia trabajo. App.tsx orquesta todo y le pasa
  * tareas + eventos.
  */
+export interface SplashLock {
+  /** La app sigue bloqueada (falta verificar al usuario de Windows). */
+  required: boolean;
+  /** null = aún comprobando si Windows Hello está disponible. */
+  helloAvailable: boolean | null;
+  username: string;
+  busy: boolean;
+  error: string | null;
+  /** La carga terminó y sólo falta desbloquear. */
+  waiting: boolean;
+  onHello: () => void;
+  onPassword: (password: string) => void;
+}
+
 export function SplashScreen({
   tasks,
   appVersion,
@@ -31,6 +50,7 @@ export function SplashScreen({
   updateProgress,
   onInstallUpdate,
   onSkipUpdate,
+  lock,
 }: {
   tasks: SplashTask[];
   /** Versión actual de la app, leída de Tauri en runtime. */
@@ -44,9 +64,10 @@ export function SplashScreen({
   /** (v2.1.0) Callback recibe la preferencia de auto-restart. */
   onInstallUpdate: (autoRestart: boolean) => void;
   onSkipUpdate: () => void;
+  /** (19/10) Bloqueo de inicio con la cuenta de Windows. */
+  lock?: SplashLock;
 }) {
-  // (v2.1.0) Auto-restart tras instalar (default true). El usuario
-  // puede destildar si prefiere abrir la app manualmente.
+  // (v2.1.0) Auto-restart tras instalar (default true).
   const [autoRestart, setAutoRestart] = useState(true);
   const [showChangelog, setShowChangelog] = useState(false);
   const total = tasks.length;
@@ -62,7 +83,6 @@ export function SplashScreen({
   // no decidió, internamente trackeamos si ya pulsó algo.
   const [pendingDecision, setPendingDecision] = useState(true);
   useEffect(() => {
-    // Si appUpdate aparece nuevo, reseteamos la decisión a pendiente.
     if (appUpdate) setPendingDecision(true);
   }, [appUpdate]);
 
@@ -85,270 +105,310 @@ export function SplashScreen({
       : null;
 
   return (
-    // (v2.1.1) Splash llena toda la ventana — la ventana se redimensiona
-    // a 480x640 al inicio del bootstrap (ver App.tsx), así que aquí
-    // sólo necesitamos llenar lo que hay. Antes envolvíamos una card
-    // centrada porque la ventana podía estar maximizada (F5 con app
-    // maximizada), pero ahora ya nos aseguramos del tamaño desde el
-    // efecto de bootstrap.
+    // La ventana se redimensiona a 480x640 al inicio del bootstrap (ver
+    // App.tsx); aquí sólo llenamos lo que hay.
     <div
       data-tauri-drag-region
       className="fixed inset-0 z-50 overflow-hidden bg-sf-bg text-sf-text"
     >
-      <div
-        data-tauri-drag-region
-        className="relative flex h-full w-full flex-col"
-      >
-      {/* Fondo */}
-      <div
-        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
-        aria-hidden
-      />
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.04]"
-        aria-hidden
-        style={{
-          backgroundImage:
-            "radial-gradient(rgb(148, 163, 184) 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-        }}
-      />
-      <div
-        className="pointer-events-none absolute left-1/2 top-[38%] h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald-500/10 blur-3xl"
-        aria-hidden
-      />
+      <div data-tauri-drag-region className="relative flex h-full w-full flex-col">
+        {/* Fondo: brillo turquesa + trazos de ruta */}
+        <div
+          className="pointer-events-none absolute -top-24 left-1/2 h-80 w-80 -translate-x-1/2 rounded-full bg-brand-500/15 blur-3xl"
+          aria-hidden
+        />
+        <SplashRouteArt className="pointer-events-none absolute inset-x-0 bottom-10 h-40 w-full text-brand-400/20" />
 
-      <div className="relative flex flex-1 flex-col items-center justify-center px-8 pb-6 pt-2">
-        {/* Logo con anillos animados */}
-        <div className="relative mb-7 flex h-24 w-24 items-center justify-center">
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
-            className="absolute inset-0 rounded-full"
-            style={{
-              background:
-                "conic-gradient(from 0deg, transparent 0deg, transparent 270deg, rgb(52, 211, 153) 320deg, rgb(16, 185, 129) 360deg)",
-              mask: "radial-gradient(circle, transparent 38px, black 39px, black 47px, transparent 48px)",
-              WebkitMask:
-                "radial-gradient(circle, transparent 38px, black 39px, black 47px, transparent 48px)",
-            }}
-          />
-          <motion.div
-            animate={{ rotate: -360 }}
-            transition={{ duration: 14, repeat: Infinity, ease: "linear" }}
-            className="absolute inset-2 rounded-full opacity-50"
-            style={{
-              background:
-                "conic-gradient(from 90deg, transparent 0deg, transparent 290deg, rgb(56, 189, 248) 360deg)",
-              mask: "radial-gradient(circle, transparent 30px, black 31px, black 36px, transparent 37px)",
-              WebkitMask:
-                "radial-gradient(circle, transparent 30px, black 31px, black 36px, transparent 37px)",
-            }}
-          />
-          <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-sf-surface ring-1 ring-emerald-500/30 shadow-2xl shadow-emerald-500/20">
-            <Plane className="h-8 w-8 text-emerald-300" strokeWidth={1.5} />
+        <div className="relative flex flex-1 flex-col items-center justify-center px-8 pb-6 pt-4">
+          {/* Logo */}
+          <div className="relative mb-6 flex h-24 w-24 items-center justify-center">
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 7, repeat: Infinity, ease: "linear" }}
+              className="absolute inset-0 rounded-full"
+              style={{
+                background:
+                  "conic-gradient(from 0deg, transparent 0deg, transparent 250deg, rgb(var(--sf-accent)) 360deg)",
+                mask: "radial-gradient(circle, transparent 42px, black 43px, black 47px, transparent 48px)",
+                WebkitMask:
+                  "radial-gradient(circle, transparent 42px, black 43px, black 47px, transparent 48px)",
+              }}
+            />
+            <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-2xl shadow-brand-500/30">
+              <Plane className="h-8 w-8 text-white" strokeWidth={1.75} />
+            </div>
           </div>
-        </div>
 
-        <h1 className="text-center text-xl font-semibold tracking-tight text-slate-50">
-          SimFleet
-        </h1>
-        <p className="mt-1.5 text-center text-[11px] tracking-wide text-sf-muted">
-          {tagline}
-        </p>
+          <h1 className="text-center text-2xl font-semibold tracking-tight text-sf-text">
+            SimFleet
+          </h1>
+          <p className="mt-1 text-center text-xs text-sf-muted">{tagline}</p>
 
-        {/* Banner update — sólo si hay update y el usuario aún no
-            decidió, y no estamos descargando */}
-        {showUpdateBanner && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-6 w-full max-w-[360px] rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 ring-1 ring-emerald-500/20"
-          >
-            <div className="flex items-start gap-2 text-[11px]">
-              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" />
-              <div className="flex-1">
-                <div className="font-semibold text-emerald-100">
-                  {t("update.banner.new_version", {
-                    version: appUpdate!.latestVersion,
-                  })}
-                </div>
-                <div className="text-[11px] text-emerald-200/70">
-                  {t("update.banner.body", {
-                    current: appUpdate!.currentVersion,
-                  })}
+          {/* Banner update */}
+          {showUpdateBanner && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-6 w-full max-w-[340px] rounded-xl border border-brand-500/30 bg-sf-surface p-3"
+            >
+              <div className="flex items-start gap-2 text-xs">
+                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-brand-300" />
+                <div className="flex-1">
+                  <div className="font-semibold text-sf-text">
+                    {t("update.banner.new_version", { version: appUpdate!.latestVersion })}
+                  </div>
+                  <div className="text-[11px] text-sf-muted">
+                    {t("update.banner.body", { current: appUpdate!.currentVersion })}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* (v2.1.0) Changelog colapsable — el usuario quería ver
-                qué cambia antes de aceptar la actualización. */}
-            {appUpdate!.notesMarkdown && (
-              <div className="mt-2">
+              {appUpdate!.notesMarkdown && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => setShowChangelog((v) => !v)}
+                    className="inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
+                  >
+                    {showChangelog ? "▲" : "▼"} {t("update.banner.view_changes")}
+                  </button>
+                  {showChangelog && (
+                    <div className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-sf-border bg-sf-bg/60 px-2 py-1.5 text-left font-mono text-[11px] leading-relaxed text-sf-text/90">
+                      {appUpdate!.notesMarkdown.slice(0, 4000)}
+                      {appUpdate!.notesMarkdown.length > 4000 && (
+                        <>
+                          …{"\n"}
+                          <a
+                            href={appUpdate!.releaseUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-brand-300 underline"
+                          >
+                            {t("update.banner.see_full_release")}
+                          </a>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-sf-text/90">
+                <input
+                  type="checkbox"
+                  checked={autoRestart}
+                  onChange={(e) => setAutoRestart(e.target.checked)}
+                  className="accent-[rgb(var(--sf-accent))]"
+                />
+                {t("update.banner.auto_restart")}
+              </label>
+
+              <div className="mt-2 flex gap-2">
                 <button
-                  onClick={() => setShowChangelog((v) => !v)}
-                  className="inline-flex items-center gap-1 text-[11px] text-emerald-200/80 hover:text-emerald-100"
+                  onClick={() => onInstallUpdate(autoRestart)}
+                  disabled={!appUpdate!.assetUrl}
+                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-brand-500 px-2 py-1.5 text-[11px] font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50"
                 >
-                  {showChangelog ? "▲" : "▼"}{" "}
-                  {t("update.banner.view_changes")}
+                  <Download className="h-3 w-3" /> {t("update.banner.install_now")}
                 </button>
-                {showChangelog && (
-                  <div className="mt-1 max-h-32 overflow-y-auto rounded border border-emerald-500/20 bg-sf-bg/50 px-2 py-1.5 text-left text-[11px] leading-relaxed text-emerald-100/85 whitespace-pre-wrap font-mono">
-                    {appUpdate!.notesMarkdown.slice(0, 4000)}
-                    {appUpdate!.notesMarkdown.length > 4000 && (
-                      <>
-                        …{"\n"}
-                        <a
-                          href={appUpdate!.releaseUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-emerald-300 underline"
-                        >
-                          {t("update.banner.see_full_release")}
-                        </a>
-                      </>
-                    )}
-                  </div>
+                <button
+                  onClick={() => {
+                    setPendingDecision(false);
+                    onSkipUpdate();
+                  }}
+                  className="rounded-md border border-sf-border px-2 py-1.5 text-[11px] text-sf-text/90 hover:bg-sf-raised"
+                >
+                  {t("common.skip")}
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Descarga del instalador */}
+          {installing && updateProgress && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-6 w-full max-w-[320px]"
+            >
+              <div className="mb-1 flex items-center justify-between text-[11px] text-brand-200">
+                <span>
+                  {downloadPct !== null
+                    ? t("update.progress.downloading_pct", {
+                        version: appUpdate?.latestVersion ?? "",
+                        pct: downloadPct,
+                      })
+                    : t("update.progress.downloading", {
+                        version: appUpdate?.latestVersion ?? "",
+                      })}
+                </span>
+                <span className="font-mono tabular-nums">
+                  {mbDown ?? "0"} {mbTotal ? `/ ${mbTotal}` : ""} MB
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
+                <div
+                  className="h-full bg-brand-400 transition-all duration-150"
+                  style={{ width: downloadPct !== null ? `${downloadPct}%` : "30%" }}
+                />
+              </div>
+              {downloadPct === 100 && (
+                <div className="mt-1 text-[11px] text-brand-200/80">
+                  {t("update.progress.complete")}
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {/* Progreso del bootstrap */}
+          {!showUpdateBanner && !installing && (
+            <div className="mt-6 w-full max-w-[300px]">
+              <div className="relative h-1 w-full overflow-hidden rounded-full bg-sf-raised">
+                <motion.div
+                  className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-600 to-brand-400"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${pct}%` }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                />
+              </div>
+              <div className="mt-2.5 flex h-4 items-center justify-center text-[11px] text-sf-muted">
+                {errored.length > 0 ? (
+                  <span className="text-rose-300">
+                    {errored.length}{" "}
+                    {errored.length === 1 ? t("common.error").toLowerCase() : t("common.errors")} ·{" "}
+                    {current?.label ?? t("splash.finishing")}
+                  </span>
+                ) : current ? (
+                  <motion.span
+                    key={current.label}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    {current.label}…
+                  </motion.span>
+                ) : (
+                  <span className="text-brand-300">
+                    {lock?.required ? t("lock.ready") : t("common.ready")}
+                  </span>
                 )}
               </div>
-            )}
-
-            {/* (v2.1.0) Checkbox auto-restart — default true. */}
-            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-emerald-100/85">
-              <input
-                type="checkbox"
-                checked={autoRestart}
-                onChange={(e) => setAutoRestart(e.target.checked)}
-                className="accent-emerald-500"
-              />
-              {t("update.banner.auto_restart")}
-            </label>
-
-            <div className="mt-2 flex gap-2">
-              <button
-                onClick={() => onInstallUpdate(autoRestart)}
-                disabled={!appUpdate!.assetUrl}
-                className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-emerald-500/30 px-2 py-1 text-[11px] font-medium hover:bg-emerald-500/40 disabled:opacity-50"
-              >
-                <Download className="h-3 w-3" />{" "}
-                {t("update.banner.install_now")}
-              </button>
-              <button
-                onClick={() => {
-                  setPendingDecision(false);
-                  onSkipUpdate();
-                }}
-                className="rounded-md border border-sf-border px-2 py-1 text-[11px] text-sf-text/90 hover:bg-sf-raised"
-              >
-                {t("common.skip")}
-              </button>
             </div>
-          </motion.div>
-        )}
+          )}
 
-        {/* Barra de progreso del download del installer cuando
-            installing está activo */}
-        {installing && updateProgress && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-6 w-full max-w-[320px]"
-          >
-            <div className="mb-1 flex items-center justify-between text-[11px] text-emerald-200">
-              <span>
-                {downloadPct !== null
-                  ? t("update.progress.downloading_pct", {
-                      version: appUpdate?.latestVersion ?? "",
-                      pct: downloadPct,
-                    })
-                  : t("update.progress.downloading", {
-                      version: appUpdate?.latestVersion ?? "",
-                    })}
-              </span>
-              <span className="font-mono tabular-nums">
-                {mbDown ?? "0"} {mbTotal ? `/ ${mbTotal}` : ""} MB
-              </span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
-              <div
-                className="h-full bg-emerald-400 transition-all duration-150"
-                style={{ width: downloadPct !== null ? `${downloadPct}%` : "30%" }}
-              />
-            </div>
-            {downloadPct === 100 && (
-              <div className="mt-1 text-[11px] text-emerald-200/80">
-                {t("update.progress.complete")}
-              </div>
-            )}
-          </motion.div>
-        )}
+          {/* (19/10) Desbloqueo con la cuenta de Windows */}
+          {lock?.required && !installing && <LockCard lock={lock} />}
+        </div>
 
-        {/* Barra de progreso de las tareas del bootstrap. Sólo
-            visible cuando NO estamos en banner/installing — para
-            no apilar barras en pantalla. */}
-        {!showUpdateBanner && !installing && (
-          <div className="mt-7 w-full max-w-[300px]">
-            <div className="relative h-1 w-full overflow-hidden rounded-full bg-sf-raised">
-              <motion.div
-                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-cyan-400"
-                initial={{ width: 0 }}
-                animate={{ width: `${pct}%` }}
-                transition={{ duration: 0.4, ease: "easeOut" }}
-              />
-              <motion.div
-                className="absolute inset-y-0 w-12 bg-gradient-to-r from-transparent via-white/30 to-transparent"
-                animate={{ x: ["-50%", "350%"] }}
-                transition={{
-                  duration: 2.2,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-              />
-            </div>
-            <div className="mt-3 flex h-4 items-center justify-center text-[11px] text-sf-muted">
-              {errored.length > 0 ? (
-                <span className="text-rose-300">
-                  {errored.length}{" "}
-                  {errored.length === 1
-                    ? t("common.error").toLowerCase()
-                    : t("common.errors")}{" "}
-                  · {current?.label ?? t("splash.finishing")}
-                </span>
-              ) : current ? (
-                <motion.span
-                  key={current.label}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  {current.label}…
-                </motion.span>
-              ) : (
-                <motion.span
-                  key="ready"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="text-emerald-300"
-                >
-                  {t("common.ready")}
-                </motion.span>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Footer — versión real leída de Tauri en runtime */}
-      <div className="relative flex items-center justify-between border-t border-sf-border/60 bg-sf-bg/40 px-5 py-2.5 text-[11px] text-sf-muted/70">
-        <span className="font-mono tabular-nums">
-          {done} / {total}
-        </span>
-        <span className="uppercase tracking-widest">
-          v{appVersion ?? "?"}
-        </span>
-      </div>
+        {/* Footer — versión real leída de Tauri en runtime */}
+        <div className="relative flex items-center justify-between border-t border-sf-border/60 px-5 py-2.5 text-[11px] text-sf-muted/80">
+          <span className="font-mono tabular-nums">
+            {done} / {total}
+          </span>
+          <span className="uppercase tracking-widest">v{appVersion ?? "?"}</span>
+        </div>
       </div>
     </div>
+  );
+}
+
+/** (19/10) Tarjeta de desbloqueo: Windows Hello o contraseña de Windows. */
+function LockCard({ lock }: { lock: SplashLock }) {
+  const [usePassword, setUsePassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const passwordMode = lock.helloAvailable === false || usePassword;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`mt-6 w-full max-w-[320px] rounded-2xl border bg-sf-surface/90 p-4 shadow-xl shadow-black/20 ${
+        lock.waiting ? "border-brand-500/40" : "border-sf-border"
+      }`}
+    >
+      <div className="flex items-center gap-2 text-sm font-semibold text-sf-text">
+        <Lock className="h-4 w-4 text-brand-300" />
+        {t("lock.title")}
+      </div>
+      <p className="mt-1 text-xs text-sf-muted">{t("lock.hint")}</p>
+      {lock.username && (
+        <p className="mt-0.5 text-[11px] text-sf-muted/80">
+          {t("lock.user", { user: lock.username })}
+        </p>
+      )}
+
+      {passwordMode ? (
+        <form
+          className="mt-3 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!password || lock.busy) return;
+            lock.onPassword(password);
+            setPassword("");
+          }}
+        >
+          <div className="relative flex-1">
+            <KeyRound className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sf-muted" />
+            <input
+              type="password"
+              autoFocus
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={t("lock.password_placeholder")}
+              autoComplete="current-password"
+              className="w-full rounded-lg border border-sf-border bg-sf-bg/70 py-2 pl-8 pr-2 text-sm text-sf-text placeholder:text-sf-muted/70 focus:border-brand-500/60 focus:outline-none"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={!password || lock.busy}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 text-xs font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50"
+          >
+            {lock.busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {t("lock.unlock")}
+          </button>
+        </form>
+      ) : (
+        <button
+          onClick={lock.onHello}
+          disabled={lock.busy || lock.helloAvailable === null}
+          className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-brand-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-60"
+        >
+          {lock.busy || lock.helloAvailable === null ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Fingerprint className="h-4 w-4" />
+          )}
+          {t("lock.unlock_hello")}
+        </button>
+      )}
+
+      {!passwordMode && lock.helloAvailable && (
+        <button
+          onClick={() => setUsePassword(true)}
+          className="mt-2 w-full text-center text-[11px] text-sf-muted underline-offset-2 hover:text-sf-text hover:underline"
+        >
+          {t("lock.use_password")}
+        </button>
+      )}
+
+      {lock.error && <p className="mt-2 text-xs text-rose-300">{lock.error}</p>}
+    </motion.div>
+  );
+}
+
+/** Trazos de ruta decorativos (SVG puro). */
+function SplashRouteArt({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 480 160" preserveAspectRatio="xMidYMid slice" className={className} fill="none" aria-hidden>
+      <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="2 7">
+        <path d="M-10 140 C 120 40, 300 30, 490 90" />
+        <path d="M40 160 C 160 90, 330 80, 480 20" />
+      </g>
+      <g fill="currentColor">
+        <circle cx="490" cy="90" r="3" />
+        <circle cx="480" cy="20" r="3" />
+      </g>
+    </svg>
   );
 }
 
@@ -358,10 +418,7 @@ export interface SplashTask {
   error?: string;
 }
 
-/** (v3.4.0) Taglines i18n. Las keys son `splash.tagline.0..5`; el dict
- *  tiene 6 strings y el random las muestrea uniformemente. Cambiar el
- *  número de taglines requiere ajustar `TAGLINE_COUNT` y añadir/quitar
- *  keys en `i18n.ts`. */
+/** (v3.4.0) Taglines i18n. Las keys son `splash.tagline.0..5`. */
 const TAGLINE_COUNT = 6;
 function pickTagline(): string {
   const idx = Math.floor(Math.random() * TAGLINE_COUNT);

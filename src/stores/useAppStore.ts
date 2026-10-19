@@ -15,7 +15,9 @@ export type View =
   | "addons"
   | "flightbook"
   | "hangar"
-  | "economy";
+  | "economy"
+  // (Ajustes 19/10) Ajustes es una pantalla más (antes un modal).
+  | "settings";
 
 interface AppState {
   sources: SourceDescriptor[];

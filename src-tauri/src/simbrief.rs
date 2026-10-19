@@ -431,7 +431,8 @@ pub async fn score_simbrief_candidates(
     // (v5.3.0) Cuenta compartida: conserva solo los OFP que son MÍOS según
     // la identidad del Google Drive conectado (o el override manual).
     let owner = ownership_filter(pool).await;
-    rows.retain(|r| ofp_is_mine(r, &owner));
+    // (19/10) Anclado al origen del vuelo (las filas ya vienen por origen).
+    rows.retain(|r| ofp_eligible(r, &owner, Some(origin_icao)));
 
     if rows.is_empty() {
         return Ok(MatchResult::NoMatch);
@@ -680,13 +681,71 @@ pub fn ofp_digits(ofp: &SimBriefFlight) -> String {
 /// Número de vuelo que SIEMPRE usa el amigo (Hector).
 const FRIEND_FLIGHT_NUMBER: &str = "357";
 
-/// Filtro de propiedad de OFPs en cuenta SimBrief compartida.
+/// Regla de propiedad de OFPs en cuenta SimBrief compartida.
 #[derive(Debug, Clone)]
-pub enum OwnershipFilter {
+pub enum OwnershipRule {
     /// Excluir los OFP cuyos dígitos estén en la lista (lo demás es mío).
     Exclude(Vec<String>),
     /// Conservar SÓLO los OFP cuyos dígitos estén en la lista.
     KeepOnly(Vec<String>),
+}
+
+/// Filtro de propiedad: regla por identidad + OFP marcados a mano.
+#[derive(Debug, Clone)]
+pub struct OwnershipFilter {
+    pub rule: OwnershipRule,
+    /// (19/10) OFP marcados como "No es mío" (ids de SimBrief).
+    pub excluded: std::collections::HashSet<String>,
+}
+
+/// (19/10) Clave de settings con los OFP excluidos a mano (JSON array).
+const EXCLUDED_OFPS_KEY: &str = "simbrief_excluded_ofps";
+/// Tope de ids guardados (los más antiguos se descartan).
+const EXCLUDED_OFPS_MAX: usize = 300;
+
+/// OFP marcados a mano como "No es mío".
+pub async fn load_excluded_ofps(pool: &SqlitePool) -> Vec<String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = ?1")
+            .bind(EXCLUDED_OFPS_KEY)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    row.and_then(|(v,)| serde_json::from_str::<Vec<String>>(&v).ok())
+        .unwrap_or_default()
+}
+
+/// (19/10) Marca un OFP como "No es mío": deja de listarse y nunca se
+/// enlaza. Si estaba enlazado a un vuelo EN CURSO, se desenlaza.
+pub async fn exclude_ofp(pool: &SqlitePool, ofp_id: &str) -> anyhow::Result<()> {
+    let mut ids = load_excluded_ofps(pool).await;
+    if !ids.iter().any(|x| x == ofp_id) {
+        ids.push(ofp_id.to_string());
+    }
+    if ids.len() > EXCLUDED_OFPS_MAX {
+        let drop = ids.len() - EXCLUDED_OFPS_MAX;
+        ids.drain(0..drop);
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(EXCLUDED_OFPS_KEY)
+    .bind(serde_json::to_string(&ids)?)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE flight_log SET simbrief_ofp_id = NULL WHERE simbrief_ofp_id = ?1 AND ended_at IS NULL",
+    )
+    .bind(ofp_id)
+    .execute(pool)
+    .await?;
+    tracing::info!(target: "simbrief", "OFP {} marcado como 'No es mío'", ofp_id);
+    Ok(())
 }
 
 /// Correo de la cuenta de Google Drive conectada (si hay).
@@ -707,22 +766,50 @@ pub async fn ownership_filter(pool: &SqlitePool) -> OwnershipFilter {
         .as_deref()
         .map(|e| crate::owner_ids::is_owner(e))
         .unwrap_or(false);
-    if is_owner {
+    let rule = if is_owner {
         // Soy Jose → el amigo (Hector) usa 357 → excluirlo.
-        OwnershipFilter::Exclude(vec![FRIEND_FLIGHT_NUMBER.to_string()])
+        OwnershipRule::Exclude(vec![FRIEND_FLIGHT_NUMBER.to_string()])
     } else {
         // Correo distinto o ausente → soy Hector → conservar solo 357.
-        OwnershipFilter::KeepOnly(vec![FRIEND_FLIGHT_NUMBER.to_string()])
+        OwnershipRule::KeepOnly(vec![FRIEND_FLIGHT_NUMBER.to_string()])
+    };
+    OwnershipFilter {
+        rule,
+        excluded: load_excluded_ofps(pool).await.into_iter().collect(),
     }
 }
 
-/// ¿El OFP es MÍO según el filtro de propiedad?
+/// ¿El OFP es MÍO según el filtro de propiedad? (sin contexto de posición)
 pub fn ofp_is_mine(ofp: &SimBriefFlight, filter: &OwnershipFilter) -> bool {
+    ofp_eligible(ofp, filter, None)
+}
+
+/// (19/10) ¿El OFP vale para MÍ ahora? Además de la regla de propiedad:
+///   · Nunca si está marcado "No es mío".
+///   · BLOQUEO POR AEROPUERTO: con `anchor` (aeropuerto donde está mi avión
+///     o el origen de mi vuelo en curso) sólo vale un OFP con ese origen.
+///     Así un plan de Hector desde otro aeropuerto nunca entra aunque olvide
+///     poner el 357, y nunca se cambia de OFP a mitad de vuelo.
+///   · Hector (KeepOnly 357): si el OFP sale de SU aeropuerto lo aceptamos
+///     aunque no lleve 357 (cuando lo olvida, su app no se queda sin plan).
+pub fn ofp_eligible(
+    ofp: &SimBriefFlight,
+    filter: &OwnershipFilter,
+    anchor: Option<&str>,
+) -> bool {
+    if filter.excluded.contains(&ofp.ofp_id) {
+        return false;
+    }
+    if let Some(a) = anchor {
+        if !ofp.origin_icao.eq_ignore_ascii_case(a.trim()) {
+            return false;
+        }
+    }
     let d = ofp_digits(ofp);
-    match filter {
+    match &filter.rule {
         // Sin dígitos no podemos descartar con certeza → lo dejamos pasar.
-        OwnershipFilter::Exclude(nums) => d.is_empty() || !nums.iter().any(|n| n == &d),
-        OwnershipFilter::KeepOnly(nums) => nums.iter().any(|n| n == &d),
+        OwnershipRule::Exclude(nums) => d.is_empty() || !nums.iter().any(|n| n == &d),
+        OwnershipRule::KeepOnly(nums) => nums.iter().any(|n| n == &d) || anchor.is_some(),
     }
 }
 
@@ -1206,5 +1293,73 @@ mod tests {
     fn returns_none_when_origin_missing() {
         let xml = "<OFP><general/></OFP>";
         assert!(parse_ofp_xml(xml, "1").is_none());
+    }
+    // ---- (19/10) Propiedad + anclaje por aeropuerto ----------------------
+
+    fn ofp_for(id: &str, flight: &str, origin: &str) -> SimBriefFlight {
+        SimBriefFlight {
+            ofp_id: id.to_string(),
+            pilot_id: "1".to_string(),
+            flight_number: Some(flight.to_string()),
+            callsign: None,
+            aircraft_icao: None,
+            origin_icao: origin.to_string(),
+            origin_name: None,
+            origin_lat: 0.0,
+            origin_lon: 0.0,
+            destination_icao: "ZZZZ".to_string(),
+            destination_name: None,
+            destination_lat: 0.0,
+            destination_lon: 0.0,
+            route: None,
+            distance_nm: None,
+            est_time_enroute_s: None,
+            generated_at: None,
+            fetched_at: String::new(),
+            pax_count: None,
+            cargo_kg: None,
+            fuel_burn_kg: None,
+            units: None,
+            aircraft_reg: None,
+            plan_ramp_kg: None,
+            route_fixes: Vec::new(),
+        }
+    }
+
+    fn filter(rule: OwnershipRule, excluded: &[&str]) -> OwnershipFilter {
+        OwnershipFilter {
+            rule,
+            excluded: excluded.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn daniel_excludes_357_and_other_airports() {
+        let f = filter(OwnershipRule::Exclude(vec!["357".into()]), &[]);
+        // Sin ancla: el 357 de Hector fuera, lo demás dentro.
+        assert!(!ofp_is_mine(&ofp_for("a", "357", "KORD"), &f));
+        assert!(ofp_is_mine(&ofp_for("b", "1234", "CYYZ"), &f));
+        // Caso reportado: vuelo desde CYYZ; Hector genera KORD→TJSJ SIN 357.
+        assert!(ofp_eligible(&ofp_for("b", "1234", "CYYZ"), &f, Some("CYYZ")));
+        assert!(!ofp_eligible(&ofp_for("c", "880", "KORD"), &f, Some("CYYZ")));
+    }
+
+    #[test]
+    fn manual_exclusion_wins() {
+        let f = filter(OwnershipRule::Exclude(vec!["357".into()]), &["b"]);
+        assert!(!ofp_is_mine(&ofp_for("b", "1234", "CYYZ"), &f));
+        assert!(!ofp_eligible(&ofp_for("b", "1234", "CYYZ"), &f, Some("CYYZ")));
+    }
+
+    #[test]
+    fn hector_keeps_357_and_own_airport_when_anchored() {
+        let f = filter(OwnershipRule::KeepOnly(vec!["357".into()]), &[]);
+        assert!(ofp_is_mine(&ofp_for("a", "357", "KORD"), &f));
+        // Sin ancla (lista general) sigue estricto: sin 357 no es suyo.
+        assert!(!ofp_is_mine(&ofp_for("c", "880", "KORD"), &f));
+        // Anclado a su aeropuerto: aunque olvide el 357, vale.
+        assert!(ofp_eligible(&ofp_for("c", "880", "KORD"), &f, Some("KORD")));
+        // Pero nunca un plan desde otro aeropuerto.
+        assert!(!ofp_eligible(&ofp_for("d", "357", "CYYZ"), &f, Some("KORD")));
     }
 }

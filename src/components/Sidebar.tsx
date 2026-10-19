@@ -38,7 +38,7 @@ import { t } from "../lib/i18n";
 const STORAGE_KEY = "simfleet.sidebar.expanded";
 const NARROW_BREAKPOINT = 1200;
 
-type NavTarget = { kind: "view"; view: View } | { kind: "settings" };
+type NavTarget = { kind: "view"; view: View };
 
 interface NavItem {
   key: string;
@@ -86,7 +86,8 @@ const GROUPS: NavGroup[] = [
     items: [
       // El tour sigue apuntando a `header-settings` (antes era el engranaje
       // de la cabecera); se conserva el id para no romperlo.
-      { key: "settings", labelKey: "nav.settings", icon: Settings, tourId: "header-settings", target: { kind: "settings" } },
+      // (Ajustes 19/10) Ajustes es ya una vista, no un modal.
+      { key: "settings", labelKey: "nav.settings", icon: Settings, tourId: "header-settings", target: { kind: "view", view: "settings" } },
     ],
   },
 ];
@@ -117,12 +118,10 @@ interface Tip {
 }
 
 interface SidebarProps {
-  settingsOpen: boolean;
-  onOpenSettings: () => void;
   safeMode: boolean;
 }
 
-export function Sidebar({ settingsOpen, onOpenSettings, safeMode }: SidebarProps) {
+export function Sidebar({ safeMode }: SidebarProps) {
   const view = useAppStore((s) => s.view);
   const setView = useAppStore((s) => s.setView);
   const openEconomy = useAppStore((s) => s.openEconomy);
@@ -184,8 +183,7 @@ export function Sidebar({ settingsOpen, onOpenSettings, safeMode }: SidebarProps
 
   const activate = (item: NavItem) => {
     setTip(null);
-    if (item.target.kind === "settings") onOpenSettings();
-    else if (item.target.view === "economy") openEconomy(null);
+    if (item.target.view === "economy") openEconomy(null);
     else setView(item.target.view);
     if (narrow) setOverlayOpen(false);
   };
@@ -197,8 +195,7 @@ export function Sidebar({ settingsOpen, onOpenSettings, safeMode }: SidebarProps
   };
   const hideTip = () => setTip(null);
 
-  const isActive = (item: NavItem) =>
-    item.target.kind === "settings" ? settingsOpen : view === item.target.view;
+  const isActive = (item: NavItem) => view === item.target.view;
 
   const toggleLabel = expanded ? t("sidebar.collapse") : t("sidebar.expand");
 

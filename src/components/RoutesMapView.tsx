@@ -248,6 +248,8 @@ export function RoutesMapView({
   const [mapReady, setMapReady] = useState(false);
 
   const simbriefFlights = useSimBriefStore((s) => s.flights);
+  // (19/10) El plan del RIVAL (Crew VS) no está en `flights` (sólo los míos).
+  const allSimbriefFlights = useSimBriefStore((s) => s.allFlights);
   const flightLogEntries = useFlightLogStore((s) => s.entries);
   // (v1.1.4) Estado en vivo del watcher SimConnect — usado para
   // pintar el avión en el mapa cuando hay vuelo en curso.
@@ -1858,6 +1860,7 @@ export function RoutesMapView({
             ofp={simbriefFlights.find(
               (f) => f.originIcao === flightStatus.originIcao,
             )}
+            onNotMine={(ofpId) => void useSimBriefStore.getState().excludeOfp(ofpId)}
             minimized={livePanelMin}
             onToggleMin={() => setLivePanelMin((v) => !v)}
             onClose={() => setLivePanelOpen(false)}
@@ -1905,7 +1908,7 @@ export function RoutesMapView({
             aircraftIcao:
               rivalAircraft?.aircraftType ?? rival.ofp.aircraft ?? null,
           }}
-          ofp={simbriefFlights.find((f) => f.originIcao === rival.ofp.origin)}
+          ofp={allSimbriefFlights.find((f) => f.originIcao === rival.ofp.origin)}
           minimized={rivalPanelMin}
           onToggleMin={() => setRivalPanelMin((v) => !v)}
           onClose={() => setRivalPanelOpen(false)}
@@ -1966,6 +1969,7 @@ interface LivePanelStatus {
 function LiveFlightPanel({
   status,
   ofp,
+  onNotMine,
   minimized,
   onToggleMin,
   onClose,
@@ -1976,6 +1980,8 @@ function LiveFlightPanel({
 }: {
   status: LivePanelStatus;
   ofp: import("../lib/types").SimBriefFlight | undefined;
+  /** (19/10) "Este plan no es mío" — sólo en el panel propio. */
+  onNotMine?: (ofpId: string) => void;
   minimized: boolean;
   onToggleMin: () => void;
   onClose: () => void;
@@ -2063,6 +2069,17 @@ function LiveFlightPanel({
         </span>
       </div>
 
+      {/* (19/10) Cuenta SimBrief compartida: si el plan mostrado es de otro
+          piloto, se descarta y no vuelve a aparecer ni a enlazarse. */}
+      {ofp && onNotMine && !minimized && (
+        <button
+          onClick={() => onNotMine(ofp.ofpId)}
+          title={t("simbrief.not_mine.tooltip")}
+          className="mt-1 text-[11px] font-medium text-sf-muted underline-offset-2 hover:text-sf-text hover:underline"
+        >
+          {t("simbrief.not_mine")}
+        </button>
+      )}
       {!minimized && (
         <>
           {/* Barra de progreso con avión */}

@@ -4,6 +4,7 @@ import {
   AlertCircle,
   CheckCircle2,
   FileDown,
+  Bell,
   KeyRound,
   Loader2,
   Upload,
@@ -20,6 +21,7 @@ import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
 import { DropSelectModal, DeleteConfirm, isEmbeddedDownload } from "./DropSelectModal";
 import { t } from "../lib/i18n";
+import { useInstallQueueStore } from "../stores/useInstallQueueStore";
 
 /**
  * (v2.2.0) Overlay de Drag & Drop universal con modal multi-archivo.
@@ -128,13 +130,11 @@ async function computeRoutingFor(insp: DropInspection): Promise<DropRouting> {
 
 export function DragDropOverlay() {
   const [hovering, setHovering] = useState(false);
-  const [activeInspections, setActiveInspections] = useState<
-    DropInspection[] | null
-  >(null);
-  // (v6.2.74) Ruteo por sessionId (2020/2024) para las descargas del embebido.
-  const [dropRouting, setDropRouting] = useState<Map<string, DropRouting>>(
-    new Map(),
-  );
+  // (Ajustes 19/10) El lote que muestra el modal viene de la COLA de
+  // instalación: un lote nuevo ya no reemplaza al abierto (se encola) y un
+  // clic fuera lo aparca en Notificaciones en vez de cancelarlo.
+  const activeBatch = useInstallQueueStore((s) => s.active);
+  const activeInspections = activeBatch?.inspections ?? null;
   const [results, setResults] = useState<DropFlowResult[]>([]);
   // (v4.23.0) Confirmación de borrado del archivo origen para el
   // FAST-PATH (archivos de 1 solo item, p.ej. liveries): antes ese
@@ -372,8 +372,12 @@ export function DragDropOverlay() {
       // Multi-item → modal de selección paginado. Sonamos + traemos al frente
       // AHORA que el modal está listo (no al empezar a procesar).
       if (fromEmbedded) void notifyDownloadReady();
-      setDropRouting(routingMap);
-      setActiveInspections(validInspections);
+      useInstallQueueStore.getState().enqueue({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        inspections: validInspections,
+        routing: routingMap,
+        createdAt: Date.now(),
+      });
     }
 
     // (v5.2.1) Resolución de contraseñas: si aún quedan archivos
@@ -412,7 +416,7 @@ export function DragDropOverlay() {
     // Actualiza el result toaster por archivo.
     setResults((prev) =>
       prev.map((r) => {
-        if (r.state !== "awaiting_modal") return r;
+        if (r.state !== "awaiting_modal" && r.state !== "pending") return r;
         const idx = inspections.findIndex((i) => i.archivePath === r.path);
         if (idx === -1) return r;
         const report = reports[idx] ?? {
@@ -423,7 +427,6 @@ export function DragDropOverlay() {
         return { path: r.path, state: "installed", report };
       }),
     );
-    setActiveInspections(null);
     await refreshUis();
   };
 
@@ -431,13 +434,33 @@ export function DragDropOverlay() {
     if (!activeInspections) return;
     setResults((prev) =>
       prev.map((r) =>
-        r.state === "awaiting_modal" &&
+        (r.state === "awaiting_modal" || r.state === "pending") &&
         activeInspections.some((i) => i.archivePath === r.path)
           ? { path: r.path, state: "cancelled" }
           : r,
       ),
     );
-    setActiveInspections(null);
+    useInstallQueueStore.getState().finishActive();
+  };
+
+  // (Ajustes 19/10) Clic fuera / Escape / X → la instalación queda PENDIENTE
+  // en Notificaciones (Instalar / Cancelar) en vez de perderse.
+  const onModalDefer = () => {
+    if (!activeInspections) return;
+    setResults((prev) =>
+      prev.map((r) =>
+        r.state === "awaiting_modal" &&
+        activeInspections.some((i) => i.archivePath === r.path)
+          ? { path: r.path, state: "pending" }
+          : r,
+      ),
+    );
+    useInstallQueueStore.getState().deferActive();
+    useToastStore.getState().push({
+      kind: "success",
+      title: t("installq.deferred.title"),
+      message: t("installq.deferred.body"),
+    });
   };
 
   return (
@@ -464,17 +487,21 @@ export function DragDropOverlay() {
         )}
       </AnimatePresence>
 
-      {activeInspections && (
+      {activeBatch && activeInspections && (
         <DropSelectModal
           /* (v7) key por-lote: si el set de inspecciones cambia (encoge), el
              modal se REMONTA fresco reseteando pageIdx y re-inicializando las
              selecciones — si no, un pageIdx viejo apuntaría a un índice que ya
              no existe y `inspections[pageIdx].sessionId` reventaría (TypeError). */
-          key={activeInspections.map((i) => i.sessionId).join(",")}
+          key={activeBatch.id}
           inspections={activeInspections}
-          routing={dropRouting}
+          routing={activeBatch.routing}
           onClose={onModalClose}
-          onDone={(reports) => onDoneBatch(activeInspections, reports)}
+          onDefer={onModalDefer}
+          onDone={(reports) => {
+            void onDoneBatch(activeInspections, reports);
+            useInstallQueueStore.getState().finishActive();
+          }}
         />
       )}
 
@@ -634,6 +661,8 @@ type DropFlowResult =
   | { path: string; state: "awaiting_modal"; items: number }
   | { path: string; state: "installed"; report: DropCommitReport }
   | { path: string; state: "cancelled" }
+  // (Ajustes 19/10) Aparcada en Notificaciones (clic fuera del modal).
+  | { path: string; state: "pending" }
   | { path: string; state: "error"; error: string };
 
 function DropResultsToast({
@@ -693,6 +722,9 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
           {result.state === "cancelled" && (
             <AlertCircle className="h-3.5 w-3.5 text-sf-muted" />
           )}
+          {result.state === "pending" && (
+            <Bell className="h-3.5 w-3.5 text-amber-300" />
+          )}
           {result.state === "awaiting_password" && (
             <KeyRound className="h-3.5 w-3.5 text-amber-300" />
           )}
@@ -715,6 +747,9 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
           {result.state === "installed" && <Installed report={result.report} />}
           {result.state === "error" && (
             <p className="text-[11px] text-rose-300">{result.error}</p>
+          )}
+          {result.state === "pending" && (
+            <p className="text-[11px] text-amber-300">{t("installq.pending_row")}</p>
           )}
           {result.state === "cancelled" && (
             <p className="text-[11px] text-sf-muted">{t("drop.cancelled")}</p>

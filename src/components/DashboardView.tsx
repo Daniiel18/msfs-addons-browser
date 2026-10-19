@@ -51,7 +51,7 @@ import { useUnits } from "../lib/units";
 import { cleanAtcType } from "../lib/aircraft";
 import { DiskCleanupModal } from "./DiskCleanupModal";
 import { ShareCardModal } from "./ShareCardModal";
-import { cleanAircraftLabel } from "./FlightBookView";
+import { cleanAircraftLabel, useAircraftPhoto } from "./FlightBookView";
 import { effectiveRoute, phaseDisplay } from "./FlyingNowBadge";
 import { computeWrapped } from "../lib/wrapped";
 import { buildWrappedSvg } from "../lib/shareCards";
@@ -513,9 +513,28 @@ function WelcomeHero({
   pilotName: string | null;
   lastFlight: FlightLogEntry | null;
 }) {
+  // (Ajustes 19/10) Foto real del avión del plan (matrícula de SimBrief →
+  // planespotters) de fondo, con degradado para que el texto se lea.
+  const registration = useHeroRegistration(lastFlight);
+  const photo = useAircraftPhoto(registration);
   return (
-    <section className="relative overflow-hidden rounded-2xl border border-sf-border/80 bg-gradient-to-br from-sf-surface via-sf-surface to-brand-500/15">
-      <RouteArt className="pointer-events-none absolute inset-y-0 right-0 h-full w-full text-brand-400/25 lg:w-3/4" />
+    <section className="relative overflow-hidden rounded-2xl border border-sf-border/80 bg-gradient-to-br from-sf-surface via-sf-surface to-brand-500/15 lg:min-h-[230px]">
+      {photo ? (
+        <>
+          <img
+            src={photo}
+            alt={registration ?? ""}
+            className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-sf-bg via-sf-bg/80 to-sf-bg/10" />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-sf-bg/50 via-transparent to-transparent" />
+          <span className="pointer-events-none absolute bottom-2 left-6 z-10 text-[10px] font-medium uppercase tracking-wider text-sf-muted">
+            {registration} · planespotters.net
+          </span>
+        </>
+      ) : (
+        <RouteArt className="pointer-events-none absolute inset-y-0 right-0 h-full w-full text-brand-400/25 lg:w-3/4" />
+      )}
       <div className="relative flex flex-col gap-5 p-6 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-sf-text">
@@ -531,6 +550,42 @@ function WelcomeHero({
       </div>
     </section>
   );
+}
+
+/** OFP de SimBrief más reciente si tiene menos de 36 h ("próximo vuelo"). */
+function useLatestOfp() {
+  const ofps = useSimBriefStore((s) => s.flights);
+  return useMemo(() => {
+    let best: (typeof ofps)[number] | null = null;
+    let bestTs = 0;
+    for (const f of ofps) {
+      const ts = f.generatedAt ? parseInt(f.generatedAt, 10) * 1000 : 0;
+      if (ts > bestTs) {
+        best = f;
+        bestTs = ts;
+      }
+    }
+    return best && Date.now() - bestTs < NEXT_OFP_MAX_AGE_MS ? best : null;
+  }, [ofps]);
+}
+
+/** (Ajustes 19/10) Matrícula para la foto del saludo, en el mismo orden que
+ *  la tarjeta de vuelo: vuelo en curso (OFP enlazado o la del sim) → próximo
+ *  OFP de SimBrief → último vuelo. */
+function useHeroRegistration(lastFlight: FlightLogEntry | null): string | null {
+  const status = useFlightLogStore((s) => s.status);
+  const ofps = useSimBriefStore((s) => s.flights);
+  const latestOfp = useLatestOfp();
+  const live =
+    !!status?.simRunning &&
+    status.simconnectConnected &&
+    !!(status.currentAirportIcao || status.originIcao);
+  if (live && status) {
+    const r = effectiveRoute(status, ofps);
+    return r.matchedOfp?.aircraftReg || status.aircraftRegistration || null;
+  }
+  if (latestOfp) return latestOfp.aircraftReg ?? null;
+  return lastFlight?.aircraftRegistration ?? null;
 }
 
 /** Trazos de rutas decorativos (SVG puro, sin imágenes). */
@@ -576,18 +631,7 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
   const setView = useAppStore((s) => s.setView);
   const u = useUnits();
 
-  const latestOfp = useMemo(() => {
-    let best: (typeof ofps)[number] | null = null;
-    let bestTs = 0;
-    for (const f of ofps) {
-      const ts = f.generatedAt ? parseInt(f.generatedAt, 10) * 1000 : 0;
-      if (ts > bestTs) {
-        best = f;
-        bestTs = ts;
-      }
-    }
-    return best && Date.now() - bestTs < NEXT_OFP_MAX_AGE_MS ? best : null;
-  }, [ofps]);
+  const latestOfp = useLatestOfp();
 
   let kind: "live" | "next" | "last";
   let origin: string | null;
@@ -652,9 +696,10 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
         : t("home.flight.last");
 
   return (
+    <div className="w-full shrink-0 lg:w-[22rem]">
     <button
       onClick={() => setView("flightbook")}
-      className="w-full shrink-0 rounded-xl border border-sf-border bg-sf-bg/70 p-4 text-left outline-none transition-colors hover:border-brand-500/40 focus-visible:ring-2 focus-visible:ring-brand-500/60 lg:w-[22rem]"
+      className="w-full rounded-xl border border-sf-border bg-sf-bg/70 p-4 text-left outline-none transition-colors hover:border-brand-500/40 focus-visible:ring-2 focus-visible:ring-brand-500/60"
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-sf-muted">{title}</span>
@@ -688,6 +733,17 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
         ))}
       </div>
     </button>
+    {/* (19/10) Cuenta SimBrief compartida: descartar un plan ajeno. */}
+    {kind === "next" && latestOfp && (
+      <button
+        onClick={() => void useSimBriefStore.getState().excludeOfp(latestOfp.ofpId)}
+        title={t("simbrief.not_mine.tooltip")}
+        className="mt-1.5 text-[11px] font-medium text-sf-muted underline-offset-2 hover:text-sf-text hover:underline"
+      >
+        {t("simbrief.not_mine")}
+      </button>
+    )}
+    </div>
   );
 }
 

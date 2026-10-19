@@ -15,6 +15,7 @@ import {
   Swords,
   Wrench,
   Gauge,
+  Package,
   X,
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
@@ -32,6 +33,12 @@ import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
 import { useGsxOfferStore } from "../stores/useGsxOfferStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
 import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
+import {
+  useInstallQueueStore,
+  batchLabel,
+  batchItemCount,
+} from "../stores/useInstallQueueStore";
+import { installPendingNow, cancelPending } from "../lib/installQueue";
 import { usePreflight } from "../lib/usePreflight";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { PerformanceModal } from "./PerformanceModal";
@@ -175,8 +182,13 @@ export function NotificationsBell() {
   const openPreflight = usePreflightStore((s) => s.setOpen);
   const showPreflight = preflightIssues > 0;
 
+  // (Ajustes 19/10) Instalaciones aparcadas (clic fuera del modal).
+  const pendingInstalls = useInstallQueueStore((s) => s.pending);
+  const openPendingInstall = useInstallQueueStore((s) => s.openPending);
+
   const packageCount = updates.length;
   const totalCount =
+    pendingInstalls.length +
     packageCount +
     (showAppUpdate ? 1 : 0) +
     (showGsx ? 1 : 0) +
@@ -299,6 +311,50 @@ export function NotificationsBell() {
                 notificaciones antes no se podía ver las de abajo sin ir
                 borrando las de arriba. */}
             <div className="max-h-[min(65vh,560px)] overflow-y-auto">
+            {/* (Ajustes 19/10) Instalaciones pendientes: clic abre el modal;
+                "Instalar" instala sin modal; "Cancelar" la descarta. */}
+            {pendingInstalls.map((b) => (
+              <div
+                key={b.id}
+                className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Package className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                  <button
+                    onClick={() => {
+                      openPendingInstall(b.id);
+                      setOpen(false);
+                    }}
+                    title={t("installq.open_tooltip")}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="text-xs font-semibold text-amber-100">
+                      {t("installq.pending_title")}
+                    </div>
+                    <div className="mt-0.5 truncate font-mono text-[11px] text-amber-200/90">
+                      {batchLabel(b)}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-amber-200/70">
+                      {t("installq.items", { n: String(batchItemCount(b)) })}
+                    </div>
+                  </button>
+                </div>
+                <div className="mt-2 flex justify-end gap-2">
+                  <button
+                    onClick={() => void cancelPending(b.id)}
+                    className="rounded-md border border-amber-500/30 px-2.5 py-1 text-[11px] font-medium text-amber-100 hover:bg-amber-500/15"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    onClick={() => void installPendingNow(b.id)}
+                    className="rounded-md bg-brand-500 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:bg-brand-400"
+                  >
+                    {t("installq.install")}
+                  </button>
+                </div>
+              </div>
+            ))}
             {/* (v6.2.34) Pre-vuelo pendiente — persiste hasta resolver. */}
             {showPreflight && (
               <button

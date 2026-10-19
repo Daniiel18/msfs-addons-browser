@@ -244,38 +244,75 @@ async fn compute_fallback_status(pool: &SqlitePool, state: &SharedState) -> Flig
         return status;
     }
 
-    if let Ok(Some(latest)) = latest_recent_simbrief(pool).await {
+    // (19/10) ANCLA: con SimConnect conectado, el origen del vuelo en curso
+    // (si lo hay) o el aeropuerto donde está el avión. Sólo vale un OFP MÍO
+    // con ese origen. Antes se copiaba el OFP más reciente de la cuenta
+    // compartida (también el de Hector) cada 5 s y el mapa dibujaba su ruta.
+    let open_origin = if sc_connected {
+        open_flight_origin(pool).await
+    } else {
+        None
+    };
+    let anchor = if sc_connected {
+        open_origin
+            .clone()
+            .or(state.lock().await.status.current_airport_icao.clone())
+    } else {
+        None
+    };
+    if let Ok(Some(latest)) = latest_recent_simbrief(pool, anchor.as_deref()).await {
         status.origin_icao = Some(latest.origin_icao);
         status.origin_name = latest.origin_name;
         status.destination_icao = Some(latest.destination_icao);
         status.destination_name = latest.destination_name;
         status.aircraft_icao = latest.aircraft_icao;
         status.distance_nm = latest.distance_nm;
+    } else if let Some(origin) = open_origin {
+        // Vuelo en curso sin OFP mío: conservamos su origen real.
+        status.origin_icao = Some(origin);
     }
     status
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct LatestFlight {
-    origin_icao: String,
-    origin_name: Option<String>,
-    destination_icao: String,
-    destination_name: Option<String>,
-    aircraft_icao: Option<String>,
-    distance_nm: Option<i64>,
+/// (19/10) Origen del vuelo abierto (sin terminar) de las últimas 24 h.
+async fn open_flight_origin(pool: &SqlitePool) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT origin_icao FROM flight_log
+        WHERE ended_at IS NULL
+          AND CAST(strftime('%s', started_at) AS INTEGER)
+              > CAST(strftime('%s', 'now', '-24 hours') AS INTEGER)
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|s| !s.trim().is_empty())
 }
 
-async fn latest_recent_simbrief(pool: &SqlitePool) -> anyhow::Result<Option<LatestFlight>> {
+async fn latest_recent_simbrief(
+    pool: &SqlitePool,
+    anchor: Option<&str>,
+) -> anyhow::Result<Option<crate::simbrief::SimBriefFlight>> {
     // (v4.20.0) Excluimos OFPs ya CONSUMIDOS: si un vuelo COMPLETADO con
     // el mismo origen→destino (o linkeado a ese ofp_id) terminó DESPUÉS
     // de que el OFP fue generado, ese plan ya se voló. Antes, tras
     // terminar el vuelo, el OFP seguía siendo "reciente" (<6h) y el
     // status volvía a mostrar la ruta vieja con fase PRE-FLIGHT en el
     // panel del mapa y el badge del header (bug reportado).
-    let row = sqlx::query_as::<_, LatestFlight>(
+    let rows = sqlx::query_as::<_, crate::simbrief::SimBriefFlight>(
         r#"
-        SELECT origin_icao, origin_name, destination_icao, destination_name,
-               aircraft_icao, distance_nm
+        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
+               origin_icao, origin_name, origin_lat, origin_lon,
+               destination_icao, destination_name, destination_lat, destination_lon,
+               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+               pax_count, cargo_kg, fuel_burn_kg, units,
+               aircraft_reg, plan_ramp_kg,
+               COALESCE(route_fixes, '[]') AS route_fixes
         FROM simbrief_flights sf
         WHERE generated_at IS NOT NULL
           AND CAST(generated_at AS INTEGER) > strftime('%s', 'now', '-6 hours')
@@ -291,12 +328,16 @@ async fn latest_recent_simbrief(pool: &SqlitePool) -> anyhow::Result<Option<Late
                   > CAST(sf.generated_at AS INTEGER)
           )
         ORDER BY CAST(generated_at AS INTEGER) DESC
-        LIMIT 1
+        LIMIT 20
         "#,
     )
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await?;
-    Ok(row)
+    // (19/10) Propiedad (correo/357 + "No es mío") y anclaje por aeropuerto.
+    let owner = crate::simbrief::ownership_filter(pool).await;
+    Ok(rows
+        .into_iter()
+        .find(|r| crate::simbrief::ofp_eligible(r, &owner, anchor)))
 }
 
 fn status_changed_for_fallback(prev: &FlightStatus, next: &FlightStatus) -> bool {
@@ -4985,7 +5026,11 @@ mod windows_simconnect {
             // AUTO-LINKEA sin modal.
             let owner = crate::simbrief::ownership_filter(pool).await;
             let before_owner = ordered.len();
-            ordered.retain(|f| crate::simbrief::ofp_is_mine(f, &owner));
+            // (19/10) BLOQUEO POR AEROPUERTO: sólo OFP míos cuyo origen es el
+            // del vuelo. Antes, si ninguno casaba, se enlazaba el MÁS RECIENTE
+            // de todos — el de Hector cuando olvidaba el 357. Ahora, sin
+            // coincidencia no se enlaza nada.
+            ordered.retain(|f| crate::simbrief::ofp_eligible(f, &owner, Some(icao.as_str())));
             tracing::info!(
                 target: "simbrief",
                 "confirm: filtro de propiedad {:?} — {} → {} OFP míos (flight {})",

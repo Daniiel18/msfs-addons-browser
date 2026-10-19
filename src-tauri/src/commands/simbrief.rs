@@ -108,7 +108,36 @@ pub async fn simbrief_briefing(
 pub async fn list_simbrief_flights(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<SimBriefFlight>, String> {
+    let mut rows = simbrief::list_flights(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+    // (19/10) La UI (lista de OFP, Inicio, mapa, pre-vuelo) sólo ve MIS OFP:
+    // misma regla de propiedad que el enlace + los marcados "No es mío".
+    let owner = simbrief::ownership_filter(&state.db).await;
+    rows.retain(|r| simbrief::ofp_is_mine(r, &owner));
+    Ok(rows)
+}
+
+/// (19/10) Lista SIN filtrar (cuenta SimBrief compartida). Sólo para
+/// localizar el plan del RIVAL en el panel de Crew VS; el resto de la UI usa
+/// `list_simbrief_flights` (sólo mis OFP).
+#[tauri::command]
+pub async fn list_simbrief_flights_all(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SimBriefFlight>, String> {
     simbrief::list_flights(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (19/10) Botón "No es mío": excluye el OFP para siempre (y lo desenlaza
+/// del vuelo en curso si estaba enlazado).
+#[tauri::command]
+pub async fn simbrief_exclude_ofp(
+    ofp_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    simbrief::exclude_ofp(&state.db, &ofp_id)
         .await
         .map_err(|e| e.to_string())
 }

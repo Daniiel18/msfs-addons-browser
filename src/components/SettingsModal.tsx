@@ -44,6 +44,7 @@ import {
 import type { CloudConfig, ExportFormat } from "../lib/types";
 import { isTestEnv } from "../lib/testEnv";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { useAppStore } from "../stores/useAppStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
@@ -124,7 +125,36 @@ function sectionTitle(key: string): string {
   return meta ? t(meta.labelKey) : key;
 }
 
-export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+/** (Ajustes 19/10) Grupo pedido por el tour mientras Ajustes aún no está
+ *  montado (pasa al cambiar de vista en el mismo tick). */
+let pendingSettingsGroup: string | null = null;
+function takePendingSettingsGroup(): string | null {
+  const g = pendingSettingsGroup;
+  pendingSettingsGroup = null;
+  return g;
+}
+/** Pide a Ajustes que muestre un grupo (montado o no). */
+export function requestSettingsGroup(id: string) {
+  pendingSettingsGroup = id;
+  window.dispatchEvent(new CustomEvent("simfleet:settings-group", { detail: id }));
+}
+
+/** (Ajustes 19/10) Ajustes como pantalla propia dentro de la app. */
+export function SettingsView() {
+  const setView = useAppStore((s) => s.setView);
+  return <SettingsModal open asPage onClose={() => setView("dashboard")} />;
+}
+
+export function SettingsModal({
+  open,
+  onClose,
+  asPage = false,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** (Ajustes 19/10) true = pantalla dentro de la app (sin overlay). */
+  asPage?: boolean;
+}) {
   const settings = useSettingsStore((s) => s.settings);
   const lastError = useSettingsStore((s) => s.lastError);
   const setBoolean = useSettingsStore((s) => s.setBoolean);
@@ -161,7 +191,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   // (v6.1) Sección activa del menú lateral (una a la vez, navegable).
   // (v6.2.19) Grupo activo + búsqueda de secciones. Con búsqueda activa se
   // muestran las secciones que casan por nombre, de CUALQUIER grupo.
-  const [group, setGroup] = useState<string>("general");
+  // (Ajustes 19/10) Si el tour pidió un grupo antes de montar la pantalla,
+  // arrancamos ya en él.
+  const [group, setGroup] = useState<string>(() => takePendingSettingsGroup() ?? "general");
   const [navQuery, setNavQuery] = useState("");
   // (Rediseño F6) El tour pide el grupo que contiene la sección que va a
   // señalar (Carpetas → storage, Drive → data).
@@ -266,13 +298,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || asPage) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, asPage, onClose]);
 
   const onSavePilot = async () => {
     const trimmed = pilotDraft.trim();
@@ -375,40 +407,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     }
   };
 
-  return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/70 px-4 py-12 backdrop-blur-sm"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-        >
-          <motion.div
-            className="relative w-full max-w-4xl overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl shadow-black/40"
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 20, opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <header className="flex items-center justify-between border-b border-sf-border px-5 py-3.5">
-              <div className="flex items-center gap-2">
-                <SettingsIcon className="h-4 w-4 text-brand-300" />
-                <h2 className="text-base font-semibold text-sf-text">
-                  {t("settings.title")}
-                </h2>
-              </div>
-              <button
-                onClick={onClose}
-                className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </header>
-
-            <div className="flex max-h-[78vh]">
+  // (Ajustes 19/10) El cuerpo (menú de secciones + contenido) es el mismo en
+  // la pantalla de Ajustes (asPage) y en el modal heredado.
+  const bodyEl = (
+            <div className={asPage ? "flex min-h-0 flex-1" : "flex max-h-[78vh]"}>
               {/* (v6.2.19) Menú lateral REDISEÑADO: buscador + 4 grupos con la
                   lista de lo que contiene cada uno — todo se ubica de un
                   vistazo. Las secciones del grupo se muestran apiladas. */}
@@ -949,6 +951,64 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </div>
               </SettingsNavContext.Provider>
             </div>
+  );
+
+  if (asPage) {
+    return (
+      <div className="flex h-full flex-col gap-4 overflow-hidden">
+        <header className="shrink-0">
+          <h1 className="text-xl font-semibold tracking-tight text-sf-text">
+            {t("settings.title")}
+          </h1>
+          <p className="mt-0.5 text-sm text-sf-muted">{t("settings.page.subtitle")}</p>
+        </header>
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-sf-border/80 bg-sf-bg">
+          {bodyEl}
+        </section>
+        {showRestartHint && (
+          <RestartHintModal onClose={() => setShowRestartHint(false)} />
+        )}
+        {simReload && (
+          <SimReloadModal onConfirm={() => window.location.reload()} />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/70 px-4 py-12 backdrop-blur-sm"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={onClose}
+        >
+          <motion.div
+            className="relative w-full max-w-4xl overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl shadow-black/40"
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 20, opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="flex items-center justify-between border-b border-sf-border px-5 py-3.5">
+              <div className="flex items-center gap-2">
+                <SettingsIcon className="h-4 w-4 text-brand-300" />
+                <h2 className="text-base font-semibold text-sf-text">
+                  {t("settings.title")}
+                </h2>
+              </div>
+              <button
+                onClick={onClose}
+                className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+
+            {bodyEl}
           </motion.div>
         </motion.div>
       )}

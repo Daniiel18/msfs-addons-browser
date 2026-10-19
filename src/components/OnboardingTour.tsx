@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronLeft, ChevronRight, Sparkles, X } from "lucide-react";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useAppStore } from "../stores/useAppStore";
+import { requestSettingsGroup } from "./SettingsModal";
 import { t } from "../lib/i18n";
 
 /**
@@ -18,7 +19,7 @@ import { t } from "../lib/i18n";
  *   · Cada step puede declarar:
  *       - `setView`      → la vista principal que la app debe mostrar
  *                          (el tour la activa vía el store antes de medir).
- *       - `openSettings` → abre/cierra el modal de Configuración.
+ *       - `openSettings` → muestra/sale de la pantalla de Ajustes.
  *       - `target`       → `data-tour-id="..."` a destacar con spotlight.
  *     Si un step no tiene `target`, el tooltip va centrado (pasos de
  *     bienvenida / cierre).
@@ -190,9 +191,7 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
     }
     onSettingsOpenChange(!!step.openSettings);
     if (step.openSettings && step.settingsGroup) {
-      window.dispatchEvent(
-        new CustomEvent("simfleet:settings-group", { detail: step.settingsGroup }),
-      );
+      requestSettingsGroup(step.settingsGroup);
     }
 
     let cancelled = false;

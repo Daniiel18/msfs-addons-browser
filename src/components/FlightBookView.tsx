@@ -34,7 +34,7 @@ import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
 import { AirlineLogo } from "./AirlineLogo";
 import { icaoToName, canonicalAirlineKey } from "../lib/airlineCodes";
-import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Pencil, Minimize2, Maximize2 } from "lucide-react";
 
 // (v4.24.2) Persistencia del colapso del sidebar de vuelos. El
 // FlightBook se DESMONTA al cambiar de pestaña (App.tsx lo renderiza
@@ -42,7 +42,6 @@ import { Pencil, Minimize2, Maximize2, ChevronLeft, ChevronRight } from "lucide-
 // usuario perdía el estado que había elegido. Espejamos a localStorage
 // (lectura síncrona, mismo patrón que i18n/units) para que quede
 // exactamente como lo dejó hasta que él mismo lo cambie.
-const SIDEBAR_COLLAPSED_KEY = "simfleet.fb.sidebarCollapsed";
 // (v4.27.0) Misma idea para el vuelo seleccionado — al volver de
 // otra pestaña, el panel y el track del vuelo deben seguir visibles
 // hasta que el usuario lo deseleccione explícitamente.
@@ -58,14 +57,6 @@ export function cleanAircraftLabel(s: string | null | undefined): string {
     .replace(/\s+[A-Z0-9]{2,4}\s*\([A-Za-z0-9-]{2,10}\)\s*$/, "")
     .replace(/\s*\([A-Za-z0-9-]{2,10}\)\s*$/, "")
     .trim();
-}
-
-function readSidebarCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
 }
 
 function readSelectedFlightId(): number | null {
@@ -129,19 +120,8 @@ export function FlightBookView() {
   // (v3.5.0) Filtro de búsqueda del sidebar — matchea ICAO origen,
   // destino, aerolínea, registration, ATC type. Vacío = todos.
   const [sidebarQuery, setSidebarQuery] = useState("");
-  // (v4.18.0) Colapso lateral del sidebar de vuelos — el mapa toma todo
-  // el ancho. Botón chevron en la barra del filtro / franja de reapertura.
-  // (v4.24.2) Inicializa desde localStorage y espeja cada cambio: el
-  // estado sobrevive a cambios de pestaña y a reinicios de la app.
-  const [sidebarCollapsed, setSidebarCollapsedState] = useState(readSidebarCollapsed);
-  const setSidebarCollapsed = (v: boolean) => {
-    setSidebarCollapsedState(v);
-    try {
-      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, v ? "1" : "0");
-    } catch {
-      // localStorage lleno/deshabilitado — el estado en memoria sigue ok.
-    }
-  };
+  // (Ajustes 19/10) La lista de vuelos ya no se puede ocultar (se quitó el
+  // botón "Ocultar lista de vuelos" a pedido del usuario).
   // (v3.6.0 Phase H — Epic E) Estado de visibilidad del ChecklistWidget.
   const [checklistOpen, setChecklistOpen] = useState(false);
   // (v6 #3) Estado del modal de combate Live VS.
@@ -466,7 +446,7 @@ export function FlightBookView() {
   // únicamente cuando el sim no está conectado.
   // (Rediseño F4) Acoplar el detalle como columna fija sólo si al mapa le
   // quedan ~420px (lista 300 + detalle 360 + separaciones).
-  const dockDetail = !!selectedFlight && gridWidth >= (sidebarCollapsed ? 820 : 1130);
+  const dockDetail = !!selectedFlight && gridWidth >= 1100;
   const overlayKind: "selected" | "stats" | "none" = selectedFlight
     ? dockDetail
       ? "none"
@@ -586,32 +566,12 @@ export function FlightBookView() {
       <div
         ref={setGridEl}
         className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${
-          sidebarCollapsed
-            ? dockDetail
-              ? "md:grid-cols-[18px_minmax(0,1fr)_360px]"
-              : "md:grid-cols-[18px_minmax(0,1fr)]"
-            : dockDetail
-              ? "md:grid-cols-[18px_300px_minmax(0,1fr)_360px]"
-              : "md:grid-cols-[18px_300px_minmax(0,1fr)]"
+          dockDetail
+            ? "md:grid-cols-[300px_minmax(0,1fr)_360px]"
+            : "md:grid-cols-[300px_minmax(0,1fr)]"
         }`}
       >
-        {/* (v4.26.0) HANDLE de colapso pegado al borde izquierdo de la
-            app — columna fina full-height SIEMPRE visible, mismo
-            patrón que el Map (scenery). Reemplaza al chevron que vivía
-            dentro de la barra del filtro + la franja de reapertura. */}
-        <button
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          title={sidebarCollapsed ? t("fb.sidebar.expand") : t("fb.sidebar.collapse")}
-          className="hidden items-center justify-center rounded-2xl border border-sf-border bg-sf-surface text-sf-muted hover:bg-sf-raised hover:text-sf-text md:flex"
-        >
-          {sidebarCollapsed ? (
-            <ChevronRight className="h-4 w-4" />
-          ) : (
-            <ChevronLeft className="h-4 w-4" />
-          )}
-        </button>
-        {!sidebarCollapsed && (
-        /* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */
+        {/* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */}
         <aside className="flex min-h-0 flex-col rounded-2xl border border-sf-border bg-sf-surface">
           <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-2xl border-b border-sf-border bg-sf-surface/80 px-3 py-2 backdrop-blur">
             <Search className="h-3.5 w-3.5 shrink-0 text-sf-muted" />
@@ -677,7 +637,6 @@ export function FlightBookView() {
             )}
           </div>
         </aside>
-        )}
 
         {/* COLUMNA DERECHA — apila vertical (v3.6.3 reorganización):
               · AirlineTagFilter chips (siempre, FUERA del mapa).

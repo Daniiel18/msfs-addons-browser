@@ -1008,6 +1008,9 @@ export interface UpdateFlightInput {
    *  antes de persistir. */
   originIcao?: string | null;
   destinationIcao?: string | null;
+  /** (19/10) Nº de vuelo y callsign corregidos a mano ("" = borrar). */
+  flightNumber?: string | null;
+  callsign?: string | null;
 }
 
 /** (v3.5.0 F2) Reporte tras borrar todos los vuelos de una fuente. */
