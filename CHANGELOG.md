@@ -5,6 +5,33 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.0.0]
+
+### Added
+- **Brand-new interface.** Compact collapsible sidebar, a single top bar with Ctrl+K search, a modern dark theme with a teal accent (light theme kept and polished) and the bundled Inter font. Every screen and ~40 modals and panels were redesigned on the same design tokens.
+- **New Home.** Welcome hero with your current, next or last flight — now with a photo of the aircraft in your SimBrief plan behind it — plus quick actions, KPIs, recent flights and a notices panel.
+- **Startup lock.** SimFleet asks you to confirm it's you before opening: Windows Hello (PIN, fingerprint or face) or, as a fallback, your Windows account password. SimFleet never sees or stores your password.
+- **Install queue.** A new drop or download no longer replaces the install dialog that is already open — it waits its turn. Clicking outside the dialog, pressing Escape or choosing "Later" keeps the install as pending in Notifications, with **Install** (no dialog) and **Cancel** buttons; click the card to reopen the dialog.
+- **"Not mine" button** for SimBrief plans on Home and on the live map, for shared SimBrief accounts.
+- **Edit flight number and callsign** of a FlightBook flight (the callsign also updates the flight's airline).
+- New splash screen in the new style.
+- Explore: card grid with a Download menu. Installed: new List view. FlightBook: flight details dock as a right column and year tabs. Hangar: aircraft KPI strip. Finance: global summary and cost breakdown.
+
+### Changed
+- Settings now opens as its own screen inside the app instead of a modal.
+- The "Hide" list buttons were removed from FlightBook and Scenery map.
+- SimBrief plans on a shared account are told apart reliably: the owner rule now applies across the whole app (with your Drive email = your plans; without it = the plans marked 357), and a plan must depart from the airport you're at, or where your open flight started, before it's used for live tracking.
+- AIRAC now reads the real installed cycle from the Navigraph manifests and re-checks at local midnight.
+- Simplaza is available again in MSFS 2024 mode; Skybound is hidden while the site is down.
+
+### Fixed
+- Someone else's SimBrief plan from a shared account no longer shows up as your live route in FlightBook (the latest plan of the account was being used even when it wasn't yours).
+- Google Drive sync: "UNIQUE constraint" failure when downloading the snapshot, and sign-in with the renewed OAuth client.
+- Map tiles showing "API key required".
+- Mixdrop / Cloudflare Turnstile "Verification failed" on download pages.
+- Share card rounded corners and text layout; FlightBook night overlay kept in sync with the world clock.
+- Light theme: hover tints and borders no longer stick.
+
 ## [7.4.1]
 
 ### Fixed
