@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
+  ChevronDown,
   Download,
   ExternalLink,
   Folder,
@@ -24,7 +25,7 @@ import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
 import { derivedType, looksLikePlaceholderTitle } from "../lib/packageType";
-import { liveryUrlFor } from "../lib/liveryslugs";
+import { liveryTargetsFor } from "../lib/liveryslugs";
 import { useThumbnail } from "../lib/thumbnails";
 import { AddonFallbackArt } from "./AddonArt";
 import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
@@ -71,6 +72,8 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
   const shownThumb = fstoThumb ?? thumb;
   const derived = useMemo(() => derivedType(pkg), [pkg]);
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
+  // (v7.4.2) Menú de liveries cuando el paquete trae varios aviones.
+  const [liveryMenuOpen, setLiveryMenuOpen] = useState(false);
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [pickingRepair, setPickingRepair] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -385,16 +388,62 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                 derivedType): abre el WebView de flightsim.to en la página de
                 liveries de este avión. Reusa el mismo esquema/ventana que el
                 resto de la app (open_livery_browser). */}
-            {derived === "AIRCRAFT" && (
-              <button
-                onClick={() => api.openLiveryBrowser(liveryUrlFor(pkg))}
-                disabled={busy !== "none"}
-                title={t("pkg.get_liveries_hint")}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 hover:border-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
-              >
-                {t("pkg.get_liveries")}
-              </button>
-            )}
+            {derived === "AIRCRAFT" && (() => {
+              // (v7.4.2) Un paquete puede traer VARIOS aviones (Fenix A319 &
+              // A321): entonces el botón abre un menú con uno por modelo.
+              const targets = liveryTargetsFor(pkg);
+              const multi = targets.length > 1;
+              return (
+                <div className="relative">
+                  <button
+                    onClick={() =>
+                      multi
+                        ? setLiveryMenuOpen((v) => !v)
+                        : api.openLiveryBrowser(targets[0].url)
+                    }
+                    disabled={busy !== "none"}
+                    title={t("pkg.get_liveries_hint")}
+                    aria-haspopup={multi ? "menu" : undefined}
+                    aria-expanded={multi ? liveryMenuOpen : undefined}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 hover:border-sky-400 hover:bg-sky-500/20 disabled:opacity-50"
+                  >
+                    {t("pkg.get_liveries")}
+                    {multi && <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
+                  {multi && liveryMenuOpen && (
+                    <>
+                      {/* Clic fuera → cierra. */}
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setLiveryMenuOpen(false)}
+                      />
+                      <div
+                        role="menu"
+                        className="absolute bottom-full left-0 z-20 mb-2 min-w-[220px] overflow-hidden rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-xl"
+                      >
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {t("pkg.get_liveries_pick")}
+                        </div>
+                        {targets.map((tg) => (
+                          <button
+                            key={tg.url}
+                            role="menuitem"
+                            onClick={() => {
+                              setLiveryMenuOpen(false);
+                              void api.openLiveryBrowser(tg.url);
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-200 hover:bg-sky-500/15 hover:text-sky-100"
+                          >
+                            ✈ {tg.label}
+                            <ExternalLink className="ml-auto h-3 w-3 text-slate-500" />
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
             <button
               onClick={openRepairPicker}
               disabled={busy !== "none" || !canRepair}

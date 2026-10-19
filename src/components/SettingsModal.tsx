@@ -13,7 +13,6 @@ import {
   Archive,
   Bell,
   CheckCircle2,
-  LogIn,
   ChevronDown,
   Cloud,
   CloudOff,
@@ -42,7 +41,8 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import type { ExportFormat } from "../lib/types";
+import type { CloudConfig, ExportFormat } from "../lib/types";
+import { isTestEnv } from "../lib/testEnv";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
@@ -51,7 +51,6 @@ import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
-import { SkyboundSettings } from "./SkyboundSettings";
 
 /**
  * Modal de configuración.
@@ -72,7 +71,6 @@ const SECTION_META: Array<{ key: string; labelKey: string }> = [
   { key: "discord", labelKey: "settings.section.discord" },
   { key: "folders", labelKey: "settings.section.folders" },
   { key: "gsx", labelKey: "settings.section.gsx" },
-  { key: "skybound", labelKey: "settings.section.skybound" },
   { key: "cloud", labelKey: "settings.section.cloud" },
   { key: "msfs_logbook", labelKey: "settings.section.msfs_logbook" },
   { key: "backup", labelKey: "settings.section.backup" },
@@ -104,7 +102,8 @@ const SETTINGS_GROUPS: Array<{
     id: "flight",
     labelKey: "settings.group.flight",
     icon: <Plane className="h-4 w-4" />,
-    sections: ["flights", "map_display", "discord", "gsx", "skybound"],
+    // (v7.4.2) "skybound" oculto mientras la fuente esté caída.
+    sections: ["flights", "map_display", "discord", "gsx"],
   },
   {
     id: "data",
@@ -799,10 +798,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 <GsxProfilesPanel onFeedback={setFeedback} />
               </Section>
 
-              <Section navKey="skybound" title={t("settings.section.skybound")} icon={<LogIn className="h-3.5 w-3.5" />}>
-                <SkyboundSettings />
-              </Section>
-
               <Section
                 navKey="cloud"
                 title={t("settings.section.cloud")}
@@ -1489,12 +1484,7 @@ function CloudSyncPanel({
 }: {
   onFeedback: (msg: string | null) => void;
 }) {
-  const [config, setConfig] = useState<{
-    connected: boolean;
-    hasCredentials: boolean;
-    userEmail: string | null;
-    lastSyncAt: string | null;
-  } | null>(null);
+  const [config, setConfig] = useState<CloudConfig | null>(null);
   // (v3.2.0) Form de credenciales eliminado — credenciales OAuth
   // van embebidas en el binario. Sólo conservamos los flags de
   // operaciones activas.
@@ -1723,6 +1713,12 @@ function CloudSyncPanel({
 
   return (
     <div className="space-y-2">
+      {/* (v7.4.2) En el entorno de pruebas, de dónde baja y adónde sube. */}
+      {isTestEnv() && (
+        <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+          🧪 {t("settings.cloud.test_env_hint")}
+        </div>
+      )}
       {/* Estado actual */}
       <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
         <div className="flex items-start justify-between gap-3">
@@ -1731,22 +1727,40 @@ function CloudSyncPanel({
               {config.connected ? (
                 <Cloud className="h-3 w-3 text-emerald-300" />
               ) : (
-                <CloudOff className="h-3 w-3 text-slate-500" />
+                <CloudOff
+                  className={
+                    config.sessionExpired
+                      ? "h-3 w-3 text-amber-300"
+                      : "h-3 w-3 text-slate-500"
+                  }
+                />
               )}
               {config.connected
                 ? t("settings.cloud.status.connected_as", {
                     email: config.userEmail ?? t("settings.cloud.no_email_short"),
                   })
-                : t("settings.cloud.status.not_connected")}
+                : config.sessionExpired
+                  ? t("settings.cloud.status.session_expired", {
+                      email: config.userEmail ?? t("settings.cloud.no_email_short"),
+                    })
+                  : t("settings.cloud.status.not_connected")}
             </div>
-            <p className="mt-0.5 text-[11px] text-slate-500">
+            <p
+              className={
+                !config.connected && config.sessionExpired
+                  ? "mt-0.5 text-[11px] text-amber-300/80"
+                  : "mt-0.5 text-[11px] text-slate-500"
+              }
+            >
               {config.connected
                 ? t("settings.cloud.status.connected_hint", {
                     last_sync: config.lastSyncAt
                       ? new Date(config.lastSyncAt).toLocaleString()
                       : t("settings.cloud.never"),
                   })
-                : t("settings.cloud.status.not_connected_hint")}
+                : config.sessionExpired
+                  ? t("settings.cloud.status.session_expired_hint")
+                  : t("settings.cloud.status.not_connected_hint")}
             </p>
           </div>
           <div className="flex shrink-0 flex-col gap-1.5">

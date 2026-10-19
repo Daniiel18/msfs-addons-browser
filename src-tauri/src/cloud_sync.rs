@@ -45,7 +45,6 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-const SYNC_FILE_NAME: &str = "msfs-addons-data.json";
 
 // =============================================================================
 // (v4.14.0 #2) Progreso de transferencia cloud — barra + velocidad + ETA.
@@ -124,6 +123,9 @@ const KEY_CLIENT_SECRET: &str = "google_client_secret";
 const KEY_REFRESH_TOKEN: &str = "google_refresh_token";
 const KEY_USER_EMAIL: &str = "google_user_email";
 const KEY_LAST_SYNC_AT: &str = "google_last_sync_at";
+/// (v7.4.2) Marca de "Google revocó/expiró el refresh token" (`invalid_grant`).
+/// Mientras exista, la UI pide reconectar y los auto-uploads no reintentan.
+const KEY_SESSION_EXPIRED: &str = "google_session_expired";
 
 /// (v3.1.0) Devuelve `(client_id, client_secret)` consultando primero
 /// los valores hardcoded de build, luego DB como fallback (compat con
@@ -162,6 +164,10 @@ const KEY_FOLDER_SYNC_LAST_AT: &str = "cloud_folder_sync_last_at";
 pub struct CloudConfig {
     pub connected: bool,
     pub has_credentials: bool,
+    /// (v7.4.2) Google rechazó el refresh token (`invalid_grant`: revocado,
+    /// contraseña cambiada o expirado — p.ej. app OAuth en modo "Testing",
+    /// cuyos tokens caducan a los 7 días). Hay que volver a Conectar.
+    pub session_expired: bool,
     pub user_email: Option<String>,
     pub last_sync_at: Option<String>,
 }
@@ -232,9 +238,11 @@ pub async fn get_config(pool: &SqlitePool) -> anyhow::Result<CloudConfig> {
         && client_secret.as_deref().filter(|s| !s.is_empty()).is_some();
     let connected = has_credentials
         && refresh_token.as_deref().filter(|s| !s.is_empty()).is_some();
+    let session_expired = get_setting(pool, KEY_SESSION_EXPIRED).await?.is_some();
     Ok(CloudConfig {
         connected,
         has_credentials,
+        session_expired,
         user_email,
         last_sync_at,
     })
@@ -254,6 +262,7 @@ pub async fn disconnect(pool: &SqlitePool) -> anyhow::Result<()> {
     delete_setting(pool, KEY_REFRESH_TOKEN).await?;
     delete_setting(pool, KEY_USER_EMAIL).await?;
     delete_setting(pool, KEY_LAST_SYNC_AT).await?;
+    delete_setting(pool, KEY_SESSION_EXPIRED).await?;
     Ok(())
 }
 
@@ -444,6 +453,7 @@ async fn handle_callback(
     if let Some(e) = &email {
         set_setting(&pool, KEY_USER_EMAIL, e).await?;
     }
+    delete_setting(&pool, KEY_SESSION_EXPIRED).await?;
     Ok(email)
 }
 
@@ -494,7 +504,10 @@ async fn exchange_code_for_tokens(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("{}", crate::tr!("cloudSync.tokenEndpointError", status = status, body = txt)));
+        if token_error_code(&txt).as_deref() == Some("invalid_client") {
+            return Err(anyhow!("{}", crate::tr!("cloudSync.invalidClient")));
+        }
+        return Err(anyhow!("{}", crate::tr!("cloudSync.tokenEndpointError", status = status, body = truncate_body(&txt))));
     }
     Ok(resp.json().await?)
 }
@@ -547,7 +560,27 @@ async fn fresh_access_token(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("{}", crate::tr!("cloudSync.refreshTokenRejected", status = status, body = txt)));
+        // (v7.4.2) `invalid_grant` = el refresh token ya no sirve y reintentar
+        // no lo arregla. Antes quedaba guardado → la UI seguía mostrando
+        // "Conectado" y CADA vuelo (auto-upload) y cada auto-sync diario
+        // fallaban con el JSON crudo de Google en un toast. Ahora lo
+        // descartamos (conservando el email para el aviso) y marcamos la
+        // sesión como expirada: la UI pide reconectar y nadie reintenta.
+        // (v7.4.2) `invalid_client` = el client secret embebido ya no vale
+        // (rotado en Google Cloud). No es culpa de la sesión: no la tocamos.
+        if token_error_code(&txt).as_deref() == Some("invalid_client") {
+            return Err(anyhow!("{}", crate::tr!("cloudSync.invalidClient")));
+        }
+        if is_invalid_grant(&txt) {
+            tracing::warn!(
+                target: "cloud",
+                "refresh token rechazado (invalid_grant) — sesión de Google marcada como expirada"
+            );
+            delete_setting(pool, KEY_REFRESH_TOKEN).await?;
+            set_setting(pool, KEY_SESSION_EXPIRED, "1").await?;
+            return Err(anyhow!("{}", crate::tr!("cloudSync.sessionExpired")));
+        }
+        return Err(anyhow!("{}", crate::tr!("cloudSync.refreshTokenRejected", status = status, body = truncate_body(&txt))));
     }
     let body: TokenResponse = resp.json().await?;
     Ok(body.access_token)
@@ -615,6 +648,24 @@ fn sanitize_id(id: &str) -> String {
     }
 }
 
+/// (v7.4.2) Código `error` de una respuesta del endpoint de tokens de Google
+/// (`invalid_grant`, `invalid_client`…), si el cuerpo es JSON.
+fn token_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("error")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// (v7.4.2) ¿La respuesta del endpoint de tokens es un `invalid_grant`?
+fn is_invalid_grant(body: &str) -> bool {
+    match token_error_code(body) {
+        Some(code) => code == "invalid_grant",
+        None => body.contains("invalid_grant"),
+    }
+}
+
 /// (v3.38.0 #12) Recorta el cuerpo de error de Google a algo legible.
 fn truncate_body(body: &str) -> String {
     let trimmed = body.trim();
@@ -630,8 +681,10 @@ fn truncate_body(body: &str) -> String {
 async fn find_sync_file(
     http: &reqwest::Client,
     access_token: &str,
+    // (v7.4.2) Snapshot a buscar: el de subida o el de bajada (ver `test_env`).
+    name: &str,
 ) -> anyhow::Result<Option<String>> {
-    let q = format!("name = '{}' and 'appDataFolder' in parents", SYNC_FILE_NAME);
+    let q = format!("name = '{}' and 'appDataFolder' in parents", name);
     let url = format!(
         "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q={}&fields=files(id)",
         urlencoding::encode(&q)
@@ -691,7 +744,7 @@ async fn create_sync_file(
     app: Option<&AppHandle>,
 ) -> anyhow::Result<String> {
     let metadata = serde_json::json!({
-        "name": SYNC_FILE_NAME,
+        "name": crate::test_env::sync_upload_file_name(),
         "parents": ["appDataFolder"],
     });
     // (v4.0.1) Subimos el payload COMPRIMIDO con gzip. Construimos el
@@ -781,8 +834,9 @@ async fn download_sync_file(
     http: &reqwest::Client,
     access_token: &str,
     app: Option<&AppHandle>,
+    name: &str,
 ) -> anyhow::Result<Option<String>> {
-    let Some(file_id) = find_sync_file(http, access_token).await? else {
+    let Some(file_id) = find_sync_file(http, access_token, name).await? else {
         return Ok(None);
     };
     let resp = http
@@ -821,7 +875,7 @@ async fn purge_cloud_snapshot(
 ) -> anyhow::Result<PurgeReport> {
     let mut report = PurgeReport::default();
     // Leer el snapshot remoto para reportar lo que se borra.
-    if let Some(text) = download_sync_file(http, access_token, None).await? {
+    if let Some(text) = download_sync_file(http, access_token, None, crate::test_env::sync_upload_file_name()).await? {
         if let Ok(snap) = serde_json::from_str::<Snapshot>(&text) {
             report.deleted_flights = snap.flight_log.len();
             report.deleted_tracks = snap.flight_log_track.len();
@@ -829,7 +883,7 @@ async fn purge_cloud_snapshot(
         }
     }
     // Borrar el archivo de Drive si existe.
-    if let Some(file_id) = find_sync_file(http, access_token).await? {
+    if let Some(file_id) = find_sync_file(http, access_token, crate::test_env::sync_upload_file_name()).await? {
         let resp = http
             .delete(format!(
                 "https://www.googleapis.com/drive/v3/files/{}",
@@ -1031,6 +1085,112 @@ fn snake_to_camel(s: &str) -> String {
     out
 }
 
+/// (v7.4.2) Upsert POR ID de un vuelo del snapshot (antes inline en
+/// `restore_snapshot`). Con `with_number = false` entra sin
+/// flight_number/airline_icao para no chocar con
+/// `uq_flight_log_va_dedup_completed` (el callsign se conserva).
+fn upsert_snapshot_flight<'q>(
+    row: &'q serde_json::Value,
+    id: i64,
+    started_at: &'q str,
+    with_number: bool,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    let (flight_number, airline_icao) = if with_number {
+        (json_str(row, "flightNumber"), json_str(row, "airlineIcao"))
+    } else {
+        (None, None)
+    };
+    sqlx::query(
+        r#"INSERT INTO flight_log
+            (id, started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
+             destination_icao, destination_name, destination_lat, destination_lon,
+             aircraft_atc_type, aircraft_title,
+             aircraft_model, aircraft_airline, aircraft_registration,
+             distance_nm, flight_time_s,
+             max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
+             departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
+             paused_seconds,
+             flight_number, callsign, airline_icao, status,
+             score_total, score_max, score_grade,
+             metar_origin, metar_dest)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             started_at = excluded.started_at,
+             ended_at = excluded.ended_at,
+             origin_icao = excluded.origin_icao,
+             origin_name = excluded.origin_name,
+             origin_lat = excluded.origin_lat,
+             origin_lon = excluded.origin_lon,
+             destination_icao = excluded.destination_icao,
+             destination_name = excluded.destination_name,
+             destination_lat = excluded.destination_lat,
+             destination_lon = excluded.destination_lon,
+             aircraft_atc_type = excluded.aircraft_atc_type,
+             aircraft_title = excluded.aircraft_title,
+             aircraft_model = excluded.aircraft_model,
+             aircraft_airline = excluded.aircraft_airline,
+             aircraft_registration = excluded.aircraft_registration,
+             distance_nm = excluded.distance_nm,
+             flight_time_s = excluded.flight_time_s,
+             max_altitude_ft = excluded.max_altitude_ft,
+             landing_fpm = excluded.landing_fpm,
+             max_ground_speed_kt = excluded.max_ground_speed_kt,
+             max_true_airspeed_kt = excluded.max_true_airspeed_kt,
+             departure_gate = excluded.departure_gate,
+             arrival_gate = excluded.arrival_gate,
+             passengers = excluded.passengers,
+             cargo_kg = excluded.cargo_kg,
+             fuel_used_kg = excluded.fuel_used_kg,
+             paused_seconds = excluded.paused_seconds,
+             flight_number = excluded.flight_number,
+             callsign = excluded.callsign,
+             airline_icao = excluded.airline_icao,
+             status = excluded.status,
+             score_total = excluded.score_total,
+             score_max = excluded.score_max,
+             score_grade = excluded.score_grade,
+             metar_origin = COALESCE(excluded.metar_origin, flight_log.metar_origin),
+             metar_dest = COALESCE(excluded.metar_dest, flight_log.metar_dest)"#,
+    )
+    .bind(id)
+    .bind(started_at)
+    .bind(json_str(row, "endedAt"))
+    .bind(json_str(row, "originIcao"))
+    .bind(json_str(row, "originName"))
+    .bind(json_f64(row, "originLat").unwrap_or(0.0))
+    .bind(json_f64(row, "originLon").unwrap_or(0.0))
+    .bind(json_str(row, "destinationIcao"))
+    .bind(json_str(row, "destinationName"))
+    .bind(json_f64(row, "destinationLat"))
+    .bind(json_f64(row, "destinationLon"))
+    .bind(json_str(row, "aircraftAtcType"))
+    .bind(json_str(row, "aircraftTitle"))
+    .bind(json_str(row, "aircraftModel"))
+    .bind(json_str(row, "aircraftAirline"))
+    .bind(json_str(row, "aircraftRegistration"))
+    .bind(json_f64(row, "distanceNm"))
+    .bind(json_i64(row, "flightTimeS"))
+    .bind(json_i64(row, "maxAltitudeFt"))
+    .bind(json_i64(row, "landingFpm"))
+    .bind(json_i64(row, "maxGroundSpeedKt"))
+    .bind(json_i64(row, "maxTrueAirspeedKt"))
+    .bind(json_str(row, "departureGate"))
+    .bind(json_str(row, "arrivalGate"))
+    .bind(json_i64(row, "passengers"))
+    .bind(json_i64(row, "cargoKg"))
+    .bind(json_i64(row, "fuelUsedKg"))
+    .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
+    .bind(flight_number)
+    .bind(json_str(row, "callsign"))
+    .bind(airline_icao)
+    .bind(json_str(row, "status").unwrap_or_else(|| "completed".to_string()))
+    .bind(json_i64(row, "scoreTotal"))
+    .bind(json_i64(row, "scoreMax"))
+    .bind(json_str(row, "scoreGrade"))
+    .bind(json_str(row, "metarOrigin"))
+    .bind(json_str(row, "metarDest"))
+}
+
 async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<RestoreReport> {
     // (v7 fix) ¿La DB estaba vacía antes del restore? Solo entonces el cleanup
     // de "phantom in-flight" es seguro: si hay datos locales, un UPDATE global
@@ -1041,6 +1201,28 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .await
         .unwrap_or(0)
         == 0;
+    // (v7.4.2) Mismo problema que `merge_remote_snapshot`: el snapshot puede
+    // traer el mismo nº de vuelo el mismo día en varias sesiones y el índice
+    // `uq_flight_log_va_dedup_completed` tumbaba el restore entero (lo vio el
+    // auto-sync con la DB vacía). El nº lo conserva el vuelo MÁS LARGO de cada
+    // grupo; si aun así choca (p.ej. con un vuelo local), entra sin nº.
+    let mut va_winner: std::collections::HashMap<String, (i64, String, i64)> =
+        std::collections::HashMap::new();
+    let mut va_key_by_id: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    for row in &snap.flight_log {
+        let Some(id) = row.get("id").and_then(|v| v.as_i64()) else { continue };
+        let Some(key) = cloud_va_key(pool, row).await? else { continue };
+        let time_s = json_i64(row, "flightTimeS").unwrap_or(0);
+        let started = json_str(row, "startedAt").unwrap_or_default();
+        let better = va_winner
+            .get(&key)
+            .map_or(true, |(t, st, _)| time_s > *t || (time_s == *t && started < *st));
+        if better {
+            va_winner.insert(key.clone(), (time_s, started, id));
+        }
+        va_key_by_id.insert(id, key);
+    }
     let mut tx = pool.begin().await?;
     let mut flights = 0;
     let mut tracks = 0;
@@ -1056,97 +1238,21 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         // engine. Los campos del scoring SE sincronizan al cloud porque
         // el usuario los puede consultar desde cualquier máquina sin
         // tener que recomputar (decisión Q15 del kickoff).
-        sqlx::query(
-            r#"INSERT INTO flight_log
-                (id, started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
-                 destination_icao, destination_name, destination_lat, destination_lon,
-                 aircraft_atc_type, aircraft_title,
-                 aircraft_model, aircraft_airline, aircraft_registration,
-                 distance_nm, flight_time_s,
-                 max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
-                 departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
-                 paused_seconds,
-                 flight_number, callsign, airline_icao, status,
-                 score_total, score_max, score_grade,
-                 metar_origin, metar_dest)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                 started_at = excluded.started_at,
-                 ended_at = excluded.ended_at,
-                 origin_icao = excluded.origin_icao,
-                 origin_name = excluded.origin_name,
-                 origin_lat = excluded.origin_lat,
-                 origin_lon = excluded.origin_lon,
-                 destination_icao = excluded.destination_icao,
-                 destination_name = excluded.destination_name,
-                 destination_lat = excluded.destination_lat,
-                 destination_lon = excluded.destination_lon,
-                 aircraft_atc_type = excluded.aircraft_atc_type,
-                 aircraft_title = excluded.aircraft_title,
-                 aircraft_model = excluded.aircraft_model,
-                 aircraft_airline = excluded.aircraft_airline,
-                 aircraft_registration = excluded.aircraft_registration,
-                 distance_nm = excluded.distance_nm,
-                 flight_time_s = excluded.flight_time_s,
-                 max_altitude_ft = excluded.max_altitude_ft,
-                 landing_fpm = excluded.landing_fpm,
-                 max_ground_speed_kt = excluded.max_ground_speed_kt,
-                 max_true_airspeed_kt = excluded.max_true_airspeed_kt,
-                 departure_gate = excluded.departure_gate,
-                 arrival_gate = excluded.arrival_gate,
-                 passengers = excluded.passengers,
-                 cargo_kg = excluded.cargo_kg,
-                 fuel_used_kg = excluded.fuel_used_kg,
-                 paused_seconds = excluded.paused_seconds,
-                 flight_number = excluded.flight_number,
-                 callsign = excluded.callsign,
-                 airline_icao = excluded.airline_icao,
-                 status = excluded.status,
-                 score_total = excluded.score_total,
-                 score_max = excluded.score_max,
-                 score_grade = excluded.score_grade,
-                 metar_origin = COALESCE(excluded.metar_origin, flight_log.metar_origin),
-                 metar_dest = COALESCE(excluded.metar_dest, flight_log.metar_dest)"#,
-        )
-        .bind(id)
-        .bind(&started_at)
-        .bind(json_str(row, "endedAt"))
-        .bind(json_str(row, "originIcao"))
-        .bind(json_str(row, "originName"))
-        .bind(json_f64(row, "originLat").unwrap_or(0.0))
-        .bind(json_f64(row, "originLon").unwrap_or(0.0))
-        .bind(json_str(row, "destinationIcao"))
-        .bind(json_str(row, "destinationName"))
-        .bind(json_f64(row, "destinationLat"))
-        .bind(json_f64(row, "destinationLon"))
-        .bind(json_str(row, "aircraftAtcType"))
-        .bind(json_str(row, "aircraftTitle"))
-        .bind(json_str(row, "aircraftModel"))
-        .bind(json_str(row, "aircraftAirline"))
-        .bind(json_str(row, "aircraftRegistration"))
-        .bind(json_f64(row, "distanceNm"))
-        .bind(json_i64(row, "flightTimeS"))
-        .bind(json_i64(row, "maxAltitudeFt"))
-        .bind(json_i64(row, "landingFpm"))
-        .bind(json_i64(row, "maxGroundSpeedKt"))
-        .bind(json_i64(row, "maxTrueAirspeedKt"))
-        .bind(json_str(row, "departureGate"))
-        .bind(json_str(row, "arrivalGate"))
-        .bind(json_i64(row, "passengers"))
-        .bind(json_i64(row, "cargoKg"))
-        .bind(json_i64(row, "fuelUsedKg"))
-        .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
-        .bind(json_str(row, "flightNumber"))
-        .bind(json_str(row, "callsign"))
-        .bind(json_str(row, "airlineIcao"))
-        .bind(json_str(row, "status").unwrap_or_else(|| "completed".to_string()))
-        .bind(json_i64(row, "scoreTotal"))
-        .bind(json_i64(row, "scoreMax"))
-        .bind(json_str(row, "scoreGrade"))
-        .bind(json_str(row, "metarOrigin"))
-        .bind(json_str(row, "metarDest"))
-        .execute(&mut *tx)
-        .await?;
+        let keep_number = va_key_by_id
+            .get(&id)
+            .map_or(true, |k| va_winner.get(k).is_some_and(|(_, _, w)| *w == id));
+        let upsert = |with_number: bool| upsert_snapshot_flight(row, id, &started_at, with_number);
+        if keep_number {
+            match upsert(true).execute(&mut *tx).await {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("uq_flight_log_va_dedup_completed") => {
+                    upsert(false).execute(&mut *tx).await?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            upsert(false).execute(&mut *tx).await?;
+        }
         flights += 1;
     }
     for row in &snap.flight_log_track {
@@ -1590,7 +1696,7 @@ pub async fn test_connection(
     }
 
     // Paso 6 — listar appDataFolder (lo que sync_now hace primero)
-    let q = format!("name = '{}' and 'appDataFolder' in parents", SYNC_FILE_NAME);
+    let q = format!("name = '{}' and 'appDataFolder' in parents", crate::test_env::sync_upload_file_name());
     let url = format!(
         "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q={}&fields=files(id)",
         urlencoding::encode(&q)
@@ -1676,7 +1782,7 @@ pub async fn sync_now(
     if local_count == 0 {
         let _guard = CLOUD_LOCK.lock().await;
         let access_token = fresh_access_token(pool, http).await?;
-        if let Some(text) = download_sync_file(http, &access_token, None).await? {
+        if let Some(text) = download_sync_file(http, &access_token, None, crate::test_env::sync_download_file_name()).await? {
             match serde_json::from_str::<Snapshot>(&text) {
                 Ok(remote) => {
                     let r = restore_snapshot(pool, &remote).await?;
@@ -1769,10 +1875,10 @@ pub async fn upload_all(
 
     // 2. Snapshot remoto actual (si existe) — base del merge. Si está
     //    corrupto, partimos de vacío (recuperación: se reescribe entero).
-    let remote_file_id = find_sync_file(http, &access_token).await?;
+    let remote_file_id = find_sync_file(http, &access_token, crate::test_env::sync_upload_file_name()).await?;
     // La bajada interna del snapshot remoto (para mergear) NO emite
     // progreso — así la barra de "Subir" solo muestra la fase de subida.
-    let mut merged: Snapshot = match download_sync_file(http, &access_token, None).await? {
+    let mut merged: Snapshot = match download_sync_file(http, &access_token, None, crate::test_env::sync_upload_file_name()).await? {
         Some(t) => serde_json::from_str(&t).unwrap_or_default(),
         None => Snapshot::default(),
     };
@@ -1957,12 +2063,11 @@ pub async fn download_missing(
     // (v7 fix, race) Serializa con las demás operaciones RMW del snapshot cloud.
     let _cloud_guard = CLOUD_LOCK.lock().await;
     let access_token = fresh_access_token(pool, http).await?;
-    let mut report = DownloadReport::default();
 
     // download_sync_file emite el evento final con el tamaño bajado.
-    let Some(text) = download_sync_file(http, &access_token, app).await? else {
+    let Some(text) = download_sync_file(http, &access_token, app, crate::test_env::sync_download_file_name()).await? else {
         tracing::info!(target: "cloud", "download: no remote snapshot exists yet");
-        return Ok(report);
+        return Ok(DownloadReport::default());
     };
     let remote: Snapshot = match serde_json::from_str(&text) {
         Ok(s) => s,
@@ -1970,6 +2075,35 @@ pub async fn download_missing(
             return Err(anyhow!("{}", crate::tr!("cloudSync.remoteSnapshotCorrupt", e = format!("{e:#}"))));
         }
     };
+    let report = merge_remote_snapshot(pool, &remote).await?;
+
+    set_setting(
+        pool,
+        KEY_LAST_SYNC_AT,
+        &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
+    .await?;
+
+    tracing::info!(
+        target: "cloud",
+        "download OK · cloud={} new={} skipped={} tracks={} settings={}",
+        report.cloud_flights,
+        report.new_flights,
+        report.skipped_existing,
+        report.new_tracks,
+        report.new_settings,
+    );
+    Ok(report)
+}
+
+/// (v7.4.2) Fusiona un snapshot ya descargado en la DB local (el corazón de
+/// `download_missing`, separado de la red para poder testearlo con datos
+/// reales). Todo en UNA transacción: o entra el snapshot entero o nada.
+async fn merge_remote_snapshot(
+    pool: &SqlitePool,
+    remote: &Snapshot,
+) -> anyhow::Result<DownloadReport> {
+    let mut report = DownloadReport::default();
     report.cloud_flights = remote.flight_log.len();
 
     // Construye índice de claves estables existentes en local para
@@ -1977,7 +2111,38 @@ pub async fn download_missing(
     //  - (source, external_id) matchea, o
     //  - (started_at, origin_lat round 2) matchea (sim-flown sin
     //    external_id)
-    let local_keys = build_local_dedup_keys(pool).await?;
+    let mut local_keys = build_local_dedup_keys(pool).await?;
+
+    // (v7.4.2) Dedup del índice `uq_flight_log_va_dedup_completed` (UN solo
+    // vuelo completed por aerolínea + nº de vuelo + día). Las claves de arriba
+    // no lo cubren: el snapshot (JSON, sin constraints) puede traer el mismo
+    // nº el mismo día en sesiones distintas — p.ej. un vuelo real + sesiones
+    // abortadas — y el 2º INSERT tumbaba TODA la bajada con
+    // "UNIQUE constraint failed: index 'uq_flight_log_va_dedup_completed'".
+    // Misma política que el auto-link de SimBrief (`link_ofp_minimal`): se
+    // bajan TODOS los vuelos y el nº lo conserva uno solo — el que ya exista
+    // en local o, si no, el MÁS LARGO del snapshot; el resto entra sin
+    // flight_number/airline_icao (el callsign se conserva).
+    let mut local_va = build_local_va_keys(pool).await?;
+    let mut va_key_of: Vec<Option<String>> = Vec::with_capacity(remote.flight_log.len());
+    // clave VA → (flight_time_s, started_at, índice en el snapshot) del ganador.
+    let mut va_winner: std::collections::HashMap<String, (i64, String, usize)> =
+        std::collections::HashMap::new();
+    for (idx, row) in remote.flight_log.iter().enumerate() {
+        let key = cloud_va_key(pool, row).await?;
+        if let Some(k) = key.as_ref().filter(|k| !local_va.contains(*k)) {
+            let time_s = json_i64(row, "flightTimeS").unwrap_or(0);
+            let started = json_str(row, "startedAt").unwrap_or_default();
+            let better = va_winner
+                .get(k)
+                .map_or(true, |(t, st, _)| time_s > *t || (time_s == *t && started < *st));
+            if better {
+                va_winner.insert(k.clone(), (time_s, started, idx));
+            }
+        }
+        va_key_of.push(key);
+    }
+    let mut va_stripped = 0usize;
 
     // Mapa de cloud_flight_id → new_local_id (para tracks).
     let mut cloud_to_local_id: std::collections::HashMap<i64, i64> =
@@ -1985,7 +2150,7 @@ pub async fn download_missing(
 
     let mut tx = pool.begin().await?;
 
-    for row in &remote.flight_log {
+    for (idx, row) in remote.flight_log.iter().enumerate() {
         let cloud_id = json_i64(row, "id");
         let source = json_str(row, "source").unwrap_or_else(|| "simconnect".into());
         let external_id = json_str(row, "externalId");
@@ -2021,70 +2186,67 @@ pub async fn download_missing(
             }
         };
 
-        // (v3.6.0 Phase H) Incluye flight_number/callsign/airline_icao
-        // /status/score_* en el INSERT para que un download-missing
-        // preserve toda la metadata VA sin tener que recomputar.
-        let result = sqlx::query(
-            r#"INSERT INTO flight_log
-                (started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
-                 destination_icao, destination_name, destination_lat, destination_lon,
-                 aircraft_atc_type, aircraft_title,
-                 aircraft_model, aircraft_airline, aircraft_registration,
-                 distance_nm, flight_time_s,
-                 max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
-                 departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
-                 paused_seconds, source, external_id,
-                 flight_number, callsign, airline_icao, status,
-                 score_total, score_max, score_grade,
-                 metar_origin, metar_dest)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
-        )
-        .bind(&started_at)
-        .bind(ended_at.as_deref())
-        .bind(json_str(row, "originIcao"))
-        .bind(json_str(row, "originName"))
-        .bind(origin_lat)
-        .bind(origin_lon)
-        .bind(json_str(row, "destinationIcao"))
-        .bind(json_str(row, "destinationName"))
-        .bind(json_f64(row, "destinationLat"))
-        .bind(json_f64(row, "destinationLon"))
-        .bind(json_str(row, "aircraftAtcType"))
-        .bind(json_str(row, "aircraftTitle"))
-        .bind(json_str(row, "aircraftModel"))
-        .bind(json_str(row, "aircraftAirline"))
-        .bind(json_str(row, "aircraftRegistration"))
-        .bind(json_f64(row, "distanceNm"))
-        .bind(json_i64(row, "flightTimeS"))
-        .bind(json_i64(row, "maxAltitudeFt"))
-        .bind(json_i64(row, "landingFpm"))
-        .bind(json_i64(row, "maxGroundSpeedKt"))
-        .bind(json_i64(row, "maxTrueAirspeedKt"))
-        .bind(json_str(row, "departureGate"))
-        .bind(json_str(row, "arrivalGate"))
-        .bind(json_i64(row, "passengers"))
-        .bind(json_i64(row, "cargoKg"))
-        .bind(json_i64(row, "fuelUsedKg"))
-        .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
-        .bind(&source)
-        .bind(external_id.as_deref())
-        .bind(json_str(row, "flightNumber"))
-        .bind(json_str(row, "callsign"))
-        .bind(json_str(row, "airlineIcao"))
-        .bind(json_str(row, "status").unwrap_or_else(|| "completed".to_string()))
-        .bind(json_i64(row, "scoreTotal"))
-        .bind(json_i64(row, "scoreMax"))
-        .bind(json_str(row, "scoreGrade"))
-        .bind(json_str(row, "metarOrigin"))
-        .bind(json_str(row, "metarDest"))
-        .execute(&mut *tx)
-        .await?;
+        // (v7.4.2) ¿Este vuelo conserva el nº de vuelo? Sólo si no choca con
+        // el índice VA (ver el pre-pase de arriba).
+        let va_key = va_key_of[idx].clone();
+        let keep_number = match &va_key {
+            None => true,
+            Some(k) => {
+                !local_va.contains(k) && va_winner.get(k).is_some_and(|(_, _, w)| *w == idx)
+            }
+        };
+        let insert = |with_number: bool| {
+            insert_cloud_flight(
+                row,
+                &started_at,
+                ended_at.as_deref(),
+                origin_lat,
+                origin_lon,
+                &source,
+                external_id.as_deref(),
+                with_number,
+            )
+        };
+        let result = if keep_number {
+            match insert(true).execute(&mut *tx).await {
+                Ok(r) => r,
+                // Red de seguridad: si aun así choca (p.ej. un formato de
+                // fecha raro), entra sin nº en vez de abortar toda la bajada.
+                // SQLite sólo aborta la SENTENCIA; la transacción sigue viva.
+                Err(e) if e.to_string().contains("uq_flight_log_va_dedup_completed") => {
+                    va_stripped += 1;
+                    insert(false).execute(&mut *tx).await?
+                }
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            va_stripped += 1;
+            insert(false).execute(&mut *tx).await?
+        };
+        if keep_number {
+            if let Some(k) = va_key {
+                local_va.insert(k);
+            }
+        }
+        // (v7.4.2) Lo recién insertado cuenta para el dedup del RESTO del
+        // snapshot: antes un vuelo repetido dentro del propio snapshot entraba
+        // dos veces.
+        if let Some(k) = import_key {
+            local_keys.insert(k);
+        }
+        local_keys.insert(sim_key);
 
         let new_id = result.last_insert_rowid();
         if let Some(cid) = cloud_id {
             cloud_to_local_id.insert(cid, new_id);
         }
         report.new_flights += 1;
+    }
+    if va_stripped > 0 {
+        tracing::info!(
+            target: "cloud",
+            "download: {va_stripped} vuelo(s) bajados SIN nº de vuelo (mismo nº el mismo día que otro vuelo completado)"
+        );
     }
 
     // Importa solo los tracks de los vuelos NUEVOS — usando el mapping
@@ -2248,24 +2410,124 @@ pub async fn download_missing(
     }
 
     tx.commit().await?;
-
-    set_setting(
-        pool,
-        KEY_LAST_SYNC_AT,
-        &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-    )
-    .await?;
-
-    tracing::info!(
-        target: "cloud",
-        "download OK · cloud={} new={} skipped={} tracks={} settings={}",
-        report.cloud_flights,
-        report.new_flights,
-        report.skipped_existing,
-        report.new_tracks,
-        report.new_settings,
-    );
     Ok(report)
+}
+
+/// (v7.4.2) INSERT de un vuelo del snapshot en `flight_log` (antes inline en
+/// `download_missing`). Incluye flight_number/callsign/airline_icao/status/
+/// score_* para preservar la metadata VA sin recomputar. Con
+/// `with_number = false` entra SIN flight_number/airline_icao — así no choca
+/// con `uq_flight_log_va_dedup_completed` cuando ya hay otro vuelo completed
+/// con el mismo nº ese día.
+#[allow(clippy::too_many_arguments)]
+fn insert_cloud_flight<'q>(
+    row: &'q serde_json::Value,
+    started_at: &'q str,
+    ended_at: Option<&'q str>,
+    origin_lat: f64,
+    origin_lon: f64,
+    source: &'q str,
+    external_id: Option<&'q str>,
+    with_number: bool,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    let (flight_number, airline_icao) = if with_number {
+        (json_str(row, "flightNumber"), json_str(row, "airlineIcao"))
+    } else {
+        (None, None)
+    };
+    sqlx::query(
+        r#"INSERT INTO flight_log
+                (started_at, ended_at, origin_icao, origin_name, origin_lat, origin_lon,
+                 destination_icao, destination_name, destination_lat, destination_lon,
+                 aircraft_atc_type, aircraft_title,
+                 aircraft_model, aircraft_airline, aircraft_registration,
+                 distance_nm, flight_time_s,
+                 max_altitude_ft, landing_fpm, max_ground_speed_kt, max_true_airspeed_kt,
+                 departure_gate, arrival_gate, passengers, cargo_kg, fuel_used_kg,
+                 paused_seconds, source, external_id,
+                 flight_number, callsign, airline_icao, status,
+                 score_total, score_max, score_grade,
+                 metar_origin, metar_dest)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .bind(json_str(row, "originIcao"))
+    .bind(json_str(row, "originName"))
+    .bind(origin_lat)
+    .bind(origin_lon)
+    .bind(json_str(row, "destinationIcao"))
+    .bind(json_str(row, "destinationName"))
+    .bind(json_f64(row, "destinationLat"))
+    .bind(json_f64(row, "destinationLon"))
+    .bind(json_str(row, "aircraftAtcType"))
+    .bind(json_str(row, "aircraftTitle"))
+    .bind(json_str(row, "aircraftModel"))
+    .bind(json_str(row, "aircraftAirline"))
+    .bind(json_str(row, "aircraftRegistration"))
+    .bind(json_f64(row, "distanceNm"))
+    .bind(json_i64(row, "flightTimeS"))
+    .bind(json_i64(row, "maxAltitudeFt"))
+    .bind(json_i64(row, "landingFpm"))
+    .bind(json_i64(row, "maxGroundSpeedKt"))
+    .bind(json_i64(row, "maxTrueAirspeedKt"))
+    .bind(json_str(row, "departureGate"))
+    .bind(json_str(row, "arrivalGate"))
+    .bind(json_i64(row, "passengers"))
+    .bind(json_i64(row, "cargoKg"))
+    .bind(json_i64(row, "fuelUsedKg"))
+    .bind(json_i64(row, "pausedSeconds").unwrap_or(0))
+    .bind(source)
+    .bind(external_id)
+    .bind(flight_number)
+    .bind(json_str(row, "callsign"))
+    .bind(airline_icao)
+    .bind(json_str(row, "status").unwrap_or_else(|| "completed".to_string()))
+    .bind(json_i64(row, "scoreTotal"))
+    .bind(json_i64(row, "scoreMax"))
+    .bind(json_str(row, "scoreGrade"))
+    .bind(json_str(row, "metarOrigin"))
+    .bind(json_str(row, "metarDest"))
+}
+
+/// (v7.4.2) Claves del índice `uq_flight_log_va_dedup_completed` de los
+/// vuelos LOCALES: `airline|flight_number|date(started_at)` de los completed.
+async fn build_local_va_keys(
+    pool: &SqlitePool,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT airline_icao, flight_number, date(started_at) FROM flight_log \
+         WHERE airline_icao IS NOT NULL AND flight_number IS NOT NULL AND status = 'completed'",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(a, n, d)| d.map(|d| format!("{a}|{n}|{d}")))
+        .collect())
+}
+
+/// (v7.4.2) Clave del índice VA de un vuelo del snapshot (`None` si el índice
+/// no le aplica). El día se calcula con el `date()` de SQLite — exactamente
+/// la misma expresión que usa el índice, también con sufijos `Z`/offset.
+async fn cloud_va_key(
+    pool: &SqlitePool,
+    row: &serde_json::Value,
+) -> anyhow::Result<Option<String>> {
+    let status = json_str(row, "status").unwrap_or_else(|| "completed".to_string());
+    let (Some(airline), Some(number)) = (json_str(row, "airlineIcao"), json_str(row, "flightNumber"))
+    else {
+        return Ok(None);
+    };
+    if status != "completed" {
+        return Ok(None);
+    }
+    let started = json_str(row, "startedAt").unwrap_or_default();
+    let day: Option<String> = sqlx::query_scalar("SELECT date(?)")
+        .bind(&started)
+        .fetch_one(pool)
+        .await?;
+    Ok(day.map(|d| format!("{airline}|{number}|{d}")))
 }
 
 /// Construye un set de claves estables para los vuelos LOCALES, para
@@ -2343,7 +2605,7 @@ pub async fn get_folder_config(pool: &SqlitePool) -> anyhow::Result<FolderSyncCo
         .unwrap_or(false);
     let data_file_exists = path_opt
         .as_deref()
-        .map(|p| std::path::Path::new(p).join(SYNC_FILE_NAME).is_file())
+        .map(|p| std::path::Path::new(p).join(crate::test_env::sync_download_file_name()).is_file())
         .unwrap_or(false);
     Ok(FolderSyncConfig {
         folder_path: path_opt,
@@ -2380,7 +2642,7 @@ pub async fn save_to_folder(
     tokio::fs::create_dir_all(&path)
         .await
         .with_context(|| crate::tr!("cloudSync.folderCreateFailed", path = path.display()))?;
-    let out = path.join(SYNC_FILE_NAME);
+    let out = path.join(crate::test_env::sync_upload_file_name());
     let bytes_written = payload.len() as u64;
     tokio::fs::write(&out, payload)
         .await
@@ -2410,7 +2672,7 @@ pub async fn load_from_folder(
     pool: &SqlitePool,
     folder_path: &str,
 ) -> anyhow::Result<FolderSyncLoadReport> {
-    let path = std::path::PathBuf::from(folder_path).join(SYNC_FILE_NAME);
+    let path = std::path::PathBuf::from(folder_path).join(crate::test_env::sync_download_file_name());
     if !path.is_file() {
         return Err(anyhow!("{}", crate::tr!("cloudSync.folderBackupMissing", path = path.display())));
     }
@@ -2424,17 +2686,23 @@ pub async fn load_from_folder(
     // de flight_log es un autoincrement LOCAL: el id=5 de esta PC y el id=5 del
     // backup son vuelos DISTINTOS → restaurar por id sobre una DB con datos
     // PISARÍA vuelos locales. Sólo es seguro en una DB vacía (reinstalación). Si
-    // ya hay vuelos, no arriesgamos: el merge por CLAVES estables va por el sync
-    // de nube ("Bajar"). (TODO v7.x: merge por clave también para carga desde
-    // carpeta.)
+    // ya hay vuelos, no arriesgamos. (v7.4.2) En vez de negarnos, usamos el
+    // mismo merge por CLAVES estables que "Bajar" (`merge_remote_snapshot`):
+    // añade sólo lo que falta y nunca pisa ni borra vuelos locales.
     let local_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM flight_log")
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    if local_count > 0 {
-        anyhow::bail!("{}", crate::tr!("cloudSync.folderLoadWouldOverwrite", n = local_count));
-    }
-    let restored = restore_snapshot(pool, &snap).await?;
+    let restored = if local_count > 0 {
+        let r = merge_remote_snapshot(pool, &snap).await?;
+        RestoreReport {
+            flights: r.new_flights,
+            tracks: r.new_tracks,
+            settings: r.new_settings,
+        }
+    } else {
+        restore_snapshot(pool, &snap).await?
+    };
     // Marcamos el path como activo y registramos last sync (incluso si
     // fue un load, el merge es bidireccional desde el punto de vista
     // del usuario: "la app ahora tiene los datos de Drive").
@@ -2575,5 +2843,132 @@ mod sha256_impl {
             out[i * 4..i * 4 + 4].copy_from_slice(&h[i].to_be_bytes());
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod download_merge_tests {
+    use super::*;
+    use serde_json::json;
+
+    async fn mem_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn flight(id: i64, started: &str, lat: f64, time_s: i64, airline: Option<&str>, number: Option<&str>) -> serde_json::Value {
+        json!({
+            "id": id, "startedAt": started, "endedAt": started, "originLat": lat, "originLon": -70.0,
+            "flightTimeS": time_s, "airlineIcao": airline, "flightNumber": number,
+            "callsign": number.map(|n| format!("{}{}", airline.unwrap_or(""), n)),
+            "status": "completed", "source": "simconnect"
+        })
+    }
+
+    fn snapshot(flights: Vec<serde_json::Value>) -> Snapshot {
+        serde_json::from_value(json!({
+            "version": 1, "exportedAt": "2026-08-27T00:00:00Z",
+            "flightLog": flights, "flightLogTrack": [], "settings": []
+        }))
+        .unwrap()
+    }
+
+    /// Reproduce el error del usuario: mismo nº de vuelo el mismo día (vuelo
+    /// real + sesiones cortas), un vuelo repetido dentro del snapshot y un
+    /// choque con un vuelo LOCAL. Antes: "UNIQUE constraint failed: index
+    /// 'uq_flight_log_va_dedup_completed'" y no bajaba nada.
+    #[tokio::test]
+    async fn same_flight_number_same_day_does_not_abort_download() {
+        let pool = mem_pool().await;
+        sqlx::query(
+            "INSERT INTO flight_log (started_at, origin_lat, origin_lon, airline_icao, flight_number, status, source) \
+             VALUES ('2026-06-27T18:13:17Z', 29.9, -95.3, 'DAL', '1069', 'completed', 'simconnect')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let snap = snapshot(vec![
+            flight(157, "2026-06-18T22:50:04Z", 18.4, 1604, Some("DAL"), Some("384")),
+            flight(158, "2026-06-18T23:58:38Z", 42.3, 22232, Some("DAL"), Some("384")),
+            flight(157, "2026-06-18T22:50:04Z", 18.4, 1604, Some("DAL"), Some("384")), // repetido
+            flight(169, "2026-06-27T16:08:52Z", 29.9, 120, Some("DAL"), Some("1069")), // choca con local
+            flight(200, "2026-07-01T10:00:00Z", 10.0, 3600, None, None),
+        ]);
+        let report = merge_remote_snapshot(&pool, &snap).await.expect("la bajada no debe abortar");
+        assert_eq!(report.new_flights, 4);
+        assert_eq!(report.skipped_existing, 1);
+
+        // El nº lo conserva el vuelo MÁS LARGO; la sesión corta entra sin nº.
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT started_at, flight_number, callsign FROM flight_log ORDER BY started_at",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let by_start = |s: &str| rows.iter().find(|r| r.0 == s).cloned().unwrap();
+        assert_eq!(by_start("2026-06-18T23:58:38Z").1.as_deref(), Some("384"));
+        assert_eq!(by_start("2026-06-18T22:50:04Z").1, None);
+        assert_eq!(by_start("2026-06-18T22:50:04Z").2.as_deref(), Some("DAL384"), "el callsign se conserva");
+        assert_eq!(by_start("2026-06-27T16:08:52Z").1, None, "el local conserva su nº");
+
+        // Idempotente: bajar otra vez no inserta nada.
+        let again = merge_remote_snapshot(&pool, &snap).await.unwrap();
+        assert_eq!(again.new_flights, 0);
+    }
+
+    /// El auto-sync con la DB VACÍA usa `restore_snapshot` (upsert por id) —
+    /// mismo choque, mismo arreglo.
+    #[tokio::test]
+    async fn restore_on_empty_db_survives_same_flight_number() {
+        let pool = mem_pool().await;
+        let snap = snapshot(vec![
+            flight(174, "2026-06-29T15:49:23Z", 33.6, 2799, Some("DAL"), Some("1905")),
+            flight(175, "2026-06-29T17:07:27Z", 33.7, 179, Some("DAL"), Some("1905")),
+            flight(176, "2026-06-29T20:24:54Z", 33.8, 1842, Some("DAL"), Some("1905")),
+        ]);
+        let r = restore_snapshot(&pool, &snap).await.expect("el restore no debe abortar");
+        assert_eq!(r.flights, 3);
+        let kept: Vec<(i64,)> = sqlx::query_as("SELECT id FROM flight_log WHERE flight_number = '1905'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, vec![(174,)], "sólo el más largo conserva el nº");
+    }
+
+    /// Repetición con un snapshot REAL (no corre por defecto):
+    ///   SIMFLEET_SNAPSHOT=<json> [SIMFLEET_DB_COPY=<copia .db>] cargo test --lib real_snapshot -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn real_snapshot_merges_cleanly() {
+        let Ok(path) = std::env::var("SIMFLEET_SNAPSHOT") else { return };
+        let snap: Snapshot = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let pool = match std::env::var("SIMFLEET_DB_COPY") {
+            Ok(db) => {
+                let pool = SqlitePool::connect(&format!("sqlite://{db}")).await.unwrap();
+                sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+                pool
+            }
+            Err(_) => mem_pool().await,
+        };
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM flight_log").fetch_one(&pool).await.unwrap();
+        let r = merge_remote_snapshot(&pool, &snap).await.expect("merge del snapshot real");
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM flight_log").fetch_one(&pool).await.unwrap();
+        println!(
+            "snapshot real: cloud={} nuevos={} omitidos={} tracks={} · vuelos en DB {} → {}",
+            r.cloud_flights, r.new_flights, r.skipped_existing, r.new_tracks, before, after
+        );
+        let again = merge_remote_snapshot(&pool, &snap).await.unwrap();
+        println!("segunda bajada: nuevos={}", again.new_flights);
+        assert_eq!(again.new_flights, 0);
+        // Y el camino del auto-sync con DB vacía (restore por id).
+        let empty = mem_pool().await;
+        let rr = restore_snapshot(&empty, &snap).await.expect("restore del snapshot real");
+        println!("restore en DB vacía: vuelos={} tracks={}", rr.flights, rr.tracks);
     }
 }

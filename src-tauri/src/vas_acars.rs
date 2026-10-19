@@ -2120,6 +2120,9 @@ fn classify_phase(
 /// Inserta los puntos del track en `flight_log_track`. Downsamplea
 /// cada `TRACK_DOWNSAMPLE_STRIDE` muestras para mantener ~10s entre
 /// puntos (similar al sampling de SimConnect).
+// `TRACK_DOWNSAMPLE_STRIDE` vale 1 HOY (sin downsample) pero es un ajuste:
+// el `% 1` es intencional, no un bug (clippy::modulo_one es deny por defecto).
+#[allow(clippy::modulo_one)]
 async fn insert_track_points(
     pool: &SqlitePool,
     flight_id: i64,

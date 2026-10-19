@@ -354,9 +354,12 @@ export function DashboardView() {
             >
               <KpiCard
                 icon={<HardDrive className="h-4 w-4" />}
+                // (v7.4.2) Es lo que OCUPAN los addons de la Community, no el
+                // espacio libre del disco ("Espacio en disco" se leía como lo
+                // que le queda al disco).
                 label={t("dashboard.kpi.disk_space")}
                 value={formatBytes(stats.totalSizeBytes)}
-                hint={t("cleanup.cta")}
+                hint={t("dashboard.kpi.disk_space.hint")}
                 tone="cyan"
               />
             </button>

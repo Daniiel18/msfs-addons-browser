@@ -63,6 +63,16 @@ impl SkyboundSource {
         if status.as_u16() == 403 {
             return Err(SourceError::Other(crate::tr!("skybound.cloudflareBlocked")));
         }
+        // (v7.4.2) 5xx (530 = Cloudflare sin origen): Skybound está caído.
+        // Error propio → mensaje claro en la UI y el escáner de updates deja
+        // de bombardearla el resto del escaneo.
+        if status.is_server_error() {
+            return Err(SourceError::Unavailable(crate::tr!(
+                "source.unavailable",
+                name = "Skybound",
+                status = status.as_u16()
+            )));
+        }
         if !status.is_success() {
             return Err(SourceError::Other(format!("Skybound HTTP {status}")));
         }

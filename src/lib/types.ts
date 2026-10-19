@@ -1207,6 +1207,12 @@ export interface AiracUpdateInfo {
   latestCycle: string;
   effectiveDate: string;
   hasUpdate: boolean;
+  /** (v7.4.2) "navigraph" = leído de la navdata instalada en la Community;
+   *  "manual" = marca guardada al pulsar "Actualizar" en la app. */
+  installedSource: "navigraph" | "manual";
+  /** (v7.4.2) Próximo ciclo y su fecha efectiva (YYYY-MM-DD). */
+  nextCycle: string;
+  nextEffectiveDate: string;
 }
 
 /** Perfil GSX Pro disponible en flightsim.to para un ICAO concreto.
@@ -1342,6 +1348,8 @@ export interface DropCommitReport {
 export interface CloudConfig {
   connected: boolean;
   hasCredentials: boolean;
+  /** (v7.4.2) Google revocó/expiró la sesión (`invalid_grant`): reconectar. */
+  sessionExpired: boolean;
   userEmail: string | null;
   lastSyncAt: string | null;
 }

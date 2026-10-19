@@ -767,6 +767,20 @@ pub async fn finalize_after_finish(
                 "capture_metar({}) omitido: {:#}", flight_id, e
             );
         }
+        // (v7.4.2) Sin sesión de Drive (nunca conectado, desconectado o sesión
+        // expirada) no hay nada que subir: antes se intentaba igual y CADA
+        // vuelo terminaba en un toast de error. La sesión expirada se avisa
+        // una sola vez (en el intento que la detecta) y en Ajustes → Nube.
+        match crate::cloud_sync::get_config(&pool_c).await {
+            Ok(cfg) if cfg.connected => {}
+            _ => {
+                tracing::debug!(
+                    target: "scoring",
+                    "auto-upload omitido: Google Drive no conectado"
+                );
+                return;
+            }
+        }
         let _ = app_c.emit(
             "score:upload:started",
             &serde_json::json!({ "flightId": flight_id }),

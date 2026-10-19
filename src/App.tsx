@@ -68,6 +68,7 @@ import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
 import { CrossLinkModal } from "./components/CrossLinkModal";
 import type { CrossLinkOffer } from "./lib/types";
+import { isTestEnv } from "./lib/testEnv";
 
 /**
  * Bootstrap centralizado: una sola tarea async awaita Promise.all
@@ -126,16 +127,35 @@ export default function App() {
   // El resultado lo comparten Notificaciones y Dashboard vía el store.
   useEffect(() => {
     const checkGsx = useGsxUpdateStore.getState().check;
-    // (v6.2.8) AIRAC: el ciclo es de calendario fijo (28 días) → basta validarlo
-    // UNA vez al arrancar. (v6.2.9) Sin polling horario, pedido del usuario.
-    void useAiracUpdateStore.getState().check();
+    // (v6.2.8) AIRAC: el ciclo es de calendario fijo (28 días). (v6.2.9) Sin
+    // polling horario, pedido del usuario. (v7.4.2) Pero chequear SÓLO al
+    // arrancar fallaba con la app abierta días en la bandeja: el aviso salía
+    // el día que se reiniciaba, no el día efectivo. Ahora (todo local, sin
+    // red): al arrancar, al volver a la ventana (p.ej. tras actualizar en
+    // Navigraph Hub) y al cruzar la medianoche local.
+    const checkAirac = useAiracUpdateStore.getState().check;
+    void checkAirac();
+    let midnightTimer = 0;
+    const scheduleMidnight = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 30);
+      midnightTimer = window.setTimeout(() => {
+        void checkAirac();
+        scheduleMidnight();
+      }, next.getTime() - now.getTime());
+    };
+    scheduleMidnight();
     // GSX sí se re-chequea: su release no sigue calendario.
     void checkGsx();
     const id = window.setInterval(() => void checkGsx(), 60 * 60 * 1000);
-    const onFocus = () => void checkGsx();
+    const onFocus = () => {
+      void checkGsx();
+      void checkAirac();
+    };
     window.addEventListener("focus", onFocus);
     return () => {
       window.clearInterval(id);
+      window.clearTimeout(midnightTimer);
       window.removeEventListener("focus", onFocus);
     };
   }, []);
@@ -143,12 +163,12 @@ export default function App() {
   const bootstrapSettings = useSettingsStore((s) => s.bootstrap);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const simVersion = useSettingsStore((s) => s.settings.simVersion);
-  // (v6.2.38) Fuentes visibles según la versión de MSFS. Simplaza NO
-  // sube addons de MSFS2024, así que ahí ofrecemos Skybound en su lugar;
-  // SceneryAddons sirve para ambas. En MSFS2020 mantenemos Simplaza.
+  // (v6.2.38) Fuentes visibles según la versión de MSFS. (v7.4.2) Simplaza
+  // vuelve a MSFS2024 igual que SceneryAddons (el backend etiqueta/filtra
+  // cada post según el sim elegido). Skybound sólo aplicaría a 2024, pero hoy
+  // el backend ni lo lista (caído desde el 10/10).
   const visibleSources = sources.filter((s) => {
     if (s.id === "skybound") return simVersion === "msfs2024";
-    if (s.id === "simplaza") return simVersion !== "msfs2024";
     return true;
   });
   // Si la fuente activa deja de estar visible (cambio de versión), saltamos
@@ -284,25 +304,22 @@ export default function App() {
     resolve: () => void;
   } | null>(null);
 
-  // (v6) Modo seguro: 2ª instancia de pruebas sin SimConnect/cloud.
+  // (v6 · v7.4.2) ENTORNO DE PRUEBAS: 2ª instancia junto a la principal con
+  // datos, WebView2, Drive, Supabase y autoarranque propios.
   // Indicadores: banner rojo + badge en el header + TÍTULO DE VENTANA (para
-  // distinguirla en la taskbar/Alt-Tab de la instancia principal).
-  const [safeMode, setSafeMode] = useState(false);
-  // (v6) En MODO SEGURO el watcher normalmente está apagado, pero se puede
-  // forzar (SIMFLEET_ENABLE_WATCHER) para probar Best Landings. El banner lo
-  // refleja para no confundir (SimConnect activo, nube siempre apagada).
+  // distinguirla en la taskbar/Alt-Tab de la instancia principal). El flag
+  // llega inyectado por el backend → se conoce desde el primer render.
+  const [safeMode, setSafeMode] = useState(isTestEnv);
   const [watcherActive, setWatcherActive] = useState(false);
+  const [testDataDir, setTestDataDir] = useState<string | null>(null);
   useEffect(() => {
     if (!isTauri) return;
     api
       .isSafeMode()
       .then((sm) => {
         setSafeMode(sm);
-        if (sm) {
-          getCurrentWindow()
-            .setTitle("SimFleet — MODO SEGURO (pruebas)")
-            .catch(() => {});
-        }
+        // (El título de la ventana lo pone el backend al arrancar.)
+        if (sm) api.testEnvDataDir().then(setTestDataDir).catch(() => {});
       })
       .catch(() => {});
     api
@@ -830,11 +847,10 @@ export default function App() {
       <UpdateBanner />
       {safeMode && (
         <div className="flex items-center justify-center gap-2 border-b border-rose-500/30 bg-rose-500/15 px-4 py-1.5 text-xs font-semibold text-rose-200">
-          {watcherActive ? (
-            <>🛡️ {t("safeMode.bannerActive")}</>
-          ) : (
-            <>🛡️ {t("safeMode.bannerIdle")}</>
-          )}
+          🧪{" "}
+          {t(watcherActive ? "safeMode.bannerActive" : "safeMode.bannerIdle", {
+            dir: testDataDir ?? "…",
+          })}
         </div>
       )}
       {!isTauri && (
@@ -876,7 +892,7 @@ export default function App() {
                 SimFleet
                 {safeMode && (
                   <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-300 ring-1 ring-rose-500/40">
-                    Safe
+                    {t("safeMode.badge")}
                   </span>
                 )}
               </h1>

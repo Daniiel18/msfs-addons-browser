@@ -52,7 +52,13 @@ export const useAiracUpdateStore = create<AiracUpdateState>((set, get) => ({
         /* ignore */
       }
     }
-    // Marca el ciclo vigente como instalado → borra el aviso (hasUpdate=false).
+    // (v7.4.2) Si el ciclo instalado se lee de la navdata de Navigraph, NO lo
+    // marcamos a ciegas: la verdad es lo que Navigraph Hub instale, y se
+    // re-chequea al volver a la app (focus). Antes se marcaba "instalado" con
+    // sólo abrir Hub, aunque no se actualizara nada.
+    if (info?.installedSource === "navigraph") return;
+    // Modo manual (sin navdata detectable): marca el ciclo vigente como
+    // instalado → borra el aviso (hasUpdate=false).
     if (info?.latestCycle) {
       try {
         await api.airacSetInstalledCycle(info.latestCycle);

@@ -842,27 +842,34 @@ function GsxFilterChip({
  *  proveedor de labels que usa el FlightBook) cuando la app está en
  *  oscuro, OSM estándar en claro. */
 function styleFor(theme: string): maplibregl.StyleSpecification {
-  return theme === "light" ? OSM_STYLE : CARTO_DARK_STYLE;
+  return theme === "light" ? OSM_STYLE : DARK_STYLE;
 }
 
-const CARTO_DARK_STYLE: maplibregl.StyleSpecification = {
+// (v7.4.2) Antes: CARTO `dark_all`. CARTO pasó a exigir API key y sus tiles
+// devuelven una imagen "API KEY REQUIRED" → el mapa salía tapado. Ahora: Esri
+// Dark Gray Canvas (base + capa de nombres), mismo look oscuro, sin clave y
+// del mismo servidor que el satélite del FlightBook.
+const DARK_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    carto: {
+    "esri-dark": {
       type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-      ],
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"],
       tileSize: 256,
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      maxzoom: 19,
+      attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors",
+      maxzoom: 16,
+    },
+    "esri-dark-labels": {
+      type: "raster",
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"],
+      tileSize: 256,
+      maxzoom: 16,
     },
   },
-  layers: [{ id: "carto", type: "raster", source: "carto" }],
+  layers: [
+    { id: "esri-dark", type: "raster", source: "esri-dark" },
+    { id: "esri-dark-labels", type: "raster", source: "esri-dark-labels" },
+  ],
   glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
 };
 
@@ -871,11 +878,8 @@ const OSM_STYLE: maplibregl.StyleSpecification = {
   sources: {
     osm: {
       type: "raster",
-      tiles: [
-        "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      ],
+      // (v7.4.2) Host único oficial (los subdominios a/b/c están deprecados).
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
       tileSize: 256,
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',

@@ -1383,7 +1383,7 @@ mod windows_simconnect {
                     unit.as_ptr(),
                     sc::SIMCONNECT_DATATYPE_FLOAT64,
                     0.0,
-                    std::u32::MAX,
+                    u32::MAX,
                 )
             };
             note_sent(lib, handle, &format!("AddToDataDefinition[TOUCHDOWN] '{name}'"));

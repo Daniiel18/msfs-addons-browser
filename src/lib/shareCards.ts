@@ -26,6 +26,62 @@ function esc(s: string): string {
 
 const FONT = "Segoe UI, Roboto, Helvetica, Arial, sans-serif";
 
+// (v7.4.2) Medición real del texto (canvas 2D) para que nada se corte a lo
+// bruto: antes los nombres se truncaban con `slice(0, 26)` → "Miami
+// International Airpor". Fuera del navegador (tests) se aproxima.
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function textWidth(text: string, size: number, weight: number): number {
+  if (measureCtx === undefined) {
+    measureCtx =
+      typeof document !== "undefined"
+        ? document.createElement("canvas").getContext("2d")
+        : null;
+  }
+  if (!measureCtx) return text.length * size * 0.56;
+  measureCtx.font = `${weight} ${size}px ${FONT}`;
+  return measureCtx.measureText(text).width;
+}
+
+/** Ajusta `text` a `maxWidth`: primero reduce la fuente hasta `minSize` y,
+ *  si aun así no cabe, lo corta en un límite de palabra con "…". */
+function fitText(
+  text: string,
+  maxWidth: number,
+  size: number,
+  weight: number,
+  minSize: number,
+): { text: string; size: number } {
+  let s = size;
+  while (s > minSize && textWidth(text, s, weight) > maxWidth) s -= 1;
+  if (textWidth(text, s, weight) <= maxWidth) return { text, size: s };
+  const words = text.split(/\s+/);
+  let out = "";
+  for (const w of words) {
+    const next = out ? `${out} ${w}` : w;
+    if (textWidth(`${next}…`, s, weight) > maxWidth) break;
+    out = next;
+  }
+  if (!out) {
+    // Una sola palabra larguísima: corte por caracteres.
+    out = text;
+    while (out.length > 1 && textWidth(`${out}…`, s, weight) > maxWidth) out = out.slice(0, -1);
+  }
+  return { text: `${out}…`, size: s };
+}
+
+/** `<text>` con el texto ya ajustado a `maxWidth`. */
+function fittedText(
+  attrs: string,
+  text: string,
+  maxWidth: number,
+  size: number,
+  weight: number,
+  minSize: number,
+): string {
+  const f = fitText(text, maxWidth, size, weight, minSize);
+  return `<text ${attrs} font-family="${FONT}" font-size="${f.size}" font-weight="${weight}">${esc(f.text)}</text>`;
+}
+
 function gradeColor(grade: string | null): string {
   switch ((grade ?? "").toUpperCase()) {
     case "A":
@@ -80,6 +136,12 @@ export function buildFlightCardSvg(
   const ac = e.aircraftTitle || e.aircraftModel || e.aircraftAtcType || "—";
   const airline = e.aircraftAirline || e.airlineIcao || "";
   const fpm = e.landingFpm != null ? `${Math.round(e.landingFpm)} fpm` : "—";
+  // Cada ICAO/nombre tiene media tarjeta (menos un hueco central).
+  const HALF = (W - 80) / 2 - 12;
+  // Mismo tamaño a ambos lados (el menor de los dos ajustes) para que
+  // origen y destino se vean parejos; lo que aún no quepa lleva "…".
+  const icaoSize = Math.min(fitText(orig, HALF, 92, 800, 56).size, fitText(dest, HALF, 92, 800, 56).size);
+  const nameSize = Math.min(fitText(origName, HALF, 17, 400, 14).size, fitText(destName, HALF, 17, 400, 14).size);
   const gcol = gradeColor(e.scoreGrade);
   const grade = e.scoreGrade ?? "—";
 
@@ -94,22 +156,22 @@ export function buildFlightCardSvg(
       <stop offset="0.55" stop-color="#0f172a"/>
       <stop offset="1" stop-color="#111a2e"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="accent" gradientUnits="userSpaceOnUse" x1="60" y1="0" x2="${W - 60}" y2="0">
       <stop offset="0" stop-color="#38bdf8"/>
       <stop offset="1" stop-color="#818cf8"/>
     </linearGradient>
   </defs>
-  <rect width="${W}" height="${H}" rx="28" fill="url(#bg)"/>
-  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="27" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <rect width="${W}" height="${H}" fill="url(#bg)"/>
+  <rect x="10" y="10" width="${W - 20}" height="${H - 20}" rx="22" fill="none" stroke="#1e293b" stroke-width="2"/>
 
   <text x="40" y="62" font-family="${FONT}" font-size="22" font-weight="800" fill="#e2e8f0">${esc(labels.brand)}</text>
   <text x="${W - 40}" y="62" font-family="${FONT}" font-size="16" fill="#94a3b8" text-anchor="end">${esc(date)}</text>
   <rect x="40" y="80" width="${W - 80}" height="2" fill="#1e293b"/>
 
-  <text x="40" y="205" font-family="${FONT}" font-size="92" font-weight="800" fill="#f8fafc">${esc(orig)}</text>
-  <text x="${W - 40}" y="205" font-family="${FONT}" font-size="92" font-weight="800" fill="#f8fafc" text-anchor="end">${esc(dest)}</text>
-  <text x="40" y="238" font-family="${FONT}" font-size="17" fill="#94a3b8">${esc(origName.slice(0, 26))}</text>
-  <text x="${W - 40}" y="238" font-family="${FONT}" font-size="17" fill="#94a3b8" text-anchor="end">${esc(destName.slice(0, 26))}</text>
+  ${fittedText(`x="40" y="205" fill="#f8fafc"`, orig, HALF, icaoSize, 800, icaoSize)}
+  ${fittedText(`x="${W - 40}" y="205" fill="#f8fafc" text-anchor="end"`, dest, HALF, icaoSize, 800, icaoSize)}
+  ${fittedText(`x="40" y="238" fill="#94a3b8"`, origName, HALF, nameSize, 400, nameSize)}
+  ${fittedText(`x="${W - 40}" y="238" fill="#94a3b8" text-anchor="end"`, destName, HALF, nameSize, 400, nameSize)}
 
   <line x1="60" y1="300" x2="${W - 60}" y2="300" stroke="url(#accent)" stroke-width="3" stroke-dasharray="2 10" stroke-linecap="round"/>
   <circle cx="60" cy="300" r="7" fill="#38bdf8"/>
@@ -119,8 +181,8 @@ export function buildFlightCardSvg(
   </g>
 
   <text x="40" y="360" font-family="${FONT}" font-size="14" fill="#64748b" letter-spacing="1">${esc(labels.aircraft.toUpperCase())}</text>
-  <text x="40" y="390" font-family="${FONT}" font-size="26" font-weight="700" fill="#e2e8f0">${esc(ac.slice(0, 30))}</text>
-  ${airline ? `<text x="40" y="416" font-family="${FONT}" font-size="16" fill="#94a3b8">${esc(airline.slice(0, 34))}</text>` : ""}
+  ${fittedText(`x="40" y="390" fill="#e2e8f0"`, ac, W - 80, 26, 700, 18)}
+  ${airline ? fittedText(`x="40" y="416" fill="#94a3b8"`, airline, W - 80, 16, 400, 13) : ""}
 
   <rect x="40" y="430" width="${W - 80}" height="90" rx="16" fill="#0b1424" stroke="#1e293b"/>
   ${stat(160, distance, labels.distance)}
@@ -174,7 +236,7 @@ export function buildWrappedSvg(
   const destLines = s.topDestinations
     .map(
       (d, i) => `
-    <text x="42" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#e2e8f0"><tspan fill="#a78bfa" font-weight="700">${i + 1}.</tspan> ${esc(d.label.slice(0, 24))}</text>
+    <text x="42" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#e2e8f0"><tspan fill="#a78bfa" font-weight="700">${i + 1}.</tspan> ${esc(fitText(d.label, W - 150, 20, 400, 20).text)}</text>
     <text x="${W - 42}" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#94a3b8" text-anchor="end">${d.count}</text>`,
     )
     .join("");
@@ -191,8 +253,8 @@ export function buildWrappedSvg(
       <stop offset="1" stop-color="#3b0764"/>
     </linearGradient>
   </defs>
-  <rect width="${W}" height="${H}" rx="28" fill="url(#wbg)"/>
-  <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="27" fill="none" stroke="#4c1d95" stroke-width="2"/>
+  <rect width="${W}" height="${H}" fill="url(#wbg)"/>
+  <rect x="10" y="10" width="${W - 20}" height="${H - 20}" rx="22" fill="none" stroke="#4c1d95" stroke-width="2"/>
 
   <text x="40" y="70" font-family="${FONT}" font-size="18" font-weight="800" fill="#c4b5fd" letter-spacing="2">SIMFLEET</text>
   <text x="40" y="140" font-family="${FONT}" font-size="64" font-weight="800" fill="#f8fafc">${esc(labels.title)}</text>
@@ -205,7 +267,7 @@ export function buildWrappedSvg(
   ${bigStat(430, 360, nf(s.airportsVisited), labels.airports)}
 
   <text x="42" y="450" font-family="${FONT}" font-size="15" fill="#c4b5fd" letter-spacing="1">${esc(labels.topAircraft.toUpperCase())}</text>
-  <text x="42" y="486" font-family="${FONT}" font-size="30" font-weight="700" fill="#f1f5f9">${esc((topAc?.label ?? "—").slice(0, 28))}</text>
+  ${fittedText(`x="42" y="486" fill="#f1f5f9"`, topAc?.label ?? "—", W - 84, 30, 700, 20)}
 
   <text x="42" y="536" font-family="${FONT}" font-size="15" fill="#c4b5fd" letter-spacing="1">${esc(labels.topDestinations.toUpperCase())}</text>
   ${destLines}

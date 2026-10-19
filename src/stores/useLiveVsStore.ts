@@ -6,6 +6,7 @@ import {
 } from "@supabase/supabase-js";
 import { useToastStore } from "./useToastStore";
 import { t } from "../lib/i18n";
+import { supabaseTable, vsChannelPrefix } from "../lib/testEnv";
 
 /**
  * (v6 #3) Live VS — estado del modo competitivo Daniel vs Héctor sobre
@@ -105,7 +106,8 @@ let channel: RealtimeChannel | null = null;
 let currentChannelName = "";
 
 function channelName(ofp: VsOfp): string {
-  return `simfleet-vs-${ofp.date}-${ofp.origin}-${ofp.dest}`.toLowerCase();
+  // (v7.4.2) En el entorno de pruebas, canal propio (`simfleet-test-vs-…`).
+  return `${vsChannelPrefix()}${ofp.date}-${ofp.origin}-${ofp.dest}`.toLowerCase();
 }
 
 /**
@@ -147,7 +149,7 @@ export function vsChannelKey(
   origin: string,
   dest: string,
 ): string {
-  return `simfleet-vs-${date}-${origin}-${dest}`.toLowerCase();
+  return `${vsChannelPrefix()}${date}-${origin}-${dest}`.toLowerCase();
 }
 
 /** (v6.2.7) Carga el snapshot persistido (duelo) de un canal/clave. */
@@ -303,7 +305,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
     const self = st.self;
     if (!client || !currentChannelName || !self) return;
     void client
-      .from("vs_results")
+      .from(supabaseTable("vs_results"))
       .upsert(
         {
           channel: currentChannelName,
@@ -331,7 +333,7 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
   const fetchPersistedResults = (name: string, selfPilot: VsPilot) => {
     if (!client) return;
     void client
-      .from("vs_results")
+      .from(supabaseTable("vs_results"))
       .select("*")
       .eq("channel", name)
       .then(

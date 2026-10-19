@@ -48,6 +48,8 @@ pub mod simbrief;
 pub mod simconnect_ffi;
 pub mod simconnect_watcher;
 pub mod sources;
+// (v7.4.2) Entorno de pruebas aislado (2ª instancia junto a la principal).
+pub mod test_env;
 pub mod updater;
 pub mod updates;
 pub mod vas_acars;
@@ -110,9 +112,26 @@ pub fn run() {
     // el usuario vuela: salta el single-instance (abajo), NO arranca el
     // watcher de SimConnect ni el auto-sync a la nube (ver init_state). Así
     // no captura ni pisa la data del vuelo en curso (ni local ni en Drive).
-    let safe_mode = std::env::var("SIMFLEET_SAFE_MODE").is_ok();
+    let safe_mode = test_env::is_active();
     if safe_mode {
-        eprintln!("[SimFleet] MODO SEGURO activo — sin SimConnect ni cloud-sync, instancia secundaria permitida.");
+        // (v7.4.2) El dir de pruebas se resuelve YA (antes de crear ningún
+        // webview) para aislar también el perfil de WebView2: localStorage,
+        // cookies y sesiones de la instancia de pruebas viven en su propio dir
+        // y no tocan los de la principal. WebView2 da prioridad a esta variable
+        // sobre el dir que Tauri le pasa.
+        match test_env::data_dir() {
+            Ok(dir) => {
+                std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dir.join("webview2"));
+                eprintln!(
+                    "[SimFleet] ENTORNO DE PRUEBAS activo — datos en {} (instancia secundaria permitida).",
+                    dir.display()
+                );
+            }
+            Err(e) => {
+                eprintln!("[SimFleet] ENTORNO DE PRUEBAS: {e:#}");
+                std::process::exit(1);
+            }
+        }
     }
     let mut builder = tauri::Builder::default();
     // (v2.2.0) Single instance — si la app ya está corriendo, abrir el .exe
@@ -127,6 +146,22 @@ pub fn run() {
             }
         }));
     }
+    // (v7.4.2) En pruebas: marca síncrona para el frontend (tablas/canales de
+    // Supabase de pruebas desde el primer render) y autoarranque con nombre y
+    // argumento propios, para no pisar la entrada «SimFleet» de la principal.
+    let autostart = if safe_mode {
+        builder = builder.plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("simfleet-test-env")
+                .js_init_script(test_env::JS_INIT_SCRIPT)
+                .build(),
+        );
+        tauri_plugin_autostart::Builder::new()
+            .app_name(test_env::AUTOSTART_NAME)
+            .arg(test_env::CLI_FLAG)
+            .build()
+    } else {
+        tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None)
+    };
     builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -139,10 +174,7 @@ pub fn run() {
         // el ejecutable arrancará con sus defaults. El plugin registra
         // / borra `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
         // según `manager.enable()` / `manager.disable()`.
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
+        .plugin(autostart)
         // (v7.4.0) Notificaciones nativas del Action Center de Windows.
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
@@ -157,6 +189,15 @@ pub fn run() {
             // como interruptor para mostrar/ocultar.
             init_tray(&handle_for_tray)?;
             app.manage(state);
+            // (v7.4.2) Título de la instancia de pruebas (taskbar / Alt-Tab).
+            // Antes lo ponía el frontend con `setTitle`, pero la capability
+            // no incluye `core:window:allow-set-title` → fallaba en silencio
+            // y la ventana se llamaba "SimFleet" igual que la principal.
+            if test_env::is_active() {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_title("SimFleet — ENTORNO DE PRUEBAS");
+                }
+            }
             // (v6.2.3) Windows: desactiva las teclas aceleradoras del WebView2
             // (F5 / Ctrl+R recargan la app y el JS no puede frenarlas — son
             // accelerators que el host procesa a nivel nativo) y el menú
@@ -242,6 +283,7 @@ pub fn run() {
             commands::community::community_targets,
             commands::community::pack_liveries,
             commands::community::is_safe_mode,
+            commands::community::test_env_data_dir,
             commands::community::is_watcher_active,
             diagnostics::diagnostics_process_tree,
             diagnostics::diagnostics_app_metrics,
@@ -371,6 +413,11 @@ pub fn run() {
 /// que el usuario reportó como invasivo. La nueva arquitectura
 /// portable migra esos datos automáticamente al primer arranque.
 pub(crate) fn resolve_portable_data_dir() -> anyhow::Result<std::path::PathBuf> {
+    // (v7.4.2) El entorno de pruebas tiene su propio dir marcado — nunca el
+    // `data/` junto al exe (que podría ser el de la instalación real).
+    if test_env::is_active() {
+        return test_env::data_dir();
+    }
     let exe = std::env::current_exe()?;
     let exe_dir = exe.parent()
         .ok_or_else(|| anyhow::anyhow!("current_exe sin parent"))?
@@ -504,6 +551,9 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // %APPDATA%\org.n0xful.msfsaddonsbrowser, migramos antes.
     let app_data_dir = match resolve_portable_data_dir() {
         Ok(p) => p,
+        // (v7.4.2) En pruebas NO hay fallback: el `app_data_dir` del SO es el
+        // `%APPDATA%\<identifier>` de la instalación real.
+        Err(e) if test_env::is_active() => return Err(e),
         Err(e) => {
             // Si todo falla, último fallback: app_data_dir del SO
             // para que la app al menos arranque (no es ideal pero
@@ -513,8 +563,13 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         }
     };
     std::fs::create_dir_all(&app_data_dir)?;
-    if let Err(e) = migrate_legacy_appdata(&app_data_dir) {
-        eprintln!("[init] migrate_legacy_appdata falló (no fatal): {e:#}");
+    // (v7.4.2) Pruebas arranca desde cero (no copia los datos legacy reales).
+    // Candado inverso: la principal jamás abre un dir de pruebas.
+    if !test_env::is_active() {
+        test_env::ensure_not_test_dir(&app_data_dir)?;
+        if let Err(e) = migrate_legacy_appdata(&app_data_dir) {
+            eprintln!("[init] migrate_legacy_appdata falló (no fatal): {e:#}");
+        }
     }
 
     // (v3.2.0) Redirigir el TEMP del proceso al data dir portable.
@@ -549,8 +604,9 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // instancias viejas del sistema" del usuario sin romper los datos
     // (que viven en AppData\Roaming\org.n0xful.msfsaddonsbrowser\,
     // intencionalmente conservado para retrocompat).
+    // (v7.4.2) La instancia de pruebas no borra nada fuera de su dir.
     #[cfg(target_os = "windows")]
-    {
+    if !test_env::is_active() {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
             let old_install =
                 std::path::PathBuf::from(&local).join("Programs").join("MSFS Addons Browser");
@@ -602,14 +658,20 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         sources::skybound::SkyboundAuth::default(),
     ));
 
-    let sources: Vec<Arc<dyn Source>> = vec![
+    let mut sources: Vec<Arc<dyn Source>> = vec![
         Arc::new(sources::sceneryaddons::SceneryAddonsSource::new(http.clone())),
         Arc::new(sources::simplaza::SimplazaSource::new(http.clone())),
-        Arc::new(sources::skybound::SkyboundSource::new(
+    ];
+    // (v7.4.2) Skybound OCULTO: devuelve HTTP 530 (caído/retirado) desde el
+    // 10/10. Fuera de la lista no sale en la UI ni lo consulta el escáner de
+    // updates. Su código sigue intacto: si vuelve, basta poner esto a `true`.
+    const SKYBOUND_ENABLED: bool = false;
+    if SKYBOUND_ENABLED {
+        sources.push(Arc::new(sources::skybound::SkyboundSource::new(
             http.clone(),
             skybound_auth.clone(),
-        )),
-    ];
+        )));
+    }
 
     let db = db::init(&app_data_dir).await?;
 
@@ -706,22 +768,18 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // "¿qué estoy volando ahora?". Emite `flight://current` al
     // frontend cuando cambia el estado. Lo añadimos al state de
     // Tauri para que el comando `get_flight_status` pueda leerlo.
-    // (v6) En MODO SEGURO NO arrancamos el watcher → cero conexión a
-    // SimConnect → no captura ni interfiere con el vuelo de la instancia
-    // principal. Igual gestionamos un estado vacío para que los comandos
-    // (`get_flight_status`) no fallen.
-    let safe_mode = std::env::var("SIMFLEET_SAFE_MODE").is_ok();
-    // (v6) En MODO SEGURO el watcher está apagado por defecto (para no abrir
-    // un 2º cliente SimConnect mientras pruebas). Pero se puede FORZAR con
-    // `SIMFLEET_ENABLE_WATCHER=1` para probar Best Landings en la instancia
-    // safe — sigue sin tocar la nube. La DB de la instancia safe (dev) es
-    // independiente de la app instalada, así que no pisa datos reales.
-    let enable_watcher = !safe_mode || std::env::var("SIMFLEET_ENABLE_WATCHER").is_ok();
+    // (v7.4.2) En el ENTORNO DE PRUEBAS el watcher corre por defecto (pedido
+    // del usuario: probar FlightBook/Best Landings en vivo); lo que graba va a
+    // la DB de pruebas, nunca a la real. `SIMFLEET_DISABLE_WATCHER=1` lo apaga
+    // y entonces gestionamos un estado vacío para que `get_flight_status` no
+    // falle.
+    let safe_mode = test_env::is_active();
+    let enable_watcher = test_env::watcher_enabled();
     let watcher_state = if enable_watcher {
         if safe_mode {
             tracing::warn!(
                 target: "simconnect",
-                "MODO SEGURO + watcher FORZADO (pruebas) — SimConnect ACTIVO, nube sigue apagada"
+                "ENTORNO DE PRUEBAS — SimConnect ACTIVO (los vuelos se graban en la DB de pruebas)"
             );
         }
         simconnect_watcher::spawn(db.clone(), app.clone())
@@ -752,9 +810,11 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     //   · Han pasado >24h desde el último sync (settings.google_last_sync_at).
     // En cualquier caso es best-effort — si falla la conexión, no
     // molestamos al usuario, sólo logueamos.
-    // (v6) En MODO SEGURO NO auto-sincronizamos: una instancia de pruebas
-    // NUNCA debe subir su DB a Drive y pisar la data real del usuario.
-    if !safe_mode {
+    // (v6) En MODO SEGURO no se auto-sincronizaba para no pisar la data real.
+    // (v7.4.2) Ahora el entorno de pruebas SUBE a su propio snapshot
+    // (`test_env::sync_upload_file_name`) y sólo LEE el real al bajar, así
+    // que el auto-sync corre igual que en la principal (pedido del usuario).
+    {
         let bg_pool = db.clone();
         let bg_http = http.clone();
         tokio::spawn(async move {
@@ -912,7 +972,11 @@ fn init_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("SimFleet")
+        .tooltip(if test_env::is_active() {
+            "SimFleet — ENTORNO DE PRUEBAS"
+        } else {
+            "SimFleet"
+        })
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {

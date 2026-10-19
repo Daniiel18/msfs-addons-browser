@@ -30,7 +30,16 @@ import type { CommunityPackage } from "./types";
 const BASE = "https://flightsim.to";
 const LIVERIES = `${BASE}/liveries`;
 
-type Resolver = (h: string) => string | null;
+/** (v7.4.2) Un destino de liveries: nombre visible + slug de flightsim.to. */
+export interface LiveryTarget {
+  label: string;
+  url: string;
+}
+
+/** Un resolver devuelve el slug dedicado, o VARIOS cuando el paquete trae
+ *  más de un modelo (p.ej. "Fenix Airbus A319 & A321" = un solo paquete
+ *  `fnx-aircraft-319-321` con los dos aviones dentro). */
+type Resolver = (h: string) => string | { label: string; slug: string }[] | null;
 
 const RESOLVERS: { label: string; resolve: Resolver }[] = [
   {
@@ -57,9 +66,13 @@ const RESOLVERS: { label: string; resolve: Resolver }[] = [
     label: "Fenix A319 / A320 / A321",
     resolve: (h) => {
       if (!h.includes("fenix") && !h.includes("fnx")) return null;
-      if (h.includes("321")) return "fenix-simulations-a321";
-      if (h.includes("319")) return "fenix-simulations-a319";
-      return "fenix-simulations-a320";
+      // (v7.4.2) El paquete "A319 & A321" trae LOS DOS modelos: antes se
+      // elegía uno solo y el otro quedaba sin página de liveries.
+      const models = ["319", "320", "321"].filter((m) => h.includes(m));
+      if (models.length > 1) {
+        return models.map((m) => ({ label: `Fenix A${m}`, slug: `fenix-simulations-a${m}` }));
+      }
+      return `fenix-simulations-a${models[0] ?? "320"}`;
     },
   },
   {
@@ -172,14 +185,33 @@ function haystack(pkg: CommunityPackage): string {
     .trim();
 }
 
-/** Slug de flightsim.to o `null` si no hay página dedicada conocida. */
-export function liverySlugFor(pkg: CommunityPackage): string | null {
+/** Slug(s) de flightsim.to del paquete, o `null` si no hay página dedicada. */
+function resolveSlugs(pkg: CommunityPackage): { label: string; slug: string }[] | null {
   const h = haystack(pkg);
   for (const r of RESOLVERS) {
-    const slug = r.resolve(h);
-    if (slug) return slug;
+    const res = r.resolve(h);
+    if (!res) continue;
+    if (typeof res === "string") return [{ label: pkg.title ?? res, slug: res }];
+    if (res.length > 0) return res;
   }
   return null;
+}
+
+/** Slug de flightsim.to o `null` si no hay página dedicada conocida. (Con
+ *  varios modelos, el primero — usa `liveryTargetsFor` para tenerlos todos.) */
+export function liverySlugFor(pkg: CommunityPackage): string | null {
+  return resolveSlugs(pkg)?.[0]?.slug ?? null;
+}
+
+/**
+ * (v7.4.2) Todos los destinos de liveries del paquete: uno por modelo cuando el
+ * paquete fusiona varios aviones (la UI muestra un menú), o uno solo (página
+ * dedicada o la búsqueda de flightsim.to como fallback).
+ */
+export function liveryTargetsFor(pkg: CommunityPackage): LiveryTarget[] {
+  const slugs = resolveSlugs(pkg);
+  if (slugs) return slugs.map((s) => ({ label: s.label, url: `${LIVERIES}/${s.slug}` }));
+  return [{ label: pkg.title ?? "", url: liveryUrlFor(pkg) }];
 }
 
 /**

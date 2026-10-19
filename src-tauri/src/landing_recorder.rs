@@ -58,7 +58,8 @@ mod capture_engine {
     use windows_capture::monitor::Monitor;
     use windows_capture::settings::{
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
-        MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+        GraphicsCaptureItemType, MinimumUpdateIntervalSettings, SecondaryWindowSettings,
+        Settings,
     };
     use windows_capture::window::Window;
 
@@ -170,6 +171,60 @@ mod capture_engine {
         audio_stop: Arc<AtomicBool>,
         audio_join: Option<JoinHandle<()>>,
         done_rx: mpsc::Receiver<Result<(), String>>,
+        /// (v7.4.2) Ventana del sim que se está capturando (None = monitor).
+        window: Option<Window>,
+        interval: Duration,
+        started_at: Instant,
+    }
+
+    /// (v7.4.2) Procesos del simulador (mismos que `simconnect_watcher`).
+    const SIM_PROCESSES: &[&str] = &["flightsimulator.exe", "flightsimulator2024.exe"];
+    /// (v7.4.2) Si en este tiempo no llegó NINGÚN frame de la ventana, pasamos
+    /// a capturar el monitor donde está el sim.
+    const NO_FRAMES_FALLBACK: Duration = Duration::from_secs(6);
+
+    /// (v7.4.2) Ventana principal del simulador: la ventana visible MÁS GRANDE
+    /// de `FlightSimulator(2024).exe`; si no hay, la primera cuyo título
+    /// contenga `title`. Antes era sólo lo segundo y se quedaba con la primera
+    /// coincidencia en Z-order — que podía ser una ventana auxiliar del sim o
+    /// de otra app con "Microsoft Flight Simulator" en el título → la captura
+    /// no recibía NINGÚN frame (0 clips guardados en los logs).
+    fn find_sim_window(title: &str) -> Option<Window> {
+        let windows = Window::enumerate().ok()?;
+        let by_process = windows
+            .iter()
+            .filter(|w| {
+                w.process_name()
+                    .map(|n| SIM_PROCESSES.contains(&n.to_ascii_lowercase().as_str()))
+                    .unwrap_or(false)
+            })
+            .max_by_key(|w| {
+                i64::from(w.width().unwrap_or(0)) * i64::from(w.height().unwrap_or(0))
+            })
+            .copied();
+        by_process.or_else(|| {
+            windows
+                .into_iter()
+                .find(|w| w.title().map(|t| t.contains(title)).unwrap_or(false))
+        })
+    }
+
+    fn start_capture<T: TryInto<GraphicsCaptureItemType> + Send + 'static>(
+        item: T,
+        interval: Duration,
+        shared: &Arc<Shared>,
+    ) -> Result<CaptureControl<Handler, HandlerError>, String> {
+        Handler::start_free_threaded(Settings::new(
+            item,
+            CursorCaptureSettings::WithoutCursor,
+            DrawBorderSettings::WithoutBorder,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Custom(interval),
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            shared.clone(),
+        ))
+        .map_err(|e| format!("{e:?}"))
     }
 
     impl CaptureSession {
@@ -220,36 +275,27 @@ mod capture_engine {
 
             // ── Captura ── throttle de frames al fps pedido (menos GPU/encoder).
             let interval = Duration::from_micros(1_000_000u64 / shared.fps as u64);
-            let control = match Window::from_contains_name(target_title) {
-                Ok(win) => Handler::start_free_threaded(Settings::new(
-                    win,
-                    CursorCaptureSettings::WithoutCursor,
-                    DrawBorderSettings::WithoutBorder,
-                    SecondaryWindowSettings::Default,
-                    MinimumUpdateIntervalSettings::Custom(interval),
-                    DirtyRegionSettings::Default,
-                    ColorFormat::Bgra8,
-                    shared.clone(),
-                ))
-                .map_err(|e| anyhow!("{}", crate::tr!("recorder.captureStartWindowFailed", target = target_title, e = format!("{e:?}"))))?,
-                Err(_) => {
+            let window = find_sim_window(target_title);
+            let control = match window {
+                Some(win) => {
+                    tracing::info!(
+                        target: "rec",
+                        "capturando ventana «{}» ({})",
+                        win.title().unwrap_or_default(),
+                        win.process_name().unwrap_or_default()
+                    );
+                    start_capture(win, interval, &shared)
+                        .map_err(|e| anyhow!("{}", crate::tr!("recorder.captureStartWindowFailed", target = target_title, e = e)))?
+                }
+                None => {
                     let mon = Monitor::primary()
                         .map_err(|e| anyhow!("{}", crate::tr!("recorder.noWindowNoMonitor", target = target_title, e = format!("{e:?}"))))?;
                     tracing::warn!(
                         target: "rec",
                         "ventana «{target_title}» no encontrada — capturando el monitor primario"
                     );
-                    Handler::start_free_threaded(Settings::new(
-                        mon,
-                        CursorCaptureSettings::WithoutCursor,
-                        DrawBorderSettings::WithoutBorder,
-                        SecondaryWindowSettings::Default,
-                        MinimumUpdateIntervalSettings::Custom(interval),
-                        DirtyRegionSettings::Default,
-                        ColorFormat::Bgra8,
-                        shared.clone(),
-                    ))
-                    .map_err(|e| anyhow!("{}", crate::tr!("recorder.captureMonitorFailed", e = format!("{e:?}"))))?
+                    start_capture(mon, interval, &shared)
+                        .map_err(|e| anyhow!("{}", crate::tr!("recorder.captureMonitorFailed", e = e)))?
                 }
             };
 
@@ -259,7 +305,44 @@ mod capture_engine {
                 audio_stop,
                 audio_join,
                 done_rx,
+                window,
+                interval,
+                started_at: Instant::now(),
             })
+        }
+
+        /// (v7.4.2) Plan B anti "0 frames": si la captura de la VENTANA no
+        /// entregó ni un frame en `NO_FRAMES_FALLBACK` (sim en pantalla
+        /// completa exclusiva, ventana minimizada/ocluida…), la cambiamos por
+        /// la del MONITOR donde está el sim. El encoder se crea con el primer
+        /// frame, así que cambiar de origen antes de él no corrompe nada.
+        /// Lo llama el hilo del grabador una vez por segundo.
+        pub fn watchdog(&mut self) {
+            if self.shared.first_frame.load(Ordering::Acquire)
+                || self.started_at.elapsed() < NO_FRAMES_FALLBACK
+            {
+                return;
+            }
+            let Some(win) = self.window.take() else {
+                return; // ya estamos en el monitor
+            };
+            let Some(mon) = win.monitor().or_else(|| Monitor::primary().ok()) else {
+                return;
+            };
+            if let Some(c) = self.control.take() {
+                let _ = c.stop();
+            }
+            match start_capture(mon, self.interval, &self.shared) {
+                Ok(c) => {
+                    tracing::warn!(
+                        target: "rec",
+                        "la ventana del sim no entregó frames en {}s — capturando su monitor",
+                        NO_FRAMES_FALLBACK.as_secs()
+                    );
+                    self.control = Some(c);
+                }
+                Err(e) => tracing::warn!(target: "rec", "plan B (monitor) falló: {e}"),
+            }
         }
 
         /// Finaliza el contenedor y mueve el temporal a `final_path`.
@@ -569,13 +652,17 @@ async fn kv_i64(pool: &SqlitePool, key: &str, default: i64) -> i64 {
 
 /// Carpeta de salida por defecto (hereda de LandingToast si existe).
 fn default_output_path(fallback_data: &Path) -> String {
-    if let Some(p) = landingtoast_video_path() {
-        return p;
+    // (v7.4.2) En el entorno de pruebas NUNCA la carpeta real: el tope de
+    // clips (`max_clips`) borra los más viejos y se llevaría clips reales.
+    if !crate::test_env::is_active() {
+        if let Some(p) = landingtoast_video_path() {
+            return p;
+        }
     }
     if let Ok(profile) = std::env::var("USERPROFILE") {
         return PathBuf::from(profile)
             .join("Videos")
-            .join("SimFleet Landings")
+            .join(crate::test_env::landings_folder_name())
             .to_string_lossy()
             .into_owned();
     }
@@ -674,14 +761,60 @@ static RECORDING_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 static RECORDING_LOCK_FILE: std::sync::Mutex<Option<std::fs::File>> =
     std::sync::Mutex::new(None);
 
+/// (v7.4.2) Ruta del lock, COMPARTIDA por todas las instancias. Antes vivía
+/// en `temp_dir()`, pero desde v3.2.0 cada instancia redirige su TEMP a su
+/// propio data dir → cada una tenía SU lock y el "entre procesos" no excluía
+/// nada (la principal y la de pruebas grababan a la vez sobre el mismo sim).
+#[cfg(target_os = "windows")]
+fn shared_lock_path(name: &str) -> PathBuf {
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map(|p| PathBuf::from(p).join("SimFleet"))
+        .unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(name)
+}
+
+#[cfg(target_os = "windows")]
+const MAIN_LOCK: &str = "simfleet_recorder.lock";
+#[cfg(target_os = "windows")]
+const TEST_LOCK: &str = "simfleet_recorder.pruebas.lock";
+
+/// (v7.4.2) ¿La instancia PRINCIPAL está grabando ahora mismo? La de pruebas
+/// le cede la captura: no arma mientras la principal graba y aborta si la
+/// principal empieza (sólo hay un sim que capturar y su clip es el real).
+pub fn main_instance_recording() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let path = shared_lock_path(MAIN_LOCK);
+        // Sin `create`: si el archivo no existe nadie lo tiene. Si existe y
+        // la principal lo tiene abierto en exclusiva, abrirlo falla.
+        path.exists()
+            && std::fs::OpenOptions::new()
+                .write(true)
+                .share_mode(0)
+                .open(&path)
+                .is_err()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// Intenta tomar el lock entre procesos. `true` si lo conseguimos.
 fn acquire_cross_process_lock() -> bool {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        let path = std::env::temp_dir().join("simfleet_recorder.lock");
+        let test = crate::test_env::is_active();
+        if test && main_instance_recording() {
+            return false;
+        }
+        let path = shared_lock_path(if test { TEST_LOCK } else { MAIN_LOCK });
         match std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .share_mode(0) // 0 = sin compartir → exclusivo entre procesos
             .open(&path)
@@ -999,7 +1132,18 @@ enum RecCmd {
 #[cfg(windows)]
 fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
     let mut session: Option<capture_engine::CaptureSession> = None;
-    while let Ok(cmd) = rx.recv() {
+    loop {
+        // (v7.4.2) Despertamos cada segundo para el watchdog de "0 frames".
+        let cmd = match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(cmd) => cmd,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(s) = session.as_mut() {
+                    s.watchdog();
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match cmd {
             RecCmd::Arm {
                 output_path,
@@ -1040,7 +1184,11 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                             .finish_and_save(Path::new(&path))
                             .map_err(|e| format!("{e:#}"));
                         release_recording();
-                        tracing::info!(target: "rec", "clip guardado: {path}");
+                        // (v7.4.2) Antes se logueaba "clip guardado" SIEMPRE,
+                        // también cuando el guardado fallaba.
+                        if r.is_ok() {
+                            tracing::info!(target: "rec", "clip guardado: {path}");
+                        }
                         r
                     }
                     None => Err("recorder no armado".to_string()),
@@ -1151,10 +1299,22 @@ async fn controller_loop(
                 && !climb_phase
                 && status.current_alt_ft.map_or(false, |a| a < 3_000));
 
+        // (v7.4.2) En el entorno de pruebas la instancia principal tiene
+        // prioridad sobre la captura del sim (ver `main_instance_recording`).
+        let yield_to_main = crate::test_env::is_active() && main_instance_recording();
+
         // ── Grabación (solo si está activada) ──
         if cfg.enabled {
+            if armed && !save_pending && yield_to_main {
+                let _ = tx.send(RecCmd::Stop);
+                armed = false;
+                armed_at = None;
+                saved = false;
+                crate::diagnostics::note_recorder_armed(false);
+                tracing::warn!(target: "rec", "pruebas: la instancia principal está grabando — cedo la captura");
+            }
             // Armar el replay buffer al entrar en aproximación.
-            if approaching && !on_ground && !armed {
+            if approaching && !on_ground && !armed && !yield_to_main {
                 let (w, h) = target_monitor_size(&app, false);
                 let _ = tx.send(RecCmd::Arm {
                     output_path: cfg.output_path.clone(),

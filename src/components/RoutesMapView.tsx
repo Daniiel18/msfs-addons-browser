@@ -204,7 +204,13 @@ export function RoutesMapView({
   // (v4.33.0) Último vuelo encuadrado en detailMode. Evita re-encuadrar
   // (y pisar la cámara que el usuario dejó) al remontar con la misma
   // selección; solo encuadra cuando CAMBIA el vuelo seleccionado.
-  const lastFittedRef = useRef<number | null | undefined>(undefined);
+  // (v7.4.2) Clave `${vuelo}|track` o `${vuelo}|gc` (qué geometría se usó).
+  const lastFittedRef = useRef<string | null>(null);
+  // (v7.4.2) Vuelo cuya cámara se restauró al remontar: no se re-encuadra.
+  const restoredForRef = useRef<number | null | undefined>(undefined);
+  // (v7.4.2) Último encuadre de detalle, para repetirlo si el contenedor
+  // cambia de tamaño justo después (ver ResizeObserver más abajo).
+  const lastFitRef = useRef<{ bounds: maplibregl.LngLatBounds; at: number } | null>(null);
   // (v1.1.4) Marker DOM del avión en vivo. Lo mantenemos en ref para
   // poder hacer setLngLat + rotación sin reconstruir el elemento cada
   // tick — el rerender de React no toca el mapa, sólo este efecto.
@@ -322,6 +328,10 @@ export function RoutesMapView({
   // este state queda vacío y el mapa vuelve a las great-circles.
   const [trackPoints, setTrackPoints] = useState<FlightTrackPoint[]>([]);
   const [loadingTrack, setLoadingTrack] = useState(false);
+  // (v7.4.2) Vuelo al que pertenecen `trackPoints`. En el render del clic,
+  // `trackPoints` todavía es el del vuelo ANTERIOR (se vacía en un efecto) —
+  // el encuadre esperaba eso y se quedaba con la ruta equivocada.
+  const [trackFor, setTrackFor] = useState<number | null>(null);
 
   // (v6.2.28 / R5) Estado del replay del vuelo seleccionado. El marcador
   // y el trail se manejan imperativamente (rAF) para no re-renderizar el
@@ -360,18 +370,19 @@ export function RoutesMapView({
             "Tiles © Esri — World Imagery (Esri, Maxar, Earthstar Geographics)",
           maxzoom: 19,
         },
-        // Labels semi-transparentes encima para legibilidad —
-        // tomados del basemap de CARTO sin background, solo
-        // etiquetas blancas.
-        "carto-labels": {
+        // Labels encima para legibilidad. (v7.4.2) Antes eran los
+        // `dark_only_labels` de CARTO, que ahora exige API key y devolvía
+        // "API KEY REQUIRED" sobre TODO el globo. Esri Boundaries & Places
+        // está hecho justo para ir sobre su World Imagery (nombres blancos
+        // con halo + fronteras) y no pide clave.
+        "esri-places": {
           type: "raster",
           tiles: [
-            "https://cartodb-basemaps-a.global.ssl.fastly.net/dark_only_labels/{z}/{x}/{y}.png",
-            "https://cartodb-basemaps-b.global.ssl.fastly.net/dark_only_labels/{z}/{x}/{y}.png",
-            "https://cartodb-basemaps-c.global.ssl.fastly.net/dark_only_labels/{z}/{x}/{y}.png",
+            "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
           ],
           tileSize: 256,
-          attribution: "Labels © CARTO · © OpenStreetMap contributors",
+          attribution: "Labels © Esri",
+          maxzoom: 19,
         },
       },
       layers: [
@@ -381,12 +392,15 @@ export function RoutesMapView({
           source: "esri-imagery",
         },
         {
-          id: "carto-labels-layer",
+          id: "esri-places-layer",
           type: "raster",
-          source: "carto-labels",
+          source: "esri-places",
           paint: { "raster-opacity": 0.8 },
         },
       ],
+      // (v7.4.2) Sin `glyphs` las capas de texto (idents de los fixes del
+      // plan, `rt-plan-fixes-labels`) no se podían dibujar.
+      glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
     };
 
     // (v4.33.0) Restaura la cámara que el usuario dejó (si la hay),
@@ -406,7 +420,7 @@ export function RoutesMapView({
     // "ya encuadrado" para que detailMode no lo re-encuadre al remontar.
     if (savedCam) {
       didAutoFitRef.current = true;
-      lastFittedRef.current = selectedFlightId ?? null;
+      restoredForRef.current = selectedFlightId ?? null;
     }
     // Persiste la cámara en cada movimiento del usuario (pan/zoom/
     // rotate). moveend cubre drag, scroll-zoom y easeTo programático.
@@ -742,7 +756,19 @@ export function RoutesMapView({
     // (v4.21.0) 30s (antes 60s) — la Tierra rota 0.25°/min; con 30s el
     // terminator queda siempre a <0.13° de su posición UTC real.
     const id = window.setInterval(refresh, 30_000);
-    return () => window.clearInterval(id);
+    // (v7.4.2) Con la ventana oculta (bandeja/minimizada) el WebView congela
+    // o estrangula los timers: al volver, el terminator seguía en la hora en
+    // que se ocultó hasta el siguiente tick. Resincronizamos al instante.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refresh);
+    };
   }, [mapReady]);
 
   // Cuando cambia el vuelo seleccionado, fetcheamos su track real.
@@ -753,6 +779,7 @@ export function RoutesMapView({
   useEffect(() => {
     let cancelled = false;
     setTrackPoints([]);
+    setTrackFor(null);
     if (selectedFlightId == null) {
       setLoadingTrack(false);
       return;
@@ -768,7 +795,10 @@ export function RoutesMapView({
         if (!cancelled) setTrackPoints([]);
       })
       .finally(() => {
-        if (!cancelled) setLoadingTrack(false);
+        if (!cancelled) {
+          setLoadingTrack(false);
+          setTrackFor(selectedFlightId);
+        }
       });
     return () => {
       cancelled = true;
@@ -1551,11 +1581,22 @@ export function RoutesMapView({
     if (!map || !mapReady) return;
     const bounds = new maplibregl.LngLatBounds();
     if (detailMode) {
+      const id = selectedFlightId ?? null;
       // (v4.33.0) Solo encuadra al CAMBIAR de vuelo; si es el mismo que
       // ya encuadramos (o el restaurado del remount), respeta la cámara
       // que el usuario dejó.
-      if (lastFittedRef.current === (selectedFlightId ?? null)) return;
-      lastFittedRef.current = selectedFlightId ?? null;
+      if (restoredForRef.current !== undefined) {
+        if (restoredForRef.current === id) return;
+        restoredForRef.current = undefined;
+      }
+      // (v7.4.2) Bug "a veces no enfoca la ruta": se encuadraba en el MISMO
+      // render del clic, con el track del vuelo ANTERIOR (o la línea recta
+      // aproximada) y se marcaba como encuadrado → al llegar el track real ya
+      // no se re-encuadraba. Ahora se espera a que el track de ESTE vuelo
+      // termine de cargar.
+      if (loadingTrack || trackFor !== id) return;
+      const fitKey = `${id}|${trackPoints.length >= 2 ? "track" : "gc"}`;
+      if (lastFittedRef.current === fitKey) return;
       // Fit a track real si lo hay, sino a la great-circle de fallback.
       // (v3.23.0) trackGeojson ahora es MultiLineString → iteramos
       // línea→punto (un nivel más de anidación).
@@ -1576,6 +1617,9 @@ export function RoutesMapView({
         }
       }
       if (!bounds.isEmpty()) {
+        lastFittedRef.current = fitKey;
+        lastFitRef.current = { bounds, at: Date.now() };
+        map.resize();
         map.fitBounds(bounds, {
           padding: 80,
           maxZoom: 8,
@@ -1584,6 +1628,10 @@ export function RoutesMapView({
       }
       return;
     }
+    // Sin selección: el próximo vuelo elegido (aunque sea el mismo) se
+    // vuelve a encuadrar.
+    lastFittedRef.current = null;
+    lastFitRef.current = null;
     // Globo: respeta el "una vez" original.
     if (didAutoFitRef.current) return;
     const allFeatures = [...flightLogGeojson.features];
@@ -1610,7 +1658,36 @@ export function RoutesMapView({
     selectedGreatCircleGeojson,
     detailMode,
     selectedFlightId,
+    loadingTrack,
+    trackFor,
+    trackPoints.length,
   ]);
+
+  // (v7.4.2) Al seleccionar un vuelo aparecen encima del mapa la barra de
+  // acciones y el badge de daños → el contenedor ENCOGE justo después del
+  // fitBounds y la ruta quedaba cortada o descentrada. Si el tamaño cambia
+  // poco después de un encuadre de detalle, lo repetimos con el tamaño real.
+  useEffect(() => {
+    const el = containerRef.current;
+    const map = mapRef.current;
+    if (!el || !map || !mapReady || typeof ResizeObserver === "undefined") return;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        map.resize();
+        const last = lastFitRef.current;
+        if (last && Date.now() - last.at < 2500) {
+          map.fitBounds(last.bounds, { padding: 80, maxZoom: 8, duration: 300 });
+        }
+      });
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [mapReady]);
 
   // (v3.6.6 fix M2) Re-fit del mapa cuando cambia el filtro de aerolínea.
   // Sin esto, el filter se aplicaba pero la cámara no se movía y daba

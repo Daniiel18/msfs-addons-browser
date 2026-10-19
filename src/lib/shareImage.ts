@@ -14,6 +14,10 @@ export async function svgToPngBlob(
   width: number,
   height: number,
   scale = 2,
+  // (v7.4.2) Fondo OPACO bajo el SVG: un PNG con píxeles transparentes
+  // (p.ej. esquinas redondeadas) sale con esquinas blancas/grises al
+  // pegarlo en WhatsApp/Discord.
+  background = "#0b1220",
 ): Promise<Blob> {
   const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);
@@ -31,6 +35,8 @@ export async function svgToPngBlob(
     canvas.height = Math.round(height * scale);
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("canvas 2d no disponible");
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.scale(scale, scale);
     ctx.drawImage(img, 0, 0, width, height);
     return await new Promise<Blob>((resolve, reject) =>

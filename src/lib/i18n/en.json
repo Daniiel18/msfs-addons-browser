@@ -240,6 +240,9 @@
   "settings.import.hint": "Pick a previous export (CSV/TXT/JSON) and choose which addons to re-download. Handy after formatting your PC.",
   "settings.import.file_filter": "MSFS Addons inventories (CSV/TXT/JSON)",
   "settings.cloud.status.connected_as": "Connected · {email}",
+  "settings.cloud.status.session_expired": "Session expired ({email})",
+  "settings.cloud.status.session_expired_hint": "Google revoked or expired SimFleet's access to your Drive. Press Connect to authorize again; your local data is untouched.",
+  "settings.cloud.test_env_hint": "Test environment: “Download” reads your REAL Drive copy (read-only) · “Upload”, auto-sync and purge only use msfs-addons-data.PRUEBAS.json. Your real copy is never modified.",
   "settings.cloud.status.not_connected": "Not connected",
   "settings.cloud.status.connected_hint": "Your flights, tracks and preferences are stored in your Google Drive (the app's private folder, invisible to you). Last sync: {last_sync}.",
   "settings.cloud.status.not_connected_hint": "Connect a Google account to sync your flights and preferences across PCs.",
@@ -869,8 +872,8 @@
   "dashboard.unknown_author": "Unknown author",
   "dashboard.kpi.total_packages": "Total packages",
   "dashboard.kpi.total_packages.hint": "Total in Community",
-  "dashboard.kpi.disk_space": "Disk space",
-  "dashboard.kpi.disk_space.hint": "Sum of all packages",
+  "dashboard.kpi.disk_space": "Addons on disk",
+  "dashboard.kpi.disk_space.hint": "Used by your Community · click to free up",
   "dashboard.kpi.airports": "Airports",
   "dashboard.kpi.airports.hint": "{aircraft} aircraft · {liveries} liveries",
   "dashboard.kpi.updates": "Pending updates",
@@ -994,6 +997,7 @@
   "pkg.gsx_not_detected": "Not detected",
   "pkg.open_folder": "Open folder",
   "pkg.get_liveries": "Get Liveries ✈️",
+  "pkg.get_liveries_pick": "Which aircraft?",
   "pkg.get_liveries_hint": "Browse flightsim.to liveries for this aircraft",
   "pkg.reinstall": "Reinstall",
   "pkg.reinstall_picker": "Pick a method and reinstall fresh",
@@ -1916,6 +1920,7 @@
   "region.fallback.A": "Western Pacific",
   "region.fallback.N": "South Pacific",
   "region.fallback.Y": "Australia",
-  "safeMode.bannerActive": "SAFE MODE (testing) — SimConnect ENABLED to test Best Landings · cloud sync stays DISABLED. Database independent from your main instance.",
-  "safeMode.bannerIdle": "SAFE MODE — testing instance. SimConnect and cloud sync are DISABLED; it does not affect your flight or the data of your main instance."
+  "safeMode.badge": "Test",
+  "safeMode.bannerActive": "TEST ENVIRONMENT — own data in {dir} · Drive, Supabase and autostart use their own test space · SimConnect ON · the Community folder is the REAL one.",
+  "safeMode.bannerIdle": "TEST ENVIRONMENT — own data in {dir} · Drive, Supabase and autostart use their own test space · SimConnect OFF · the Community folder is the REAL one."
 }

@@ -76,21 +76,32 @@ pub async fn pack_liveries(
     )
 }
 
-/// (v6) `true` si la app corre en MODO SEGURO (`SIMFLEET_SAFE_MODE`): 2ª
-/// instancia de pruebas sin SimConnect ni auto-sync. El frontend muestra un
-/// banner para no confundirla con la instancia principal.
+/// (v6 · v7.4.2) `true` si la app es la instancia del ENTORNO DE PRUEBAS
+/// (ver `test_env`). El frontend muestra un banner para no confundirla con la
+/// instancia principal.
 #[tauri::command]
 pub fn is_safe_mode() -> bool {
-    std::env::var("SIMFLEET_SAFE_MODE").is_ok()
+    crate::test_env::is_active()
 }
 
-/// (v6) `true` si el watcher de SimConnect está activo. En MODO SEGURO suele
-/// estar apagado, salvo que se fuerce con `SIMFLEET_ENABLE_WATCHER=1` para
-/// probar Best Landings — el banner lo refleja para no confundir al usuario.
+/// (v6 · v7.4.2) `true` si el watcher de SimConnect está activo. En pruebas
+/// corre por defecto; `SIMFLEET_DISABLE_WATCHER=1` lo apaga — el banner lo
+/// refleja para no confundir al usuario.
 #[tauri::command]
 pub fn is_watcher_active() -> bool {
-    std::env::var("SIMFLEET_SAFE_MODE").is_err()
-        || std::env::var("SIMFLEET_ENABLE_WATCHER").is_ok()
+    crate::test_env::watcher_enabled()
+}
+
+/// (v7.4.2) Dir de datos del entorno de pruebas, para mostrarlo en el banner.
+/// `None` en la instancia principal.
+#[tauri::command]
+pub fn test_env_data_dir() -> Option<String> {
+    if !crate::test_env::is_active() {
+        return None;
+    }
+    crate::test_env::data_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// (v6 #1) Crea junctions NTFS de los paquetes recién instalados en la

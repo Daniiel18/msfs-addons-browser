@@ -138,6 +138,28 @@ pub enum SourceError {
     NotImplemented,
     #[error("other: {0}")]
     Other(String),
+    /// (v7.4.2) La fuente está caída o inaccesible (HTTP 5xx, p.ej. el 530
+    /// de Cloudflare cuando el origen no responde). El mensaje ya es
+    /// user-facing (i18n), sin prefijo técnico.
+    #[error("{0}")]
+    Unavailable(String),
+}
+
+impl SourceError {
+    /// (v7.4.2) `true` si el error indica que la FUENTE entera no responde
+    /// (no un fallo de esa búsqueda concreta): reintentar otras búsquedas
+    /// contra ella en el mismo escaneo es inútil.
+    pub fn is_unavailable(&self) -> bool {
+        match self {
+            SourceError::Unavailable(_) => true,
+            SourceError::Http(e) => {
+                e.is_connect()
+                    || e.is_timeout()
+                    || e.status().is_some_and(|s| s.is_server_error())
+            }
+            _ => false,
+        }
+    }
 }
 
 pub(crate) fn stable_id(source: &str, page_url: &str) -> String {

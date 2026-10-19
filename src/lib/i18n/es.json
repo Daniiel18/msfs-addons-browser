@@ -240,6 +240,9 @@
   "settings.import.hint": "Selecciona un export previo (CSV/TXT/JSON) y elige qué addons re-descargar. Útil tras formatear el PC.",
   "settings.import.file_filter": "Inventarios MSFS Addons (CSV/TXT/JSON)",
   "settings.cloud.status.connected_as": "Conectado · {email}",
+  "settings.cloud.status.session_expired": "Sesión expirada ({email})",
+  "settings.cloud.status.session_expired_hint": "Google revocó o dejó caducar el acceso de SimFleet a tu Drive. Pulsa Conectar para volver a autorizar; tus datos locales no se tocan.",
+  "settings.cloud.test_env_hint": "Entorno de pruebas: «Bajar» lee tu copia REAL de Drive (solo lectura) · «Subir», el auto-sync y la purga usan solo msfs-addons-data.PRUEBAS.json. Tu copia real nunca se modifica.",
   "settings.cloud.status.not_connected": "No conectado",
   "settings.cloud.status.connected_hint": "Tus vuelos, tracks y preferencias se guardan en tu Google Drive (carpeta privada de la app, invisible para ti). Último sync: {last_sync}.",
   "settings.cloud.status.not_connected_hint": "Conecta una cuenta de Google para sincronizar tus vuelos y preferencias entre PCs.",
@@ -869,8 +872,8 @@
   "dashboard.unknown_author": "Autor desconocido",
   "dashboard.kpi.total_packages": "Paquetes totales",
   "dashboard.kpi.total_packages.hint": "Total en Community",
-  "dashboard.kpi.disk_space": "Espacio en disco",
-  "dashboard.kpi.disk_space.hint": "Suma de todos los paquetes",
+  "dashboard.kpi.disk_space": "Addons en disco",
+  "dashboard.kpi.disk_space.hint": "Ocupado por tu Community · clic para liberar",
   "dashboard.kpi.airports": "Aeropuertos",
   "dashboard.kpi.airports.hint": "{aircraft} aviones · {liveries} liveries",
   "dashboard.kpi.updates": "Updates pendientes",
@@ -994,6 +997,7 @@
   "pkg.gsx_not_detected": "No detectado",
   "pkg.open_folder": "Abrir carpeta",
   "pkg.get_liveries": "Ver liveries ✈️",
+  "pkg.get_liveries_pick": "¿De qué avión?",
   "pkg.get_liveries_hint": "Explora liveries de flightsim.to para este avión",
   "pkg.reinstall": "Reinstalar",
   "pkg.reinstall_picker": "Elegir método y reinstalar limpio",
@@ -1916,6 +1920,7 @@
   "region.fallback.A": "Pacífico Occidental",
   "region.fallback.N": "Pacífico Sur",
   "region.fallback.Y": "Australia",
-  "safeMode.bannerActive": "MODO SEGURO (pruebas) — SimConnect ACTIVO para probar Best Landings · la nube sigue DESACTIVADA. DB independiente de tu instancia principal.",
-  "safeMode.bannerIdle": "MODO SEGURO — instancia de pruebas. SimConnect y la sincronización con la nube están DESACTIVADOS; no afecta el vuelo ni los datos de tu instancia principal."
+  "safeMode.badge": "Pruebas",
+  "safeMode.bannerActive": "ENTORNO DE PRUEBAS — datos propios en {dir} · Drive, Supabase y autoarranque usan su espacio de pruebas · SimConnect ACTIVO · la carpeta Community es la REAL.",
+  "safeMode.bannerIdle": "ENTORNO DE PRUEBAS — datos propios en {dir} · Drive, Supabase y autoarranque usan su espacio de pruebas · SimConnect APAGADO · la carpeta Community es la REAL."
 }

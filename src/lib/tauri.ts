@@ -387,6 +387,8 @@ interface Api {
   isSafeMode: () => Promise<boolean>;
   /** (v6) `true` si el watcher de SimConnect está activo (forzado en safe). */
   isWatcherActive: () => Promise<boolean>;
+  /** (v7.4.2) Dir de datos del entorno de pruebas (`null` en la principal). */
+  testEnvDataDir: () => Promise<string | null>;
   /** (v6.2.15) Árbol de procesos de SimFleet + RAM por proceso (diagnóstico). */
   diagnosticsProcessTree: () => Promise<DiagProcReport>;
   /** (v6.2.16) Actividad de los subsistemas internos (SimConnect, tracking…). */
@@ -815,7 +817,25 @@ const realApi: Api = {
   deleteDroppedArchive: (archivePath) =>
     invoke<void>("delete_dropped_archive", { archivePath }),
 
-  checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
+  // (v7.4.2) Cuatro componentes consultan esto (splash, banner, badge de la
+  // titlebar y campanita) y dos lo repiten cada 15 min + en cada `focus` →
+  // en los logs cada chequeo salía DOBLE y alternar sim↔app gastaba el cupo
+  // de la API de GitHub (60 req/h sin auth). Compartimos la misma promesa
+  // durante 60 s: una sola petición real por ráfaga.
+  checkForUpdate: (() => {
+    let last: { at: number; p: Promise<UpdateInfo | null> } | null = null;
+    return () => {
+      const now = Date.now();
+      if (last && now - last.at < 60_000) return last.p;
+      const p = invoke<UpdateInfo | null>("check_for_update");
+      last = { at: now, p };
+      // Un fallo no se cachea: el siguiente intento vuelve a consultar.
+      p.catch(() => {
+        if (last?.p === p) last = null;
+      });
+      return p;
+    };
+  })(),
   installUpdate: (assetUrl, autoRestart) =>
     invoke<void>("install_update", { assetUrl, autoRestart: autoRestart ?? true }),
   onUpdateProgress: async (cb) => {
@@ -841,6 +861,7 @@ const realApi: Api = {
     invoke<{ has2020: boolean; has2024: boolean }>("get_installed_sims"),
   isSafeMode: () => invoke<boolean>("is_safe_mode"),
   isWatcherActive: () => invoke<boolean>("is_watcher_active"),
+  testEnvDataDir: () => invoke<string | null>("test_env_data_dir"),
   diagnosticsProcessTree: () =>
     invoke<DiagProcReport>("diagnostics_process_tree"),
   diagnosticsAppMetrics: () =>
@@ -1387,6 +1408,7 @@ const demoApi: Api = {
     return {
       connected: false,
       hasCredentials: false,
+      sessionExpired: false,
       userEmail: null,
       lastSyncAt: null,
     };
@@ -1630,6 +1652,9 @@ const demoApi: Api = {
   },
   async isWatcherActive() {
     return true;
+  },
+  async testEnvDataDir() {
+    return null;
   },
   async diagnosticsProcessTree() {
     return { totalBytes: 0, count: 0, processes: [] };
@@ -2274,10 +2299,13 @@ const demoApi: Api = {
   },
   async airacCheckUpdate() {
     return {
-      installedCycle: "2506",
-      latestCycle: "2507",
-      effectiveDate: "2026-07-10",
+      installedCycle: "2609",
+      latestCycle: "2610",
+      effectiveDate: "2026-10-01",
       hasUpdate: true,
+      installedSource: "manual" as const,
+      nextCycle: "2611",
+      nextEffectiveDate: "2026-10-29",
     };
   },
   async airacSetInstalledCycle() {

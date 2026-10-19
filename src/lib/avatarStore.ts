@@ -5,6 +5,7 @@ import {
   DEFAULT_VS_SUPABASE_KEY,
   normalizeSupabaseUrl,
 } from "./liveVsConfig";
+import { supabaseTable } from "./testEnv";
 
 /**
  * (v6.1 #30) Persistencia del avatar del piloto: LOCAL (localStorage) + NUBE
@@ -100,7 +101,7 @@ export async function loadAvatar(identity: string): Promise<string | null> {
     if (!c) return;
     try {
       const { data, error } = await c
-        .from("pilot_avatars")
+        .from(supabaseTable("pilot_avatars"))
         .select("data_url")
         .eq("identity", identity)
         .maybeSingle();
@@ -124,7 +125,7 @@ export async function saveAvatar(identity: string, dataUrl: string): Promise<voi
   if (!c) return;
   try {
     await c
-      .from("pilot_avatars")
+      .from(supabaseTable("pilot_avatars"))
       .upsert({ identity, data_url: dataUrl, updated_at: new Date().toISOString() });
   } catch {
     /* sin tabla/conexión → queda solo local, se reintenta en el próximo guardado */

@@ -1,146 +1,164 @@
 /**
- * (v4.0.0 — P6) Terminator line dinámica para el RoutesMapView.
+ * (v4.0.0 — P6 · v7.4.2) Terminator día/noche del RoutesMapView.
  *
- * Computa el polígono GeoJSON que cubre la zona en penumbra/noche de
- * la Tierra para un timestamp UTC dado. Pintado como `fill-layer`
- * sobre el globo, divide visualmente las zonas iluminadas de las
- * oscuras — mismo efecto que se ve en Google Earth o Windy.
+ * Computa el polígono GeoJSON de la zona donde el sol está por debajo de
+ * `altitudeDeg` (0° = noche geométrica, -6/-12/-18° = crepúsculos) para un
+ * instante UTC. Pintado como `fill-layer` sobre el globo.
+ *
+ * ## Por qué se reescribió (v7.4.2)
+ *
+ * La versión anterior buscaba, para cada longitud, UNA latitud frontera por
+ * bisección entre -90° y +90° y cerraba el polígono contra un polo. Eso sólo
+ * vale si la zona oscura toca un polo. Para las bandas de crepúsculo
+ * (-12°/-18°) cerca de los equinoccios (|declinación| < |umbral|, p.ej. en
+ * octubre) la zona es un casquete que NO toca ningún polo: la bisección no
+ * encontraba cambio de signo, devolvía `null` y el código saltaba al polo
+ * N o S según la altitud en el ecuador → franjas oscuras de polo a polo que
+ * no correspondían con la hora real ("la noche se desincroniza del reloj").
  *
  * ## Matemática
  *
- * El "terminator" es el círculo máximo donde el ángulo del sol sobre
- * el horizonte es 0°. Para cada longitud entre -180 y +180, calculamos
- * la latitud del terminator usando la fórmula:
+ * Posición del sol con las mismas fórmulas que SunCalc (declinación δ,
+ * ascensión recta α, tiempo sidéreo θ₀). Para un punto (φ, λ):
  *
- *   tan(lat_terminator) = -cos(longitudHourAngle) / tan(declinacion)
+ *   sin(alt) = sin φ · sin δ + cos φ · cos δ · cos H,   H = θ₀ + λ − α
  *
- * donde:
- *   · declinacion = ángulo del sol respecto al ecuador (-23.5° a +23.5°
- *     según la época del año).
- *   · longitudHourAngle = (longitud - subsolar_lon)°
- *   · subsolar_lon = -GMST × 15° (rotación de la Tierra contra el sol)
- *
- * `suncalc.getPosition(date, lat, lon)` nos da `altitude` directamente
- * para cada punto — alternativa más limpia que reimplementar la
- * trigonometría astronómica. Buscamos por bisección la latitud donde
- * altitude = 0 para cada longitud.
+ * Con A = sin δ y B = cos δ · cos H: sin(alt) = R · sin(φ + γ), con
+ * R = √(A² + B²) y γ = atan2(B, A). Así, para cada meridiano, la zona
+ * `alt < umbral` es UN intervalo de latitudes [lo, hi] (o vacío) que se
+ * resuelve de forma exacta con asin — sin bisección.
  *
  * ## Construcción del polígono
  *
- * El polígono "noche" se construye como un anillo cerrado:
- *   1. Para 181 longitudes (cada 2°), calcular la lat del terminator.
- *   2. Cerrar el contorno con los polos correspondientes según el
- *      hemisferio iluminado (verano vs invierno).
+ *   · La noche contiene el polo N  → anillo por `lo(λ)` + cierre por +90°.
+ *   · La noche contiene el polo S  → anillo por `hi(λ)` + cierre por −90°.
+ *   · No toca ningún polo (casquete) → por cada tramo continuo de longitudes
+ *     con noche: `hi` de oeste a este y `lo` de vuelta. Si el casquete cruza
+ *     el antimeridiano salen dos tramos (MultiPolygon) que comparten borde.
  *
- * ## Performance
- *
- * 181 puntos × 1 bisección por punto ≈ ~1ms de CPU. Despreciable.
- * Recomputar cada 60s — la Tierra rota 0.25°/min, así que un update
- * por minuto da un movimiento del terminator imperceptible al ojo
- * pero matemáticamente preciso.
- *
- * Renderizado: 1 fill-layer + 1 GeoJSON source. Sin impacto en FPS.
+ * Coste: ~361 muestras × 4 bandas con trigonometría directa ≈ <1 ms.
  */
 
-import SunCalc from "suncalc";
+const RAD = Math.PI / 180;
+const DEG = 180 / Math.PI;
 
-/**
- * Calcula la latitud (°) del terminator para una longitud dada, en
- * el instante `date`. Devuelve `null` si el sol nunca se pone o nunca
- * sale en esa longitud (caso polar al solsticio).
- *
- * Algoritmo: bisección sobre `getPosition().altitude` entre -90 y +90.
- * En ~16 iteraciones la precisión es < 0.001° — más que suficiente
- * para resolución de mapa.
- */
-function terminatorLatAtLon(
-  date: Date,
-  lon: number,
-  altitudeThresholdRad: number = 0,
-): number | null {
-  // En cada longitud, buscamos la latitud donde altitude(lat) =
-  // `altitudeThresholdRad`. Para el terminator estándar el threshold
-  // es 0 (horizonte). Para civil twilight usamos -6° = -0.1047 rad,
-  // que define el límite donde aún hay luz crepuscular suave en el
-  // cielo. La altitude solar varía monótonamente con lat para una
-  // longitud fija, así que la bisección converge en ~18 iteraciones.
-  let lo = -90;
-  let hi = 90;
-  const aLo = SunCalc.getPosition(date, lo, lon).altitude - altitudeThresholdRad;
-  const aHi = SunCalc.getPosition(date, hi, lon).altitude - altitudeThresholdRad;
-  if (aLo * aHi > 0) return null;
-  for (let i = 0; i < 18; i++) {
-    const mid = (lo + hi) / 2;
-    const aMid =
-      SunCalc.getPosition(date, mid, lon).altitude - altitudeThresholdRad;
-    if (aMid * aLo < 0) {
-      hi = mid;
-    } else {
-      lo = mid;
-    }
+/** Declinación y longitud subsolar (rad) — fórmulas de SunCalc. */
+function sunPosition(date: Date): { dec: number; subLon: number } {
+  const d = date.valueOf() / 86_400_000 - 0.5 + 2_440_588 - 2_451_545;
+  const M = RAD * (357.5291 + 0.98560028 * d);
+  const C = RAD * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+  const L = M + C + RAD * 102.9372 + Math.PI;
+  const e = RAD * 23.4397;
+  const dec = Math.asin(Math.sin(e) * Math.sin(L));
+  const ra = Math.atan2(Math.sin(L) * Math.cos(e), Math.cos(L));
+  const theta0 = RAD * (280.16 + 360.9856235 * d);
+  // H = θ₀ + λ − α = 0 en el punto subsolar → λ = α − θ₀.
+  const subLon = Math.atan2(Math.sin(ra - theta0), Math.cos(ra - theta0));
+  return { dec, subLon };
+}
+
+/** Intervalo [lo, hi] (grados) de latitudes con alt < umbral en el meridiano
+ *  `lonDeg`, o `null` si en ese meridiano no hay noche. */
+function nightInterval(
+  dec: number,
+  subLon: number,
+  lonDeg: number,
+  sinThreshold: number,
+): [number, number] | null {
+  const H = lonDeg * RAD - subLon;
+  const A = Math.sin(dec);
+  const B = Math.cos(dec) * Math.cos(H);
+  const R = Math.hypot(A, B);
+  if (R < 1e-12) return sinThreshold > 0 ? [-90, 90] : null;
+  const k = sinThreshold / R;
+  if (k <= -1) return null; // el sol nunca baja del umbral aquí
+  if (k >= 1) return [-90, 90];
+  const gamma = Math.atan2(B, A);
+  const a = Math.asin(k);
+  // sin(u) < sin(a)  ⇔  u ∈ (π − a, 2π + a)  (mod 2π),  con u = φ + γ.
+  const start = Math.PI - a - gamma;
+  const end = 2 * Math.PI + a - gamma;
+  let best: [number, number] | null = null;
+  for (let n = -2; n <= 2; n++) {
+    const lo = Math.max(start + 2 * Math.PI * n, -Math.PI / 2);
+    const hi = Math.min(end + 2 * Math.PI * n, Math.PI / 2);
+    if (hi > lo && (!best || hi - lo > best[1] - best[0])) best = [lo, hi];
   }
-  return (lo + hi) / 2;
+  return best ? [best[0] * DEG, best[1] * DEG] : null;
 }
 
 /**
- * Construye el polígono GeoJSON de la zona en sombra (noche) para
- * el timestamp dado. El polígono cubre la mitad oscura de la Tierra
- * incluyendo los polos cuando aplica (polar night).
+ * Polígono GeoJSON de la zona con el sol por debajo de `altitudeDeg` en el
+ * instante `date`.
  *
- * El frontend usa el resultado en un MapLibre `GeoJSONSource.setData`
- * cada 60s para mover el terminator de manera continua.
- *
- * @param date Hora UTC (típicamente `new Date()` al momento del render).
- * @param step Espaciado en longitud entre samples (°). Default 2°
- *             produce 181 puntos — suficiente para que la curva se vea
- *             suave a cualquier zoom razonable.
+ * @param date Instante (típicamente `new Date()`); se usa en UTC.
+ * @param step Espaciado en longitud entre muestras (°).
+ * @param altitudeDeg Umbral de altitud solar (0, -6, -12, -18…).
  */
 export function buildTerminatorPolygon(
   date: Date = new Date(),
   step: number = 2,
   altitudeDeg: number = 0,
-): GeoJSON.Feature<GeoJSON.Polygon> {
-  const altitudeRad = (altitudeDeg * Math.PI) / 180;
-  // Sample del terminator cada `step`° de longitud, de -180 a +180.
-  const terminatorRing: [number, number][] = [];
-  for (let lon = -180; lon <= 180; lon += step) {
-    const lat = terminatorLatAtLon(date, lon, altitudeRad);
-    // Si no hay terminator en esta longitud (sol siempre arriba),
-    // anclamos al polo más cercano al hemisferio iluminado para
-    // mantener el polígono cerrado y continuo. La declinación solar
-    // decide qué polo.
-    if (lat == null) {
-      const decl = SunCalc.getPosition(date, 0, lon).altitude - altitudeRad;
-      terminatorRing.push([lon, decl > 0 ? 90 : -90]);
-    } else {
-      terminatorRing.push([lon, lat]);
-    }
-  }
+): GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> {
+  const { dec, subLon } = sunPosition(date);
+  const sinT = Math.sin(altitudeDeg * RAD);
+  const lons: number[] = [];
+  for (let lon = -180; lon < 180; lon += step) lons.push(lon);
+  lons.push(180);
+  const samples = lons.map((lon) => ({ lon, iv: nightInterval(dec, subLon, lon, sinT) }));
 
-  // ¿Qué hemisferio está oscuro? El hemisferio opuesto al que tiene
-  // el sol arriba ahora. Usamos `getPosition` en el polo norte:
-  // altitude > threshold → sol en el norte → noche en el sur.
-  const northSunny =
-    SunCalc.getPosition(date, 89, 0).altitude - altitudeRad > 0;
+  // Altitud del sol en cada polo = ±δ → ¿el polo está dentro de la noche?
+  const northNight = Math.sin(dec) < sinT;
+  const southNight = -Math.sin(dec) < sinT;
 
-  // Para cerrar el polígono "noche" añadimos los segmentos verticales
-  // a los polos. Si el norte está iluminado, la noche cubre desde el
-  // terminator hacia el polo SUR.
-  const polarLat = northSunny ? -90 : 90;
-  // Closing path: ir hasta el polo a lon=+180, traversar el polo
-  // (todos los puntos del polo son el mismo), volver al inicio.
-  terminatorRing.push([180, polarLat]);
-  terminatorRing.push([-180, polarLat]);
-  terminatorRing.push(terminatorRing[0]);
-
-  return {
+  const feature = (
+    geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon,
+  ): GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> => ({
     type: "Feature",
     properties: {},
-    geometry: {
-      type: "Polygon",
-      coordinates: [terminatorRing],
-    },
-  };
-}
+    geometry,
+  });
 
-// (v4.22.0) `subsolarPoint` eliminado — helper de debug nunca importado.
+  if (northNight || southNight) {
+    // La noche toca un polo → existe en todos los meridianos; la frontera es
+    // el extremo opuesto al polo.
+    const ring: [number, number][] = samples.map(({ lon, iv }) => [
+      lon,
+      iv ? (northNight ? iv[0] : iv[1]) : northNight ? 90 : -90,
+    ]);
+    const pole = northNight ? 90 : -90;
+    ring.push([180, pole], [-180, pole], ring[0]);
+    return feature({ type: "Polygon", coordinates: [ring] });
+  }
+
+  // Casquete que no toca polos: un polígono por tramo continuo con noche.
+  const polygons: [number, number][][][] = [];
+  let run: { lon: number; iv: [number, number] }[] = [];
+  const flush = () => {
+    if (run.length >= 2) {
+      const ring: [number, number][] = [
+        ...run.map((s): [number, number] => [s.lon, s.iv[1]]),
+        ...run
+          .slice()
+          .reverse()
+          .map((s): [number, number] => [s.lon, s.iv[0]]),
+      ];
+      ring.push(ring[0]);
+      polygons.push([ring]);
+    }
+    run = [];
+  };
+  for (const s of samples) {
+    if (s.iv) run.push({ lon: s.lon, iv: s.iv });
+    else flush();
+  }
+  flush();
+  if (polygons.length === 0) {
+    return feature({ type: "MultiPolygon", coordinates: [] });
+  }
+  return feature(
+    polygons.length === 1
+      ? { type: "Polygon", coordinates: polygons[0] }
+      : { type: "MultiPolygon", coordinates: polygons },
+  );
+}

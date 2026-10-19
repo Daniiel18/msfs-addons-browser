@@ -34,8 +34,16 @@ pub(crate) fn set_extensions_dir(dir: PathBuf) {
 /// (`isEmbeddedDownload`) para auto-instalar + auto-borrar sin preguntar.
 const MIRROR_DL_DIR: &str = "simfleet-mirror-dl";
 
-/// User-Agent de Chrome — algunos hosters/CDN rechazan el UA por defecto de
-/// WebView2. Compartido por el navegador de liveries y el de hosters.
+/// User-Agent de Chrome para el cliente HTTP (`reqwest`) que baja/reanuda el
+/// archivo final — algunos CDN rechazan el UA por defecto de reqwest.
+///
+/// (v7.4.2) Ya NO se aplica a las ventanas WebView: el UA fijo decía
+/// "Chrome/131" mientras el motor real (WebView2, hoy 155) manda sus Client
+/// Hints con su versión y marca verdaderas. Las verificaciones anti-bot
+/// (Cloudflare Turnstile en mixdrop & co.) ven dos identidades que no cuadran
+/// y rechazan el desafío SIEMPRE, por mucho que el usuario lo resuelva
+/// ("verifica que eres humano" en bucle). Sin override, UA y Client Hints
+/// coinciden (= un Edge normal) y el desafío lo resuelve el usuario sin más.
 const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -141,7 +149,10 @@ pub async fn open_livery_browser(
             None => String::new(),
         }
     };
-    let livery_init = format!("{}\n{OVERLAY_JS}\n{LIVERY_DRIVER_JS}", lang_prefix(&lang));
+    let livery_init = top_frame_only(&format!(
+        "{}\n{OVERLAY_JS}\n{LIVERY_DRIVER_JS}",
+        lang_prefix(&lang)
+    ));
 
     let mut builder = WebviewWindowBuilder::new(&app, LIVERY_WIN, WebviewUrl::External(parsed))
         .initialization_script(livery_init.as_str())
@@ -155,7 +166,7 @@ pub async fn open_livery_browser(
         .min_inner_size(820.0, 560.0)
         .center()
         .focused(true)
-        .user_agent(CHROME_UA)
+        // (v7.4.2) Sin `.user_agent(CHROME_UA)`: ver la nota de `CHROME_UA`.
         // (v6.2.53) HIPÓTESIS del blanco: el drag&drop handler que Tauri instala
         // en cada webview rompe el render de WebView2 en algunos sitios. Lo
         // desactivamos en ESTA ventana (no necesitamos soltar archivos aquí).
@@ -538,6 +549,19 @@ const HOSTER_DRIVER_JS: &str = r#"
 /// clic o captcha que el usuario resuelve en la ventana.
 /// (v7) Prefijo JS que le pasa el idioma de la app al overlay. Sólo 'es'/'en';
 /// cualquier otro ('auto'/'') → el overlay cae a `navigator.language`.
+/// (v7.4.2) Envuelve un initialization script para que corra SÓLO en el frame
+/// principal. En Windows, wry inyecta los scripts en TODOS los frames aunque se
+/// pida "main frame only" (doc de wry: "scripts are always added to subframes
+/// regardless of the `for_main_frame_only` option"). Así el overlay, el driver
+/// de hosters y el acelerador de timers de flightsim.to (que pisa
+/// `setTimeout`/`setInterval`) se metían DENTRO del iframe de Cloudflare
+/// Turnstile: le inyectaban nodos, un sondeo cada 400 ms y timers alterados →
+/// Turnstile detectaba la manipulación y respondía "Verification failed" por
+/// mucho que el usuario marcara "soy humano" (mixdrop / get.php / flightsim.to).
+fn top_frame_only(js: &str) -> String {
+    format!("if (window.top === window.self) {{\n{js}\n}}")
+}
+
 fn lang_prefix(lang: &str) -> String {
     let l = if lang == "en" || lang == "es" { lang } else { "" };
     format!("window.__sfLang={l:?};")
@@ -602,7 +626,10 @@ pub(crate) fn open_hoster_download(
 
     // Overlay de SimFleet + driver de hosters (bloqueo/auto-avance/captcha),
     // con el idioma de la app inyectado.
-    let hoster_init = format!("{}\n{OVERLAY_JS}\n{HOSTER_DRIVER_JS}", lang_prefix(lang));
+    let hoster_init = top_frame_only(&format!(
+        "{}\n{OVERLAY_JS}\n{HOSTER_DRIVER_JS}",
+        lang_prefix(lang)
+    ));
 
     let mut builder = WebviewWindowBuilder::new(app, &win_label, WebviewUrl::External(parsed))
         .initialization_script(hoster_init.as_str())
@@ -620,7 +647,8 @@ pub(crate) fn open_hoster_download(
         // sistema; se maneja como un popout de SimFleet (se cierra con el ✕ del
         // overlay o solo al terminar).
         .decorations(false)
-        .user_agent(CHROME_UA)
+        // (v7.4.2) Sin `.user_agent(CHROME_UA)`: con el UA falso la
+        // verificación humana de mixdrop fallaba en bucle (ver `CHROME_UA`).
         // Mismo fix del render en blanco que en liveries.
         .disable_drag_drop_handler()
         // (v7) Intercepta el centinela del botón ✕: cancela la descarga (borra
@@ -852,8 +880,21 @@ fn install_web_guards(win: &tauri::WebviewWindow, block_new_windows: bool) {
                 }
             }
             // ── Ad blocker ────────────────────────────────────────────────
-            let _ = core
-                .AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+            // (v7.4.2) Filtros SÓLO para los dominios de anuncios. Antes era
+            // `*` → TODAS las peticiones (incluidas las del desafío de
+            // Cloudflare) pasaban por este handler; ahora el resto de la red no
+            // se toca y la página se comporta como en un Edge normal.
+            for pattern in AD_HOSTS
+                .iter()
+                .map(|h| format!("*{h}*"))
+                .chain(std::iter::once(format!("*{FSTO_ADS_PATH}*")))
+            {
+                let pattern = windows_core::HSTRING::from(pattern);
+                let _ = core.AddWebResourceRequestedFilter(
+                    &pattern,
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                );
+            }
             let env = core
                 .cast::<ICoreWebView2_2>()
                 .ok()
@@ -1027,128 +1068,136 @@ fn fmt_eta(secs: f64) -> String {
 #[cfg(target_os = "windows")]
 fn is_ad_url(url: &str) -> bool {
     let u = url.to_ascii_lowercase();
-    const HOSTS: &[&str] = &[
-        "googlesyndication.com",
-        "doubleclick.net",
-        "googleadservices.com",
-        "googletagservices.com",
-        // (v7) OJO: `googletagmanager.com` (gtag) y `google-analytics.com` NO
-        // se bloquean — son ANALYTICS, no anuncios, y algunos hosters
-        // (modsfire: `alt095.js`) llaman `gtag()` sin guardas y REVIENTAN si no
-        // está → el botón de descarga queda muerto y "no pasa nada" al clicar.
-        // Bloquearlos no quita ningún anuncio visible; sí rompe las descargas.
-        "adservice.google",
-        "adnxs.com",
-        "amazon-adsystem.com",
-        "pubmatic.com",
-        "rubiconproject.com",
-        "criteo.com",
-        "criteo.net",
-        "taboola.com",
-        "outbrain.com",
-        "scorecardresearch.com",
-        "moatads.com",
-        "adform.net",
-        "adsafeprotected.com",
-        "aniview.com",
-        "pub.network",
-        "sekindo.com",
-        "3lift.com",
-        "casalemedia.com",
-        "openx.net",
-        "smartadserver.com",
-        "teads.tv",
-        "yieldmo.com",
-        "sharethrough.com",
-        "bidswitch.net",
-        "onetag.com",
-        "gumgum.com",
-        "indexww.com",
-        "adsrvr.org",
-        "quantserve.com",
-        // (v7) Redes de popunders / anuncios de los HOSTERS de archivos
-        // (modsfire, mixdrop y similares). Bloquearlas a nivel de red mata
-        // los popunders y los "botones de descarga falsos" de raíz — el
-        // script del anuncio nunca llega a cargar. NINGUNA es un captcha:
-        // reCAPTCHA (google.com/recaptcha, gstatic) y Cloudflare Turnstile
-        // (challenges.cloudflare.com) NO están aquí, así se pueden resolver.
-        "hai8g.com",
-        "crn77.com",
-        "xadsmart.com",
-        "greatdexchange.com",
-        "snigelweb.com",
-        "playwire.com",
-        "intergient.com",
-        "popads.net",
-        "popcash.net",
-        "propellerads.com",
-        "hilltopads.com",
-        "hilltopads.net",
-        "adsterra.com",
-        "clickadu.com",
-        "exoclick.com",
-        "juicyads.com",
-        "mgid.com",
-        "poptm.com",
-        "onclickalgo.com",
-        "highperformanceformat.com",
-        "profitabledisplaynetwork.com",
-        "adnium.com",
-        "trafficjunky.com",
-        "adcash.com",
-        // (v7) Dominios de ENTREGA (delivery/serving) — la clave que faltaba:
-        // mixdrop/hosters NO sirven los popunders desde el dominio de MARCA
-        // (exoclick.com) sino desde estos. Bloquear la marca no bloqueaba el
-        // anuncio. (Verificado en la investigación de adblock.)
-        "realsrv.com",
-        "exdynsrv.com",
-        "exosrv.com",
-        "exv6.com",
-        "magsrv.com",
-        "orbsrv.com",
-        "optnx.com",
-        "onclckds.com",
-        "propu.net",
-        "propellerpops.com",
-        "propellerclick.com",
-        "monetag.com",
-        "ad-maven.com",
-        "admaven.com",
-        "pxlad.io",
-        "grptaam.com",
-        "tsyndicate.com",
-        "trafficstars.com",
-        "twinred.com",
-        "clickadilla.com",
-        "bidvertiser.com",
-        "bdtcdn.com",
-        "revenuehits.com",
-        "galaksion.com",
-        "richads.com",
-        "yllix.com",
-        "adbutler.com",
-        "adskeeper.com",
-        "coinzilla.com",
-        "czilladx.com",
-        "cointraffic.io",
-        "media.net",
-        "revcontent.com",
-        "adspyglass.com",
-        // (v7) Vistos en vivo en mixdrop (los estables; los aleatorios/rotativos
-        // los cubre uBlock Origin Lite con EasyList).
-        "network-n.com",
-        "work-n.com",
-        "btloader.com",
-        "hadronid.net",
-        "bounceexchange.com",
-        "snigelweb.com",
-    ];
-    if HOSTS.iter().any(|h| u.contains(h)) {
+    if AD_HOSTS.iter().any(|h| u.contains(h)) {
         return true;
     }
     // Endpoint de anuncios propio de flightsim.to.
-    u.contains("flightsim.to/backend/ads/")
+    u.contains(FSTO_ADS_PATH)
 }
+
+/// Endpoint de anuncios propio de flightsim.to (también bloqueado).
+#[cfg(target_os = "windows")]
+const FSTO_ADS_PATH: &str = "flightsim.to/backend/ads/";
+
+/// Dominios de anuncios / tracking / popunders bloqueados en los navegadores
+/// embebidos (ver `install_web_guards`).
+#[cfg(target_os = "windows")]
+const AD_HOSTS: &[&str] = &[
+    "googlesyndication.com",
+    "doubleclick.net",
+    "googleadservices.com",
+    "googletagservices.com",
+    // (v7) OJO: `googletagmanager.com` (gtag) y `google-analytics.com` NO
+    // se bloquean — son ANALYTICS, no anuncios, y algunos hosters
+    // (modsfire: `alt095.js`) llaman `gtag()` sin guardas y REVIENTAN si no
+    // está → el botón de descarga queda muerto y "no pasa nada" al clicar.
+    // Bloquearlos no quita ningún anuncio visible; sí rompe las descargas.
+    "adservice.google",
+    "adnxs.com",
+    "amazon-adsystem.com",
+    "pubmatic.com",
+    "rubiconproject.com",
+    "criteo.com",
+    "criteo.net",
+    "taboola.com",
+    "outbrain.com",
+    "scorecardresearch.com",
+    "moatads.com",
+    "adform.net",
+    "adsafeprotected.com",
+    "aniview.com",
+    "pub.network",
+    "sekindo.com",
+    "3lift.com",
+    "casalemedia.com",
+    "openx.net",
+    "smartadserver.com",
+    "teads.tv",
+    "yieldmo.com",
+    "sharethrough.com",
+    "bidswitch.net",
+    "onetag.com",
+    "gumgum.com",
+    "indexww.com",
+    "adsrvr.org",
+    "quantserve.com",
+    // (v7) Redes de popunders / anuncios de los HOSTERS de archivos
+    // (modsfire, mixdrop y similares). Bloquearlas a nivel de red mata
+    // los popunders y los "botones de descarga falsos" de raíz — el
+    // script del anuncio nunca llega a cargar. NINGUNA es un captcha:
+    // reCAPTCHA (google.com/recaptcha, gstatic) y Cloudflare Turnstile
+    // (challenges.cloudflare.com) NO están aquí, así se pueden resolver.
+    "hai8g.com",
+    "crn77.com",
+    "xadsmart.com",
+    "greatdexchange.com",
+    "snigelweb.com",
+    "playwire.com",
+    "intergient.com",
+    "popads.net",
+    "popcash.net",
+    "propellerads.com",
+    "hilltopads.com",
+    "hilltopads.net",
+    "adsterra.com",
+    "clickadu.com",
+    "exoclick.com",
+    "juicyads.com",
+    "mgid.com",
+    "poptm.com",
+    "onclickalgo.com",
+    "highperformanceformat.com",
+    "profitabledisplaynetwork.com",
+    "adnium.com",
+    "trafficjunky.com",
+    "adcash.com",
+    // (v7) Dominios de ENTREGA (delivery/serving) — la clave que faltaba:
+    // mixdrop/hosters NO sirven los popunders desde el dominio de MARCA
+    // (exoclick.com) sino desde estos. Bloquear la marca no bloqueaba el
+    // anuncio. (Verificado en la investigación de adblock.)
+    "realsrv.com",
+    "exdynsrv.com",
+    "exosrv.com",
+    "exv6.com",
+    "magsrv.com",
+    "orbsrv.com",
+    "optnx.com",
+    "onclckds.com",
+    "propu.net",
+    "propellerpops.com",
+    "propellerclick.com",
+    "monetag.com",
+    "ad-maven.com",
+    "admaven.com",
+    "pxlad.io",
+    "grptaam.com",
+    "tsyndicate.com",
+    "trafficstars.com",
+    "twinred.com",
+    "clickadilla.com",
+    "bidvertiser.com",
+    "bdtcdn.com",
+    "revenuehits.com",
+    "galaksion.com",
+    "richads.com",
+    "yllix.com",
+    "adbutler.com",
+    "adskeeper.com",
+    "coinzilla.com",
+    "czilladx.com",
+    "cointraffic.io",
+    "media.net",
+    "revcontent.com",
+    "adspyglass.com",
+    // (v7) Vistos en vivo en mixdrop (los estables; los aleatorios/rotativos
+    // los cubre uBlock Origin Lite con EasyList).
+    "network-n.com",
+    "work-n.com",
+    "btloader.com",
+    "hadronid.net",
+    "bounceexchange.com",
+    "snigelweb.com",
+];
 
 fn download_filename(url: &tauri::Url) -> String {
     let raw = url

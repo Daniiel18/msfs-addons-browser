@@ -18,6 +18,7 @@ import { PauseCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { t } from "../lib/i18n";
+import { isTauri } from "../lib/tauri";
 
 interface ReplayPayload {
   active: boolean;
@@ -32,6 +33,9 @@ export function ReplayBanner() {
   const [state, setState] = useState<ReplayPayload | null>(null);
 
   useEffect(() => {
+    // (v7.4.2) En el demo del navegador no hay backend de Tauri: `listen`
+    // lanzaba "Cannot read properties of undefined (transformCallback)".
+    if (!isTauri) return;
     let unlisten: UnlistenFn | null = null;
     listen<ReplayPayload>("flight://replay", (event) => {
       if (event.payload.active) {

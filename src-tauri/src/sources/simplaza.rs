@@ -324,6 +324,9 @@ impl Source for SimplazaSource {
                      image_url,
                      released_at,
                  }| {
+                    if !visible_for_selected_sim(&title) {
+                        return None;
+                    }
                     let parsed = crate::parser::parse(&title);
                     let t_lower = title.to_lowercase();
                     let dev_lower = parsed
@@ -363,6 +366,7 @@ impl Source for SimplazaSource {
                         password: None,
                     });
                 }
+                let simulator = simulator_from_title(&title).to_string();
                 Addon {
                     id: stable_id("simplaza", &page_url),
                     source: "simplaza".into(),
@@ -371,7 +375,7 @@ impl Source for SimplazaSource {
                     name: parsed.name,
                     version: parsed.version,
                     icao: parsed.icao,
-                    simulator: "MSFS 2020".to_string(),
+                    simulator,
                     download_methods: super::prioritize_methods(methods),
                     page_url,
                     image_url,
@@ -409,6 +413,7 @@ impl Source for SimplazaSource {
 
         let prepped: Vec<_> = entries
             .into_iter()
+            .filter(|e| visible_for_selected_sim(&e.title))
             .take(MAX_DETAIL_FETCHES)
             .map(|e| {
                 let parsed = crate::parser::parse(&e.title);
@@ -428,6 +433,7 @@ impl Source for SimplazaSource {
                         password: None,
                     });
                 }
+                let simulator = simulator_from_title(&title).to_string();
                 Addon {
                     id: stable_id("simplaza", &page_url),
                     source: "simplaza".into(),
@@ -436,7 +442,7 @@ impl Source for SimplazaSource {
                     name: parsed.name,
                     version: parsed.version,
                     icao: parsed.icao,
-                    simulator: "MSFS 2020".to_string(),
+                    simulator,
                     download_methods: super::prioritize_methods(methods),
                     page_url,
                     image_url,
@@ -452,6 +458,36 @@ impl Source for SimplazaSource {
     }
 }
 
+/// (v7.4.2) Simulador de un post de Simplaza según su TÍTULO. Simplaza
+/// clasifica todo bajo `msfs-2020-*` y sólo algunos títulos dicen
+/// "[MSFS 2024]" o "MSFS 2020/2024". Un año suelto NO cuenta: "v2024.10.31"
+/// es una versión (REX, Parallel 42…), no el simulador — por eso exigimos el
+/// prefijo "MSFS" o el par "2020/2024".
+fn simulator_from_title(title: &str) -> &'static str {
+    static RE_2024: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"(?i)\bmsfs\s*2024\b").unwrap());
+    static RE_2020: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"(?i)\bmsfs\s*2020\b").unwrap());
+    static RE_BOTH: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"2020\s*[/&+,]\s*2024").unwrap());
+    let both = RE_BOTH.is_match(title);
+    let has24 = both || RE_2024.is_match(title);
+    let has20 = both || RE_2020.is_match(title);
+    match (has20, has24) {
+        (true, true) => "MSFS 2020/2024",
+        (false, true) => "MSFS 2024",
+        _ => "MSFS 2020",
+    }
+}
+
+/// (v7.4.2) ¿Se muestra este post con la versión de MSFS elegida? En MSFS
+/// 2024 se ve TODO el catálogo (los addons de 2020 suelen funcionar en 2024 y
+/// Simplaza casi no etiqueta los de 2024 — decisión del usuario); en 2020 se
+/// ocultan los marcados sólo para 2024.
+fn visible_for_selected_sim(title: &str) -> bool {
+    crate::sim::is_2024() || simulator_from_title(title) != "MSFS 2024"
+}
+
 fn doc_has_next_page(html: &str) -> bool {
     let doc = Html::parse_document(html);
     let sel = match Selector::parse("a.next.page-numbers, a.next") {
@@ -459,4 +495,19 @@ fn doc_has_next_page(html: &str) -> bool {
         Err(_) => return false,
     };
     doc.select(&sel).next().is_some()
+}
+
+#[cfg(test)]
+mod sim_label_tests {
+    use super::simulator_from_title;
+
+    #[test]
+    fn labels_from_title() {
+        assert_eq!(simulator_from_title("LIMC Milan Malpensa Airport (Merged) v3.5.0 [MSFS 2024]"), "MSFS 2024");
+        assert_eq!(simulator_from_title("Some Airport v1.0 [MSFS 2020/2024]"), "MSFS 2020/2024");
+        assert_eq!(simulator_from_title("Pack for MSFS 2020 & 2024"), "MSFS 2020/2024");
+        // Un año en la VERSIÓN no es el simulador.
+        assert_eq!(simulator_from_title("Parallel 42 – Flow Pro v2024.44.4.14"), "MSFS 2020");
+        assert_eq!(simulator_from_title("Flysimware – Learjet 35A v1.8.6"), "MSFS 2020");
+    }
 }

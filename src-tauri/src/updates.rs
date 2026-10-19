@@ -338,6 +338,7 @@ pub async fn refresh_for_installed(
     );
 
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let down: DownSources = Arc::default();
     let mut handles = Vec::with_capacity(tasks.len());
     // (v3.1.3) Contador atómico para enumerar tareas N/total al
     // procesar — el usuario pidió audibility para saber si el
@@ -348,10 +349,14 @@ pub async fn refresh_for_installed(
         let sem = sem.clone();
         let pool = pool.clone();
         let counter = progress_counter.clone();
+        let down = down.clone();
         handles.push(tokio::spawn(async move {
             // Permit liberado al salir del scope — limita la
             // ventana de in-flight requests al backend.
             let _permit = sem.acquire_owned().await.ok()?;
+            if down.lock().map(|d| d.contains(source.id())).unwrap_or(false) {
+                return Some(QueryOutcome::Failed);
+            }
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             tracing::info!(
                 target: "updates",
@@ -398,12 +403,22 @@ pub async fn refresh_for_installed(
                     QueryOutcome::Ok { addons_seen: count }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "updates: search('{}') en {} falló: {}",
-                        icao,
-                        source.id(),
-                        e
-                    );
+                    let first_down = e.is_unavailable()
+                        && down.lock().map(|mut d| d.insert(source.id())).unwrap_or(false);
+                    if first_down {
+                        tracing::warn!(
+                            "updates: {} no responde ({}) — se omiten sus demás búsquedas en este escaneo",
+                            source.id(),
+                            e
+                        );
+                    } else if !e.is_unavailable() {
+                        tracing::warn!(
+                            "updates: search('{}') en {} falló: {}",
+                            icao,
+                            source.id(),
+                            e
+                        );
+                    }
                     QueryOutcome::Failed
                 }
             };
@@ -446,6 +461,13 @@ enum QueryOutcome {
     Ok { addons_seen: usize },
     Failed,
 }
+
+/// (v7.4.2) Fuentes que dieron "caída" (`SourceError::is_unavailable`)
+/// durante ESTE escaneo. Antes, con Skybound devolviendo HTTP 530 desde el
+/// 10/10, cada escaneo lanzaba ~50 búsquedas condenadas a fallar (y 50 WARN
+/// en el log). Ahora la primera caída "abre el circuito" y el resto de
+/// búsquedas a esa fuente se omiten hasta el próximo escaneo.
+type DownSources = Arc<std::sync::Mutex<std::collections::HashSet<&'static str>>>;
 
 async fn cache_is_fresh(pool: &SqlitePool, icao: &str, source: &str) -> bool {
     let row = match repo::get_update_check_cache(pool, icao, source).await {

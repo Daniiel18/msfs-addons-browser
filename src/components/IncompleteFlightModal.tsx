@@ -103,17 +103,19 @@ function IncompleteFlightCard({
       style: {
         version: 8,
         sources: {
-          "carto-dark": {
+          // (v7.4.2) Antes CARTO `dark_all` (ahora exige API key).
+          "esri-dark": {
             type: "raster",
             tiles: [
-              "https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
+              "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
             ],
             tileSize: 256,
-            attribution: "© OpenStreetMap · © CARTO",
+            attribution: "Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap",
+            maxzoom: 16,
           },
         },
         layers: [
-          { id: "carto-dark-layer", type: "raster", source: "carto-dark" },
+          { id: "esri-dark-layer", type: "raster", source: "esri-dark" },
         ],
       },
       center: [entry.originLon ?? 0, entry.originLat ?? 20],
