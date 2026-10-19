@@ -44,17 +44,17 @@ export function SimVersionModal({ onChosen }: { onChosen?: () => void } = {}) {
         initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.18 }}
-        className="w-[min(520px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+        className="w-[min(520px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
       >
-        <header className="flex items-center gap-2.5 border-b border-slate-800 px-5 py-4">
+        <header className="flex items-center gap-2.5 border-b border-sf-border px-5 py-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500/15 ring-1 ring-brand-500/40">
             <Plane className="h-4 w-4 text-brand-300" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-slate-100">
+            <h2 className="text-sm font-semibold text-sf-text">
               {t("simver.title")}
             </h2>
-            <p className="text-[11px] text-slate-500">{t("simver.subtitle")}</p>
+            <p className="text-[11px] text-sf-muted">{t("simver.subtitle")}</p>
           </div>
         </header>
 
@@ -64,12 +64,12 @@ export function SimVersionModal({ onChosen }: { onChosen?: () => void } = {}) {
               key={v}
               onClick={() => void choose(v)}
               disabled={!!busy}
-              className="group flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-6 text-center transition-colors hover:border-brand-500/50 hover:bg-slate-900 disabled:opacity-50"
+              className="group flex flex-col items-center gap-2 rounded-xl border border-sf-border bg-sf-surface px-4 py-6 text-center transition-colors hover:border-brand-500/50 hover:bg-sf-surface disabled:opacity-50"
             >
-              <span className="text-base font-bold text-slate-100">
+              <span className="text-base font-bold text-sf-text">
                 {v === "msfs2020" ? "MSFS 2020" : "MSFS 2024"}
               </span>
-              <span className="text-[11px] leading-relaxed text-slate-400">
+              <span className="text-[11px] leading-relaxed text-sf-muted">
                 {v === "msfs2020"
                   ? t("simver.opt2020")
                   : t("simver.opt2024")}
@@ -86,7 +86,7 @@ export function SimVersionModal({ onChosen }: { onChosen?: () => void } = {}) {
           ))}
         </div>
 
-        <p className="border-t border-slate-800 px-5 py-3 text-[11px] text-slate-500">
+        <p className="border-t border-sf-border px-5 py-3 text-[11px] text-sf-muted">
           {t("simver.note")}
         </p>
       </motion.div>

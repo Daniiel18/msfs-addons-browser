@@ -1721,7 +1721,7 @@ export function RoutesMapView({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-xl border border-slate-800 bg-slate-950 ${
+      className={`relative overflow-hidden rounded-xl border border-sf-border bg-sf-bg ${
         className ?? ""
       }`}
       style={{ height }}
@@ -1731,16 +1731,16 @@ export function RoutesMapView({
           modo detalle, sólo el badge ámbar del track real.
           (v3.5.0) Movida a top-RIGHT — la card de detalle vive en
           el top-left, así que los chips antes quedaban tapados. */}
-      <div className="pointer-events-none absolute right-3 top-3 flex flex-wrap justify-end gap-2 text-[10px] font-medium uppercase tracking-wide text-slate-300">
+      <div className="pointer-events-none absolute right-3 top-3 flex flex-wrap justify-end gap-2 text-[10px] font-medium uppercase tracking-wide text-sf-text/90">
         {detailMode ? (
-          <span className="rounded-md bg-slate-950/80 px-2 py-1 ring-1 ring-amber-500/30">
+          <span className="rounded-md bg-sf-bg/85 px-2 py-1 ring-1 ring-amber-500/30">
             <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-amber-400 align-middle" />
             {t("fb.map.real_track")}{" "}
             <span className="text-amber-300">({trackPoints.length} pts)</span>
           </span>
         ) : (
           <>
-            <span className="rounded-md bg-slate-950/80 px-2 py-1 ring-1 ring-emerald-500/30">
+            <span className="rounded-md bg-sf-bg/85 px-2 py-1 ring-1 ring-emerald-500/30">
               <span className="mr-1 inline-block h-1.5 w-3 rounded-full bg-emerald-400 align-middle" />
               {t("fb.map.real_count")} <span className="text-emerald-300">({totalReal})</span>
             </span>
@@ -1753,7 +1753,7 @@ export function RoutesMapView({
         </div>
       )}
       {detailMode && !loadingTrack && trackPoints.length < 2 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-400">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-sf-muted">
           {t("fb.map.no_track")}
         </div>
       )}
@@ -1764,13 +1764,13 @@ export function RoutesMapView({
           {!replayOn ? (
             <button
               onClick={toggleReplay}
-              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-slate-950/80 px-4 py-2 text-xs font-semibold text-cyan-200 backdrop-blur hover:bg-cyan-500/15"
+              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-sf-bg/85 px-4 py-2 text-xs font-semibold text-cyan-200 backdrop-blur hover:bg-cyan-500/15"
             >
               <PlayCircle className="h-4 w-4" />
               {t("replay.start")}
             </button>
           ) : (
-            <div className="pointer-events-auto flex w-[min(560px,100%)] flex-col gap-2 rounded-xl border border-slate-700 bg-slate-950/90 px-3 py-2.5 backdrop-blur">
+            <div className="pointer-events-auto flex w-[min(560px,100%)] flex-col gap-2 rounded-xl border border-sf-border bg-sf-bg/90 px-3 py-2.5 backdrop-blur">
               <div className="flex items-center gap-3">
                 <button
                   onClick={toggleReplayPlay}
@@ -1788,34 +1788,34 @@ export function RoutesMapView({
                   max={Math.max(1, replayTotalMs)}
                   value={Math.min(replayClock, replayTotalMs)}
                   onChange={(e) => scrubReplay(Number(e.target.value))}
-                  className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-slate-700 accent-cyan-400"
+                  className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-sf-border accent-cyan-400"
                 />
-                <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-300">
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-sf-text/90">
                   {fmtClock(replayClock)} / {fmtClock(replayTotalMs)}
                 </span>
                 <button
                   onClick={toggleReplay}
                   title={t("replay.exit")}
-                  className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                  className="shrink-0 rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                <div className="flex items-center gap-1.5 text-[10px] text-sf-muted">
                   {trackPoints[replayIdx]?.altFt != null && (
-                    <span className="rounded bg-slate-800 px-1.5 py-0.5">
+                    <span className="rounded bg-sf-raised px-1.5 py-0.5">
                       {Math.round(trackPoints[replayIdx].altFt as number).toLocaleString()} ft
                     </span>
                   )}
                   {trackPoints[replayIdx]?.gsKt != null && (
-                    <span className="rounded bg-slate-800 px-1.5 py-0.5">
+                    <span className="rounded bg-sf-raised px-1.5 py-0.5">
                       {Math.round(trackPoints[replayIdx].gsKt as number)} kt
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="mr-0.5 text-[10px] text-slate-500">
+                  <span className="mr-0.5 text-[10px] text-sf-muted">
                     {t("replay.speed")}
                   </span>
                   {REPLAY_SPEEDS.map((sp) => (
@@ -1825,7 +1825,7 @@ export function RoutesMapView({
                       className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
                         replaySpeed === sp
                           ? "bg-cyan-500/30 text-cyan-100"
-                          : "bg-slate-800 text-slate-400 hover:text-slate-200"
+                          : "bg-sf-raised text-sf-muted hover:text-sf-text"
                       }`}
                     >
                       {sp}×
@@ -1839,7 +1839,7 @@ export function RoutesMapView({
       )}
 
       {empty && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-500">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-sf-muted">
           {t("fb.map.empty_title")}
           <br />
           {t("fb.map.empty_hint")}
@@ -2016,21 +2016,21 @@ function LiveFlightPanel({
   const accentText = accent === "fuchsia" ? "text-fuchsia-300" : "text-sky-300";
   return (
     <div
-      className={`absolute ${positionClass} z-10 w-[300px] rounded-xl border border-slate-700/80 bg-slate-950/90 p-3 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur`}
+      className={`absolute ${positionClass} z-10 w-[300px] rounded-xl border border-sf-border/80 bg-sf-bg/90 p-3 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur`}
     >
       {/* Botonera ⌖ ^ X */}
       <div className="absolute right-2 top-2 flex items-center gap-1">
         <button
           onClick={onCenter}
           title={t("fb.live.center")}
-          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
         >
           <Crosshair className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={onToggleMin}
           title={minimized ? t("fb.live.expand") : t("fb.live.minimize")}
-          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
         >
           {minimized ? (
             <ChevronDown className="h-3.5 w-3.5" />
@@ -2041,7 +2041,7 @@ function LiveFlightPanel({
         <button
           onClick={onClose}
           title={t("common.close")}
-          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -2053,7 +2053,7 @@ function LiveFlightPanel({
         {pilotName && (
           <span className={`text-xs font-bold ${accentText}`}>{pilotName}</span>
         )}
-        <span className="font-mono text-sm font-bold text-slate-100">
+        <span className="font-mono text-sm font-bold text-sf-text">
           {status.originIcao ?? "—"} - {status.destinationIcao ?? "—"}
         </span>
         <span
@@ -2067,7 +2067,7 @@ function LiveFlightPanel({
         <>
           {/* Barra de progreso con avión */}
           {pct != null && (
-            <div className="relative mt-2 h-1.5 w-full rounded-full bg-slate-800">
+            <div className="relative mt-2 h-1.5 w-full rounded-full bg-sf-raised">
               <div
                 className="h-full rounded-full bg-sky-400"
                 style={{ width: `${pct}%` }}
@@ -2081,7 +2081,7 @@ function LiveFlightPanel({
             </div>
           )}
           {(doneNm != null || remainNm != null) && (
-            <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] text-slate-400">
+            <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] text-sf-muted">
               <span>
                 {doneNm != null ? `${Math.round(doneNm)} NM` : "—"}
               </span>
@@ -2094,29 +2094,29 @@ function LiveFlightPanel({
 
           {/* Cards GS / Alt / HDG */}
           <div className="mt-2 grid grid-cols-3 gap-1.5">
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5 text-center">
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-sf-muted">
                 GS
               </div>
-              <div className="font-mono text-xs text-slate-100">
+              <div className="font-mono text-xs text-sf-text">
                 {gs != null ? `${Math.round(gs)} kt` : "—"}
               </div>
             </div>
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5 text-center">
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-sf-muted">
                 {t("fb.live.altitude")}
               </div>
-              <div className="font-mono text-xs text-slate-100">
+              <div className="font-mono text-xs text-sf-text">
                 {status.currentAltFt != null
                   ? `${Math.round(status.currentAltFt).toLocaleString()} ft`
                   : "—"}
               </div>
             </div>
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5 text-center">
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-sf-muted">
                 {t("fb.live.heading")}
               </div>
-              <div className="font-mono text-xs text-slate-100">
+              <div className="font-mono text-xs text-sf-text">
                 {status.currentHeadingDeg != null
                   ? `${Math.round(status.currentHeadingDeg)}°`
                   : "—"}
@@ -2126,25 +2126,25 @@ function LiveFlightPanel({
 
           {/* Aeropuertos + aeronave */}
           <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px]">
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
-              <div className="font-mono font-semibold text-slate-200">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5">
+              <div className="font-mono font-semibold text-sf-text">
                 {status.originIcao ?? "—"}
               </div>
-              <div className="truncate text-slate-500">
+              <div className="truncate text-sf-muted">
                 {status.originName ?? ""}
               </div>
             </div>
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
-              <div className="font-mono font-semibold text-slate-200">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5">
+              <div className="font-mono font-semibold text-sf-text">
                 {status.destinationIcao ?? "—"}
               </div>
-              <div className="truncate text-slate-500">
+              <div className="truncate text-sf-muted">
                 {status.destinationName ?? ""}
               </div>
             </div>
           </div>
           {status.aircraftIcao && (
-            <div className="mt-1.5 text-center font-mono text-[10px] text-slate-500">
+            <div className="mt-1.5 text-center font-mono text-[10px] text-sf-muted">
               {t("fb.live.aircraft")}: {status.aircraftIcao}
             </div>
           )}

@@ -112,14 +112,14 @@ function EconomyLoading() {
   return (
     <div className="space-y-4">
       {/* Barra indeterminada: un haz de marca recorriendo la pista. */}
-      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-slate-800/80">
+      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
         <motion.div
           className="absolute inset-y-0 w-1/3 rounded-full bg-gradient-to-r from-transparent via-brand-400 to-transparent"
           animate={{ x: ["-120%", "360%"] }}
           transition={{ duration: 1.15, repeat: Infinity, ease: "easeInOut" }}
         />
       </div>
-      <div className="flex items-center gap-2 text-sm text-slate-400">
+      <div className="flex items-center gap-2 text-sm text-sf-muted">
         <Wallet className="h-4 w-4 animate-pulse text-brand-400" />
         {t("economy.loading")}
       </div>
@@ -128,15 +128,15 @@ function EconomyLoading() {
         {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
-            className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4"
+            className="flex items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface p-4"
             style={{ opacity: 1 - i * 0.18 }}
           >
-            <div className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-slate-800" />
+            <div className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-sf-raised" />
             <div className="flex-1 space-y-2">
-              <div className="h-3 w-1/3 animate-pulse rounded bg-slate-800" />
-              <div className="h-2.5 w-1/5 animate-pulse rounded bg-slate-800/70" />
+              <div className="h-3 w-1/3 animate-pulse rounded bg-sf-raised" />
+              <div className="h-2.5 w-1/5 animate-pulse rounded bg-sf-raised" />
             </div>
-            <div className="h-7 w-24 animate-pulse rounded-lg bg-slate-800" />
+            <div className="h-7 w-24 animate-pulse rounded-lg bg-sf-raised" />
           </div>
         ))}
       </div>
@@ -194,11 +194,10 @@ export function EconomyView() {
   return (
     <div className="h-full overflow-y-auto pr-1">
       <header className="mb-4">
-        <h1 className="flex items-center gap-2 text-xl font-semibold text-slate-100">
-          <Wallet className="h-5 w-5 text-brand-400" />
+        <h1 className="text-xl font-semibold tracking-tight text-sf-text">
           {t("economy.title")}
         </h1>
-        <p className="mt-1 text-sm text-slate-500">{t("economy.subtitle")}</p>
+        <p className="mt-0.5 text-sm text-sf-muted">{t("economy.subtitle")}</p>
       </header>
 
       {error && (
@@ -210,11 +209,11 @@ export function EconomyView() {
       {!error && !list && <EconomyLoading />}
 
       {!error && list && list.length === 0 && (
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center">
-          <p className="text-base font-semibold text-slate-200">
+        <div className="rounded-2xl border border-sf-border bg-sf-surface p-10 text-center">
+          <p className="text-base font-semibold text-sf-text">
             {t("economy.empty.title")}
           </p>
-          <p className="mt-1 text-sm text-slate-500">{t("economy.empty.hint")}</p>
+          <p className="mt-1 text-sm text-sf-muted">{t("economy.empty.hint")}</p>
         </div>
       )}
 
@@ -265,16 +264,17 @@ function Overview({
 
   return (
     <>
+      <GlobalSummary list={list} />
       {list.length >= 2 && <RankingStrip list={list} onSelect={onSelect} />}
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-sf-muted">
           {t("economy.overview.count", { n: list.length })}
         </span>
-        <span className="ml-auto text-[11px] text-slate-600">
+        <span className="ml-auto text-[11px] text-sf-muted/70">
           {t("economy.click_hint")}
         </span>
-        <div className="flex items-center gap-1 rounded-lg bg-slate-900/70 p-0.5 ring-1 ring-slate-800">
+        <div className="flex items-center gap-1 rounded-lg bg-sf-surface/70 p-0.5 ring-1 ring-sf-border">
           {(["net", "balance", "satisfaction"] as SortKey[]).map((k) => (
             <button
               key={k}
@@ -282,7 +282,7 @@ function Overview({
               className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
                 sort === k
                   ? "bg-brand-500/20 text-brand-200"
-                  : "text-slate-400 hover:text-slate-200"
+                  : "text-sf-muted hover:text-sf-text"
               }`}
             >
               {t(`economy.sort.${k}`)}
@@ -308,6 +308,134 @@ function Overview({
         ))}
       </div>
     </>
+  );
+}
+
+/** (Rediseño F4) Resumen global: suma de todas tus aerolíneas (ingresos,
+ *  costes, resultado, saldo) + desglose de costes por categoría. Todo sale
+ *  del mismo ledger que las tarjetas; no hay datos nuevos. */
+function GlobalSummary({ list }: { list: AirlineLedger[] }) {
+  const s = useMemo(() => {
+    const z = {
+      revenue: 0, costs: 0, net: 0, balance: 0,
+      fuel: 0, catering: 0, handling: 0, maintenance: 0, fees: 0,
+    };
+    for (const l of list) {
+      z.revenue += l.revenue;
+      z.costs += l.costs;
+      z.net += l.net;
+      z.balance += l.balance;
+      z.fuel += l.costFuel;
+      z.catering += l.costCatering;
+      z.handling += l.costHandling;
+      z.maintenance += l.costMaintenance;
+      z.fees += l.costFees;
+    }
+    return z;
+  }, [list]);
+  const margin = s.revenue > 0 ? (s.net / s.revenue) * 100 : 0;
+  const costs = [
+    { key: "fuel", name: t("economy.costs.fuel"), value: s.fuel, color: COST_COLORS.fuel },
+    { key: "catering", name: t("economy.costs.catering"), value: s.catering, color: COST_COLORS.catering },
+    { key: "handling", name: t("economy.costs.handling"), value: s.handling, color: COST_COLORS.handling },
+    { key: "maintenance", name: t("economy.costs.maintenance"), value: s.maintenance, color: COST_COLORS.maintenance },
+    { key: "fees", name: t("economy.costs.fees"), value: s.fees, color: COST_COLORS.fees },
+  ]
+    .filter((c) => c.value > 0)
+    .sort((a, b) => b.value - a.value);
+  const costTotal = costs.reduce((a, c) => a + c.value, 0);
+
+  return (
+    <section className="mb-5 space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryKpi
+          icon={<TrendingUp className="h-5 w-5" />}
+          label={t("economy.revenue.heading")}
+          value={usdFull.format(s.revenue)}
+        />
+        <SummaryKpi
+          icon={<TrendingDown className="h-5 w-5" />}
+          label={t("economy.costs.heading")}
+          value={usdFull.format(s.costs)}
+        />
+        <SummaryKpi
+          icon={<Percent className="h-5 w-5" />}
+          label={t("economy.kpi.net")}
+          value={fmtSigned(s.net)}
+          valueClass={s.net >= 0 ? "text-emerald-300" : "text-rose-300"}
+          hint={`${t("economy.kpi.margin")} ${margin >= 0 ? "+" : ""}${margin.toFixed(0)}%`}
+        />
+        <SummaryKpi
+          icon={<Landmark className="h-5 w-5" />}
+          label={t("economy.summary.balance")}
+          value={usdFull.format(s.balance)}
+          hint={t("economy.overview.count", { n: list.length })}
+        />
+      </div>
+
+      {costTotal > 0 && (
+        <div className="rounded-xl border border-sf-border/80 bg-sf-surface p-4">
+          <div className="mb-3 flex items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold text-sf-text">
+              {t("economy.summary.cost_breakdown")}
+            </h2>
+            <span className="text-xs tabular-nums text-sf-muted">{usdFull.format(costTotal)}</span>
+          </div>
+          <div className="flex h-2.5 overflow-hidden rounded-full bg-sf-bg">
+            {costs.map((c) => (
+              <div
+                key={c.key}
+                style={{ width: `${(c.value / costTotal) * 100}%`, background: c.color }}
+                title={`${c.name}: ${usdFull.format(c.value)}`}
+              />
+            ))}
+          </div>
+          <ul className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+            {costs.map((c) => (
+              <li key={c.key} className="flex items-center gap-2 text-[13px]">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: c.color }} />
+                <span className="min-w-0 flex-1 truncate text-sf-text">{c.name}</span>
+                <span className="w-10 shrink-0 text-right text-xs tabular-nums text-sf-muted">
+                  {((c.value / costTotal) * 100).toFixed(0)}%
+                </span>
+                <span className="w-24 shrink-0 text-right text-xs tabular-nums text-sf-text">
+                  {usdFull.format(c.value)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SummaryKpi({
+  icon,
+  label,
+  value,
+  hint,
+  valueClass = "text-sf-text",
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint?: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-sf-border/80 bg-sf-surface p-4">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sf-raised text-brand-300">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-[13px] font-medium text-sf-muted">{label}</div>
+        <div className={`mt-0.5 truncate text-2xl font-semibold tabular-nums ${valueClass}`}>
+          {value}
+        </div>
+        {hint && <div className="mt-0.5 truncate text-xs text-sf-muted">{hint}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -367,7 +495,7 @@ function RankingStrip({
 
   return (
     <div className="mb-3">
-      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sf-muted">
         <Trophy className="h-3.5 w-3.5 text-amber-400" />
         {t("economy.rank.heading")}
       </h2>
@@ -376,7 +504,7 @@ function RankingStrip({
           <button
             key={it.key}
             onClick={() => onSelect(it.led)}
-            className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-3 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
+            className="flex items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface p-3 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
           >
             <span
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
@@ -385,12 +513,12 @@ function RankingStrip({
               {it.icon}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500">
+              <div className="text-[10px] uppercase tracking-wide text-sf-muted">
                 {it.label}
               </div>
               <div className="flex items-center gap-1.5">
                 <AirlineLogo icao={it.led.icao} name={it.led.name} size={18} />
-                <span className="truncate text-sm font-semibold text-slate-100">
+                <span className="truncate text-sm font-semibold text-sf-text">
                   {it.led.name}
                 </span>
               </div>
@@ -422,7 +550,7 @@ function AirlineCard({
   return (
     <button
       onClick={onClick}
-      className="group relative flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
+      className="group relative flex flex-col gap-3 rounded-2xl border border-sf-border bg-sf-surface p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
     >
       {rank != null && (
         <span
@@ -435,7 +563,7 @@ function AirlineCard({
       <div className="flex items-center gap-3">
         <AirlineLogo icao={led.icao} name={led.name} size={40} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-slate-100">
+          <div className="truncate text-sm font-semibold text-sf-text">
             {led.name}
           </div>
           <span
@@ -463,15 +591,15 @@ function AirlineCard({
 
       <div className="flex items-end justify-between">
         <div>
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">
+          <div className="text-[10px] uppercase tracking-wide text-sf-muted">
             {t("economy.kpi.balance")}
           </div>
-          <div className="text-lg font-bold text-slate-100">
+          <div className="text-lg font-bold text-sf-text">
             {usdCompact.format(led.balance)}
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">
+          <div className="text-[10px] uppercase tracking-wide text-sf-muted">
             {t("economy.kpi.net")}
           </div>
           <div
@@ -487,7 +615,7 @@ function AirlineCard({
       {/* Satisfacción */}
       <div>
         <div className="mb-1 flex items-center justify-between text-[10px]">
-          <span className="flex items-center gap-1 text-slate-500">
+          <span className="flex items-center gap-1 text-sf-muted">
             <Smile className="h-3 w-3" />
             {t("economy.kpi.satisfaction")}
           </span>
@@ -496,10 +624,10 @@ function AirlineCard({
               {Math.round(sat!)}% · {tier.label}
             </span>
           ) : (
-            <span className="text-slate-600">{t("economy.sat.nodata")}</span>
+            <span className="text-sf-muted/70">{t("economy.sat.nodata")}</span>
           )}
         </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
           <div
             className="h-full rounded-full"
             style={{
@@ -510,14 +638,14 @@ function AirlineCard({
         </div>
       </div>
 
-      <div className="flex items-center gap-3 text-[11px] text-slate-500">
+      <div className="flex items-center gap-3 text-[11px] text-sf-muted">
         <span className="flex items-center gap-1">
           <Plane className="h-3 w-3" /> {intFmt.format(led.flights)}
         </span>
         <span className="flex items-center gap-1">
           <Users className="h-3 w-3" /> {intFmt.format(led.passengers)}
         </span>
-        <span className="ml-auto font-medium text-slate-400">
+        <span className="ml-auto font-medium text-sf-muted">
           {margin >= 0 ? "+" : ""}
           {margin.toFixed(0)}% {t("economy.kpi.margin").toLowerCase()}
         </span>
@@ -579,17 +707,17 @@ function AirlineDetail({
     <div className="space-y-4">
       <button
         onClick={onBack}
-        className="flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-200"
+        className="flex items-center gap-1.5 text-xs font-medium text-sf-muted hover:text-sf-text"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         {t("economy.back")}
       </button>
 
       {/* Cabecera */}
-      <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sf-border bg-sf-surface p-4">
         <AirlineLogo icao={led.icao} name={led.name} size={56} />
         <div className="min-w-0">
-          <h2 className="text-lg font-bold text-slate-100">{led.name}</h2>
+          <h2 className="text-lg font-bold text-sf-text">{led.name}</h2>
           <div className="mt-0.5 flex items-center gap-2 text-[11px]">
             <span
               className="rounded-full px-2 py-0.5 font-medium"
@@ -600,7 +728,7 @@ function AirlineDetail({
             >
               {airlineKind(led).label}
             </span>
-            {led.icao && <span className="text-slate-500">{led.icao}</span>}
+            {led.icao && <span className="text-sf-muted">{led.icao}</span>}
           </div>
         </div>
         <span
@@ -619,36 +747,36 @@ function AirlineDetail({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <button
           onClick={() => setModal("maintenance")}
-          className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-slate-900/70"
+          className="flex items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
         >
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-300">
             <Wrench className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-100">
+            <div className="text-sm font-semibold text-sf-text">
               {t("economy.manage.maintenance")}
             </div>
-            <div className="text-xs text-slate-500">
+            <div className="text-xs text-sf-muted">
               {t("economy.manage.maintenance.hint")}
             </div>
           </div>
         </button>
         {!led.cargo && (
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+          <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/15 text-sky-300">
                 <ConciergeBell className="h-5 w-5" />
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-slate-100">
+                  <span className="text-sm font-semibold text-sf-text">
                     {t("economy.manage.services")}
                   </span>
-                  <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+                  <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
                     {t("economy.svc.auto.badge")}
                   </span>
                 </div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-sf-muted">
                   {t("economy.svc.auto.hint", { kind: airlineKind(led).label.toLowerCase() })}
                 </div>
               </div>
@@ -657,7 +785,7 @@ function AirlineDetail({
               {SERVICES.filter((s) => autoServiceKeys(led).includes(s.key)).map((s) => (
                 <span
                   key={s.key}
-                  className="flex items-center gap-1 rounded-md bg-slate-950/50 px-2 py-1 text-[11px] text-slate-300 ring-1 ring-slate-800"
+                  className="flex items-center gap-1 rounded-md bg-sf-bg/50 px-2 py-1 text-[11px] text-sf-text/90 ring-1 ring-sf-border"
                 >
                   {s.icon}
                   {t(s.labelKey)}
@@ -713,8 +841,8 @@ function AirlineDetail({
       <BalanceHistoryCard led={led} />
 
       {/* Satisfacción del pasajero */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+      <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
+        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
           <Smile className="h-4 w-4 text-brand-400" />
           {t("economy.kpi.satisfaction")}
         </h3>
@@ -728,25 +856,25 @@ function AirlineDetail({
                 {tier.label}
               </span>
               {led.avgLandingFpm != null && (
-                <span className="ml-auto text-xs text-slate-500">
+                <span className="ml-auto text-xs text-sf-muted">
                   {t("economy.satisfaction.avgfpm", {
                     fpm: Math.round(led.avgLandingFpm),
                   })}
                 </span>
               )}
             </div>
-            <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-sf-raised">
               <div
                 className="h-full rounded-full transition-all"
                 style={{ width: `${sat}%`, background: tier.color }}
               />
             </div>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-sf-muted">
               {t("economy.satisfaction.hint")}
             </p>
           </>
         ) : (
-          <p className="py-6 text-center text-sm text-slate-500">
+          <p className="py-6 text-center text-sm text-sf-muted">
             {t("economy.satisfaction.nodata")}
           </p>
         )}
@@ -832,20 +960,20 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
   }, [data, led.valuation]);
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+    <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-sf-text">
           <Wallet className="h-4 w-4 text-brand-400" />
           {t("economy.history.heading")}
         </h3>
-        <span className="text-xs text-slate-500">{t("economy.history.hint")}</span>
+        <span className="text-xs text-sf-muted">{t("economy.history.hint")}</span>
       </div>
       {loading ? (
-        <div className="flex h-56 items-center justify-center text-sm text-slate-500">
+        <div className="flex h-56 items-center justify-center text-sm text-sf-muted">
           {t("economy.history.loading")}
         </div>
       ) : data.length < 2 ? (
-        <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-slate-500">
+        <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-sf-muted">
           {t("economy.history.nodata")}
         </div>
       ) : (
@@ -903,16 +1031,16 @@ function BalanceTooltip({ active, payload }: any) {
   const p = payload[0].payload as BalancePoint & { dateLabel: string };
   const up = p.delta >= 0;
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs shadow-xl">
-      <div className="font-semibold text-slate-200">{p.label}</div>
-      <div className="text-slate-500">{p.dateLabel}</div>
+    <div className="rounded-lg border border-sf-border bg-sf-surface/95 px-3 py-2 text-xs shadow-xl">
+      <div className="font-semibold text-sf-text">{p.label}</div>
+      <div className="text-sf-muted">{p.dateLabel}</div>
       <div className="mt-1 flex items-center justify-between gap-4">
-        <span className="text-slate-400">{t("economy.history.balance")}</span>
-        <span className="font-semibold text-slate-100">{usdFull.format(p.balance)}</span>
+        <span className="text-sf-muted">{t("economy.history.balance")}</span>
+        <span className="font-semibold text-sf-text">{usdFull.format(p.balance)}</span>
       </div>
       {p.kind !== "start" && (
         <div className="flex items-center justify-between gap-4">
-          <span className="text-slate-400">{t("economy.history.change")}</span>
+          <span className="text-sf-muted">{t("economy.history.change")}</span>
           <span className={up ? "text-emerald-400" : "text-red-400"}>
             {up ? "+" : ""}
             {usdFull.format(p.delta)}
@@ -928,7 +1056,7 @@ function Kpi({
   label,
   value,
   hint,
-  valueClass = "text-slate-100",
+  valueClass = "text-sf-text",
 }: {
   icon?: React.ReactNode;
   label: string;
@@ -937,13 +1065,13 @@ function Kpi({
   valueClass?: string;
 }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-sf-muted">
         {icon}
         {label}
       </div>
       <div className={`mt-1 text-lg font-bold ${valueClass}`}>{value}</div>
-      {hint && <div className="text-[10px] text-slate-600">{hint}</div>}
+      {hint && <div className="text-[10px] text-sf-muted/70">{hint}</div>}
     </div>
   );
 }
@@ -960,15 +1088,15 @@ function BreakdownCard({
   data: Array<{ name: string; value: number; color: string }>;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+    <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
       <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
+        <h3 className="text-sm font-semibold text-sf-text">{title}</h3>
         <span className={`text-base font-bold ${totalClass}`}>
           {usdFull.format(total)}
         </span>
       </div>
       {data.length === 0 ? (
-        <p className="py-10 text-center text-xs text-slate-600">
+        <p className="py-10 text-center text-xs text-sf-muted/70">
           {t("economy.no_data")}
         </p>
       ) : (
@@ -1011,13 +1139,13 @@ function BreakdownCard({
                     className="h-2.5 w-2.5 shrink-0 rounded-sm"
                     style={{ background: d.color }}
                   />
-                  <span className="min-w-0 flex-1 truncate text-slate-400">
+                  <span className="min-w-0 flex-1 truncate text-sf-muted">
                     {d.name}
                   </span>
-                  <span className="font-medium text-slate-300">
+                  <span className="font-medium text-sf-text/90">
                     {usdCompact.format(d.value)}
                   </span>
-                  <span className="w-9 text-right text-slate-600">
+                  <span className="w-9 text-right text-sf-muted/70">
                     {pct.toFixed(0)}%
                   </span>
                 </li>

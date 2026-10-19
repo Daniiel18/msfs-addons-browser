@@ -105,8 +105,8 @@ export function DiagnosticsSettings() {
 
   if (!unlocked) {
     return (
-      <div className="space-y-3 rounded-md border border-slate-800 bg-slate-900/40 px-3 py-3">
-        <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+      <div className="space-y-3 rounded-md border border-sf-border bg-sf-surface px-3 py-3">
+        <div className="flex items-center gap-1.5 text-[11px] text-sf-muted">
           <Lock className="h-3.5 w-3.5" />
           {t("diag.unlock.hint")}
         </div>
@@ -124,8 +124,8 @@ export function DiagnosticsSettings() {
             tryCode(v);
           }}
           placeholder="····"
-          className={`w-full rounded-md border bg-slate-950 px-3 py-2 text-center font-mono text-lg tracking-[0.5em] text-slate-100 outline-none ${
-            error ? "border-rose-500/60" : "border-slate-700 focus:border-brand-500"
+          className={`w-full rounded-md border bg-sf-bg px-3 py-2 text-center font-mono text-lg tracking-[0.5em] text-sf-text outline-none ${
+            error ? "border-rose-500/60" : "border-sf-border focus:border-brand-500"
           }`}
         />
 
@@ -136,7 +136,7 @@ export function DiagnosticsSettings() {
               key={d}
               type="button"
               onClick={() => pressDigit(d)}
-              className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-brand-500/50 hover:bg-slate-800 active:scale-95"
+              className="rounded-lg border border-sf-border bg-sf-surface py-2 text-sm font-semibold text-sf-text transition-colors hover:border-brand-500/50 hover:bg-sf-raised active:scale-95"
             >
               {d}
             </button>
@@ -147,14 +147,14 @@ export function DiagnosticsSettings() {
               setCode("");
               setError(false);
             }}
-            className="rounded-lg border border-slate-800 bg-slate-950 py-2 text-[10px] font-medium text-slate-500 hover:text-slate-300"
+            className="rounded-lg border border-sf-border bg-sf-bg py-2 text-[11px] font-medium text-sf-muted hover:text-sf-text/90"
           >
             {t("diag.unlock.clear")}
           </button>
           <button
             type="button"
             onClick={() => pressDigit("0")}
-            className="rounded-lg border border-slate-700 bg-slate-900 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-brand-500/50 hover:bg-slate-800 active:scale-95"
+            className="rounded-lg border border-sf-border bg-sf-surface py-2 text-sm font-semibold text-sf-text transition-colors hover:border-brand-500/50 hover:bg-sf-raised active:scale-95"
           >
             0
           </button>
@@ -164,7 +164,7 @@ export function DiagnosticsSettings() {
               setCode((c) => c.slice(0, -1));
               setError(false);
             }}
-            className="flex items-center justify-center rounded-lg border border-slate-800 bg-slate-950 py-2 text-slate-500 hover:text-slate-300"
+            className="flex items-center justify-center rounded-lg border border-sf-border bg-sf-bg py-2 text-sf-muted hover:text-sf-text/90"
           >
             <Delete className="h-4 w-4" />
           </button>
@@ -185,7 +185,7 @@ export function DiagnosticsSettings() {
   return (
     <div className="space-y-2">
       {/* ── Subsistemas internos ── */}
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
         {t("diag.subsystems")}
       </p>
       <div className="grid grid-cols-2 gap-1.5">
@@ -248,30 +248,30 @@ export function DiagnosticsSettings() {
       </div>
 
       {/* ── Procesos del SO ── */}
-      <div className="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2">
-        <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+      <div className="flex items-center justify-between rounded-md border border-sf-border bg-sf-surface px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[11px] text-sf-muted">
           <Activity className="h-3.5 w-3.5 text-emerald-400" />
           <span>
             {t("diag.total")}{" "}
-            <span className="font-mono font-semibold text-slate-100">
+            <span className="font-mono font-semibold text-sf-text">
               {report ? fmtMB(report.totalBytes) : "—"}
             </span>{" "}
-            <span className="text-slate-500">({report?.count ?? 0} {t("diag.processes")})</span>
+            <span className="text-sf-muted">({report?.count ?? 0} {t("diag.processes")})</span>
           </span>
         </div>
         <button
           onClick={refresh}
-          className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+          className="inline-flex items-center gap-1 rounded-md border border-sf-border px-2 py-1 text-[11px] text-sf-text/90 hover:bg-sf-raised"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
           {t("diag.refresh")}
         </button>
       </div>
 
-      <div className="overflow-hidden rounded-md border border-slate-800">
+      <div className="overflow-hidden rounded-md border border-sf-border">
         <table className="w-full text-[11px]">
           <thead>
-            <tr className="bg-slate-900/60 text-slate-500">
+            <tr className="bg-sf-surface text-sf-muted">
               <th className="px-2 py-1.5 text-left font-medium">{t("diag.table.process")}</th>
               <th className="px-2 py-1.5 text-right font-medium">PID</th>
               <th className="px-2 py-1.5 text-right font-medium">RAM</th>
@@ -281,20 +281,20 @@ export function DiagnosticsSettings() {
             {procs.map((p) => (
               <tr
                 key={p.pid}
-                className="border-t border-slate-800/70 odd:bg-slate-950/40"
+                className="border-t border-sf-border/70 odd:bg-sf-bg/40"
               >
-                <td className="truncate px-2 py-1.5 text-slate-200">
+                <td className="truncate px-2 py-1.5 text-sf-text">
                   {p.isMain && (
-                    <span className="mr-1 rounded bg-brand-500/20 px-1 text-[9px] font-bold uppercase text-brand-300">
+                    <span className="mr-1 rounded bg-brand-500/20 px-1 text-[11px] font-bold uppercase text-brand-300">
                       main
                     </span>
                   )}
                   {p.name}
                 </td>
-                <td className="px-2 py-1.5 text-right font-mono text-slate-500">
+                <td className="px-2 py-1.5 text-right font-mono text-sf-muted">
                   {p.pid}
                 </td>
-                <td className="px-2 py-1.5 text-right font-mono text-slate-100">
+                <td className="px-2 py-1.5 text-right font-mono text-sf-text">
                   {fmtMB(p.memoryBytes)}
                 </td>
               </tr>
@@ -303,7 +303,7 @@ export function DiagnosticsSettings() {
               <tr>
                 <td
                   colSpan={3}
-                  className="px-2 py-3 text-center text-[11px] text-slate-500"
+                  className="px-2 py-3 text-center text-[11px] text-sf-muted"
                 >
                   {t("diag.table.empty")}
                 </td>
@@ -313,7 +313,7 @@ export function DiagnosticsSettings() {
         </table>
       </div>
 
-      <p className="text-[10px] text-slate-500">
+      <p className="text-[11px] text-sf-muted">
         {t("diag.log_hint")}
       </p>
     </div>
@@ -346,20 +346,20 @@ function SubsystemCard({
     ? warnWhenOk
       ? "text-amber-300"
       : "text-emerald-300"
-    : "text-slate-500";
+    : "text-sf-muted";
   return (
-    <div className="rounded-md border border-slate-800 bg-slate-900/40 px-2.5 py-2">
+    <div className="rounded-md border border-sf-border bg-sf-surface px-2.5 py-2">
       <div className="flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
-          <span className="text-slate-400">{icon}</span>
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-sf-text">
+          <span className="text-sf-muted">{icon}</span>
           {title}
         </span>
-        <span className={`flex items-center gap-1 text-[10px] font-medium ${statusColor}`}>
+        <span className={`flex items-center gap-1 text-[11px] font-medium ${statusColor}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
           {status}
         </span>
       </div>
-      <p className="mt-1 truncate text-[10px] text-slate-500">{detail}</p>
+      <p className="mt-1 truncate text-[11px] text-sf-muted">{detail}</p>
     </div>
   );
 }

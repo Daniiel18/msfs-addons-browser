@@ -5,6 +5,15 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LandingOsd } from "./components/LandingOsd";
 import { preloadLocale } from "./lib/i18n";
+// (Rediseño F1) Inter empaquetada (offline): latin + latin-ext, 4 pesos.
+import "@fontsource/inter/latin-400.css";
+import "@fontsource/inter/latin-500.css";
+import "@fontsource/inter/latin-600.css";
+import "@fontsource/inter/latin-700.css";
+import "@fontsource/inter/latin-ext-400.css";
+import "@fontsource/inter/latin-ext-500.css";
+import "@fontsource/inter/latin-ext-600.css";
+import "@fontsource/inter/latin-ext-700.css";
 import "./styles/globals.css";
 
 // (v3.4.0) Pre-cargar el locale SÍNCRONO antes del primer render.
@@ -32,8 +41,12 @@ function windowLabel(): string {
 }
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
+const label = windowLabel();
+// (Rediseño F1) Marca la ventana en <html> para que el CSS pueda dejar el
+// OSD con su tipografía original (ver globals.css).
+document.documentElement.dataset.window = label;
 
-if (windowLabel() === "osd") {
+if (label === "osd") {
   root.render(
     <React.StrictMode>
       <LandingOsd />

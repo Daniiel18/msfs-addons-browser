@@ -69,6 +69,13 @@ export function NotificationsBell() {
 
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // (Rediseño F2) Otras pantallas (Inicio › Avisos) pueden abrir la campana.
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("simfleet:notifications", onOpen);
+    return () => window.removeEventListener("simfleet:notifications", onOpen);
+  }, []);
   const [appUpdate, setAppUpdate] = useState<UpdateInfo | null>(null);
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
 
@@ -230,7 +237,7 @@ export function NotificationsBell() {
     <div ref={wrapRef} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/60 text-slate-300 transition-colors hover:border-brand-500/40 hover:text-slate-100"
+        className="relative inline-flex h-8 w-8 items-center justify-center rounded-lg border border-sf-border bg-sf-surface text-sf-text/90 transition-colors hover:border-brand-500/40 hover:text-sf-text"
         title={
           totalCount > 0
             ? t("notificationsBell.count_tooltip", { count: String(totalCount) })
@@ -239,7 +246,7 @@ export function NotificationsBell() {
       >
         <Bell className="h-4 w-4" />
         {totalCount > 0 && (
-          <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-amber-950 ring-2 ring-slate-950">
+          <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-amber-950 ring-2 ring-slate-950">
             {totalCount > 99 ? "99+" : totalCount}
           </span>
         )}
@@ -252,11 +259,11 @@ export function NotificationsBell() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.98 }}
             transition={{ duration: 0.12 }}
-            className="absolute right-0 top-full z-30 mt-2 w-[420px] origin-top-right overflow-hidden rounded-xl border border-slate-800 bg-slate-950/95 shadow-xl ring-1 ring-slate-800 backdrop-blur"
+            className="absolute right-0 top-full z-30 mt-2 w-[420px] origin-top-right overflow-hidden rounded-xl border border-sf-border bg-sf-bg/95 shadow-xl ring-1 ring-sf-border backdrop-blur"
           >
-            <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+            <header className="flex items-center justify-between gap-2 border-b border-sf-border px-4 py-3">
               <div>
-                <h3 className="text-sm font-semibold text-slate-100">
+                <h3 className="text-sm font-semibold text-sf-text">
                   {t("notifications.title")}
                 </h3>
               </div>
@@ -272,7 +279,7 @@ export function NotificationsBell() {
                       .catch((e) => console.warn("re-check failed:", e));
                   }}
                   title={t("notifications.recheck_tooltip")}
-                  className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
+                  className="rounded-md border border-sf-border p-1.5 text-sf-text/90 hover:border-brand-500/40 hover:bg-sf-surface"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
                 </button>
@@ -280,7 +287,7 @@ export function NotificationsBell() {
                   <button
                     onClick={() => dismissAll()}
                     title={t("notifications.mark_all_seen")}
-                    className="rounded-md border border-slate-800 p-1.5 text-slate-300 hover:border-brand-500/40 hover:bg-slate-900"
+                    className="rounded-md border border-sf-border p-1.5 text-sf-text/90 hover:border-brand-500/40 hover:bg-sf-surface"
                   >
                     <CheckCheck className="h-3.5 w-3.5" />
                   </button>
@@ -581,11 +588,11 @@ export function NotificationsBell() {
                           ? t("notifications.maint_due")
                           : t("notifications.maint_soon")}
                       </div>
-                      <div className="mt-0.5 font-mono text-[11px] text-slate-300">
+                      <div className="mt-0.5 font-mono text-[11px] text-sf-text/90">
                         {a.registration}
                         {a.model ? ` · ${a.model}` : ""}
                       </div>
-                      <div className="mt-0.5 text-[11px] text-slate-400">
+                      <div className="mt-0.5 text-[11px] text-sf-muted">
                         {t(`economy.comp.${a.component}`)} ·{" "}
                         {Math.round(a.wearPct)}%
                         {a.dueCount > 1
@@ -596,7 +603,7 @@ export function NotificationsBell() {
                     <button
                       onClick={() => maintDismiss(a)}
                       title={t("notifications.dismiss_app_update")}
-                      className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-700/40 hover:text-slate-200"
+                      className="shrink-0 rounded-md p-1 text-sf-muted hover:bg-slate-700/40 hover:text-sf-text"
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -637,7 +644,7 @@ export function NotificationsBell() {
                     <div className="mt-0.5 truncate text-[11px] text-emerald-200/80">
                       {n.title}
                     </div>
-                    <div className="mt-0.5 text-[11px] text-slate-400">
+                    <div className="mt-0.5 text-[11px] text-sf-muted">
                       {n.reason === "updated"
                         ? t("notifications.fps_after_update_hint")
                         : t("notifications.fps_hint")}
@@ -655,7 +662,7 @@ export function NotificationsBell() {
             ))}
 
             {packageCount > 0 && (
-              <div className="border-b border-slate-800 bg-amber-500/5 px-4 py-2">
+              <div className="border-b border-sf-border bg-amber-500/5 px-4 py-2">
                 <button
                   onClick={handleUpdateAll}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-amber-500 px-3 py-2 text-xs font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/20 hover:bg-amber-400"
@@ -663,7 +670,7 @@ export function NotificationsBell() {
                   <Sparkles className="h-3.5 w-3.5" />
                   {t("notifications.update_all")} ({packageCount})
                 </button>
-                <p className="mt-1 text-center text-[10px] text-slate-500">
+                <p className="mt-1 text-center text-[11px] text-sf-muted">
                   {t("notifications.update_all.hint")}
                 </p>
               </div>
@@ -676,15 +683,15 @@ export function NotificationsBell() {
                 </div>
               )}
               {totalCount === 0 ? (
-                <div className="px-4 py-8 text-center text-xs text-slate-500">
+                <div className="px-4 py-8 text-center text-xs text-sf-muted">
                   {t("notifications.empty")}
                 </div>
               ) : packageCount === 0 ? null : (
-                <ul className="divide-y divide-slate-800">
+                <ul className="divide-y divide-sf-border">
                   {updates.map((u) => (
                     <li
                       key={u.folderName}
-                      className="group flex items-stretch hover:bg-slate-900/60"
+                      className="group flex items-stretch hover:bg-sf-surface"
                     >
                       <button
                         onClick={() => openInSearch(u)}
@@ -699,11 +706,11 @@ export function NotificationsBell() {
                             <span className="font-mono text-[11px] font-semibold text-brand-300">
                               {u.icao}
                             </span>
-                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                            <span className="rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
                               {u.source}
                             </span>
                           </div>
-                          <div className="mt-1 truncate text-sm text-slate-100">
+                          <div className="mt-1 truncate text-sm text-sf-text">
                             {u.title}
                           </div>
                           <div className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-300 ring-1 ring-amber-500/30">
@@ -715,14 +722,14 @@ export function NotificationsBell() {
                         <button
                           onClick={() => focusOnMap(u.folderName)}
                           title={t("common.view_on_map")}
-                          className="rounded-md border border-slate-800 p-1 text-slate-400 hover:border-brand-500/40 hover:text-slate-100"
+                          className="rounded-md border border-sf-border p-1 text-sf-muted hover:border-brand-500/40 hover:text-sf-text"
                         >
                           <MapIcon className="h-3.5 w-3.5" />
                         </button>
                         <button
                           onClick={() => dismissUpdate(u.folderName)}
                           title={t("common.dismiss")}
-                          className="rounded-md border border-slate-800 p-1 text-slate-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
+                          className="rounded-md border border-sf-border p-1 text-sf-muted hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>

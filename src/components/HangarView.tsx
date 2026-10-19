@@ -181,7 +181,7 @@ export function HangarView() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-slate-500">
+      <div className="flex h-full items-center justify-center text-sm text-sf-muted">
         {t("common.loading")}
       </div>
     );
@@ -195,7 +195,7 @@ export function HangarView() {
   }
   if (!data || data.totalFlights === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-500">
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-sf-muted">
         <Plane className="h-8 w-8" />
         <p className="text-sm">{t("hangar.empty")}</p>
       </div>
@@ -207,10 +207,10 @@ export function HangarView() {
       {/* ── Cabecera ───────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-100">
+          <h1 className="text-xl font-semibold tracking-tight text-sf-text">
             {t("hangar.heading")}
           </h1>
-          <p className="text-xs text-slate-500">{t("hangar.subheading")}</p>
+          <p className="mt-0.5 text-sm text-sf-muted">{t("hangar.subheading")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <HeaderKpi
@@ -236,24 +236,24 @@ export function HangarView() {
       </div>
 
       {/* ── Cuerpo maestro/detalle ─────────────────────────────── */}
-      <div className="mt-5 grid grid-cols-1 items-start gap-4 lg:grid-cols-[320px_1fr]">
+      <div className="mt-5 grid grid-cols-1 items-start gap-4 md:grid-cols-[280px_1fr] lg:grid-cols-[320px_1fr]">
         {/* Flota */}
-        <section className="self-start rounded-2xl border border-slate-800 bg-slate-900/40 p-3">
-          <h2 className="mb-2 flex items-center gap-1.5 px-1 text-sm font-semibold text-slate-200">
+        <section className="self-start rounded-2xl border border-sf-border bg-sf-surface p-3">
+          <h2 className="mb-2 flex items-center gap-1.5 px-1 text-sm font-semibold text-sf-text">
             {t("hangar.fleet")}
-            <Info className="h-3.5 w-3.5 text-slate-600" />
+            <Info className="h-3.5 w-3.5 text-sf-muted/70" />
           </h2>
           <div className="mb-3 flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sf-muted" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t("hangar.search")}
-                className="w-full rounded-lg border border-slate-800 bg-slate-950/60 py-1.5 pl-8 pr-2 text-xs text-slate-200 placeholder:text-slate-600 focus:border-brand-500/50 focus:outline-none"
+                className="w-full rounded-lg border border-sf-border bg-sf-bg/60 py-1.5 pl-8 pr-2 text-xs text-sf-text placeholder:text-sf-muted/70 focus:border-brand-500/50 focus:outline-none"
               />
             </div>
-            <button className="rounded-lg border border-slate-800 bg-slate-950/60 p-1.5 text-slate-400 hover:text-slate-200">
+            <button className="rounded-lg border border-sf-border bg-sf-bg/60 p-1.5 text-sf-muted hover:text-sf-text">
               <SlidersHorizontal className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -271,7 +271,7 @@ export function HangarView() {
               />
             ))}
             {fleet.length === 0 && (
-              <p className="px-1 py-3 text-center text-[11px] text-slate-600">
+              <p className="px-1 py-3 text-center text-[11px] text-sf-muted/70">
                 {t("hangar.search_empty")}
               </p>
             )}
@@ -279,22 +279,22 @@ export function HangarView() {
 
           {/* (v6.1) Paginación de la flota (cuando hay más de 10 y no se busca) */}
           {!searching && pageCount > 1 && (
-            <div className="mt-3 flex items-center justify-between border-t border-slate-800 pt-2.5">
+            <div className="mt-3 flex items-center justify-between border-t border-sf-border pt-2.5">
               <button
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 disabled={page === 0}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-500/40 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-lg border border-sf-border bg-sf-bg/60 px-2 py-1 text-[11px] text-sf-text/90 hover:border-brand-500/40 disabled:opacity-40"
               >
                 <ChevronRight className="h-3.5 w-3.5 rotate-180" />
                 {t("hangar.page.prev")}
               </button>
-              <span className="text-[11px] text-slate-500">
+              <span className="text-[11px] text-sf-muted">
                 {t("hangar.page.of", { a: String(page + 1), b: String(pageCount) })}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
                 disabled={page >= pageCount - 1}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-500/40 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-lg border border-sf-border bg-sf-bg/60 px-2 py-1 text-[11px] text-sf-text/90 hover:border-brand-500/40 disabled:opacity-40"
               >
                 {t("hangar.page.next")}
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -332,16 +332,16 @@ function HeaderKpi({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2">
+    <div className="flex items-center gap-2.5 rounded-xl border border-sf-border bg-sf-surface px-3 py-2">
       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500/15 text-brand-300">
         {icon}
       </div>
       <div>
-        <div className="text-[10px] uppercase tracking-wide text-slate-500">
+        <div className="text-[11px] uppercase tracking-wide text-sf-muted">
           {label}
         </div>
-        <div className="text-sm font-semibold text-slate-100">{value}</div>
-        <div className="text-[9px] text-slate-600">{t("hangar.all_aircraft")}</div>
+        <div className="text-sm font-semibold text-sf-text">{value}</div>
+        <div className="text-[11px] text-sf-muted">{t("hangar.all_aircraft")}</div>
       </div>
     </div>
   );
@@ -402,11 +402,11 @@ function FleetOverview({
   const regionData = topRegions.map((r) => ({ label: r.label, count: r.count }));
 
   return (
-    <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-      <h2 className="mb-1 text-base font-semibold text-slate-100">
+    <section className="rounded-2xl border border-sf-border bg-sf-surface p-4">
+      <h2 className="mb-1 text-base font-semibold text-sf-text">
         {t("hangar.overview.heading")}
       </h2>
-      <p className="mb-4 text-xs text-slate-500">{t("hangar.overview.hint")}</p>
+      <p className="mb-4 text-xs text-sf-muted">{t("hangar.overview.hint")}</p>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <TreemapCard
           icon={<Plane className="h-4 w-4 text-brand-400" />}
@@ -465,18 +465,18 @@ function CardShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
+      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
         {icon}
         {title}
         {hint && (
-          <span className="ml-auto text-[10px] font-normal text-slate-500">
+          <span className="ml-auto text-[10px] font-normal text-sf-muted">
             {hint}
           </span>
         )}
       </h3>
       {empty ? (
-        <div className="py-10 text-center text-xs text-slate-600">
+        <div className="py-10 text-center text-xs text-sf-muted/70">
           {t("hangar.overview.no_data")}
         </div>
       ) : (
@@ -550,9 +550,9 @@ function TreeTip({ active, payload }: { active?: boolean; payload?: Array<{ payl
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-950/95 px-2.5 py-1.5 text-xs shadow-xl">
-      <div className="font-semibold text-slate-100">{p.name}</div>
-      <div className="text-slate-400">{p.size} {t("hangar.flights_short")}</div>
+    <div className="rounded-lg border border-sf-border bg-sf-bg/95 px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-semibold text-sf-text">{p.name}</div>
+      <div className="text-sf-muted">{p.size} {t("hangar.flights_short")}</div>
     </div>
   );
 }
@@ -626,33 +626,33 @@ function FleetRow({
       className={`flex w-full items-center gap-2.5 rounded-xl border p-2 text-left transition-colors ${
         active
           ? "border-brand-500/60 bg-brand-500/10 ring-1 ring-brand-500/30"
-          : "border-transparent bg-slate-950/40 hover:bg-slate-800/40"
+          : "border-transparent bg-sf-bg/40 hover:bg-sf-raised/70"
       }`}
     >
-      <span className="w-4 shrink-0 text-center text-xs font-semibold text-slate-500">
+      <span className="w-4 shrink-0 text-center text-xs font-semibold text-sf-muted">
         {rank > 0 ? rank : ""}
       </span>
       <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={32} />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-xs font-semibold text-slate-100">
+        <div className="truncate text-xs font-semibold text-sf-text">
           {ac.airlineName ?? model ?? t("hangar.unknown_model")}
         </div>
-        <div className="truncate text-[11px] text-slate-500">{model ?? "—"}</div>
+        <div className="truncate text-[11px] text-sf-muted">{model ?? "—"}</div>
         {ac.registration && (
-          <div className="truncate font-mono text-[10px] text-slate-600">
+          <div className="truncate font-mono text-[10px] text-sf-muted/70">
             {ac.registration}
           </div>
         )}
       </div>
       <div className="shrink-0 text-right">
-        <div className="text-xs font-semibold text-slate-200">
+        <div className="text-xs font-semibold text-sf-text">
           {Math.round(ac.totalNm).toLocaleString()} nm
         </div>
-        <div className="text-[10px] text-slate-500">
+        <div className="text-[10px] text-sf-muted">
           {ac.flights} {t("hangar.flights_short")}
         </div>
       </div>
-      <MoreVertical className="h-3.5 w-3.5 shrink-0 text-slate-600" />
+      <MoreVertical className="h-3.5 w-3.5 shrink-0 text-sf-muted/70" />
     </button>
   );
 }
@@ -712,13 +712,13 @@ function AircraftDetail({
       : ac.lastIcao ?? null;
 
   return (
-    <section className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40 lg:self-stretch">
+    <section className="flex flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface lg:self-stretch">
       {/* Banner */}
       <div className="relative overflow-hidden">
         <div className="absolute right-3 top-3 z-10 flex">
           <button
             onClick={() => setReportOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-1.5 text-xs text-slate-200 backdrop-blur hover:border-brand-500/40"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-slate-950/70 px-3 py-1.5 text-xs text-sf-text backdrop-blur hover:border-brand-500/40"
           >
             <Download className="h-3.5 w-3.5" />
             {t("hangar.export")}
@@ -735,7 +735,7 @@ function AircraftDetail({
               className="absolute inset-0 h-full w-full object-cover"
             />
             <div className="absolute inset-0 bg-gradient-to-r from-slate-950/95 via-slate-950/70 to-slate-950/30" />
-            <span className="pointer-events-none absolute bottom-1.5 right-2 z-10 rounded bg-slate-950/60 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-slate-300/80 backdrop-blur-sm">
+            <span className="pointer-events-none absolute bottom-1.5 right-2 z-10 rounded bg-sf-bg/60 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-sf-text/90/80 backdrop-blur-sm">
               planespotters.net
             </span>
           </>
@@ -759,22 +759,47 @@ function AircraftDetail({
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={20} />
-              <span className="text-sm font-medium text-slate-200">
+              <span className="text-sm font-medium text-sf-text">
                 {ac.airlineName ?? "—"}
               </span>
             </div>
-            <p className="mt-0.5 text-xs text-slate-400">
+            <p className="mt-0.5 text-xs text-sf-muted">
               {[model, location].filter(Boolean).join(" · ") || "—"}
             </p>
           </div>
           {!photo && (
-            <PlaneLanding className="h-16 w-16 shrink-0 text-slate-700/60" />
+            <PlaneLanding className="h-16 w-16 shrink-0 text-sf-muted/70/60" />
           )}
         </div>
       </div>
 
+      {/* (Rediseño F4) KPIs del avión bajo la foto + estado general. */}
+      <div className="grid grid-cols-2 gap-px border-b border-sf-border/70 bg-sf-border/50 sm:grid-cols-4">
+        <AcKpi label={t("hangar.kpi.flights")} value={ac.flights.toLocaleString()} />
+        <AcKpi label={t("hangar.kpi.miles")} value={`${Math.round(ac.totalNm).toLocaleString()} nm`} />
+        <AcKpi label={t("hangar.kpi.hours")} value={hours(ac.totalTimeS)} />
+        <AcKpi
+          label={t("hangar.kpi.avg_fpm")}
+          value={ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)} fpm` : "—"}
+        />
+      </div>
+      <div className="flex items-center gap-3 border-b border-sf-border/70 px-4 py-2.5">
+        <span className="shrink-0 text-xs text-sf-muted">{t("hangar.health_general")}</span>
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-sf-raised">
+          <div
+            className={`h-full rounded-full ${
+              ac.healthPct >= 75 ? "bg-emerald-400" : ac.healthPct >= 50 ? "bg-amber-400" : "bg-rose-400"
+            }`}
+            style={{ width: `${Math.max(0, Math.min(100, ac.healthPct))}%` }}
+          />
+        </div>
+        <span className="shrink-0 text-xs font-semibold tabular-nums text-sf-text">
+          {Math.round(ac.healthPct)}%
+        </span>
+      </div>
+
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-800 px-4">
+      <div className="flex gap-1 border-b border-sf-border px-4">
         {TABS.map((tb) => (
           <button
             key={tb}
@@ -782,7 +807,7 @@ function AircraftDetail({
             className={`relative px-3 py-2.5 text-xs font-medium transition-colors ${
               tab === tb
                 ? "text-brand-300"
-                : "text-slate-500 hover:text-slate-300"
+                : "text-sf-muted hover:text-sf-text/90"
             }`}
           >
             {t(`hangar.tab.${tb}`)}
@@ -835,12 +860,22 @@ const STATUS_COLOR: Record<string, string> = {
   alert: "#f43f5e",
 };
 
+/** (Rediseño F4) Celda de la fila de KPIs bajo la foto del avión. */
+function AcKpi({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-sf-surface px-4 py-3">
+      <div className="truncate text-[11px] uppercase tracking-wide text-sf-muted">{label}</div>
+      <div className="mt-0.5 truncate text-lg font-semibold tabular-nums text-sf-text">{value}</div>
+    </div>
+  );
+}
+
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-1 text-xl font-bold text-slate-100">{value}</div>
-      {sub && <div className="text-[11px] text-slate-500">{sub}</div>}
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
+      <div className="text-[10px] uppercase tracking-wide text-sf-muted">{label}</div>
+      <div className="mt-1 text-xl font-bold text-sf-text">{value}</div>
+      {sub && <div className="text-[11px] text-sf-muted">{sub}</div>}
     </div>
   );
 }
@@ -872,15 +907,15 @@ function ComponentBar({ label, health, status, nextDueHours }: {
 }) {
   const color = STATUS_COLOR[status] ?? "#38bdf8";
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-200">{label}</span>
+        <span className="text-xs font-medium text-sf-text">{label}</span>
         <span className="text-xs font-semibold" style={{ color }}>{health}%</span>
       </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sf-raised">
         <div className="h-full rounded-full" style={{ width: `${health}%`, backgroundColor: color }} />
       </div>
-      <div className="mt-1.5 text-[10px] text-slate-500">
+      <div className="mt-1.5 text-[10px] text-sf-muted">
         {nextDueHours <= 0
           ? t("hangar.mx.overdue")
           : t("hangar.mx.next_in", { n: nextDueHours.toLocaleString() })}
@@ -906,7 +941,7 @@ function MaintenanceTab({ mx, realHistory, realMaint }: { mx: MaintenanceData; r
         </div>
       )}
       <div>
-        <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+        <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
           <Wrench className="h-4 w-4 text-brand-400" />
           {t("hangar.mx.components")}
         </h4>
@@ -967,12 +1002,12 @@ function FlightsTab({ ac }: { ac: HangarAircraft }) {
   const [open, setOpen] = useState<number | null>(null);
 
   if (flights.length === 0) {
-    return <div className="py-10 text-center text-sm text-slate-500">{t("hangar.flights.empty")}</div>;
+    return <div className="py-10 text-center text-sm text-sf-muted">{t("hangar.flights.empty")}</div>;
   }
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-800">
+    <div className="overflow-hidden rounded-xl border border-sf-border">
       <table className="w-full text-left text-xs">
-        <thead className="bg-slate-900/60 text-[10px] uppercase tracking-wide text-slate-500">
+        <thead className="bg-sf-surface text-[10px] uppercase tracking-wide text-sf-muted">
           <tr>
             <th className="w-6 px-2 py-2"></th>
             <th className="px-2 py-2">{t("hangar.flights.date")}</th>
@@ -988,16 +1023,16 @@ function FlightsTab({ ac }: { ac: HangarAircraft }) {
               <Fragment key={f.id}>
                 <tr
                   onClick={() => setOpen(isOpen ? null : f.id)}
-                  className={`cursor-pointer border-t border-slate-800/60 transition-colors hover:bg-slate-800/30 ${isOpen ? "bg-slate-800/30" : ""}`}
+                  className={`cursor-pointer border-t border-sf-border/60 transition-colors hover:bg-sf-raised/70 ${isOpen ? "bg-sf-raised/70" : ""}`}
                 >
-                  <td className="px-2 py-2 text-slate-500">
+                  <td className="px-2 py-2 text-sf-muted">
                     <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-90" : ""}`} />
                   </td>
-                  <td className="px-2 py-2 text-slate-300">{fmtDate(f.startedAt)}</td>
-                  <td className="px-2 py-2 text-slate-200">
+                  <td className="px-2 py-2 text-sf-text/90">{fmtDate(f.startedAt)}</td>
+                  <td className="px-2 py-2 text-sf-text">
                     {f.originIcao ?? "—"} → {f.destinationIcao ?? f.destinationName ?? "—"}
                   </td>
-                  <td className="px-2 py-2 text-right text-slate-400">
+                  <td className="px-2 py-2 text-right text-sf-muted">
                     {f.flightTimeS ? hours(f.flightTimeS) : "—"}
                   </td>
                   <td className="px-3 py-2 text-right font-semibold" style={{ color: GRADE_COLOR[fpmGrade(f.landingFpm)] ?? "#94a3b8" }}>
@@ -1005,7 +1040,7 @@ function FlightsTab({ ac }: { ac: HangarAircraft }) {
                   </td>
                 </tr>
                 {isOpen && (
-                  <tr className="border-t border-slate-800/60 bg-slate-950/50">
+                  <tr className="border-t border-sf-border/60 bg-sf-bg/50">
                     <td colSpan={5} className="p-0">
                       <FlightDetail flight={f} engineHealth={engineHealth} />
                     </td>
@@ -1041,7 +1076,7 @@ function FlightDetail({ flight, engineHealth }: { flight: FlightLogEntry; engine
           <StatTile label={t("hangar.fd.fuel")} value={tel.fuelKg != null ? `${Math.round(tel.fuelKg).toLocaleString()} kg` : "—"} />
         </div>
         <div className="mt-3">
-          <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+          <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-sf-text/90">
             <Thermometer className="h-3.5 w-3.5 text-rose-400" />
             {t("hangar.fd.egt_title")}
           </h4>
@@ -1070,12 +1105,12 @@ function FlightDetail({ flight, engineHealth }: { flight: FlightLogEntry; engine
 
       {/* Dibujo de los motores con zonas de calor */}
       <div>
-        <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+        <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-sf-text/90">
           <Flame className="h-3.5 w-3.5 text-orange-400" />
           {t("hangar.fd.engine_title", { n: String(tel.engines) })}
         </h4>
         <EngineDiagram tel={tel} />
-        <p className="mt-1 text-[10px] text-slate-500">{t("hangar.fd.engine_hint")}</p>
+        <p className="mt-1 text-[10px] text-sf-muted">{t("hangar.fd.engine_hint")}</p>
       </div>
     </div>
   );
@@ -1218,39 +1253,39 @@ function HistoryTab({ mx, realHistory }: { mx: MaintenanceData; realHistory: Mai
       {realHistory.map((r, i) => {
         const shop = maintShopFor(`${r.component}-${r.servicedAt}`);
         return (
-          <div key={`real-${i}`} className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+          <div key={`real-${i}`} className="flex items-start gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3">
             <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white" style={{ backgroundColor: shop.color }}>
               {shop.code}
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-100">
+                <span className="text-xs font-semibold text-sf-text">
                   {t(`economy.comp.${r.component}`)} · {shop.name}
                 </span>
-                <span className="shrink-0 text-[11px] text-slate-500">{fmtDate(r.servicedAt)}</span>
+                <span className="shrink-0 text-[11px] text-sf-muted">{fmtDate(r.servicedAt)}</span>
               </div>
-              <p className="mt-0.5 truncate text-[11px] text-slate-400">{t("hangar.history.work")}</p>
-              <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500">
-                <span className="font-semibold text-slate-300">{money(r.cost)}</span>
+              <p className="mt-0.5 truncate text-[11px] text-sf-muted">{t("hangar.history.work")}</p>
+              <div className="mt-1 flex items-center gap-3 text-[10px] text-sf-muted">
+                <span className="font-semibold text-sf-text/90">{money(r.cost)}</span>
               </div>
             </div>
           </div>
         );
       })}
       {mx.reports.map((r) => (
-        <div key={r.id} className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+        <div key={r.id} className="flex items-start gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3">
           <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white" style={{ backgroundColor: r.shop.color }}>
             {r.shop.code}
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-slate-100">{r.type} · {r.shop.name}</span>
-              <span className="shrink-0 text-[11px] text-slate-500">{fmtDate(r.date)}</span>
+              <span className="text-xs font-semibold text-sf-text">{r.type} · {r.shop.name}</span>
+              <span className="shrink-0 text-[11px] text-sf-muted">{fmtDate(r.date)}</span>
             </div>
-            <p className="mt-0.5 truncate text-[11px] text-slate-400">{r.summary}</p>
-            <div className="mt-1 flex items-center gap-3 text-[10px] text-slate-500">
+            <p className="mt-0.5 truncate text-[11px] text-sf-muted">{r.summary}</p>
+            <div className="mt-1 flex items-center gap-3 text-[10px] text-sf-muted">
               <span><Clock className="mr-0.5 inline h-3 w-3" />{r.hoursAtService.toLocaleString()} h</span>
-              <span className="font-semibold text-slate-300">{money(r.totalCost)}</span>
+              <span className="font-semibold text-sf-text/90">{money(r.totalCost)}</span>
             </div>
           </div>
         </div>
@@ -1313,7 +1348,7 @@ function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: Mainten
 
   return (
     <div>
-      <p className="mb-3 text-[11px] text-slate-500">{t("hangar.docs.hint")}</p>
+      <p className="mb-3 text-[11px] text-sf-muted">{t("hangar.docs.hint")}</p>
       {/* (v6.1) Cierre DIARIO: un PDF por día con todos los servicios hechos. */}
       {dailyCloses.length > 0 && (
         <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -1327,10 +1362,10 @@ function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: Mainten
                 <FileText className="h-5 w-5" />
               </span>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-semibold text-slate-100">
+                <div className="truncate text-xs font-semibold text-sf-text">
                   {t("hangar.docs.daily_close")}
                 </div>
-                <div className="truncate text-[11px] text-slate-500">
+                <div className="truncate text-[11px] text-sf-muted">
                   {fmtDate(d.day)} · {t("hangar.docs.n_services", { n: String(d.records.length) })}
                 </div>
                 <div className="text-[11px] font-semibold text-emerald-300">{money(d.total)}</div>
@@ -1344,19 +1379,19 @@ function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: Mainten
           <button
             key={r.id}
             onClick={() => setReport(r)}
-            className="group flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left hover:border-brand-500/40"
+            className="group flex items-center gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3 text-left hover:border-brand-500/40"
           >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-brand-300 ring-1 ring-slate-800 group-hover:text-brand-200">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sf-surface text-brand-300 ring-1 ring-sf-border group-hover:text-brand-200">
               <FileText className="h-5 w-5" />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-semibold text-slate-100">
+              <div className="truncate text-xs font-semibold text-sf-text">
                 {t("hangar.docs.report")} · {r.type}
               </div>
-              <div className="truncate text-[11px] text-slate-500">
+              <div className="truncate text-[11px] text-sf-muted">
                 {r.shop.name} · {fmtDate(r.date)}
               </div>
-              <div className="text-[11px] font-semibold text-slate-300">{money(r.totalCost)}</div>
+              <div className="text-[11px] font-semibold text-sf-text/90">{money(r.totalCost)}</div>
             </div>
           </button>
         ))}
@@ -1402,11 +1437,11 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
             </span>
             <div>
               <div className="text-lg font-bold">{r.shop.name}</div>
-              <div className="text-xs text-slate-500">{t("hangar.docs.work_order")} #{r.id.slice(-6).toUpperCase()}</div>
+              <div className="text-xs text-sf-muted">{t("hangar.docs.work_order")} #{r.id.slice(-6).toUpperCase()}</div>
             </div>
           </div>
-          <div className="text-right text-xs text-slate-500">
-            <div className="font-semibold text-slate-700">{t("hangar.docs.report")}</div>
+          <div className="text-right text-xs text-sf-muted">
+            <div className="font-semibold text-sf-muted/70">{t("hangar.docs.report")}</div>
             <div>{fmtDate(r.date)}</div>
           </div>
         </div>
@@ -1425,14 +1460,14 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
 
         {/* Resumen */}
         <div className="mt-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.docs.summary")}</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-sf-muted">{t("hangar.docs.summary")}</div>
           <p className="mt-1 text-sm">{r.summary}</p>
         </div>
 
         {/* Tabla de piezas */}
         <table className="mt-4 w-full text-left text-sm">
           <thead>
-            <tr className="border-b border-slate-300 text-xs uppercase tracking-wide text-slate-500">
+            <tr className="border-b border-slate-300 text-xs uppercase tracking-wide text-sf-muted">
               <th className="py-1.5">{t("hangar.docs.part")}</th>
               <th className="py-1.5">{t("hangar.docs.pn")}</th>
               <th className="py-1.5 text-center">{t("hangar.docs.qty")}</th>
@@ -1444,9 +1479,9 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
             {r.parts.map((p, i) => (
               <tr key={i} className="border-b border-slate-200">
                 <td className="py-1.5 font-medium">{p.name}</td>
-                <td className="py-1.5 font-mono text-xs text-slate-600">{p.partNumber}</td>
+                <td className="py-1.5 font-mono text-xs text-sf-muted/70">{p.partNumber}</td>
                 <td className="py-1.5 text-center">{p.qty}</td>
-                <td className="py-1.5 text-xs text-slate-600">{p.reason}</td>
+                <td className="py-1.5 text-xs text-sf-muted/70">{p.reason}</td>
                 <td className="py-1.5 text-right">{money(p.cost * p.qty)}</td>
               </tr>
             ))}
@@ -1463,15 +1498,15 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
           </div>
         </div>
 
-        <p className="mt-6 text-[10px] text-slate-400">{t("hangar.docs.disclaimer")}</p>
+        <p className="mt-6 text-[10px] text-sf-muted">{t("hangar.docs.disclaimer")}</p>
 
         {/* Acciones (no se imprimen) */}
         <div className="mt-6 flex justify-end gap-2 print:hidden">
-          <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
+          <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-sf-muted/70 hover:bg-slate-100">
             <X className="h-4 w-4" />
             {t("common.close")}
           </button>
-          <button onClick={doPrint} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
+          <button onClick={doPrint} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-brand-400">
             <Printer className="h-4 w-4" />
             {t("hangar.docs.print")}
           </button>
@@ -1484,14 +1519,14 @@ function ReportModal({ ac, report, hoursTotal, onClose }: {
 function Field2({ k, v }: { k: string; v: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wide text-slate-400">{k}</div>
+      <div className="text-[10px] uppercase tracking-wide text-sf-muted">{k}</div>
       <div className="font-medium">{v}</div>
     </div>
   );
 }
 function Row({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex justify-between text-slate-600">
+    <div className="flex justify-between text-sf-muted/70">
       <span>{k}</span>
       <span className="font-medium text-slate-800">{v}</span>
     </div>
@@ -1512,7 +1547,7 @@ function FlightMapSvg({ flights }: { flights: FlightLogEntry[] }) {
   const W = 640;
   const H = 300;
   if (pts.length === 0) {
-    return <div className="py-8 text-center text-xs text-slate-400">—</div>;
+    return <div className="py-8 text-center text-xs text-sf-muted">—</div>;
   }
   const lats = pts.map((p) => p[0]);
   const lons = pts.map((p) => p[1]);
@@ -1648,18 +1683,18 @@ function AircraftReportModal({
         className="hangar-print-area w-full max-w-3xl rounded-2xl bg-white p-8 text-slate-900 shadow-2xl"
       >
         {/* Encabezado */}
-        <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+        <div className="flex items-center justify-between border-b-2 border-sf-border pb-4">
           <div className="flex items-center gap-3">
             <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={40} />
             <div>
               <div className="text-xl font-bold">{ac.registration ?? model}</div>
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-sf-muted">
                 {[ac.airlineName, model].filter(Boolean).join(" · ")}
               </div>
             </div>
           </div>
-          <div className="text-right text-xs text-slate-500">
-            <div className="font-semibold text-slate-700">{t("hangar.report.title")}</div>
+          <div className="text-right text-xs text-sf-muted">
+            <div className="font-semibold text-sf-muted/70">{t("hangar.report.title")}</div>
             <div>{fmtDate(new Date().toISOString())}</div>
           </div>
         </div>
@@ -1680,17 +1715,17 @@ function AircraftReportModal({
 
         {/* Mapa de rutas */}
         <div className="mt-5">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.report.routes")}</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sf-muted">{t("hangar.report.routes")}</h3>
           <FlightMapSvg flights={flights} />
         </div>
 
         {/* Salud de componentes */}
         <div className="mt-5">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.mx.components")}</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sf-muted">{t("hangar.mx.components")}</h3>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
             {mx.components.map((c) => (
               <div key={c.key} className="flex justify-between border-b border-slate-200 py-0.5">
-                <span className="text-slate-600">{c.label}</span>
+                <span className="text-sf-muted/70">{c.label}</span>
                 <span className="font-semibold">{c.healthPct}%</span>
               </div>
             ))}
@@ -1699,10 +1734,10 @@ function AircraftReportModal({
 
         {/* Vuelos recientes */}
         <div className="mt-5">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hangar.report.recent")}</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sf-muted">{t("hangar.report.recent")}</h3>
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-300 text-xs uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-300 text-xs uppercase tracking-wide text-sf-muted">
                 <th className="py-1">{t("hangar.flights.date")}</th>
                 <th className="py-1">{t("hangar.flights.dest")}</th>
                 <th className="py-1 text-right">{t("hangar.flights.time")}</th>
@@ -1722,13 +1757,13 @@ function AircraftReportModal({
           </table>
         </div>
 
-        <p className="mt-6 text-[10px] text-slate-400">{t("hangar.report.disclaimer")}</p>
+        <p className="mt-6 text-[10px] text-sf-muted">{t("hangar.report.disclaimer")}</p>
 
         <div className="mt-6 flex justify-end gap-2 print:hidden">
-          <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
+          <button onClick={onClose} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm text-sf-muted/70 hover:bg-slate-100">
             <X className="h-4 w-4" /> {t("common.close")}
           </button>
-          <button onClick={doPrint} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-400">
+          <button onClick={doPrint} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-brand-400">
             <Printer className="h-4 w-4" /> {t("hangar.docs.print")}
           </button>
         </div>
@@ -1741,7 +1776,7 @@ function RKpi({ k, v }: { k: string; v: string }) {
   return (
     <div className="rounded-lg bg-slate-100 p-2 text-center">
       <div className="text-base font-bold text-slate-900">{v}</div>
-      <div className="text-[9px] uppercase tracking-wide text-slate-500">{k}</div>
+      <div className="text-[10px] uppercase tracking-wide text-sf-muted">{k}</div>
     </div>
   );
 }
@@ -1996,17 +2031,17 @@ function GearHealthCard({ ac, maint }: { ac: HangarAircraft; maint: AircraftMain
   const nextDue = Math.max(0, Math.round(pct / 10) - 3);
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-4">
+      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
         <Gauge className="h-4 w-4 text-brand-400" />
         {t("hangar.gear.title")}
-        <Info className="h-3 w-3 text-slate-600" />
+        <Info className="h-3 w-3 text-sf-muted/70" />
       </h3>
       <div className="flex items-end gap-2">
         <span className={`text-3xl font-bold ${color}`}>{pct}%</span>
-        <span className="mb-1 text-xs text-slate-400">{condition}</span>
+        <span className="mb-1 text-xs text-sf-muted">{condition}</span>
       </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-sf-raised">
         <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
       </div>
       {nextDue <= 5 && (
@@ -2026,14 +2061,14 @@ function GearHealthCard({ ac, maint }: { ac: HangarAircraft; maint: AircraftMain
           <LandingGear model={ac.model} damage={damage} />
         )}
       </div>
-      <div className="mt-3 flex items-center justify-between border-t border-slate-800 pt-3 text-[11px]">
+      <div className="mt-3 flex items-center justify-between border-t border-sf-border pt-3 text-[11px]">
         <div>
-          <div className="text-slate-600">{t("hangar.gear.last_inspection")}</div>
-          <div className="text-slate-300">{fmtDate(ac.lastFlightAt)}</div>
+          <div className="text-sf-muted/70">{t("hangar.gear.last_inspection")}</div>
+          <div className="text-sf-text/90">{fmtDate(ac.lastFlightAt)}</div>
         </div>
         <div className="text-right">
-          <div className="text-slate-600">{t("hangar.gear.next_due")}</div>
-          <div className="text-slate-300">
+          <div className="text-sf-muted/70">{t("hangar.gear.next_due")}</div>
+          <div className="text-sf-text/90">
             {t("hangar.gear.in_landings", { n: String(nextDue) })}
           </div>
         </div>
@@ -2076,14 +2111,14 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
     ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)} fpm` : "—";
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-      <h3 className="mb-2 flex items-center gap-1.5 text-base font-semibold text-slate-100">
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-4">
+      <h3 className="mb-2 flex items-center gap-1.5 text-base font-semibold text-sf-text">
         <Gauge className="h-4 w-4 text-brand-400" />
         {t("hangar.fpm.title", { n: String(n) })}
-        <Info className="h-3 w-3 text-slate-600" />
+        <Info className="h-3 w-3 text-sf-muted/70" />
       </h3>
       {n === 0 ? (
-        <div className="flex h-40 items-center justify-center text-sm text-slate-600">
+        <div className="flex h-40 items-center justify-center text-sm text-sf-muted/70">
           {t("hangar.fpm.no_data")}
         </div>
       ) : (
@@ -2128,17 +2163,17 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
         </div>
       )}
       {/* Leyenda */}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-3">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-sf-border pt-3">
         <div className="flex flex-wrap gap-3 text-[12px]">
           <Legend color={GRADE_COLOR.butter} label={t("hangar.fpm.butter")} n={counts.butter ?? 0} />
           <Legend color={GRADE_COLOR.acceptable} label={t("hangar.fpm.acceptable")} n={counts.acceptable ?? 0} />
           <Legend color={GRADE_COLOR.hard} label={t("hangar.fpm.hard")} n={counts.hard ?? 0} />
         </div>
         <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">
+          <div className="text-[10px] uppercase tracking-wide text-sf-muted">
             {t("hangar.fpm.avg")}
           </div>
-          <div className="text-base font-semibold text-slate-100">{avg}</div>
+          <div className="text-base font-semibold text-sf-text">{avg}</div>
         </div>
       </div>
     </div>
@@ -2160,9 +2195,9 @@ function FpmDot(props: {
 
 function Legend({ color, label, n }: { color: string; label: string; n: number }) {
   return (
-    <span className="inline-flex items-center gap-1 text-slate-400">
+    <span className="inline-flex items-center gap-1 text-sf-muted">
       <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-      {label} <span className="font-semibold text-slate-200">{n}</span>
+      {label} <span className="font-semibold text-sf-text">{n}</span>
     </span>
   );
 }
@@ -2181,13 +2216,13 @@ function BestLandings({
   return (
     <div className="mt-5">
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-200">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-sf-text">
           <Film className="h-4 w-4 text-brand-400" />
           {t("hangar.best_landings.title")}
-          <Info className="h-3 w-3 text-slate-600" />
+          <Info className="h-3 w-3 text-sf-muted/70" />
         </h3>
         {hasClips && (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-sf-muted">
             {recorded.length} {t("hangar.flights_short")}
           </span>
         )}
@@ -2206,12 +2241,12 @@ function BestLandings({
               <LandingCard key={i} l={l} />
             ))}
           </div>
-          <p className="mt-1 text-[11px] text-slate-600">
+          <p className="mt-1 text-[11px] text-sf-muted/70">
             {t("hangar.best_landings.enable_hint")}
           </p>
         </>
       ) : (
-        <div className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-slate-700 bg-slate-900/30 py-8 text-slate-500">
+        <div className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-sf-border bg-sf-surface/60 py-8 text-sf-muted">
           <Film className="h-6 w-6" />
           <p className="text-sm">{t("hangar.best_landings.empty")}</p>
           <p className="text-[11px]">{t("hangar.best_landings.enable_hint")}</p>
@@ -2253,7 +2288,7 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
 
   const src = clipSrc(clip.path);
   return (
-    <div className="group w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
+    <div className="group w-full overflow-hidden rounded-xl border border-sf-border bg-sf-bg/40">
       <button
         onClick={play}
         className="relative flex aspect-video w-full items-center justify-center overflow-hidden bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950"
@@ -2270,11 +2305,11 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (
-          <span className="font-mono text-2xl font-bold text-slate-300/70">
+          <span className="font-mono text-2xl font-bold text-sf-text/90/70">
             {clip.airportIcao ?? "✈"}
           </span>
         )}
-        <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 transition-colors group-hover:bg-slate-950/40">
+        <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 transition-colors group-hover:bg-sf-bg/40">
           <Play className="h-7 w-7 text-white opacity-0 transition-opacity group-hover:opacity-90" />
         </span>
         {clip.fpm != null && (
@@ -2286,17 +2321,17 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
           </span>
         )}
         {clip.isTest && (
-          <span className="absolute left-2 top-2 rounded bg-slate-950/70 px-1.5 py-0.5 text-[9px] text-slate-400">
+          <span className="absolute left-2 top-2 rounded bg-slate-950/70 px-1.5 py-0.5 text-[10px] text-sf-muted">
             {t("hangar.clip.test")}
           </span>
         )}
       </button>
       <div className="flex items-center justify-between gap-1 p-2.5">
         <div className="min-w-0">
-          <div className="truncate text-xs font-medium text-slate-200">
+          <div className="truncate text-xs font-medium text-sf-text">
             {clip.airportName ?? clip.airportIcao ?? t("hangar.clip.test")}
           </div>
-          <div className="truncate text-[10px] text-slate-500">
+          <div className="truncate text-[10px] text-sf-muted">
             {fmtDate(clip.recordedAt)}
           </div>
         </div>
@@ -2304,8 +2339,8 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
           <button
             onClick={toggleFav}
             title={t("hangar.clip.favorite")}
-            className={`rounded p-1 hover:bg-slate-800 ${
-              clip.favorite ? "text-amber-400" : "text-slate-500"
+            className={`rounded p-1 hover:bg-sf-raised ${
+              clip.favorite ? "text-amber-400" : "text-sf-muted"
             }`}
           >
             <Star
@@ -2316,7 +2351,7 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
           <button
             onClick={remove}
             title={t("hangar.clip.delete")}
-            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-rose-400"
+            className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-rose-400"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -2335,9 +2370,9 @@ function LandingCard({ l }: { l: HangarLanding }) {
         ? t("hangar.fpm.acceptable")
         : t("hangar.fpm.hard");
   return (
-    <div className="w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40">
+    <div className="w-full overflow-hidden rounded-xl border border-sf-border bg-sf-bg/40">
       <div className="relative flex aspect-video items-center justify-center bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950">
-        <span className="font-mono text-2xl font-bold text-slate-300/80">
+        <span className="font-mono text-2xl font-bold text-sf-text/90/80">
           {l.icao ?? "—"}
         </span>
         <span
@@ -2348,10 +2383,10 @@ function LandingCard({ l }: { l: HangarLanding }) {
         </span>
       </div>
       <div className="p-2.5">
-        <div className="truncate text-xs font-medium text-slate-200">
+        <div className="truncate text-xs font-medium text-sf-text">
           {l.airportName ?? l.icao ?? "—"}
         </div>
-        <div className="mt-0.5 flex items-center justify-between text-[10px] text-slate-500">
+        <div className="mt-0.5 flex items-center justify-between text-[10px] text-sf-muted">
           <span>{fmtDate(l.date)}</span>
           <span>{l.model ? cleanAtcType(l.model) ?? l.model : ""}</span>
         </div>

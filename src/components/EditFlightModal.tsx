@@ -181,21 +181,21 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
           // automáticamente y el contenido se ve completo via scroll
           // del backdrop. Se quitó `scale` de la animación porque
           // interfería con el cálculo de altura inicial al montar.
-          className="my-auto w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+          className="my-auto w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
         >
-          <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
+          <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-3">
             <div>
               <h3 className="text-sm font-semibold text-amber-200">
                 {t("editflight.title")} · {entry.originIcao ?? "?"} → {entry.destinationIcao ?? "?"}
               </h3>
-              <p className="mt-0.5 text-[11px] text-slate-400">
+              <p className="mt-0.5 text-[11px] text-sf-muted">
                 {t("editflight.desc")}
               </p>
             </div>
             <button
               onClick={onClose}
               disabled={saving}
-              className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-50"
             >
               <X className="h-4 w-4" />
             </button>
@@ -212,7 +212,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   max={48}
                   className="w-14"
                 />
-                <span className="text-xs text-slate-500">h</span>
+                <span className="text-xs text-sf-muted">h</span>
                 <NumInput
                   value={minutes}
                   onChange={setMinutes}
@@ -221,8 +221,8 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   max={59}
                   className="w-14"
                 />
-                <span className="text-xs text-slate-500">m</span>
-                <span className="ml-2 text-[10px] text-slate-500">
+                <span className="text-xs text-sf-muted">m</span>
+                <span className="ml-2 text-[11px] text-sf-muted">
                   {t("editflight.block_time_note")}
                 </span>
               </div>
@@ -240,7 +240,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   onChange={(e) => setOriginIcao(e.target.value.toUpperCase())}
                   placeholder={t("editflight.ph.dep_icao")}
                   maxLength={4}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
+                  className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-sf-text focus:border-amber-400 focus:outline-none"
                 />
               </Field>
               <Field label={t("editflight.dest")}>
@@ -250,7 +250,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   onChange={(e) => setDestIcao(e.target.value.toUpperCase())}
                   placeholder={t("editflight.ph.arr_icao")}
                   maxLength={4}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-slate-100 focus:border-amber-400 focus:outline-none"
+                  className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm font-mono uppercase tracking-wide text-sf-text focus:border-amber-400 focus:outline-none"
                 />
               </Field>
             </div>
@@ -284,7 +284,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 min={0}
                 max={1_000_000}
               />
-              <p className="mt-1 text-[10px] text-slate-500">
+              <p className="mt-1 text-[11px] text-sf-muted">
                 {t("editflight.fuel_note")}
               </p>
             </Field>
@@ -296,9 +296,9 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                 onChange={(e) => setRegistration(e.target.value.toUpperCase())}
                 placeholder={t("editflight.ph.registration")}
                 maxLength={10}
-                className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm uppercase text-slate-100 focus:border-amber-400 focus:outline-none"
+                className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm uppercase text-sf-text focus:border-amber-400 focus:outline-none"
               />
-              <p className="mt-1 text-[10px] text-slate-500">
+              <p className="mt-1 text-[11px] text-sf-muted">
                 {t("editflight.registration_note")}
               </p>
             </Field>
@@ -310,7 +310,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   value={depGate}
                   onChange={(e) => setDepGate(e.target.value)}
                   placeholder={t("editflight.ph.gate_a")}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
+                  className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm text-sf-text focus:border-amber-400 focus:outline-none"
                 />
               </Field>
               <Field label={t("editflight.gate_arr")}>
@@ -319,7 +319,7 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
                   value={arrGate}
                   onChange={(e) => setArrGate(e.target.value)}
                   placeholder={t("editflight.ph.gate_b")}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
+                  className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm text-sf-text focus:border-amber-400 focus:outline-none"
                 />
               </Field>
             </div>
@@ -331,15 +331,15 @@ export function EditFlightModal({ entry, onClose, onSaved }: Props) {
             )}
           </div>
 
-          <footer className="flex items-center justify-between gap-2 border-t border-slate-800 px-5 py-3">
-            <p className="text-[10px] text-slate-500">
+          <footer className="flex items-center justify-between gap-2 border-t border-sf-border px-5 py-3">
+            <p className="text-[11px] text-sf-muted">
               {t("editflight.saved_note")}
             </p>
             <div className="flex items-center gap-2">
               <button
                 onClick={onClose}
                 disabled={saving}
-                className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:bg-sf-raised disabled:opacity-50"
               >
                 {t("common.cancel")}
               </button>
@@ -372,7 +372,7 @@ function Field({
 }) {
   return (
     <div>
-      <label className="mb-1 block text-[10px] uppercase tracking-wide text-slate-400">
+      <label className="mb-1 block text-[11px] uppercase tracking-wide text-sf-muted">
         {label}
       </label>
       {children}
@@ -403,7 +403,7 @@ function NumInput({
       placeholder={placeholder}
       min={min}
       max={max}
-      className={`rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-sm tabular-nums text-slate-100 focus:border-amber-400 focus:outline-none ${
+      className={`rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-sm tabular-nums text-sf-text focus:border-amber-400 focus:outline-none ${
         className ?? "w-full"
       }`}
     />

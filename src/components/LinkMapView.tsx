@@ -96,8 +96,8 @@ function AddonNode({ data }: NodeProps<AddonNodeType>) {
 
   return (
     <div
-      className={`w-[200px] overflow-hidden rounded-lg border bg-slate-950 shadow-lg transition-colors ${
-        enabled ? "border-slate-700" : "border-slate-800 opacity-70"
+      className={`w-[200px] overflow-hidden rounded-lg border bg-sf-bg shadow-lg transition-colors ${
+        enabled ? "border-sf-border" : "border-sf-border opacity-70"
       }`}
     >
       {/* Handle de ENTRADA (izquierda, azul): este addon depende de… */}
@@ -136,19 +136,19 @@ function AddonNode({ data }: NodeProps<AddonNodeType>) {
       <div className="space-y-1 p-2">
         <p
           className={`line-clamp-1 text-[11px] font-semibold leading-tight ${
-            enabled ? "text-slate-100" : "text-slate-500"
+            enabled ? "text-sf-text" : "text-sf-muted"
           }`}
           title={pkg.title}
         >
           {pkg.title}
         </p>
-        <p className="line-clamp-1 text-[9px] text-slate-500">
+        <p className="line-clamp-1 text-[10px] text-sf-muted">
           {pkg.creator ?? "—"}
           {pkg.packageVersion && ` · v${pkg.packageVersion}`}
         </p>
         <div className="flex items-center justify-between pt-0.5">
           <ToggleSwitch on={enabled} busy={busy} onToggle={toggle} small />
-          <span className="text-[8px] uppercase tracking-wide text-slate-600">
+          <span className="text-[8px] uppercase tracking-wide text-sf-muted/70">
             {pkg.folderName.slice(0, 22)}
           </span>
         </div>
@@ -174,7 +174,7 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
       className={`w-[180px] overflow-hidden rounded-lg border-2 shadow-lg transition-colors ${
         enabled
           ? "border-emerald-600/60 bg-emerald-950/40"
-          : "border-slate-700 bg-slate-950/70 opacity-70"
+          : "border-sf-border bg-slate-950/70 opacity-70"
       } ${isOptimizable ? "cursor-pointer ring-1 ring-amber-400/40" : ""}`}
     >
       <div className="relative h-[56px] w-full overflow-hidden bg-gradient-to-br from-emerald-900/40 to-slate-950">
@@ -189,7 +189,7 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
             <MapPin className="h-7 w-7" />
           </div>
         )}
-        <span className="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-0.5 font-mono text-[9px] font-bold text-emerald-950">
+        <span className="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-0.5 font-mono text-[10px] font-bold text-emerald-950">
           {pkg.icao}
         </span>
         <span className="absolute right-1.5 top-1.5 flex flex-col items-end gap-1">
@@ -200,7 +200,7 @@ function AirportNode({ data }: NodeProps<AirportNodeType>) {
       <div className="flex items-center gap-1.5 p-2">
         <p
           className={`line-clamp-1 min-w-0 flex-1 text-[10px] font-semibold ${
-            enabled ? "text-emerald-100" : "text-slate-500"
+            enabled ? "text-emerald-100" : "text-sf-muted"
           }`}
           title={pkg.airportName ?? pkg.title}
         >
@@ -700,15 +700,15 @@ export function LinkMapView({
     // ~480px y tocaba dar zoom + arrastrar para ver todo. Ahora el
     // contenedor llena el viewport descontando el header + nav
     // sticky + métricas + chips de vista (~10rem).
-    <div className="relative h-[calc(100vh-11rem)] min-h-[560px] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
+    <div className="relative h-full min-h-[560px] overflow-hidden rounded-2xl border border-sf-border bg-sf-bg/60">
       {/* Barra superior del lienzo — contadores + acciones. */}
       <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-950/80 px-2.5 py-1.5 text-[11px] text-slate-300 ring-1 ring-slate-800 backdrop-blur">
+        <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-950/80 px-2.5 py-1.5 text-[11px] text-sf-text/90 ring-1 ring-sf-border backdrop-blur">
           <GitBranch className="h-3 w-3 text-amber-300" />
-          <b className="tabular-nums text-slate-100">{members.length}</b>
+          <b className="tabular-nums text-sf-text">{members.length}</b>
           {t("linkmap.addons_label")}
-          <span className="text-slate-600">·</span>
-          <b className="tabular-nums text-slate-100">{visibleLinks.length}</b>
+          <span className="text-sf-muted/70">·</span>
+          <b className="tabular-nums text-sf-text">{visibleLinks.length}</b>
           {t("linkmap.links_label")}
         </span>
       </div>
@@ -750,7 +750,7 @@ export function LinkMapView({
         <button
           onClick={() => void autoArrange()}
           title={t("linkmap.auto_arrange")}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-100 shadow-md hover:bg-slate-600"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-sf-border px-2.5 py-1.5 text-[11px] font-semibold text-sf-text shadow-md hover:bg-slate-600"
         >
           <LayoutGrid className="h-3 w-3" />
           {t("linkmap.auto_arrange")}
@@ -773,26 +773,26 @@ export function LinkMapView({
 
       {/* Popover "Add Item" — addons fuera del lienzo, con buscador. */}
       {addOpen && (
-        <div className="absolute right-3 top-12 z-20 w-72 overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800">
-          <div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2">
-            <Search className="h-3 w-3 shrink-0 text-slate-500" />
+        <div className="absolute right-3 top-12 z-20 w-72 overflow-hidden rounded-xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border">
+          <div className="flex items-center gap-2 border-b border-sf-border px-3 py-2">
+            <Search className="h-3 w-3 shrink-0 text-sf-muted" />
             <input
               autoFocus
               value={addQuery}
               onChange={(e) => setAddQuery(e.target.value)}
               placeholder={t("linkmap.add_placeholder")}
-              className="w-full bg-transparent text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none"
+              className="w-full bg-transparent text-[11px] text-sf-text placeholder:text-sf-muted/70 focus:outline-none"
             />
             <button
               onClick={() => setAddOpen(false)}
-              className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              className="rounded p-0.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <X className="h-3 w-3" />
             </button>
           </div>
           <ul className="max-h-72 overflow-y-auto py-1">
             {addCandidates.length === 0 ? (
-              <li className="px-3 py-4 text-center text-[11px] text-slate-600">
+              <li className="px-3 py-4 text-center text-[11px] text-sf-muted/70">
                 {t("linkmap.add_empty")}
               </li>
             ) : (
@@ -800,12 +800,12 @@ export function LinkMapView({
                 <li key={p.folderName}>
                   <button
                     onClick={() => void addItem(p.folderName)}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-800/60"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-sf-raised"
                   >
-                    <span className="shrink-0 text-slate-500">
+                    <span className="shrink-0 text-sf-muted">
                       {nodeTypeIcon(ty, "h-3 w-3")}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-slate-200">
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text">
                       {p.title}
                     </span>
                   </button>
@@ -851,12 +851,12 @@ export function LinkMapView({
       {/* Estado vacío — guía rápida. */}
       {loaded && members.length === 0 && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-          <div className="pointer-events-auto max-w-sm rounded-xl border border-slate-800 bg-slate-950/90 p-5 text-center backdrop-blur">
+          <div className="pointer-events-auto max-w-sm rounded-xl border border-sf-border bg-sf-bg/90 p-5 text-center backdrop-blur">
             <GitBranch className="mx-auto mb-2 h-7 w-7 text-amber-400" />
-            <p className="text-sm font-semibold text-slate-100">
+            <p className="text-sm font-semibold text-sf-text">
               {t("linkmap.empty.title")}
             </p>
-            <p className="mt-1.5 text-xs text-slate-400">
+            <p className="mt-1.5 text-xs text-sf-muted">
               {t("linkmap.empty.body")}
             </p>
             <button
@@ -871,7 +871,7 @@ export function LinkMapView({
       )}
 
       {/* Hint de conexión, abajo al centro (estilo barra de atajos). */}
-      <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md bg-slate-950/80 px-3 py-1 text-[10px] text-slate-500 ring-1 ring-slate-800 backdrop-blur">
+      <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md bg-slate-950/80 px-3 py-1 text-[10px] text-sf-muted ring-1 ring-sf-border backdrop-blur">
         {t("linkmap.hint")}
       </div>
 
@@ -974,27 +974,27 @@ function ManageLinksModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[min(640px,calc(100vh-4rem))] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+        className="flex max-h-[min(640px,calc(100vh-4rem))] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
       >
-        <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+        <header className="flex items-center justify-between border-b border-sf-border px-5 py-3">
           <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-amber-200">
             <Link2 className="h-4 w-4" />
             {t("linkmap.modal.title")}
           </h3>
           <button
             onClick={onClose}
-            className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
           >
             <X className="h-4 w-4" />
           </button>
         </header>
 
         {/* Form de creación: source (base) → target (dependiente). */}
-        <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2 border-b border-slate-800 px-5 py-3">
+        <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2 border-b border-sf-border px-5 py-3">
           <select
             value={source}
             onChange={(e) => setSource(e.target.value)}
-            className="w-full rounded-md border border-slate-800 bg-slate-900 px-2 py-1.5 text-[11px] text-slate-200 focus:border-amber-500/40 focus:outline-none"
+            className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-[11px] text-sf-text focus:border-amber-500/40 focus:outline-none"
           >
             <option value="">{t("linkmap.modal.source_placeholder")}</option>
             {sorted.map(({ p }) => (
@@ -1007,7 +1007,7 @@ function ManageLinksModal({
           <select
             value={target}
             onChange={(e) => setTarget(e.target.value)}
-            className="w-full rounded-md border border-slate-800 bg-slate-900 px-2 py-1.5 text-[11px] text-slate-200 focus:border-amber-500/40 focus:outline-none"
+            className="w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-[11px] text-sf-text focus:border-amber-500/40 focus:outline-none"
           >
             <option value="">{t("linkmap.modal.target_placeholder")}</option>
             {sorted.map(({ p }) => (
@@ -1028,7 +1028,7 @@ function ManageLinksModal({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
           {links.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-500">
+            <p className="py-6 text-center text-xs text-sf-muted">
               {t("linkmap.modal.no_links")}
             </p>
           ) : (
@@ -1036,17 +1036,17 @@ function ManageLinksModal({
               {links.map((l) => (
                 <li
                   key={l.id}
-                  className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2"
+                  className="flex items-center gap-2 rounded-lg border border-sf-border bg-sf-surface px-3 py-2"
                 >
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-slate-200" title={l.sourceFolder}>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text" title={l.sourceFolder}>
                     {titleOf(l.sourceFolder)}
                   </span>
                   <span className="shrink-0 text-amber-400">→</span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-slate-200" title={l.targetFolder}>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text" title={l.targetFolder}>
                     {titleOf(l.targetFolder)}
                   </span>
                   <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
                       l.origin === "auto"
                         ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
                         : "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30"
@@ -1060,7 +1060,7 @@ function ManageLinksModal({
                     onClick={() => void removeLink(l)}
                     disabled={busy}
                     title={t("linkmap.modal.delete")}
-                    className="shrink-0 rounded p-1 text-slate-500 hover:bg-rose-500/15 hover:text-rose-300 disabled:opacity-50"
+                    className="shrink-0 rounded p-1 text-sf-muted hover:bg-rose-500/15 hover:text-rose-300 disabled:opacity-50"
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>
@@ -1331,7 +1331,7 @@ function nodeBadgeClass(t: DerivedType): string {
     case "MISC":
       return `${base} bg-amber-500/80 text-amber-950`;
     default:
-      return `${base} bg-slate-700/80 text-slate-200`;
+      return `${base} bg-slate-700/80 text-sf-text`;
   }
 }
 

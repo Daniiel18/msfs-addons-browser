@@ -253,7 +253,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative flex max-h-[calc(100vh-3rem)] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="relative flex max-h-[calc(100vh-3rem)] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
           {/* (v5.0.0) Vista previa del addon arriba — igual que la card
               de aeropuertos. Thumbnail local / web, o silueta tipada. */}
@@ -273,7 +273,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent" />
           </div>
 
-          <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
+          <header className="flex shrink-0 items-start justify-between gap-3 border-b border-sf-border px-5 py-4">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 {pkg.icao && (
@@ -282,7 +282,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                   </span>
                 )}
                 {pkg.contentType && (
-                  <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                  <span className="rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
                     {pkg.contentType}
                   </span>
                 )}
@@ -292,11 +292,11 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                   </span>
                 )}
               </div>
-              <h2 className="mt-2 truncate text-base font-semibold text-slate-100">
+              <h2 className="mt-2 truncate text-base font-semibold text-sf-text">
                 {pkg.title}
               </h2>
               {pkg.creator && (
-                <p className="mt-0.5 text-xs text-slate-400">
+                <p className="mt-0.5 text-xs text-sf-muted">
                   {pkg.creator}
                   {pkg.packageVersion && ` · v${pkg.packageVersion}`}
                 </p>
@@ -305,7 +305,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
             <button
               onClick={onClose}
               disabled={busy !== "none"}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+              className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-50"
             >
               <X className="h-4 w-4" />
             </button>
@@ -353,7 +353,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                 <div className="mt-2 flex justify-end gap-2">
                   <button
                     onClick={() => setConfirmingUninstall(false)}
-                    className="rounded-md border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800"
+                    className="rounded-md border border-sf-border px-3 py-1 text-sf-text hover:bg-sf-raised"
                   >
                     {t("common.cancel")}
                   </button>
@@ -375,11 +375,11 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
 
           </div>
 
-          <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-800 px-5 py-3">
+          <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-sf-border px-5 py-3">
             <button
               onClick={openFolder}
               disabled={busy !== "none"}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-brand-500/40 hover:bg-slate-800 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-sf-raised px-3 py-1.5 text-xs font-medium text-sf-text hover:border-brand-500/40 hover:bg-sf-raised disabled:opacity-50"
             >
               <Folder className="h-3.5 w-3.5" />
               {t("pkg.open_folder")}
@@ -419,9 +419,9 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                       />
                       <div
                         role="menu"
-                        className="absolute bottom-full left-0 z-20 mb-2 min-w-[220px] overflow-hidden rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-xl"
+                        className="absolute bottom-full left-0 z-20 mb-2 min-w-[220px] overflow-hidden rounded-lg border border-sf-border bg-sf-surface py-1 shadow-xl"
                       >
-                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
                           {t("pkg.get_liveries_pick")}
                         </div>
                         {targets.map((tg) => (
@@ -432,10 +432,10 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                               setLiveryMenuOpen(false);
                               void api.openLiveryBrowser(tg.url);
                             }}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-200 hover:bg-sky-500/15 hover:text-sky-100"
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-sf-text hover:bg-sky-500/15 hover:text-sky-100"
                           >
                             ✈ {tg.label}
-                            <ExternalLink className="ml-auto h-3 w-3 text-slate-500" />
+                            <ExternalLink className="ml-auto h-3 w-3 text-sf-muted" />
                           </button>
                         ))}
                       </div>
@@ -486,7 +486,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                   e.preventDefault();
                   api.openExternal(update.pageUrl);
                 }}
-                className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200"
+                className="inline-flex items-center gap-1 text-[11px] text-sf-muted hover:text-sf-text"
                 title={t("pkg.view_source")}
               >
                 <ExternalLink className="h-3 w-3" />
@@ -556,14 +556,14 @@ export function RepairMethodPicker({
         exit={{ opacity: 0, scale: 0.96, y: 8 }}
         transition={{ duration: 0.14 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-[min(560px,calc(100%-2rem))] max-h-[calc(100%-2rem)] overflow-hidden rounded-xl border border-amber-500/30 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+        className="w-[min(560px,calc(100%-2rem))] max-h-[calc(100%-2rem)] overflow-hidden rounded-xl border border-amber-500/30 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
       >
-        <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
+        <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-3">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-amber-200">
               {t("pkg.repair.title")}
             </h3>
-            <p className="mt-0.5 text-[11px] text-slate-400">
+            <p className="mt-0.5 text-[11px] text-sf-muted">
               {t("pkg.repair.body.before")}{" "}
               <span className="font-mono">{pkg.folderName}</span>{" "}
               {t("pkg.repair.body.after")}
@@ -571,7 +571,7 @@ export function RepairMethodPicker({
           </div>
           <button
             onClick={onCancel}
-            className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
           >
             <X className="h-4 w-4" />
           </button>
@@ -579,25 +579,25 @@ export function RepairMethodPicker({
 
         <div className="max-h-[60vh] overflow-y-auto p-4">
           {searching && grouped.length === 0 ? (
-            <div className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-slate-400">
+            <div className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-sf-muted">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               {t("pkg.repair.searching", { icao: pkg.icao ?? "" })}
             </div>
           ) : grouped.length === 0 ? (
-            <p className="px-2 py-4 text-center text-xs text-slate-500">
+            <p className="px-2 py-4 text-center text-xs text-sf-muted">
               {t("pkg.repair.no_methods")}
             </p>
           ) : (
             <ul className="space-y-3">
               {grouped.map((g, gi) => (
                 <li key={`${g.source}-${gi}`}>
-                  <div className="mb-1.5 flex items-center gap-2 text-[11px] text-slate-400">
-                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-semibold uppercase tracking-wide">
+                  <div className="mb-1.5 flex items-center gap-2 text-[11px] text-sf-muted">
+                    <span className="rounded bg-sf-raised px-1.5 py-0.5 font-semibold uppercase tracking-wide">
                       {g.source}
                     </span>
-                    {g.version && <span className="text-slate-500">v{g.version}</span>}
+                    {g.version && <span className="text-sf-muted">v{g.version}</span>}
                   </div>
-                  <p className="mb-2 truncate text-xs text-slate-200">{g.title}</p>
+                  <p className="mb-2 truncate text-xs text-sf-text">{g.title}</p>
                   <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                     {g.methods.map((mm, mi) => (
                       <button
@@ -606,12 +606,12 @@ export function RepairMethodPicker({
                         className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors ${
                           mm.kind === "torrent"
                             ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20"
-                            : "border-slate-700 bg-slate-800/60 text-slate-200 hover:border-brand-500/40 hover:bg-slate-800"
+                            : "border-sf-border bg-sf-raised text-sf-text hover:border-brand-500/40 hover:bg-sf-raised"
                         }`}
                       >
                         <Download className="h-3.5 w-3.5 shrink-0" />
                         <span className="min-w-0 flex-1 truncate">{mm.name}</span>
-                        <span className="shrink-0 rounded bg-slate-900/60 px-1.5 py-0.5 text-[10px] uppercase">
+                        <span className="shrink-0 rounded bg-sf-surface px-1.5 py-0.5 text-[11px] uppercase">
                           {mm.kind}
                         </span>
                       </button>
@@ -623,10 +623,10 @@ export function RepairMethodPicker({
           )}
         </div>
 
-        <footer className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
+        <footer className="flex justify-end gap-2 border-t border-sf-border px-5 py-3">
           <button
             onClick={onCancel}
-            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+            className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text hover:bg-sf-raised"
           >
             {t("common.cancel")}
           </button>
@@ -682,9 +682,9 @@ export function Detail({
 }) {
   return (
     <>
-      <dt className="text-slate-500">{label}</dt>
+      <dt className="text-sf-muted">{label}</dt>
       <dd
-        className={`truncate text-slate-200 ${mono ? "font-mono text-[11px]" : ""}`}
+        className={`truncate text-sf-text ${mono ? "font-mono text-[11px]" : ""}`}
         title={value}
       >
         {value}
@@ -701,14 +701,14 @@ export function GsxProfileRow({ icao }: { icao: string | null }) {
   const has = installedIcaos.has(icao.toUpperCase());
   return (
     <>
-      <dt className="text-slate-500">{t("pkg.gsx_profile")}</dt>
+      <dt className="text-sf-muted">{t("pkg.gsx_profile")}</dt>
       <dd className="truncate">
         {has ? (
           <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-200 ring-1 ring-violet-500/40">
             ✓ {t("pkg.gsx_installed")}
           </span>
         ) : (
-          <span className="text-[11px] text-slate-500">{t("pkg.gsx_not_detected")}</span>
+          <span className="text-[11px] text-sf-muted">{t("pkg.gsx_not_detected")}</span>
         )}
       </dd>
     </>
@@ -748,26 +748,26 @@ function PackLiveriesSection({ installPath }: { installPath: string }) {
 
   return (
     <div className="mt-4">
-      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sf-muted">
         {t("pkg.liveries.heading", { n: liveries.length })}
       </h3>
       <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
         {liveries.map((l, i) => (
           <div
             key={`${l.container}-${l.registration ?? l.title}-${i}`}
-            className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-900/40 px-2.5 py-1.5"
+            className="flex items-center gap-2.5 rounded-lg border border-sf-border bg-sf-surface px-2.5 py-1.5"
           >
             <AirlineLogo icao={null} name={l.airline ?? l.title} size={22} />
             <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-medium text-slate-200">
+              <div className="truncate text-xs font-medium text-sf-text">
                 {l.airline ?? l.title}
               </div>
               {l.airline && (
-                <div className="truncate text-[10px] text-slate-500">{l.title}</div>
+                <div className="truncate text-[11px] text-sf-muted">{l.title}</div>
               )}
             </div>
             {l.registration && (
-              <span className="shrink-0 rounded bg-slate-800 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-200">
+              <span className="shrink-0 rounded bg-sf-raised px-2 py-0.5 font-mono text-[11px] font-semibold text-sf-text">
                 {l.registration}
               </span>
             )}

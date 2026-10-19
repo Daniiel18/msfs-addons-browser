@@ -86,13 +86,13 @@ export function ShareCardModal({ title, card, onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative flex max-h-[calc(100vh-3rem)] w-[min(460px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="relative flex max-h-[calc(100vh-3rem)] w-[min(460px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
-          <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-5 py-3">
-            <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
+          <header className="flex items-center justify-between gap-2 border-b border-sf-border px-5 py-3">
+            <h2 className="text-sm font-semibold text-sf-text">{title}</h2>
             <button
               onClick={onClose}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <X className="h-4 w-4" />
             </button>
@@ -105,11 +105,11 @@ export function ShareCardModal({ title, card, onClose }: Props) {
             />
           </div>
 
-          <footer className="flex items-center gap-2 border-t border-slate-800 px-4 py-3">
+          <footer className="flex items-center gap-2 border-t border-sf-border px-4 py-3">
             <button
               onClick={() => void doCopy()}
               disabled={copying}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-brand-500 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-400 disabled:opacity-50"
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-brand-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50"
             >
               {copying ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -123,7 +123,7 @@ export function ShareCardModal({ title, card, onClose }: Props) {
             <button
               onClick={() => void doSave()}
               disabled={saving}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-sf-border bg-sf-surface px-3 py-2 text-sm font-medium text-sf-text hover:bg-sf-raised disabled:opacity-50"
             >
               {saving ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

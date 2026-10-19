@@ -213,28 +213,28 @@ export function ImportInventoryModal({ path, onClose }: Props) {
         onClick={onClose}
       >
         <motion.div
-          className="relative w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
+          className="relative w-full max-w-3xl rounded-2xl border border-sf-border bg-sf-bg shadow-2xl"
           initial={{ y: 20, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 20, opacity: 0 }}
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
         >
-          <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+          <header className="flex items-center justify-between border-b border-sf-border px-5 py-3">
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-brand-300" />
               <div>
-                <h2 className="text-sm font-semibold text-slate-100">
+                <h2 className="text-sm font-semibold text-sf-text">
                   {t("import.title")}
                 </h2>
-                <p className="text-[11px] text-slate-500 font-mono truncate max-w-[400px]" title={path}>
+                <p className="text-[11px] text-sf-muted font-mono truncate max-w-[400px]" title={path}>
                   {path}
                 </p>
               </div>
             </div>
             <button
               onClick={onClose}
-              className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <X className="h-4 w-4" />
             </button>
@@ -248,7 +248,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
           )}
 
           {!parseError && items.length === 0 && (
-            <div className="flex items-center justify-center gap-2 py-12 text-xs text-slate-400">
+            <div className="flex items-center justify-center gap-2 py-12 text-xs text-sf-muted">
               <Loader2 className="h-4 w-4 animate-spin" />
               {t("import.reading")}
             </div>
@@ -256,7 +256,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
 
           {items.length > 0 && (
             <>
-              <div className="border-b border-slate-800 px-5 py-2 text-[11px] text-slate-500">
+              <div className="border-b border-sf-border px-5 py-2 text-[11px] text-sf-muted">
                 {t("import.entries_detected", { count: String(items.length) })} ·{" "}
                 <span className="text-emerald-300">
                   {t("import.resolved", {
@@ -270,14 +270,14 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                   })}
                 </span>
                 {resolving && <span className="ml-2 text-brand-300">{t("import.resolving")}</span>}
-                <span className="ml-3 text-slate-400">
+                <span className="ml-3 text-sf-muted">
                   {t("import.sources", { count: String(sources.length) })}
                 </span>
               </div>
               <div className="max-h-[55vh] overflow-y-auto p-4">
                 {grouped.map(([cat, idxs]) => (
                   <section key={cat} className="mb-4 last:mb-0">
-                    <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
                       {t(cat)} ({idxs.length})
                     </h3>
                     <ul className="space-y-1.5">
@@ -289,7 +289,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                             className={`flex items-start gap-2 rounded-md border px-3 py-2 ${
                               selected.has(i)
                                 ? "border-brand-500/50 bg-brand-500/5"
-                                : "border-slate-800 bg-slate-900/40"
+                                : "border-sf-border bg-sf-surface"
                             }`}
                           >
                             <input
@@ -306,11 +306,11 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                                     {it.raw.icao}
                                   </span>
                                 )}
-                                <span className="truncate text-xs text-slate-200">
+                                <span className="truncate text-xs text-sf-text">
                                   {it.raw.rawTitle}
                                 </span>
                               </div>
-                              <div className="mt-0.5 text-[10px] text-slate-500">
+                              <div className="mt-0.5 text-[11px] text-sf-muted">
                                 {it.raw.developer && (
                                   <span className="mr-2">{it.raw.developer}</span>
                                 )}
@@ -324,8 +324,8 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                   </section>
                 ))}
               </div>
-              <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
-                <div className="text-[11px] text-slate-400">
+              <footer className="flex items-center justify-between gap-2 border-t border-sf-border bg-sf-surface px-5 py-3">
+                <div className="text-[11px] text-sf-muted">
                   <CheckCircle2 className="mr-1 inline h-3 w-3 text-emerald-300" />
                   {t("import.selected", {
                     selected: String(selected.size),
@@ -335,7 +335,7 @@ export function ImportInventoryModal({ path, onClose }: Props) {
                 <div className="flex gap-2">
                   <button
                     onClick={onClose}
-                    className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700"
+                    className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:border-sf-border"
                   >
                     {t("common.cancel")}
                   </button>
@@ -373,7 +373,7 @@ function statusLabel(it: ResolvedItem): React.ReactNode {
         </span>
       );
     case "not_found":
-      return <span className="text-slate-500">{t("import.status.no_match")}</span>;
+      return <span className="text-sf-muted">{t("import.status.no_match")}</span>;
     case "error":
       return <span className="text-rose-300">{t("import.status.error")}</span>;
     default:

@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Calendar,
   CheckCircle2,
+  ChevronDown,
   Download,
   ExternalLink,
   FileText,
@@ -286,8 +287,6 @@ interface Props {
 }
 
 export function ResultCard({ addon }: Props) {
-  const hasTorrent = addon.downloadMethods.some((m) => m.kind === "torrent");
-  const hasMirror  = addon.downloadMethods.some((m) => m.kind === "mirror");
   const startDownload = useDownloadsStore((s) => s.start);
   const communityPackages = useCommunityStore((s) => s.packages);
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
@@ -319,13 +318,13 @@ export function ResultCard({ addon }: Props) {
   // página tiene muchos resultados de versiones distintas y el
   // usuario está buscando "algo nuevo que sustituya lo que ya
   // tengo". Borde ámbar = update; borde verde sutil = al día;
-  // borde slate = no instalado.
+  // borde neutro = no instalado.
   const cardBorder =
     installState.kind === "update"
       ? "border-amber-500/50 hover:border-amber-400/70"
       : installState.kind === "up-to-date" || installState.kind === "installed-unknown-version"
         ? "border-emerald-500/30 hover:border-emerald-400/50"
-        : "border-slate-800 hover:border-brand-500/40";
+        : "border-sf-border/80 hover:border-brand-500/40";
 
   const handleDownload = (method: DownloadMethod) => {
     startDownload({
@@ -345,12 +344,12 @@ export function ResultCard({ addon }: Props) {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
-      className={`group overflow-hidden rounded-2xl border bg-slate-900/50 backdrop-blur transition-colors hover:bg-slate-900/70 ${cardBorder}`}
+      // (Rediseño F3) Tarjeta vertical para la rejilla. Sin overflow-hidden
+      // aquí (lo lleva el banner) para que el menú de descarga pueda salir.
+      className={`group flex flex-col rounded-xl border bg-sf-surface transition-colors ${cardBorder}`}
     >
       {/* Banner superior — ICAO + simulator como overlays sobre la
-          imagen. El badge GSX (descarga) vivía aquí antes pero migró
-          a un control único debajo del SearchBar. (v1.1.4) Ahora
-          mostramos un mini-check si el usuario tiene perfil GSX
+          imagen. (v1.1.4) Mini-check si el usuario tiene perfil GSX
           local instalado para este ICAO. */}
       <Banner
         imageUrl={addon.imageUrl}
@@ -361,82 +360,66 @@ export function ResultCard({ addon }: Props) {
         hasGsxProfile={hasGsxProfile}
       />
 
-      <div className="p-5">
-        <header className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold leading-snug text-slate-100">
-              {addon.name}
-            </h3>
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-400">
-              {addon.developer && (
-                <span className="inline-flex items-center gap-1">
-                  <User className="h-3.5 w-3.5" />
-                  {addon.developer}
-                </span>
-              )}
-              {addon.version && (
-                <span className="inline-flex items-center gap-1">
-                  <Tag className="h-3.5 w-3.5" />
-                  v{addon.version}
-                </span>
-              )}
-              {addon.releasedAt && (
-                <span
-                  className="inline-flex items-center gap-1"
-                  title={t("result.uploaded_to_source", { date: addon.releasedAt })}
-                >
-                  <Calendar className="h-3.5 w-3.5" />
-                  {formatReleaseDate(addon.releasedAt)}
-                </span>
-              )}
-            </div>
-          </div>
+      <div className="flex flex-1 flex-col p-4">
+        <h3
+          className="line-clamp-2 text-[15px] font-semibold leading-snug text-sf-text"
+          title={addon.name}
+        >
+          {addon.name}
+        </h3>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-sf-muted">
+          {addon.developer && (
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <User className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{addon.developer}</span>
+            </span>
+          )}
+          {addon.version && (
+            <span className="inline-flex items-center gap-1">
+              <Tag className="h-3.5 w-3.5" />
+              v{addon.version}
+            </span>
+          )}
+          {addon.releasedAt && (
+            <span
+              className="inline-flex items-center gap-1"
+              title={t("result.uploaded_to_source", { date: addon.releasedAt })}
+            >
+              <Calendar className="h-3.5 w-3.5" />
+              {formatReleaseDate(addon.releasedAt)}
+            </span>
+          )}
+        </div>
+
+        <footer className="mt-auto flex items-center gap-1.5 pt-4">
           <button
             onClick={() => api.openExternal(addon.pageUrl)}
-            className="shrink-0 rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            className="shrink-0 rounded-lg p-2 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             title={t("result.open_source")}
+            aria-label={t("result.open_source")}
           >
             <ExternalLink className="h-4 w-4" />
           </button>
-        </header>
-
-        <footer className="mt-4 flex flex-wrap items-center gap-2">
-          {hasTorrent && <Chip label="Torrent" tone="brand" />}
-          {hasMirror  && <Chip label="Mirror" tone="slate" />}
-          {addon.downloadMethods.length === 0 && (
-            <span className="text-xs text-slate-500">{t("result.no_download_methods")}</span>
+          {isSimplaza && (
+            <button
+              onClick={() => setShowChangelog(true)}
+              title={t("result.view_simplaza_changelog")}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-sf-muted transition-colors hover:bg-sf-raised hover:text-sf-text"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              {t("result.changelog")}
+            </button>
           )}
-          <div className="ml-auto flex flex-wrap gap-2">
-            {isSimplaza && (
-              <button
-                onClick={() => setShowChangelog(true)}
-                title={t("result.view_simplaza_changelog")}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-brand-500/40 hover:bg-slate-800 hover:text-slate-100"
-              >
-                <FileText className="h-3.5 w-3.5" />
-                {t("result.changelog")}
-              </button>
-            )}
-            {addon.downloadMethods.slice(0, 3).map((m, i) => (
-              <button
-                key={i}
-                onClick={() => handleDownload(m)}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  m.kind === "torrent"
-                    ? "border-brand-500/50 bg-brand-500/10 text-brand-200 hover:border-brand-400 hover:bg-brand-500/20"
-                    : "border-slate-700 bg-slate-800/80 text-slate-200 hover:border-brand-500/60 hover:bg-slate-800"
-                }`}
-                title={
-                  m.kind === "torrent"
-                    ? t("result.torrent_tooltip")
-                    : t("result.mirror_tooltip")
-                }
-              >
-                <Download className="h-3.5 w-3.5" />
-                {m.name}
-              </button>
-            ))}
-          </div>
+          {addon.downloadMethods.length === 0 ? (
+            <span className="ml-auto text-xs text-sf-muted">
+              {t("result.no_download_methods")}
+            </span>
+          ) : (
+            <DownloadMenu
+              methods={addon.downloadMethods.slice(0, 3)}
+              onPick={handleDownload}
+            />
+          )}
         </footer>
       </div>
 
@@ -453,6 +436,102 @@ export function ResultCard({ addon }: Props) {
   );
 }
 
+/**
+ * (Rediseño F3) Botón "Descargar" con el método principal (torrent si lo
+ * hay, si no el primero) + flecha que despliega todos los métodos. Cada
+ * opción llama al mismo `start` de descargas que antes los botones sueltos.
+ */
+function DownloadMenu({
+  methods,
+  onPick,
+}: {
+  methods: DownloadMethod[];
+  onPick: (m: DownloadMethod) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const primary = methods.find((m) => m.kind === "torrent") ?? methods[0];
+  const hasMenu = methods.length > 1;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const tooltipFor = (m: DownloadMethod) =>
+    m.kind === "torrent" ? t("result.torrent_tooltip") : t("result.mirror_tooltip");
+
+  return (
+    <div ref={ref} className="relative ml-auto inline-flex shrink-0">
+      <button
+        onClick={() => onPick(primary)}
+        title={`${primary.name} — ${tooltipFor(primary)}`}
+        className={`inline-flex items-center gap-1.5 bg-brand-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition-colors hover:bg-brand-400 ${
+          hasMenu ? "rounded-l-lg" : "rounded-lg"
+        }`}
+      >
+        <Download className="h-3.5 w-3.5" />
+        {t("result.download")}
+      </button>
+      {hasMenu && (
+        <button
+          onClick={() => setOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          title={t("result.more_methods")}
+          aria-label={t("result.more_methods")}
+          className="inline-flex items-center rounded-r-lg border-l border-slate-950/20 bg-brand-500 px-1.5 text-slate-950 transition-colors hover:bg-brand-400"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {open && (
+        <div
+          role="menu"
+          className="absolute bottom-full right-0 z-20 mb-1.5 w-60 overflow-hidden rounded-lg border border-sf-border bg-sf-surface py-1 shadow-xl shadow-black/40"
+        >
+          {methods.map((m, i) => (
+            <button
+              key={i}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onPick(m);
+              }}
+              title={tooltipFor(m)}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-sf-text hover:bg-sf-raised"
+            >
+              <Download
+                className={`h-3.5 w-3.5 shrink-0 ${
+                  m.kind === "torrent" ? "text-brand-300" : "text-sf-muted"
+                }`}
+              />
+              <span className="min-w-0 flex-1 truncate">{m.name}</span>
+              <span className="shrink-0 text-[11px] uppercase tracking-wide text-sf-muted">
+                {m.kind === "torrent" ? "Torrent" : "Mirror"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Etiquetas sobre la foto con colores fijos (bg-black/…, hex): deben leerse
+ *  igual sobre cualquier imagen y en ambos temas; los overrides del tema
+ *  claro no tocan estas clases. */
 function Banner({
   imageUrl,
   alt,
@@ -472,7 +551,7 @@ function Banner({
   const showImage = imageUrl && !failed;
 
   return (
-    <div className="relative aspect-[21/9] w-full overflow-hidden bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950">
+    <div className="relative aspect-video w-full overflow-hidden rounded-t-xl bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950">
       {showImage ? (
         <img
           src={imageUrl}
@@ -481,28 +560,28 @@ function Banner({
           decoding="async"
           referrerPolicy="no-referrer"
           onError={() => setFailed(true)}
-          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
         />
       ) : (
         <BannerPlaceholder icao={icao} />
       )}
 
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-slate-950/40" />
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/60 via-transparent to-slate-950/40" />
 
-      <div className="absolute inset-x-0 top-0 flex flex-wrap items-start justify-between gap-1.5 p-3">
+      <div className="absolute inset-x-0 top-0 flex flex-wrap items-start justify-between gap-1.5 p-2.5">
         <div className="flex flex-wrap items-center gap-1.5">
           {icao && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-slate-950/80 px-2 py-1 font-mono text-xs font-semibold text-brand-300 ring-1 ring-brand-500/30 backdrop-blur">
+            <span className="inline-flex items-center gap-1 rounded-md bg-black/65 px-2 py-0.5 font-mono text-xs font-semibold text-[#a6eedf] ring-1 ring-[#35cdb2]/40">
               <Plane className="h-3 w-3" />
               {icao}
             </span>
           )}
-          <span className="rounded-md bg-slate-950/80 px-2 py-1 text-[11px] uppercase tracking-wide text-slate-300 ring-1 ring-slate-700 backdrop-blur">
+          <span className="rounded-md bg-black/65 px-2 py-0.5 text-[11px] font-medium text-white/90 ring-1 ring-white/15">
             {simulator}
           </span>
           {hasGsxProfile && (
             <span
-              className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-2 py-1 text-[11px] font-semibold text-violet-200 ring-1 ring-violet-500/40 backdrop-blur"
+              className="inline-flex items-center gap-1 rounded-md bg-violet-500/25 px-2 py-0.5 text-[11px] font-semibold text-violet-100 ring-1 ring-violet-500/50"
               title={t("result.gsx_installed_tooltip")}
             >
               <CheckCircle2 className="h-3 w-3" />
@@ -530,7 +609,7 @@ function InstallBadge({ state }: { state: InstallState }) {
   if (state.kind === "update") {
     return (
       <span
-        className="inline-flex items-center gap-1 rounded-md bg-amber-500/95 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-950 shadow-lg shadow-amber-500/30 ring-1 ring-amber-300 backdrop-blur"
+        className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-amber-950 shadow-lg shadow-amber-500/30"
         title={t("result.update.tooltip", {
           installed: state.pkg.packageVersion ?? "?",
           latest: state.latestVersion,
@@ -548,7 +627,7 @@ function InstallBadge({ state }: { state: InstallState }) {
   if (state.kind === "up-to-date") {
     return (
       <span
-        className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/40 backdrop-blur"
+        className="inline-flex items-center gap-1 rounded-md bg-[#10b981] px-2 py-0.5 text-[11px] font-semibold text-[#022c22] shadow-lg shadow-black/30"
         title={t("result.installed.with_version.tooltip", {
           version: state.pkg.packageVersion ?? "",
         })}
@@ -564,7 +643,7 @@ function InstallBadge({ state }: { state: InstallState }) {
   // installed-unknown-version
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-200 ring-1 ring-emerald-500/40 backdrop-blur"
+      className="inline-flex items-center gap-1 rounded-md bg-[#10b981] px-2 py-0.5 text-[11px] font-semibold text-[#022c22] shadow-lg shadow-black/30"
       title={t("result.installed.unknown.tooltip")}
     >
       <CheckCircle2 className="h-3 w-3" />
@@ -576,24 +655,14 @@ function InstallBadge({ state }: { state: InstallState }) {
 function BannerPlaceholder({ icao }: { icao: string | null }) {
   return (
     <div className="flex h-full w-full items-center justify-center">
-      <div className="flex flex-col items-center gap-2 text-slate-700">
-        <Plane className="h-10 w-10" strokeWidth={1.5} />
+      <div className="flex flex-col items-center gap-2 text-slate-600">
+        <Plane className="h-9 w-9" strokeWidth={1.5} />
         {icao && (
-          <span className="font-mono text-3xl font-bold tracking-widest text-slate-700">
+          <span className="font-mono text-2xl font-bold tracking-widest text-slate-600">
             {icao}
           </span>
         )}
       </div>
     </div>
-  );
-}
-
-function Chip({ label, tone }: { label: string; tone: "brand" | "slate" }) {
-  const toneClass =
-    tone === "brand"
-      ? "bg-brand-500/15 text-brand-300 ring-1 ring-brand-500/30"
-      : "bg-slate-700/40 text-slate-300 ring-1 ring-slate-700";
-  return (
-    <span className={`rounded-md px-2 py-0.5 text-xs ${toneClass}`}>{label}</span>
   );
 }

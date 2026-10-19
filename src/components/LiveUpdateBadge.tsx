@@ -86,7 +86,7 @@ export function LiveUpdateBadge() {
     <>
       <button
         onClick={() => setShowModal(true)}
-        className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 shadow-lg shadow-emerald-500/10 hover:bg-emerald-500/25"
+        className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-200 shadow-lg shadow-emerald-500/10 hover:bg-emerald-500/25"
         title={t("liveUpdate.badgeTip", { version: update.latestVersion })}
       >
         <motion.span
@@ -113,16 +113,16 @@ export function LiveUpdateBadge() {
               exit={{ y: 16, opacity: 0 }}
               transition={{ duration: 0.18 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md rounded-2xl border border-emerald-500/30 bg-slate-950 shadow-2xl"
+              className="w-full max-w-md rounded-2xl border border-emerald-500/30 bg-sf-bg shadow-2xl"
             >
-              <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+              <header className="flex items-center justify-between border-b border-sf-border px-5 py-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-emerald-200">
                   <Sparkles className="h-4 w-4 text-emerald-300" />
                   {t("liveUpdate.title")}
                 </div>
                 <button
                   onClick={() => !installing && setShowModal(false)}
-                  className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+                  className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-50"
                   disabled={installing}
                 >
                   <X className="h-4 w-4" />
@@ -138,7 +138,7 @@ export function LiveUpdateBadge() {
                     href={update.releaseUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-0.5 inline-block text-[10px] text-emerald-300 hover:underline"
+                    className="mt-0.5 inline-block text-[11px] text-emerald-300 hover:underline"
                   >
                     {t("liveUpdate.viewRelease")}
                   </a>
@@ -146,10 +146,10 @@ export function LiveUpdateBadge() {
 
                 {update.notesMarkdown && (
                   <div>
-                    <div className="mb-1 text-[11px] uppercase tracking-wider text-slate-400">
+                    <div className="mb-1 text-[11px] uppercase tracking-wider text-sf-muted">
                       {t("liveUpdate.changes")}
                     </div>
-                    <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-300">
+                    <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-sf-border bg-sf-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-sf-text/90">
                       {update.notesMarkdown.slice(0, 8000)}
                       {update.notesMarkdown.length > 8000 && "…"}
                     </div>
@@ -168,14 +168,14 @@ export function LiveUpdateBadge() {
                       )}
                     </div>
                     {downloadPct !== null && (
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
                         <div
                           className="h-full bg-emerald-400 transition-all duration-200"
                           style={{ width: `${downloadPct}%` }}
                         />
                       </div>
                     )}
-                    <p className="mt-1.5 text-[10px] text-emerald-200/70">
+                    <p className="mt-1.5 text-[11px] text-emerald-200/70">
                       {t("liveUpdate.willClose")}{" "}
                       {autoRestart
                         ? t("liveUpdate.willRestart")
@@ -184,7 +184,7 @@ export function LiveUpdateBadge() {
                   </div>
                 )}
 
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-sf-text/90">
                   <input
                     type="checkbox"
                     checked={autoRestart}
@@ -196,14 +196,14 @@ export function LiveUpdateBadge() {
                 </label>
               </div>
 
-              <footer className="flex items-center justify-end gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
+              <footer className="flex items-center justify-end gap-2 border-t border-sf-border bg-sf-surface px-5 py-3">
                 <button
                   onClick={() => {
                     setDismissed(update.latestVersion);
                     setShowModal(false);
                   }}
                   disabled={installing}
-                  className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
+                  className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:border-sf-border disabled:opacity-50"
                 >
                   {t("liveUpdate.remindLater")}
                 </button>

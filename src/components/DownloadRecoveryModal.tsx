@@ -38,25 +38,25 @@ export function DownloadRecoveryModal() {
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl ring-1 ring-slate-800"
+        className="w-full max-w-md rounded-2xl border border-sf-border bg-sf-surface p-6 shadow-2xl ring-1 ring-sf-border"
       >
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2 text-amber-300">
             <AlertTriangle className="h-5 w-5" />
-            <h2 className="text-base font-semibold text-slate-100">
+            <h2 className="text-base font-semibold text-sf-text">
               {t("dl.recover.title")}
             </h2>
           </div>
           <button
             onClick={dismiss}
             aria-label={t("common.dismiss")}
-            className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        <p className="mt-2 text-sm text-slate-400">
+        <p className="mt-2 text-sm text-sf-muted">
           {t("dl.recover.body", { title: addonTitle })}
         </p>
 
@@ -65,13 +65,13 @@ export function DownloadRecoveryModal() {
             <button
               onClick={() => setShowWhy((v) => !v)}
               title={t("dl.recover.why")}
-              className="inline-flex cursor-help items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-sm text-slate-500"
+              className="inline-flex cursor-help items-center justify-between gap-2 rounded-lg border border-sf-border bg-sf-raised/70 px-3 py-2 text-sm text-sf-muted"
             >
               <span className="inline-flex items-center gap-2">
                 <Download className="h-4 w-4" />
                 {torrent.name}
               </span>
-              <span className="text-[11px] uppercase tracking-wide text-slate-600">
+              <span className="text-[11px] uppercase tracking-wide text-sf-muted/70">
                 {t("dl.recover.failed")}
               </span>
             </button>
@@ -87,7 +87,7 @@ export function DownloadRecoveryModal() {
             <button
               key={i}
               onClick={() => pick(m)}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm font-medium text-slate-100 transition-colors hover:border-brand-500/60 hover:bg-slate-800"
+              className="inline-flex items-center gap-2 rounded-lg border border-sf-border bg-sf-raised px-3 py-2 text-sm font-medium text-sf-text transition-colors hover:border-brand-500/60 hover:bg-sf-raised"
             >
               <Download className="h-4 w-4" />
               {m.name}

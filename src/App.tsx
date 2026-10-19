@@ -1,16 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  BarChart3,
-  Boxes,
-  FlaskConical,
-  Globe2,
-  ListChecks,
-  Plane,
-  Search,
-  Settings,
-  Wallet,
-  Warehouse,
-} from "lucide-react";
+import { FlaskConical, Globe2, Search } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { api, isTauri } from "./lib/tauri";
 import { setActiveLocale, t } from "./lib/i18n";
@@ -38,6 +27,8 @@ import { FlightBookView } from "./components/FlightBookView";
 import { HangarView } from "./components/HangarView";
 import { EconomyView } from "./components/EconomyView";
 import { TitleBar } from "./components/TitleBar";
+import { Sidebar } from "./components/Sidebar";
+import { LiveUpdateBadge } from "./components/LiveUpdateBadge";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -80,8 +71,8 @@ export default function App() {
   const {
     sources, activeSourceId, query, results, status, error, view,
     browsePage, browseHasMore, browseMode,
-    setSources, setActiveSource, setQuery, setResults, setStatus, setError, setView,
-    loadBrowsePage, openEconomy,
+    setSources, setActiveSource, setQuery, setResults, setStatus, setError,
+    loadBrowsePage,
   } = useAppStore();
 
   const bootstrapDownloads = useDownloadsStore((s) => s.bootstrap);
@@ -836,255 +827,200 @@ export default function App() {
   }
 
   return (
-    /* (v4.29.0) Shell de altura-viewport: flex column + overflow
-       hidden. El body ya no scrollea — cada vista tiene su propio
-       scroll. La rueda sobre el mapa ya no desplaza el header. */
-    <div className="app-shell flex h-screen flex-col overflow-hidden bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900">
-      {isTauri && <TitleBar />}
-      {/* (v2.2.0) Banner de update visible siempre que haya una nueva
-          versión y el usuario no la haya descartado. Se renderiza
-          ARRIBA del header de la app, debajo del titlebar. */}
-      <UpdateBanner />
-      {safeMode && (
-        <div className="flex items-center justify-center gap-2 border-b border-rose-500/30 bg-rose-500/15 px-4 py-1.5 text-xs font-semibold text-rose-200">
-          🧪{" "}
-          {t(watcherActive ? "safeMode.bannerActive" : "safeMode.bannerIdle", {
-            dir: testDataDir ?? "…",
-          })}
-        </div>
-      )}
-      {!isTauri && (
-        <div className="flex items-center justify-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-200">
-          <FlaskConical className="h-3.5 w-3.5" />
-          {/* (v3.4.0) Texto i18n con un placeholder `{cmd}` que separamos
-              al render para inyectar el <code> con estilo Tailwind. Más
-              legible que concatenación + dangerouslySetInnerHTML. */}
-          <span>
-            {t("demo.title", { cmd: "__CMD__" })
-              .split("__CMD__")
-              .flatMap((chunk, i, arr) =>
-                i < arr.length - 1
-                  ? [
-                      <span key={`t${i}`}>{chunk}</span>,
-                      <code
-                        key={`c${i}`}
-                        className="rounded bg-amber-500/20 px-1 font-mono"
-                      >
-                        npm run tauri dev
-                      </code>,
-                    ]
-                  : [<span key={`t${i}`}>{chunk}</span>],
-              )}
-          </span>
-        </div>
-      )}
+    /* (v4.29.0) Shell de altura-viewport + overflow hidden. El body ya
+       no scrollea — cada vista tiene su propio scroll.
+       (Rediseño F1) Menú lateral a la izquierda y, a su derecha, una
+       columna con la barra superior única + banners + contenido. */
+    <div className="app-shell flex h-screen overflow-hidden bg-sf-bg text-sf-text">
+      <Sidebar
+        settingsOpen={settingsOpen}
+        onOpenSettings={() => setSettingsOpen(true)}
+        safeMode={safeMode}
+      />
 
-      <header className="app-shell-header sticky top-9 z-40 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur">
-        {/* Header truly fluid — sin max-w. Se ajusta al ancho de la
-            ventana con padding generoso a los lados. */}
-        <div className="flex w-full items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-2 no-select">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-500/15 ring-1 ring-brand-500/30">
-              <Plane className="h-5 w-5 text-brand-300" />
-            </div>
-            <div>
-              <h1 className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-slate-100">
-                SimFleet
-                {safeMode && (
-                  <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-300 ring-1 ring-rose-500/40">
-                    {t("safeMode.badge")}
-                  </span>
-                )}
-              </h1>
-              <p className="text-[11px] text-slate-500">
-                {t("header.tagline")}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <FlyingNowBadge />
-            <GsxRemoteBadge />
-            {view === "search" && (
-              <SourceToggle
-                sources={visibleSources}
-                activeId={activeSourceId}
-                onChange={setActiveSource}
-              />
-            )}
-            {/* (v6.2.57) Botón dedicado a flightsim.to (abre el navegador
-                embebido: liveries, perfiles GSX, apps). Independiente de la
-                versión de MSFS. Antes estaba en Addons; el usuario lo pidió aquí. */}
-            {view === "search" && (
-              <button
-                onClick={() =>
-                  void api.openLiveryBrowser("https://flightsim.to")
-                }
-                title={t("flightsimto.tooltip")}
-                className="group inline-flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-2 text-slate-300 transition-colors hover:border-brand-500/40 hover:bg-slate-900 hover:text-slate-100"
-              >
-                <Globe2 className="h-4 w-4 text-sky-400 transition-colors group-hover:text-sky-300" />
-                <span className="hidden text-xs font-medium sm:inline">
-                  flightsim.to
-                </span>
-              </button>
-            )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TitleBar
+          leading={
             <button
               onClick={() => window.dispatchEvent(new Event("simfleet:palette"))}
               title={t("palette.tooltip")}
-              className="hidden items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 py-2 text-slate-400 hover:border-brand-500/40 hover:text-slate-100 sm:inline-flex"
+              aria-label={t("palette.tooltip")}
+              className="flex h-8 w-8 min-w-0 shrink-0 items-center justify-center gap-2 rounded-lg border border-sf-border bg-sf-surface text-sf-muted transition-colors hover:border-brand-500/40 hover:text-sf-text lg:w-72 lg:shrink lg:justify-start lg:px-3 xl:w-96"
             >
-              <Search className="h-4 w-4" />
-              <kbd className="rounded border border-slate-700 bg-slate-950 px-1 py-0.5 text-[9px] font-medium text-slate-500">
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="hidden truncate text-[13px] lg:inline">
+                {t("topbar.search_placeholder")}
+              </span>
+              <kbd className="ml-auto hidden shrink-0 rounded border border-sf-border bg-sf-bg px-1.5 py-0.5 text-[10px] font-medium text-sf-muted lg:inline">
                 Ctrl K
               </kbd>
             </button>
-            <button
-              data-tour-id="header-settings"
-              onClick={() => setSettingsOpen(true)}
-              title={t("header.settings.tooltip")}
-              className="rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-slate-400 hover:border-brand-500/40 hover:text-slate-100"
-            >
-              <Settings className="h-4 w-4" />
-            </button>
-            <span data-tour-id="header-notifications">
-              <NotificationsBell />
-            </span>
-            <DownloadsButton />
-            <PilotBadge />
+          }
+          actions={
+            <>
+              {/* Badges de estado: si falta ancho, se recortan ellos antes
+                  que los accesos o los controles de ventana. */}
+              <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden">
+                <FlyingNowBadge />
+                <GsxRemoteBadge />
+                <LiveUpdateBadge />
+              </div>
+              <span data-tour-id="header-notifications" className="shrink-0">
+                <NotificationsBell />
+              </span>
+              <span className="shrink-0">
+                <DownloadsButton />
+              </span>
+              <span className="shrink-0">
+                <PilotBadge />
+              </span>
+            </>
+          }
+        />
+        {/* (v2.2.0) Banner de update visible siempre que haya una nueva
+            versión y el usuario no la haya descartado. Debajo de la barra
+            superior. */}
+        <UpdateBanner />
+        {safeMode && (
+          <div className="flex items-center justify-center gap-2 border-b border-rose-500/30 bg-rose-500/15 px-4 py-1.5 text-xs font-semibold text-rose-200">
+            🧪{" "}
+            {t(watcherActive ? "safeMode.bannerActive" : "safeMode.bannerIdle", {
+              dir: testDataDir ?? "…",
+            })}
           </div>
-        </div>
-      </header>
+        )}
+        {!isTauri && (
+          <div className="flex items-center justify-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-200">
+            <FlaskConical className="h-3.5 w-3.5" />
+            {/* (v3.4.0) Texto i18n con un placeholder `{cmd}` que separamos
+                al render para inyectar el <code> con estilo Tailwind. Más
+                legible que concatenación + dangerouslySetInnerHTML. */}
+            <span>
+              {t("demo.title", { cmd: "__CMD__" })
+                .split("__CMD__")
+                .flatMap((chunk, i, arr) =>
+                  i < arr.length - 1
+                    ? [
+                        <span key={`t${i}`}>{chunk}</span>,
+                        <code
+                          key={`c${i}`}
+                          className="rounded bg-amber-500/20 px-1 font-mono"
+                        >
+                          npm run tauri dev
+                        </code>,
+                      ]
+                    : [<span key={`t${i}`}>{chunk}</span>],
+                )}
+            </span>
+          </div>
+        )}
+
+        <main
+          className={`min-h-0 flex-1 w-full overflow-hidden px-6 pb-5 pt-5 ${
+            view === "search" ? "mx-auto max-w-[1600px]" : ""
+          }`}
+        >
+          {/* (v4.29.0) Dashboard y Search pueden tener contenido alto;
+              envolvemos en wrapper scrolleable INTERNO. Map, Addons y
+              FlightBook ya tienen sus propios layouts h-full. */}
+          {view === "dashboard" && (
+            <div className="h-full overflow-y-auto">
+              <DashboardView />
+            </div>
+          )}
+
+          {view === "search" && (
+            <div className="h-full overflow-y-auto">
+              <div className="space-y-4 pb-2">
+                {/* (Rediseño F3) Cabecera de Explorar: el selector de
+                    catálogo y flightsim.to viven aquí, junto al buscador
+                    (antes estaban en la barra superior sólo en esta vista). */}
+                <header className="flex flex-wrap items-end justify-between gap-3">
+                  <div className="min-w-0">
+                    <h1 className="text-xl font-semibold tracking-tight text-sf-text">
+                      {t("explore.title")}
+                    </h1>
+                    <p className="mt-0.5 text-sm text-sf-muted">
+                      {t("explore.subtitle")}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SourceToggle
+                      sources={visibleSources}
+                      activeId={activeSourceId}
+                      onChange={setActiveSource}
+                    />
+                    {/* (v6.2.57) Botón dedicado a flightsim.to (abre el navegador
+                        embebido: liveries, perfiles GSX, apps). Independiente de la
+                        versión de MSFS. */}
+                    <button
+                      onClick={() =>
+                        void api.openLiveryBrowser("https://flightsim.to")
+                      }
+                      title={t("flightsimto.tooltip")}
+                      className="group inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-sf-border bg-sf-surface px-3 text-sf-muted transition-colors hover:border-brand-500/40 hover:text-sf-text"
+                    >
+                      <Globe2 className="h-4 w-4 text-sky-400 transition-colors group-hover:text-sky-300" />
+                      <span className="text-xs font-medium">flightsim.to</span>
+                    </button>
+                  </div>
+                </header>
+                <SearchBar
+                  value={query}
+                  onChange={setQuery}
+                  onSubmit={runSearch}
+                  loading={status === "loading"}
+                  placeholder={
+                    activeSourceId === "simplaza"
+                      ? t("search.placeholder.simplaza")
+                      : t("search.placeholder.scenery")
+                  }
+                />
+                {activeSourceId === "sceneryaddons" && (
+                  <div className="flex justify-center empty:hidden">
+                    <GsxSearchSummary query={query} />
+                  </div>
+                )}
+                <ResultsList
+                  results={results}
+                  status={status}
+                  error={error}
+                  query={query}
+                  browseMode={browseMode}
+                />
+                {browseMode === "browse" && results.length > 0 && (
+                  <div className="flex items-center justify-center gap-2 pt-2">
+                    <button
+                      onClick={() => loadBrowsePage(Math.max(1, browsePage - 1))}
+                      disabled={status === "loading" || browsePage <= 1}
+                      className="rounded-lg border border-sf-border bg-sf-surface px-3 py-1.5 text-xs font-medium text-sf-text hover:border-brand-500/40 disabled:opacity-40"
+                    >
+                      {t("common.previous")}
+                    </button>
+                    <span className="px-2 text-xs tabular-nums text-sf-muted">
+                      {t("common.page")} {browsePage}
+                    </span>
+                    <button
+                      onClick={() => loadBrowsePage(browsePage + 1)}
+                      disabled={status === "loading" || !browseHasMore}
+                      className="rounded-lg border border-sf-border bg-sf-surface px-3 py-1.5 text-xs font-medium text-sf-text hover:border-brand-500/40 disabled:opacity-40"
+                    >
+                      {t("common.next")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {view === "map" && <MapView />}
+          {view === "addons" && <AddonsView />}
+          {view === "flightbook" && <FlightBookView />}
+          {view === "hangar" && <HangarView />}
+          {view === "economy" && <EconomyView />}
+        </main>
+      </div>
 
       <DownloadsPanel open={isPanelOpen} onClose={() => setPanelOpen(false)} />
-
-      {/* (v4.27.0) Nav FUERA del main para que:
-          1. Mantenga el MISMO ancho en todas las pantallas (antes en
-             Search se encogía con `max-w-[1600px]`).
-          2. Sea sticky en scroll — siempre accesible aunque la vista
-             tenga contenido largo.
-          El cap de Search se aplica solo a su contenido (más abajo). */}
-      <nav className="sticky top-0 z-30 mx-6 mt-5 flex gap-1 rounded-xl bg-slate-900/80 p-1 ring-1 ring-slate-800 backdrop-blur">
-          <ViewTab
-            active={view === "dashboard"}
-            onClick={() => setView("dashboard")}
-            icon={<BarChart3 className="h-4 w-4" />}
-            label={t("nav.dashboard")}
-            tourId="nav-dashboard"
-          />
-          <ViewTab
-            active={view === "search"}
-            onClick={() => setView("search")}
-            icon={<ListChecks className="h-4 w-4" />}
-            label={t("nav.search")}
-            tourId="nav-search"
-          />
-          <ViewTab
-            active={view === "map"}
-            onClick={() => setView("map")}
-            icon={<Globe2 className="h-4 w-4" />}
-            label={t("nav.map")}
-            tourId="nav-map"
-          />
-          <ViewTab
-            active={view === "addons"}
-            onClick={() => setView("addons")}
-            icon={<Boxes className="h-4 w-4" />}
-            label={t("nav.addons")}
-            tourId="nav-addons"
-          />
-          <ViewTab
-            active={view === "flightbook"}
-            onClick={() => setView("flightbook")}
-            icon={<Plane className="h-4 w-4" />}
-            label={t("nav.flightbook")}
-            tourId="nav-flightbook"
-          />
-          <ViewTab
-            active={view === "hangar"}
-            onClick={() => setView("hangar")}
-            icon={<Warehouse className="h-4 w-4" />}
-            label={t("nav.hangar")}
-            tourId="nav-hangar"
-          />
-          <ViewTab
-            active={view === "economy"}
-            onClick={() => openEconomy(null)}
-            icon={<Wallet className="h-4 w-4" />}
-            label={t("nav.economy")}
-            tourId="nav-economy"
-          />
-      </nav>
-
-      <main
-        className={`min-h-0 flex-1 w-full overflow-hidden px-6 pb-5 pt-4 ${
-          view === "search" ? "mx-auto max-w-[1600px]" : ""
-        }`}
-      >
-        {/* (v4.29.0) Dashboard y Search pueden tener contenido alto;
-            envolvemos en wrapper scrolleable INTERNO. Map, Addons y
-            FlightBook ya tienen sus propios layouts h-full. */}
-        {view === "dashboard" && (
-          <div className="h-full overflow-y-auto">
-            <DashboardView />
-          </div>
-        )}
-
-        {view === "search" && (
-          <div className="h-full overflow-y-auto">
-            <SearchBar
-              value={query}
-              onChange={setQuery}
-              onSubmit={runSearch}
-              loading={status === "loading"}
-              placeholder={
-                activeSourceId === "simplaza"
-                  ? t("search.placeholder.simplaza")
-                  : t("search.placeholder.scenery")
-              }
-            />
-            {activeSourceId === "sceneryaddons" && (
-              <div className="mt-3 flex justify-center">
-                <GsxSearchSummary query={query} />
-              </div>
-            )}
-            <div className="mt-6">
-              <ResultsList
-                results={results}
-                status={status}
-                error={error}
-                query={query}
-                browseMode={browseMode}
-              />
-            </div>
-            {browseMode === "browse" && results.length > 0 && (
-              <div className="mt-4 flex items-center justify-center gap-2">
-                <button
-                  onClick={() => loadBrowsePage(Math.max(1, browsePage - 1))}
-                  disabled={status === "loading" || browsePage <= 1}
-                  className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-40"
-                >
-                  {t("common.previous")}
-                </button>
-                <span className="text-xs text-slate-500">
-                  {t("common.page")} {browsePage}
-                </span>
-                <button
-                  onClick={() => loadBrowsePage(browsePage + 1)}
-                  disabled={status === "loading" || !browseHasMore}
-                  className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-40"
-                >
-                  {t("common.next")}
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        {view === "map" && <MapView />}
-        {view === "addons" && <AddonsView />}
-        {view === "flightbook" && <FlightBookView />}
-        {view === "hangar" && <HangarView />}
-        {view === "economy" && <EconomyView />}
-      </main>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {/* (v6.2.27 / R4) Paleta de comandos global — Ctrl/Cmd+K. */}
@@ -1128,34 +1064,5 @@ export default function App() {
         />
       )}
     </div>
-  );
-}
-
-function ViewTab({
-  active,
-  onClick,
-  icon,
-  label,
-  tourId,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  tourId?: string;
-}) {
-  return (
-    <button
-      data-tour-id={tourId}
-      onClick={onClick}
-      className={`inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
-        active
-          ? "bg-brand-500/15 text-brand-200 ring-1 ring-brand-500/30"
-          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
   );
 }

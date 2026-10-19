@@ -151,6 +151,19 @@ export function FlightBookView() {
   // mapa queda visible para que el usuario pueda ver la trayectoria
   // del vuelo seleccionado.
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  // (Rediseño F4) Filtro rápido por año sobre la lista (null = todos).
+  const [yearFilter, setYearFilter] = useState<number | null>(null);
+  // (Rediseño F4) Ancho del área lista+mapa: con espacio suficiente el
+  // detalle del vuelo se acopla como columna fija a la derecha del mapa
+  // (en vez de flotar encima y tapar la ruta).
+  const [gridEl, setGridEl] = useState<HTMLDivElement | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+  useEffect(() => {
+    if (!gridEl) return;
+    const ro = new ResizeObserver(([e]) => setGridWidth(e.contentRect.width));
+    ro.observe(gridEl);
+    return () => ro.disconnect();
+  }, [gridEl]);
   const [showShare, setShowShare] = useState(false);
   const [exportingWeb, setExportingWeb] = useState(false);
   const pushExportToast = useToastStore((s) => s.push);
@@ -400,8 +413,24 @@ export function FlightBookView() {
   // arriba del mapa). Si selectedAirline está activo, sólo entran vuelos
   // que matchean el icao o el name fallback. `selectedAirline` viene
   // del declaration de arriba (compartido con statsPool).
+  // (Rediseño F4) Años presentes en la bitácora, del más reciente al más antiguo.
+  const flightYears = useMemo(() => {
+    const ys = new Set<number>();
+    for (const e of completed) {
+      const y = new Date(e.startedAt).getFullYear();
+      if (Number.isFinite(y)) ys.add(y);
+    }
+    return [...ys].sort((a, b) => b - a);
+  }, [completed]);
+  useEffect(() => {
+    if (yearFilter != null && !flightYears.includes(yearFilter)) setYearFilter(null);
+  }, [flightYears, yearFilter]);
+
   const filteredCompleted = useMemo(() => {
     let arr = completed;
+    if (yearFilter != null) {
+      arr = arr.filter((e) => new Date(e.startedAt).getFullYear() === yearFilter);
+    }
     if (selectedAirline) {
       const selKey = canonicalAirlineKey(selectedAirline.icao, selectedAirline.name);
       arr = arr.filter(
@@ -427,7 +456,7 @@ export function FlightBookView() {
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [completed, sidebarQuery, selectedAirline]);
+  }, [completed, sidebarQuery, selectedAirline, yearFilter]);
 
   // (v3.5.0 → v4.19.0) Pieza central del overlay flotante. Con
   // SimConnect conectado (preflight, vuelo activo, llegada) NO se
@@ -435,8 +464,13 @@ export function FlightBookView() {
   // detalle de un vuelo viejo al clickearlo (el LiveFlightPanel del
   // mapa ya cubre el vuelo en curso). El Overview de stats se mantiene
   // únicamente cuando el sim no está conectado.
+  // (Rediseño F4) Acoplar el detalle como columna fija sólo si al mapa le
+  // quedan ~420px (lista 300 + detalle 360 + separaciones).
+  const dockDetail = !!selectedFlight && gridWidth >= (sidebarCollapsed ? 820 : 1130);
   const overlayKind: "selected" | "stats" | "none" = selectedFlight
-    ? "selected"
+    ? dockDetail
+      ? "none"
+      : "selected"
     : inFlight || status?.simconnectConnected
       ? "none"
       : completed.length > 0
@@ -444,21 +478,20 @@ export function FlightBookView() {
         : "none";
 
   return (
-    <section className="flex h-[calc(100vh-13rem)] flex-col gap-3 overflow-hidden">
+    <section className="flex h-full flex-col gap-3 overflow-hidden">
       <header className="flex shrink-0 items-center gap-3">
         <div className="min-w-0 shrink-0">
-          <h1 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-            <Plane className="h-5 w-5 text-emerald-300" />
+          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-sf-text">
             {t("fb.title")}
             {selectedFlight && (
-              <span className="ml-1 inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-200 ring-1 ring-amber-500/30">
+              <span className="ml-1 inline-flex items-center gap-1 rounded-md bg-brand-500/15 px-2 py-0.5 text-xs font-medium text-brand-200 ring-1 ring-brand-500/30">
                 <PlaneLanding className="h-3 w-3" />
                 {selectedFlight.originIcao ?? "?"} →{" "}
                 {selectedFlight.destinationIcao ?? "?"}
               </span>
             )}
           </h1>
-          <p className="text-xs text-slate-500">
+          <p className="text-sm text-sf-muted">
             {selectedFlight
               ? t("fb.subtitle.detail")
               : t("fb.subtitle.list")}
@@ -479,7 +512,7 @@ export function FlightBookView() {
             <button
               onClick={() => void exportWeb()}
               disabled={exportingWeb}
-              className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/60 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-brand-500/40 hover:text-slate-100 disabled:opacity-50"
+              className="inline-flex items-center gap-1 rounded-md border border-sf-border bg-sf-surface px-2.5 py-1.5 text-xs font-medium text-sf-text/90 hover:border-brand-500/40 hover:text-sf-text disabled:opacity-50"
               title={t("fbexport.tooltip")}
             >
               <Share2 className="h-3 w-3" />
@@ -499,7 +532,7 @@ export function FlightBookView() {
           {selectedFlight ? (
             <button
               onClick={() => setSelectedFlightId(null)}
-              className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-medium text-amber-200 hover:border-amber-400 hover:bg-amber-500/20"
+              className="inline-flex items-center gap-1 rounded-md border border-sf-border bg-sf-surface px-2.5 py-1.5 text-xs font-medium text-sf-text/90 hover:border-brand-500/40 hover:text-sf-text"
               title={t("fb.back_to_globe.tooltip")}
             >
               <ArrowLeft className="h-3 w-3" />
@@ -547,11 +580,19 @@ export function FlightBookView() {
           Patrón visual a lo Flightradar24 / Polarsteps: el mapa es el
           contexto permanente, los datos son overlays semitransparentes
           que dejan ver el geografía detrás. */}
+      {/* (Rediseño F6) Columnas desde md (768px): con la ventana mínima
+          (960px) lista y mapa van lado a lado; antes se apilaban y el mapa
+          quedaba sin altura. */}
       <div
+        ref={setGridEl}
         className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${
           sidebarCollapsed
-            ? "lg:grid-cols-[18px_minmax(0,1fr)]"
-            : "lg:grid-cols-[18px_300px_minmax(0,1fr)]"
+            ? dockDetail
+              ? "md:grid-cols-[18px_minmax(0,1fr)_360px]"
+              : "md:grid-cols-[18px_minmax(0,1fr)]"
+            : dockDetail
+              ? "md:grid-cols-[18px_300px_minmax(0,1fr)_360px]"
+              : "md:grid-cols-[18px_300px_minmax(0,1fr)]"
         }`}
       >
         {/* (v4.26.0) HANDLE de colapso pegado al borde izquierdo de la
@@ -561,7 +602,7 @@ export function FlightBookView() {
         <button
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
           title={sidebarCollapsed ? t("fb.sidebar.expand") : t("fb.sidebar.collapse")}
-          className="hidden items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500 hover:bg-slate-800/60 hover:text-slate-200 lg:flex"
+          className="hidden items-center justify-center rounded-2xl border border-sf-border bg-sf-surface text-sf-muted hover:bg-sf-raised hover:text-sf-text md:flex"
         >
           {sidebarCollapsed ? (
             <ChevronRight className="h-4 w-4" />
@@ -571,32 +612,50 @@ export function FlightBookView() {
         </button>
         {!sidebarCollapsed && (
         /* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */
-        <aside className="flex min-h-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/40">
-          <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-2xl border-b border-slate-800 bg-slate-900/80 px-3 py-2 backdrop-blur">
-            <Search className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+        <aside className="flex min-h-0 flex-col rounded-2xl border border-sf-border bg-sf-surface">
+          <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-2xl border-b border-sf-border bg-sf-surface/80 px-3 py-2 backdrop-blur">
+            <Search className="h-3.5 w-3.5 shrink-0 text-sf-muted" />
             <input
               value={sidebarQuery}
               onChange={(e) => setSidebarQuery(e.target.value)}
               placeholder={t("fb.sidebar.filter_placeholder")}
-              className="w-full bg-transparent text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none"
+              className="w-full bg-transparent text-xs text-sf-text placeholder:text-sf-muted/70 focus:outline-none"
             />
-            <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400">
+            <span className="shrink-0 rounded bg-sf-raised px-1.5 py-0.5 text-[10px] tabular-nums text-sf-muted">
               {filteredCompleted.length}
             </span>
           </div>
+          {/* (Rediseño F4) Pestañas por año (sólo si hay vuelos de 2+ años). */}
+          {flightYears.length > 1 && (
+            <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-sf-border px-2 py-1.5">
+              <YearTab
+                active={yearFilter === null}
+                onClick={() => setYearFilter(null)}
+                label={t("fb.years.all")}
+              />
+              {flightYears.map((y) => (
+                <YearTab
+                  key={y}
+                  active={yearFilter === y}
+                  onClick={() => setYearFilter(y)}
+                  label={String(y)}
+                />
+              ))}
+            </div>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
             {completed.length === 0 ? (
               <div className="px-3 py-8 text-center">
-                <Plane className="mx-auto mb-2 h-6 w-6 text-slate-600" />
-                <p className="text-xs font-medium text-slate-400">
+                <Plane className="mx-auto mb-2 h-6 w-6 text-sf-muted/70" />
+                <p className="text-xs font-medium text-sf-muted">
                   {t("fb.empty.title")}
                 </p>
-                <p className="mt-1 text-[10px] text-slate-500">
+                <p className="mt-1 text-[10px] text-sf-muted">
                   {t("fb.empty.body")}
                 </p>
               </div>
             ) : filteredCompleted.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[11px] text-slate-500">
+              <div className="px-3 py-6 text-center text-[11px] text-sf-muted">
                 {t("fb.sidebar.no_matches")}
               </div>
             ) : (
@@ -644,7 +703,7 @@ export function FlightBookView() {
               vsHasSnapshot={vsSnapshotExists}
             />
           )}
-          <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/40">
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-sf-border bg-sf-bg/40">
             <div className="absolute inset-0">
               <RoutesMapView
                 height="100%"
@@ -702,7 +761,7 @@ export function FlightBookView() {
                   >
                     <motion.div
                       layout
-                      className={`overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-950/75 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur-xl ${
+                      className={`overflow-hidden rounded-2xl border border-sf-border/70 bg-slate-950/75 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur-xl ${
                         overlayKind === "selected" && !panelCollapsed
                           ? "flex h-full flex-col"
                           : ""
@@ -733,6 +792,20 @@ export function FlightBookView() {
             </AnimatePresence>
           </div>
         </div>
+
+        {/* (Rediseño F4) Detalle del vuelo acoplado como columna fija. */}
+        {dockDetail && selectedFlight && (
+          <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-sf-border/80 bg-sf-surface">
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <SelectedFlightPanel
+                entry={selectedFlight}
+                collapsed={false}
+                collapsible={false}
+                onToggleCollapse={() => {}}
+              />
+            </div>
+          </aside>
+        )}
       </div>
 
       {/* (v3.2.0) Modal de confirmación de borrado. Estético en vez
@@ -759,6 +832,29 @@ export function FlightBookView() {
   );
 }
 
+/** (Rediseño F4) Pestaña del filtro por año de la lista de vuelos. */
+function YearTab({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium tabular-nums transition-colors ${
+        active ? "bg-brand-500/15 text-brand-200" : "text-sf-muted hover:text-sf-text"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 /** (v3.2.0) Modal estético de confirmación al borrar un vuelo del
  *  FlightBook. Reemplaza el `window.confirm` nativo (UI del SO) por
  *  un overlay con AnimatePresence + Tailwind, manteniendo el theme
@@ -780,37 +876,37 @@ function DeleteFlightModal({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm rounded-2xl border border-rose-500/30 bg-slate-900 shadow-2xl shadow-rose-500/10"
+        className="w-full max-w-sm rounded-2xl border border-rose-500/30 bg-sf-surface shadow-2xl shadow-rose-500/10"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-center gap-2 border-b border-slate-800 px-5 py-3">
+        <header className="flex items-center gap-2 border-b border-sf-border px-5 py-3">
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/15 ring-1 ring-rose-500/30">
             <Trash2 className="h-3.5 w-3.5 text-rose-300" />
           </div>
-          <h3 className="text-sm font-semibold text-slate-100">
+          <h3 className="text-sm font-semibold text-sf-text">
             {t("fb.delete.title")}
           </h3>
         </header>
         <div className="space-y-3 px-5 py-4">
-          <div className="rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2">
-            <div className="font-mono text-sm text-slate-100">
+          <div className="rounded-md border border-sf-border bg-sf-bg/50 px-3 py-2">
+            <div className="font-mono text-sm text-sf-text">
               {orig}
               <span className="mx-1.5 text-rose-300">→</span>
               {dest}
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
+            <div className="mt-0.5 text-[11px] text-sf-muted">
               {formatDate(entry.startedAt)}
               {entry.aircraftAtcType && ` · ${entry.aircraftAtcType}`}
             </div>
           </div>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-sf-muted">
             {t("fb.delete.body")}
           </p>
         </div>
-        <footer className="flex justify-end gap-2 border-t border-slate-800 bg-slate-950/30 px-5 py-3">
+        <footer className="flex justify-end gap-2 border-t border-sf-border bg-slate-950/30 px-5 py-3">
           <button
             onClick={onCancel}
-            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-600 hover:text-slate-100"
+            className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:border-slate-600 hover:text-sf-text"
           >
             {t("common.cancel")}
           </button>
@@ -890,14 +986,14 @@ function AirportCell({
   const sub = airportSubtitle(airport);
   return (
     <span className="flex flex-col items-end text-right">
-      <span className="font-mono font-bold text-slate-100">{icao}</span>
+      <span className="font-mono font-bold text-sf-text">{icao}</span>
       {name && (
-        <span className="font-sans text-[11px] font-normal leading-tight text-slate-400">
+        <span className="font-sans text-[11px] font-normal leading-tight text-sf-muted">
           {name}
         </span>
       )}
       {sub && (
-        <span className="font-sans text-[10px] font-normal leading-tight text-slate-500">
+        <span className="font-sans text-[10px] font-normal leading-tight text-sf-muted">
           {sub}
         </span>
       )}
@@ -909,10 +1005,13 @@ function SelectedFlightPanel({
   entry,
   collapsed,
   onToggleCollapse,
+  collapsible = true,
 }: {
   entry: FlightLogEntry;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  /** (Rediseño F4) false en la columna acoplada: ahí no se colapsa. */
+  collapsible?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const reload = useFlightLogStore((s) => s.reload);
@@ -956,9 +1055,9 @@ function SelectedFlightPanel({
         className="space-y-3"
       >
         {/* HEADER — Card prominente con ruta y aerolínea. */}
-        <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-br from-amber-500/[0.12] to-amber-500/[0.04] p-4 shadow-md shadow-amber-500/10 ring-1 ring-amber-500/20">
+        <div className="rounded-xl border border-brand-500/30 bg-gradient-to-br from-brand-500/[0.12] to-brand-500/[0.03] p-4">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-amber-300/90">
+            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-brand-300">
               <PlaneLanding className="h-3 w-3" />
               {t("fb.selected_flight")}
             </div>
@@ -966,6 +1065,7 @@ function SelectedFlightPanel({
               {/* (v3.6.1 fix I6 → v3.6.4 fix K5) Botón colapsar/expandir
                   con iconos lucide claros (Maximize2/Minimize2). El
                   usuario reportó que el punto "▴/▾" se veía confuso. */}
+              {collapsible && (
               <button
                 onClick={onToggleCollapse}
                 title={
@@ -973,7 +1073,7 @@ function SelectedFlightPanel({
                     ? t("fb.detail.expand")
                     : t("fb.detail.collapse")
                 }
-                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+                className="inline-flex items-center gap-1 rounded-full border border-brand-500/30 bg-brand-500/10 px-2.5 py-1 text-[11px] font-medium text-brand-200 transition-colors hover:bg-brand-500/20"
               >
                 {collapsed ? (
                   <Maximize2 className="h-2.5 w-2.5" />
@@ -982,10 +1082,11 @@ function SelectedFlightPanel({
                 )}
                 {collapsed ? t("fb.detail.expand_label") : t("fb.detail.collapse_label")}
               </button>
+              )}
               <button
                 onClick={() => setEditing(true)}
                 title={t("fb.action.edit")}
-                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+                className="inline-flex items-center gap-1 rounded-full border border-brand-500/30 bg-brand-500/10 px-2.5 py-1 text-[11px] font-medium text-brand-200 transition-colors hover:bg-brand-500/20"
               >
                 <Pencil className="h-2.5 w-2.5" />
                 {t("fb.action.edit")}
@@ -1014,7 +1115,7 @@ function SelectedFlightPanel({
                 size={28}
               />
               {entry.aircraftAirline && (
-                <span className="text-xs font-semibold uppercase tracking-wide text-amber-200/90">
+                <span className="text-xs font-semibold uppercase tracking-wide text-brand-200">
                   {entry.aircraftAirline}
                 </span>
               )}
@@ -1024,22 +1125,22 @@ function SelectedFlightPanel({
               tracking-tight. Es el elemento más prominente del panel,
               lo PRIMERO que el usuario ve al abrir un vuelo. */}
           <div className="flex items-baseline gap-3 font-mono">
-            <span className="text-4xl font-black tracking-tight text-amber-50 drop-shadow">
+            <span className="text-4xl font-black tracking-tight text-sf-text">
               {entry.originIcao ?? "?"}
             </span>
-            <span className="text-2xl text-amber-300">→</span>
-            <span className="text-4xl font-black tracking-tight text-amber-50 drop-shadow">
+            <span className="text-2xl text-brand-300">→</span>
+            <span className="text-4xl font-black tracking-tight text-sf-text">
               {entry.destinationIcao ?? "?"}
             </span>
           </div>
           {/* AIRCRAFT + DATE — medium peso, secundario. */}
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             {(entry.aircraftAtcType || entry.aircraftTitle) && (
-              <span className="text-sm font-medium text-amber-100">
+              <span className="text-sm font-medium text-sf-text">
                 {cleanAircraftLabel(entry.aircraftAtcType ?? entry.aircraftTitle)}
               </span>
             )}
-            <span className="text-[11px] tracking-wide text-amber-300/70">
+            <span className="text-xs tracking-wide text-sf-muted">
               · {formatDate(entry.startedAt)}
             </span>
           </div>
@@ -1087,7 +1188,7 @@ function SelectedFlightPanel({
                   {shortGate(entry.departureGate)}
                 </span>
               ) : (
-                <span className="text-slate-600">—</span>
+                <span className="text-sf-muted/70">—</span>
               )
             }
           />
@@ -1099,7 +1200,7 @@ function SelectedFlightPanel({
                   {shortGate(entry.arrivalGate)}
                 </span>
               ) : (
-                <span className="text-slate-600">—</span>
+                <span className="text-sf-muted/70">—</span>
               )
             }
           />
@@ -1119,7 +1220,7 @@ function SelectedFlightPanel({
           <BlockRow
             label={t("fb.times.block")}
             value={
-              <span className="font-mono font-semibold text-slate-100">
+              <span className="font-mono font-semibold text-sf-text">
                 {entry.flightTimeS !== null
                   ? formatHM(entry.flightTimeS)
                   : "—"}
@@ -1130,11 +1231,11 @@ function SelectedFlightPanel({
             label={t("fb.times.paused")}
             value={
               entry.pausedSeconds > 0 ? (
-                <span className="font-mono text-[11px] text-slate-400">
+                <span className="font-mono text-[11px] text-sf-muted">
                   {formatHM(entry.pausedSeconds)}
                 </span>
               ) : (
-                <span className="text-slate-600">—</span>
+                <span className="text-sf-muted/70">—</span>
               )
             }
           />
@@ -1220,23 +1321,23 @@ function SelectedFlightPanel({
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-400" />
               {t("fb.imported_flight.badge")}
             </span>
-            <span className="text-slate-500">
+            <span className="text-sf-muted">
               {t("fb.imported_flight.detail")}
             </span>
           </div>
         ) : (
           (entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
-              <span className="text-slate-500">{t("fb.block.peak")}:</span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
+              <span className="text-sf-muted">{t("fb.block.peak")}:</span>
               {entry.maxAltitudeFt !== null && (
-                <span className="font-mono text-slate-200">
-                  <span className="text-slate-400">ALT</span>{" "}
+                <span className="font-mono text-sf-text">
+                  <span className="text-sf-muted">ALT</span>{" "}
                   {u.fmt.altitude(entry.maxAltitudeFt)}
                 </span>
               )}
               {entry.maxGroundSpeedKt !== null && (
-                <span className="font-mono text-slate-200">
-                  <span className="text-slate-400">GS</span>{" "}
+                <span className="font-mono text-sf-text">
+                  <span className="text-sf-muted">GS</span>{" "}
                   {u.fmt.speed(entry.maxGroundSpeedKt)}
                 </span>
               )}
@@ -1280,8 +1381,8 @@ function SelectedFlightPanel({
                   ? "text-amber-300"
                   : "text-rose-400 font-semibold";
           return (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
-              <span className="text-slate-500">{t("fb.block.touchdown")}:</span>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
+              <span className="text-sf-muted">{t("fb.block.touchdown")}:</span>
               <span className={`font-mono ${color}`}>
                 {u.fmt.vs(fpm)}
               </span>
@@ -1313,8 +1414,8 @@ function SelectedFlightPanel({
                 ? "text-amber-300"
                 : "text-rose-400 font-semibold";
           return (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-[11px]">
-              <span className="text-slate-500">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
+              <span className="text-sf-muted">
                 {t("fb.block.brake_temp")}:
               </span>
               <span className={`font-mono ${color}`}>{u.fmt.temp(c)}</span>
@@ -1353,8 +1454,8 @@ function DetailBlock({
     }
   };
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm transition-shadow hover:shadow-md">
-      <div className="mb-2.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-400">
+    <div className="rounded-2xl border border-sf-border bg-sf-surface p-4 shadow-sm transition-shadow hover:shadow-md">
+      <div className="mb-2.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-sf-muted">
         <Icon />
         {title}
       </div>
@@ -1374,8 +1475,8 @@ function BlockRow({
 }) {
   return (
     <div className="flex items-baseline justify-between gap-3 text-[12px]">
-      <span className="shrink-0 text-slate-500">{label}</span>
-      <span className="text-right text-slate-100">{value}</span>
+      <span className="shrink-0 text-sf-muted">{label}</span>
+      <span className="text-right text-sf-text">{value}</span>
     </div>
   );
 }
@@ -1438,11 +1539,11 @@ function StatsWidget({
   const u = useUnits();
   const fpmColor =
     stats.avgLandingFpm == null
-      ? "text-slate-200"
+      ? "text-sf-text"
       : stats.avgLandingFpm > -200
         ? "text-emerald-300"
         : stats.avgLandingFpm > -500
-          ? "text-slate-200"
+          ? "text-sf-text"
           : "text-rose-300";
 
   return (
@@ -1451,7 +1552,7 @@ function StatsWidget({
         <Plane className="h-3 w-3" />
         {t("fb.stats.overview")}
       </div>
-      <div className="divide-y divide-slate-800/80 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40">
+      <div className="divide-y divide-sf-border/80 overflow-hidden rounded-lg border border-sf-border bg-sf-surface">
         <CompactRow
           icon={<Plane className="h-3 w-3 text-emerald-300" />}
           label={t("fb.stat.flights")}
@@ -1518,13 +1619,13 @@ function CompactRow({
 }) {
   return (
     <div className="flex items-center justify-between px-2.5 py-1.5">
-      <div className="flex min-w-0 items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-400">
+      <div className="flex min-w-0 items-center gap-1.5 text-[10px] uppercase tracking-wide text-sf-muted">
         {icon}
         <span className="truncate">{label}</span>
       </div>
       <span
         className={`shrink-0 font-mono text-xs font-semibold ${
-          valueClassName ?? "text-slate-100"
+          valueClassName ?? "text-sf-text"
         }`}
       >
         {value}
@@ -1559,27 +1660,27 @@ function FlightTimeline({
   return (
     <div className="space-y-2 py-1">
       {/* Track con pista + barra activa + extremos circulares. */}
-      <div className="relative mx-1 h-1.5 rounded-full bg-slate-800">
+      <div className="relative mx-1 h-1.5 rounded-full bg-sf-raised">
         <div
           className="absolute inset-y-0 left-0 rounded-full bg-emerald-400"
           style={{ width: closed ? "100%" : "55%" }}
         />
-        <div className="absolute -left-1 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-emerald-400 bg-slate-950" />
+        <div className="absolute -left-1 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-emerald-400 bg-sf-bg" />
         <div
-          className={`absolute -right-1 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 bg-slate-950 ${
+          className={`absolute -right-1 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 bg-sf-bg ${
             closed ? "border-emerald-400" : "border-slate-600"
           }`}
         />
       </div>
       {/* Labels alineadas a los extremos. */}
-      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-wider text-slate-500">
+      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-wider text-sf-muted">
         <div className="flex flex-col items-start">
           <span>{outLabel}</span>
-          <span className="font-mono text-sm text-slate-100">{outTime}</span>
+          <span className="font-mono text-sm text-sf-text">{outTime}</span>
         </div>
         <div className="flex flex-col items-end">
           <span>{inLabel}</span>
-          <span className="font-mono text-sm text-slate-100">{inTime}</span>
+          <span className="font-mono text-sm text-sf-text">{inTime}</span>
         </div>
       </div>
     </div>
@@ -1754,7 +1855,7 @@ function AircraftThumb({
   }
   return (
     <div
-      className="relative flex aspect-[3/2] w-full items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 ring-1 ring-slate-800"
+      className="relative flex aspect-[3/2] w-full items-center justify-center overflow-hidden rounded-xl border border-sf-border bg-gradient-to-br from-slate-900 to-slate-950 ring-1 ring-sf-border"
       title={
         registration && photoUrl
           ? `${registration} · planespotters.net`
@@ -1785,7 +1886,7 @@ function AircraftThumb({
       )}
       {/* Crédito sutil de planespotters cuando se muestra una foto real. */}
       {photoUrl && (
-        <span className="pointer-events-none absolute bottom-1 right-1.5 rounded bg-slate-950/60 px-1 py-0.5 text-[8px] font-medium uppercase tracking-wider text-slate-200/80 backdrop-blur-sm">
+        <span className="pointer-events-none absolute bottom-1 right-1.5 rounded bg-sf-bg/60 px-1 py-0.5 text-[8px] font-medium uppercase tracking-wider text-sf-text backdrop-blur-sm">
           planespotters.net
         </span>
       )}
@@ -1966,21 +2067,21 @@ function DetailActionsBar({
                   ? t("fb.checklist.disabled.tooltip")
                   : t("fb.tabs.coming_soon", { feature: tab.label })
           }
-          className={`relative flex flex-col items-center gap-1 rounded-xl border px-2 py-2 text-[10px] font-medium ring-1 backdrop-blur-xl transition-all ${
+          className={`relative flex flex-col items-center gap-1 rounded-xl border px-2 py-2 text-[11px] font-medium ring-1 transition-all ${
             tab.active
               ? tab.key === "vs"
                 ? "border-fuchsia-500/60 bg-fuchsia-500/15 text-fuchsia-100 ring-fuchsia-500/30"
-                : "border-emerald-500/60 bg-emerald-500/15 text-emerald-100 ring-emerald-500/30"
+                : "border-brand-500/60 bg-brand-500/15 text-brand-100 ring-brand-500/30"
               : tab.enabled
-                ? "border-slate-700/60 bg-slate-950/65 text-slate-200 ring-slate-800/60 hover:border-slate-600 hover:bg-slate-900/75"
-                : "border-slate-700/60 bg-slate-950/65 text-slate-300 opacity-60 ring-slate-800/60 disabled:cursor-not-allowed"
+                ? "border-sf-border/60 bg-sf-surface text-sf-text ring-sf-border/60 hover:border-brand-500/40 hover:bg-sf-raised"
+                : "border-sf-border/60 bg-sf-surface text-sf-text/90 opacity-60 ring-sf-border/60 disabled:cursor-not-allowed"
           }`}
         >
           <span
             className={`absolute right-1.5 top-1.5 inline-block h-1.5 w-1.5 rounded-full ${tab.dot}`}
             aria-hidden
           />
-          <span className="text-slate-200">{tab.icon}</span>
+          <span className="text-sf-text">{tab.icon}</span>
           <span className="leading-none">{tab.label}</span>
         </button>
       ))}
@@ -2026,12 +2127,12 @@ function CompactFlightRow({
       }
       className={`group relative cursor-pointer overflow-hidden rounded-lg px-2.5 py-2 transition-colors ${
         selected
-          ? "bg-amber-500/15 ring-1 ring-amber-500/40"
-          : "hover:bg-slate-800/60"
+          ? "bg-brand-500/15 ring-1 ring-brand-500/40"
+          : "hover:bg-sf-raised"
       }`}
     >
       {selected && (
-        <span className="absolute left-0 top-0 h-full w-0.5 bg-amber-400" />
+        <span className="absolute left-0 top-0 h-full w-0.5 bg-brand-400" />
       )}
       <div className="flex items-center justify-between gap-2 font-mono">
         <span className="flex min-w-0 items-center gap-1.5">
@@ -2044,13 +2145,13 @@ function CompactFlightRow({
           />
           <span
             className={`truncate text-sm font-bold tracking-tight ${
-              selected ? "text-amber-50" : "text-slate-100"
+              selected ? "text-sf-text" : "text-sf-text"
             }`}
           >
             <span>{entry.originIcao ?? "?"}</span>
             <span
               className={`mx-1 ${
-                selected ? "text-amber-300" : "text-emerald-400"
+                selected ? "text-brand-300" : "text-brand-400/70"
               }`}
             >
               →
@@ -2058,7 +2159,7 @@ function CompactFlightRow({
             <span>{entry.destinationIcao ?? "?"}</span>
           </span>
         </span>
-        <span className="shrink-0 font-sans text-[10px] tabular-nums text-slate-400">
+        <span className="shrink-0 font-sans text-[10px] tabular-nums text-sf-muted">
           {duration}
         </span>
       </div>
@@ -2095,10 +2196,10 @@ function CompactFlightRow({
           ) : null}
         </div>
       )}
-      <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+      <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-sf-muted">
         <span className="truncate">
-          {aircraft && <span className="text-slate-400">{aircraft}</span>}
-          {aircraft && <span className="mx-1 text-slate-700">·</span>}
+          {aircraft && <span className="text-sf-muted">{aircraft}</span>}
+          {aircraft && <span className="mx-1 text-sf-muted/70">·</span>}
           {formatDate(entry.startedAt)}
         </span>
         <button
@@ -2107,7 +2208,7 @@ function CompactFlightRow({
             onDelete();
           }}
           title={t("fb.delete.confirm")}
-          className="shrink-0 rounded p-0.5 text-slate-700 opacity-0 transition-colors hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
+          className="shrink-0 rounded p-0.5 text-sf-muted/70 opacity-0 transition-colors hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
         >
           <Trash2 className="h-2.5 w-2.5" />
         </button>
@@ -2258,7 +2359,7 @@ function AirlineTagFilter() {
           e.currentTarget.scrollLeft += e.deltaY;
         }
       }}
-      className="flex w-full items-center gap-2 overflow-x-auto rounded-2xl border border-slate-700/50 bg-slate-950/70 px-2.5 py-2 shadow-lg ring-1 ring-slate-800/50 backdrop-blur-md [scrollbar-width:thin]"
+      className="flex w-full items-center gap-2 overflow-x-auto rounded-2xl border border-sf-border/50 bg-slate-950/70 px-2.5 py-2 shadow-lg ring-1 ring-sf-border/50 backdrop-blur-md [scrollbar-width:thin]"
     >
       {/* (v4.21.0) Chips rediseñados: cada uno con borde + fondo propio
           (antes texto plano), contador en mini-pill, glow suave en el
@@ -2268,7 +2369,7 @@ function AirlineTagFilter() {
         className={`shrink-0 rounded-full border px-3 py-1 text-[11px] font-semibold transition-all duration-150 ${
           selected == null
             ? "border-emerald-400/50 bg-emerald-500/20 text-emerald-100 shadow-[0_0_10px_rgba(52,211,153,0.25)]"
-            : "border-slate-700/60 bg-slate-900/60 text-slate-400 hover:border-slate-500/60 hover:bg-slate-800/80 hover:text-slate-100"
+            : "border-sf-border/60 bg-sf-surface text-sf-muted hover:border-slate-500/60 hover:bg-sf-raised hover:text-sf-text"
         }`}
       >
         {t("fb.airline.all")}
@@ -2292,8 +2393,8 @@ function AirlineTagFilter() {
             title={a.name}
             className={`group flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all duration-150 ${
               isActive
-                ? "border-amber-400/50 bg-amber-500/20 text-amber-100 shadow-[0_0_10px_rgba(251,191,36,0.25)]"
-                : "border-slate-700/60 bg-slate-900/60 text-slate-300 hover:border-slate-500/60 hover:bg-slate-800/80 hover:text-slate-100"
+                ? "border-brand-500/50 bg-brand-500/15 text-brand-100"
+                : "border-sf-border/60 bg-sf-surface text-sf-text/90 hover:border-slate-500/60 hover:bg-sf-raised hover:text-sf-text"
             }`}
           >
             {/* (v4.8.0) Mini logo de aerolínea en el chip de filtro. */}
@@ -2302,10 +2403,10 @@ function AirlineTagFilter() {
               {a.icao ?? a.name.slice(0, 3).toUpperCase()}
             </span>
             <span
-              className={`rounded-full px-1.5 py-px text-[9px] font-semibold tabular-nums transition-colors ${
+              className={`rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums transition-colors ${
                 isActive
-                  ? "bg-amber-400/20 text-amber-200"
-                  : "bg-slate-800 text-slate-400 group-hover:bg-slate-700 group-hover:text-slate-200"
+                  ? "bg-brand-500/25 text-brand-100"
+                  : "bg-sf-raised text-sf-muted group-hover:bg-sf-border group-hover:text-sf-text"
               }`}
             >
               {a.flightCount}
@@ -2459,16 +2560,16 @@ function ChecklistWidget({
 
   return (
     <div
-      className={`pointer-events-auto absolute z-30 rounded-2xl border border-slate-700/80 bg-slate-950/85 shadow-2xl ring-1 ring-slate-800/70 backdrop-blur-xl transition-all ${
+      className={`pointer-events-auto absolute z-30 rounded-2xl border border-sf-border/80 bg-slate-950/85 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur-xl transition-all ${
         expanded
           ? "inset-3 flex flex-col"
           : "right-3 top-16 flex max-h-[60vh] w-[340px] flex-col"
       }`}
     >
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-sf-border px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <ClipboardCheck className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
-          <span className="truncate text-xs font-semibold text-slate-100">
+          <span className="truncate text-xs font-semibold text-sf-text">
             {t("fb.checklist.title")}
           </span>
           {report && (
@@ -2485,14 +2586,14 @@ function ChecklistWidget({
           <button
             onClick={() => setExpanded((v) => !v)}
             title={expanded ? t("fb.checklist.shrink") : t("fb.checklist.expand")}
-            className="rounded p-1 text-slate-400 hover:bg-slate-800/70 hover:text-slate-200"
+            className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
           >
             {expanded ? "⤢" : "⤡"}
           </button>
           <button
             onClick={onClose}
             title={t("common.close")}
-            className="rounded p-1 text-slate-400 hover:bg-slate-800/70 hover:text-slate-200"
+            className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
           >
             ×
           </button>
@@ -2500,7 +2601,7 @@ function ChecklistWidget({
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading && (
-          <div className="px-2 py-6 text-center text-xs text-slate-500">
+          <div className="px-2 py-6 text-center text-xs text-sf-muted">
             {t("fb.checklist.loading")}
           </div>
         )}
@@ -2510,7 +2611,7 @@ function ChecklistWidget({
           </div>
         )}
         {!loading && !error && byPhase.length === 0 && (
-          <div className="px-2 py-6 text-center text-xs text-slate-500">
+          <div className="px-2 py-6 text-center text-xs text-sf-muted">
             {t("fb.checklist.empty")}
           </div>
         )}
@@ -2527,7 +2628,7 @@ function ChecklistWidget({
           return (
             <div
               key={group.phase}
-              className="mb-1 rounded-lg border border-slate-800/70 bg-slate-900/40"
+              className="mb-1 rounded-lg border border-sf-border/70 bg-sf-surface"
             >
               <button
                 onClick={() =>
@@ -2538,10 +2639,10 @@ function ChecklistWidget({
                     return next;
                   })
                 }
-                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[11px] font-medium text-slate-200 hover:bg-slate-800/40"
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[11px] font-medium text-sf-text hover:bg-sf-raised/70"
               >
                 <span className="flex items-center gap-2">
-                  <span className="text-[10px] text-slate-500">
+                  <span className="text-[10px] text-sf-muted">
                     {isOpen ? "▾" : "▸"}
                   </span>
                   <span className="capitalize">
@@ -2553,7 +2654,7 @@ function ChecklistWidget({
                 </span>
               </button>
               {isOpen && (
-                <ul className="space-y-1 border-t border-slate-800/70 px-3 py-2">
+                <ul className="space-y-1 border-t border-sf-border/70 px-3 py-2">
                   {group.items.map((it) => {
                     // (v4.1.0) Checklist puro: ✓ cumplido / ✗ no cumplido
                     // / — no aplica (datos ausentes, o no aplica a este
@@ -2570,7 +2671,7 @@ function ChecklistWidget({
                         ? "text-emerald-400"
                         : it.status === "missed"
                           ? "text-rose-400"
-                          : "text-slate-600";
+                          : "text-sf-muted/70";
                     return (
                       <li
                         key={it.ruleId}
@@ -2589,8 +2690,8 @@ function ChecklistWidget({
                         <span
                           className={`min-w-0 ${
                             it.status === "na"
-                              ? "text-slate-500"
-                              : "text-slate-300"
+                              ? "text-sf-muted"
+                              : "text-sf-text/90"
                           }`}
                         >
                           {ruleLabel}

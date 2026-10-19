@@ -85,19 +85,19 @@ export function VsCombatModal({
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.94, y: 12 }}
         onClick={(e) => e.stopPropagation()}
-        className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-y-auto rounded-2xl border border-fuchsia-500/30 bg-slate-950/95 shadow-2xl ring-1 ring-fuchsia-500/20"
+        className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-y-auto rounded-2xl border border-fuchsia-500/30 bg-sf-bg/95 shadow-2xl ring-1 ring-fuchsia-500/20"
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-sky-500/10 via-fuchsia-500/10 to-rose-500/10 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-sf-border bg-gradient-to-r from-sky-500/10 via-fuchsia-500/10 to-rose-500/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Swords className="h-4 w-4 text-fuchsia-300" />
-            <span className="text-sm font-semibold text-slate-100">
+            <span className="text-sm font-semibold text-sf-text">
               {t("vs.title")}
             </span>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
+            className="rounded-lg p-1 text-sf-muted transition-colors hover:bg-sf-raised hover:text-sf-text"
           >
             <X className="h-4 w-4" />
           </button>
@@ -114,7 +114,7 @@ export function VsCombatModal({
             isYou
             accent="sky"
           />
-          <div className="flex flex-col items-center justify-center gap-1 bg-slate-900/40 px-2">
+          <div className="flex flex-col items-center justify-center gap-1 bg-sf-surface px-2">
             <span className="text-lg font-black tracking-tighter text-fuchsia-300">
               VS
             </span>
@@ -169,18 +169,18 @@ function LandingResult({
     winner = self.fpm > rival.fpm ? "self" : rival.fpm > self.fpm ? "rival" : "tie";
   }
   return (
-    <div className="border-t border-slate-800 bg-slate-900/40 px-4 py-3">
+    <div className="border-t border-sf-border bg-sf-surface px-4 py-3">
       <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-fuchsia-300">
         <Trophy className="h-3.5 w-3.5" />
         {t("vs.touchdown")}
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
         <LandingCell name={selfName} r={self} win={winner === "self"} accent="sky" />
-        <span className="text-xs font-black text-slate-500">—</span>
+        <span className="text-xs font-black text-sf-muted">—</span>
         <LandingCell name={rivalName} r={rival} win={winner === "rival"} accent="rose" />
       </div>
       {winner === "tie" && (
-        <p className="mt-2 text-center text-[10px] text-slate-400">{t("vs.tie")}</p>
+        <p className="mt-2 text-center text-[11px] text-sf-muted">{t("vs.tie")}</p>
       )}
     </div>
   );
@@ -204,7 +204,7 @@ function LandingCell({
       className={`rounded-xl border p-2 text-center ${
         win
           ? "border-amber-500/50 bg-amber-500/10"
-          : "border-slate-800 bg-slate-950/40"
+          : "border-sf-border bg-sf-bg/40"
       }`}
     >
       <div className={`flex items-center justify-center gap-1 truncate text-[11px] font-semibold ${text}`}>
@@ -215,14 +215,14 @@ function LandingCell({
         <>
           <div className="text-xl font-extrabold" style={{ color: g!.color }}>
             {Math.round(r.fpm)}
-            <span className="ml-1 text-xs font-semibold text-slate-400">fpm</span>
+            <span className="ml-1 text-xs font-semibold text-sf-muted">fpm</span>
           </div>
-          <div className="text-[10px] font-bold uppercase tracking-wide" style={{ color: g!.color }}>
+          <div className="text-[11px] font-bold uppercase tracking-wide" style={{ color: g!.color }}>
             {t(g!.key)}
           </div>
         </>
       ) : (
-        <div className="py-1.5 text-[11px] text-slate-500">{t("vs.waiting_landing")}</div>
+        <div className="py-1.5 text-[11px] text-sf-muted">{t("vs.waiting_landing")}</div>
       )}
     </div>
   );
@@ -261,14 +261,14 @@ function PilotCard({
     return (
       <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
         <div
-          className={`flex aspect-[3/2] w-full items-center justify-center rounded-xl border border-dashed border-slate-800 bg-slate-950/40 ring-1 ${ring}`}
+          className={`flex aspect-[3/2] w-full items-center justify-center rounded-xl border border-dashed border-sf-border bg-sf-bg/40 ring-1 ${ring}`}
         >
-          <Plane className="h-10 w-10 text-slate-700" />
+          <Plane className="h-10 w-10 text-sf-muted/70" />
         </div>
         <span className={`text-sm font-bold ${text}`}>
           {isYou ? t("vs.you") : "—"}
         </span>
-        <span className="text-[11px] text-slate-500">
+        <span className="text-[11px] text-sf-muted">
           {t("vs.waiting_landing")}
         </span>
       </div>
@@ -279,7 +279,7 @@ function PilotCard({
     <div className="flex flex-col gap-2 p-4">
       {/* Foto / silueta */}
       <div
-        className={`relative flex aspect-[3/2] w-full items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 ring-1 ${ring}`}
+        className={`relative flex aspect-[3/2] w-full items-center justify-center overflow-hidden rounded-xl border border-sf-border bg-gradient-to-br from-slate-900 to-slate-950 ring-1 ${ring}`}
       >
         {photo ? (
           <img
@@ -288,15 +288,15 @@ function PilotCard({
             className="h-full w-full object-cover"
           />
         ) : (
-          <Plane className="h-10 w-10 text-slate-700" />
+          <Plane className="h-10 w-10 text-sf-muted/70" />
         )}
         {isLeader && (
-          <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/90 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-950">
+          <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-full bg-amber-500/90 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider text-amber-950">
             <Flag className="h-2.5 w-2.5" /> {t("vs.leading")}
           </span>
         )}
         {isYou && (
-          <span className="absolute right-1.5 top-1.5 rounded-full bg-slate-950/80 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-200">
+          <span className="absolute right-1.5 top-1.5 rounded-full bg-slate-950/80 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider text-sf-text">
             {t("vs.you")}
           </span>
         )}
@@ -310,19 +310,19 @@ function PilotCard({
       {/* Aerolínea */}
       <div className="flex items-center gap-2">
         <AirlineLogo icao={alIcao} name={alName} size={18} />
-        <span className="truncate text-xs text-slate-300">
+        <span className="truncate text-xs text-sf-text/90">
           {alName ?? pilot.ofp.callsign ?? "—"}
         </span>
       </div>
 
       {/* Modelo + matrícula */}
-      <div className="flex items-center justify-between text-[11px] text-slate-400">
-        <span className="font-mono text-slate-200">{acType ?? "—"}</span>
+      <div className="flex items-center justify-between text-[11px] text-sf-muted">
+        <span className="font-mono text-sf-text">{acType ?? "—"}</span>
         <span className="font-mono uppercase">{reg ?? "—"}</span>
       </div>
 
       {/* Telemetría en vivo */}
-      <div className="mt-1 grid grid-cols-3 gap-1 rounded-lg bg-slate-900/50 p-2 text-center">
+      <div className="mt-1 grid grid-cols-3 gap-1 rounded-lg bg-sf-surface p-2 text-center">
         <Stat
           icon={<ArrowUp className="h-3 w-3" />}
           value={pos ? `${Math.round(pos.alt).toLocaleString()}` : "—"}
@@ -354,11 +354,11 @@ function Stat({
 }) {
   return (
     <div className="flex flex-col items-center gap-0.5">
-      <span className="text-slate-500">{icon}</span>
-      <span className="font-mono text-sm font-semibold text-slate-100">
+      <span className="text-sf-muted">{icon}</span>
+      <span className="font-mono text-sm font-semibold text-sf-text">
         {value}
       </span>
-      <span className="text-[9px] uppercase tracking-wider text-slate-500">
+      <span className="text-[11px] uppercase tracking-wider text-sf-muted">
         {unit}
       </span>
     </div>

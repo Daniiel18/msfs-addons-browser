@@ -41,7 +41,7 @@ export function SearchBar({
     >
       <div
         className={cn(
-          "flex w-full items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 backdrop-blur transition-all",
+          "flex w-full items-center gap-3 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 transition-all",
           loading
             ? "cursor-wait opacity-60"
             : "focus-within:border-brand-500/60 focus-within:ring-2 focus-within:ring-brand-500/20",
@@ -50,7 +50,7 @@ export function SearchBar({
         {loading ? (
           <Loader2 className="h-5 w-5 shrink-0 animate-spin text-brand-400" />
         ) : (
-          <Search className="h-5 w-5 shrink-0 text-slate-400" />
+          <Search className="h-5 w-5 shrink-0 text-sf-muted" />
         )}
         <input
           ref={ref}
@@ -63,11 +63,11 @@ export function SearchBar({
           // `readOnly` on top of `disabled` keeps the element keyboard-
           // focusable on re-enable (browsers skip disabled fields when
           // tabbing), while `disabled` still blocks input while loading.
-          className="w-full bg-transparent text-base text-slate-100 placeholder:text-slate-500 focus:outline-none disabled:cursor-wait disabled:text-slate-400"
+          className="w-full bg-transparent text-[15px] text-sf-text placeholder:text-sf-muted/80 focus:outline-none disabled:cursor-wait disabled:text-sf-muted"
         />
         <kbd
           className={cn(
-            "hidden rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-xs text-slate-400 md:inline",
+            "hidden rounded border border-sf-border bg-sf-bg px-1.5 py-0.5 text-[11px] text-sf-muted md:inline",
             loading && "opacity-50",
           )}
         >

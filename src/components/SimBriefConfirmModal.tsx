@@ -137,13 +137,13 @@ export function SimBriefConfirmModal() {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 14, opacity: 0 }}
           transition={{ duration: 0.16 }}
-          className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 p-5 shadow-2xl ring-1 ring-slate-800/70"
+          className="w-full max-w-md rounded-2xl border border-sf-border bg-sf-bg p-5 shadow-2xl ring-1 ring-sf-border/70"
         >
           {/* Header */}
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
               <PlaneLanding className="h-4 w-4 text-emerald-300" />
-              <h2 className="text-sm font-semibold text-slate-100">
+              <h2 className="text-sm font-semibold text-sf-text">
                 {t("sbconfirm.title")}
               </h2>
             </div>
@@ -151,7 +151,7 @@ export function SimBriefConfirmModal() {
               onClick={close}
               disabled={busy}
               title={t("common.close")}
-              className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-40"
+              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-40"
             >
               <X className="h-4 w-4" />
             </button>
@@ -159,26 +159,26 @@ export function SimBriefConfirmModal() {
 
           {step === "ask" ? (
             <>
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-sf-muted">
                 {t("sbconfirm.question")}
               </p>
               {/* Card del candidato actual */}
-              <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+              <div className="mt-3 rounded-xl border border-sf-border bg-sf-surface px-4 py-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-lg font-bold text-slate-100">
+                  <span className="font-mono text-lg font-bold text-sf-text">
                     {label}
                   </span>
-                  <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+                  <span className="rounded bg-sf-raised px-1.5 py-0.5 font-mono text-[11px] text-sf-muted">
                     {(idx % candidates.length) + 1} / {candidates.length}
                   </span>
                 </div>
                 <div className="mt-1 font-mono text-sm text-sky-200">
                   {cur.originIcao} → {cur.destinationIcao}
                 </div>
-                <div className="mt-1 text-[11px] text-slate-400">
+                <div className="mt-1 text-[11px] text-sf-muted">
                   {cur.aircraftIcao ?? "—"}
                   {cur.aircraftReg ? (
-                    <span className="ml-2 font-mono text-slate-300">
+                    <span className="ml-2 font-mono text-sf-text/90">
                       {cur.aircraftReg}
                     </span>
                   ) : null}
@@ -188,7 +188,7 @@ export function SimBriefConfirmModal() {
                 <button
                   onClick={onNo}
                   disabled={busy}
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/60 px-4 py-2 text-xs font-medium text-slate-300 hover:border-slate-600 hover:text-slate-100 disabled:opacity-40"
+                  className="inline-flex items-center gap-1 rounded-md border border-sf-border bg-sf-surface px-4 py-2 text-xs font-medium text-sf-text/90 hover:border-slate-600 hover:text-sf-text disabled:opacity-40"
                 >
                   {t("sbconfirm.no")}
                   <ChevronRight className="h-3.5 w-3.5" />
@@ -215,19 +215,19 @@ export function SimBriefConfirmModal() {
                   {t("sbconfirm.mismatch.body")}
                 </p>
                 <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[11px]">
-                  <div className="rounded bg-slate-900/60 px-2 py-1.5">
-                    <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                  <div className="rounded bg-sf-surface px-2 py-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                       SimBrief
                     </div>
-                    <div className="text-slate-200">
+                    <div className="text-sf-text">
                       {mismatch?.simbriefReg ?? "—"}
                     </div>
                   </div>
-                  <div className="rounded bg-slate-900/60 px-2 py-1.5">
-                    <div className="text-[9px] uppercase tracking-wide text-slate-500">
+                  <div className="rounded bg-sf-surface px-2 py-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                       {t("sbconfirm.mismatch.sim")}
                     </div>
-                    <div className="text-slate-200">
+                    <div className="text-sf-text">
                       {mismatch?.simReg ?? "—"}
                     </div>
                   </div>
@@ -240,7 +240,7 @@ export function SimBriefConfirmModal() {
                     setMismatch(null);
                   }}
                   disabled={busy}
-                  className="rounded-md border border-slate-700 bg-slate-900/60 px-4 py-2 text-xs font-medium text-slate-300 hover:border-slate-600 hover:text-slate-100 disabled:opacity-40"
+                  className="rounded-md border border-sf-border bg-sf-surface px-4 py-2 text-xs font-medium text-sf-text/90 hover:border-slate-600 hover:text-sf-text disabled:opacity-40"
                 >
                   {t("sbconfirm.mismatch.back")}
                 </button>

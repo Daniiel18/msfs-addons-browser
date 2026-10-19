@@ -38,27 +38,27 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
 
     return (
-      <div className="min-h-screen bg-slate-950 p-6 text-slate-100">
+      <div className="min-h-screen bg-sf-bg p-6 text-sf-text">
         <div className="mx-auto max-w-3xl rounded-2xl border border-red-500/40 bg-red-500/5 p-6">
           <h1 className="text-lg font-semibold text-red-300">
             {t("errorBoundary.title")}
           </h1>
-          <p className="mt-1 text-sm text-slate-300">
+          <p className="mt-1 text-sm text-sf-text/90">
             {t("errorBoundary.body")}
           </p>
-          <pre className="mt-4 max-h-64 overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-red-200">
+          <pre className="mt-4 max-h-64 overflow-auto rounded-lg bg-sf-surface p-3 text-xs text-red-200">
             {error.message}
             {"\n\n"}
             {error.stack}
           </pre>
           {info?.componentStack && (
-            <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+            <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-sf-surface p-3 text-xs text-sf-text/90">
               {info.componentStack}
             </pre>
           )}
           <button
             onClick={this.handleReload}
-            className="mt-4 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 hover:border-brand-500/50"
+            className="mt-4 rounded-lg border border-sf-border bg-sf-raised px-3 py-1.5 text-xs font-medium text-sf-text hover:border-brand-500/50"
           >
             {t("errorBoundary.reload")}
           </button>

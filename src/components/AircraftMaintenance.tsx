@@ -158,7 +158,7 @@ export function SilhouetteView({
     return (
       <div className="flex items-center gap-1.5">
         <span className="h-2.5 w-2.5 rounded-full" style={{ background: col }} />
-        <span className="text-[10px] text-slate-400">{label} {Math.round(w)}%</span>
+        <span className="text-[11px] text-sf-muted">{label} {Math.round(w)}%</span>
       </div>
     );
   };
@@ -202,18 +202,18 @@ function TelemetryStrip({ tel }: { tel: RealTelemetry }) {
   const hasReal = tel.flightsWithData > 0;
 
   return (
-    <div className="mb-2 rounded-lg border border-slate-800 bg-slate-950/40 p-2">
+    <div className="mb-2 rounded-lg border border-sf-border bg-sf-bg/40 p-2">
       <div className="mb-1.5 flex items-center gap-1.5">
         <Activity className="h-3.5 w-3.5 text-emerald-400" />
-        <span className="text-[11px] font-semibold text-slate-300">
+        <span className="text-[11px] font-semibold text-sf-text/90">
           {t("economy.tel.heading")}
         </span>
         {hasReal ? (
-          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
             {t("economy.tel.live", { n: tel.flightsWithData })}
           </span>
         ) : (
-          <span className="rounded-full bg-slate-700/40 px-1.5 py-0.5 text-[9px] font-medium text-slate-400">
+          <span className="rounded-full bg-slate-700/40 px-1.5 py-0.5 text-[11px] font-medium text-sf-muted">
             {t("economy.tel.nodata")}
           </span>
         )}
@@ -222,10 +222,10 @@ function TelemetryStrip({ tel }: { tel: RealTelemetry }) {
         {chips.map((c) => (
           <span
             key={c.label}
-            className="flex items-center gap-1 rounded-md bg-slate-900/70 px-2 py-1 text-[10px]"
+            className="flex items-center gap-1 rounded-md bg-sf-surface/70 px-2 py-1 text-[11px]"
           >
-            <span className="text-slate-500">{c.label}</span>
-            <span className={`font-semibold ${c.warn ? "text-amber-300" : "text-slate-200"}`}>
+            <span className="text-sf-muted">{c.label}</span>
+            <span className={`font-semibold ${c.warn ? "text-amber-300" : "text-sf-text"}`}>
               {c.value}
             </span>
           </span>
@@ -317,28 +317,28 @@ export function MaintenanceModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
-        className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+        className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* header */}
-        <div className="flex items-center gap-3 border-b border-slate-800 p-4">
+        <div className="flex items-center gap-3 border-b border-sf-border p-4">
           <AirlineLogo icao={led.icao} name={led.name} size={32} />
           <div className="min-w-0 flex-1">
-            <h3 className="flex items-center gap-1.5 truncate text-sm font-semibold text-slate-100">
+            <h3 className="flex items-center gap-1.5 truncate text-sm font-semibold text-sf-text">
               <Wrench className="h-4 w-4 text-amber-400" />
               {t("economy.maint.title")}
             </h3>
-            <p className="truncate text-xs text-slate-500">{led.name}</p>
+            <p className="truncate text-xs text-sf-muted">{led.name}</p>
           </div>
-          <button onClick={onClose} className="rounded-lg p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300">
+          <button onClick={onClose} className="rounded-lg p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text/90">
             <X className="h-4 w-4" />
           </button>
         </div>
 
         {/* maintenance level */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-4 py-2.5">
-          <span className="text-xs text-slate-500">{t("economy.maint.level")}:</span>
-          <div className="flex items-center gap-1 rounded-lg bg-slate-950/70 p-0.5 ring-1 ring-slate-800">
+        <div className="flex flex-wrap items-center gap-2 border-b border-sf-border px-4 py-2.5">
+          <span className="text-xs text-sf-muted">{t("economy.maint.level")}:</span>
+          <div className="flex items-center gap-1 rounded-lg bg-slate-950/70 p-0.5 ring-1 ring-sf-border">
             {MAINT_LEVELS.map((lvl) => {
               const name = ["basic", "standard", "premium"][lvl];
               const on = policy?.maintenanceLevel === lvl;
@@ -348,7 +348,7 @@ export function MaintenanceModal({
                   disabled={busy}
                   onClick={() => setLevel(lvl)}
                   className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
-                    on ? "bg-brand-500/20 text-brand-200" : "text-slate-400 hover:text-slate-200"
+                    on ? "bg-brand-500/20 text-brand-200" : "text-sf-muted hover:text-sf-text"
                   }`}
                 >
                   {t(`economy.maint.${name}`)}
@@ -359,13 +359,13 @@ export function MaintenanceModal({
         </div>
 
         {!fleet ? (
-          <div className="py-20 text-center text-sm text-slate-500">{t("economy.maint.loading")}</div>
+          <div className="py-20 text-center text-sm text-sf-muted">{t("economy.maint.loading")}</div>
         ) : fleet.length === 0 ? (
-          <div className="py-20 text-center text-sm text-slate-500">{t("economy.maint.empty")}</div>
+          <div className="py-20 text-center text-sm text-sf-muted">{t("economy.maint.empty")}</div>
         ) : (
           <div className="flex min-h-0 flex-1 overflow-hidden">
             {/* fleet list */}
-            <div className="w-44 shrink-0 overflow-y-auto border-r border-slate-800 p-2">
+            <div className="w-44 shrink-0 overflow-y-auto border-r border-sf-border p-2">
               {fleet.map((a) => {
                 const on = a.registration === selected;
                 return (
@@ -373,15 +373,15 @@ export function MaintenanceModal({
                     key={a.registration}
                     onClick={() => setSelected(a.registration)}
                     className={`mb-1.5 w-full rounded-xl border p-2 text-left transition-colors ${
-                      on ? "border-brand-500/60 bg-brand-500/10" : "border-transparent bg-slate-950/40 hover:bg-slate-800/40"
+                      on ? "border-brand-500/60 bg-brand-500/10" : "border-transparent bg-sf-bg/40 hover:bg-sf-raised/70"
                     }`}
                   >
                     <div className="flex items-center gap-1.5">
-                      <Plane className="h-3 w-3 text-slate-500" />
-                      <span className="truncate text-xs font-semibold text-slate-100">{a.registration}</span>
+                      <Plane className="h-3 w-3 text-sf-muted" />
+                      <span className="truncate text-xs font-semibold text-sf-text">{a.registration}</span>
                     </div>
-                    <div className="truncate text-[10px] text-slate-500">{a.model ?? "—"}</div>
-                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div className="truncate text-[11px] text-sf-muted">{a.model ?? "—"}</div>
+                    <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
                       <div className="h-full rounded-full" style={{ width: `${a.overallWear}%`, background: wearColor(a.overallWear) }} />
                     </div>
                   </button>
@@ -392,7 +392,7 @@ export function MaintenanceModal({
             {/* detail */}
             <div className="min-w-0 flex-1 overflow-y-auto p-4">
               {!current ? (
-                <p className="py-10 text-center text-sm text-slate-500">{t("economy.maint.select")}</p>
+                <p className="py-10 text-center text-sm text-sf-muted">{t("economy.maint.select")}</p>
               ) : (
                 <div className="flex flex-col gap-4 md:flex-row">
                   {/* silhouette */}
@@ -402,8 +402,8 @@ export function MaintenanceModal({
                   {/* components */}
                   <div className="min-w-0 flex-1">
                     <div className="mb-2 flex items-baseline justify-between">
-                      <h4 className="text-sm font-semibold text-slate-100">{current.registration}</h4>
-                      <span className="text-[11px] text-slate-500">
+                      <h4 className="text-sm font-semibold text-sf-text">{current.registration}</h4>
+                      <span className="text-[11px] text-sf-muted">
                         {t("economy.maint.flights", { n: current.flights })}
                       </span>
                     </div>
@@ -414,21 +414,21 @@ export function MaintenanceModal({
                         .map((c) => (
                           <div
                             key={c.id}
-                            className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-2"
+                            className="flex items-center gap-2 rounded-lg border border-sf-border bg-sf-bg/40 p-2"
                           >
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between">
-                                <span className="truncate text-xs font-medium text-slate-200">
+                                <span className="truncate text-xs font-medium text-sf-text">
                                   {t(`economy.comp.${c.id}`)}
                                 </span>
                                 <span className="text-[11px] font-semibold" style={{ color: wearColor(c.wearPct) }}>
                                   {Math.round(c.wearPct)}%
                                 </span>
                               </div>
-                              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
                                 <div className="h-full rounded-full" style={{ width: `${c.wearPct}%`, background: wearColor(c.wearPct) }} />
                               </div>
-                              <div className="mt-0.5 text-[10px] text-slate-500">
+                              <div className="mt-0.5 text-[11px] text-sf-muted">
                                 {usd.format(c.actionCost)}
                               </div>
                             </div>
@@ -446,7 +446,7 @@ export function MaintenanceModal({
                                 className={`flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors disabled:opacity-40 ${
                                   c.status === "due"
                                     ? "bg-red-500/20 text-red-300 hover:bg-red-500/30"
-                                    : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+                                    : "bg-sf-raised text-sf-text hover:bg-sf-border"
                                 }`}
                               >
                                 <Wrench className="h-3.5 w-3.5" />
@@ -456,7 +456,7 @@ export function MaintenanceModal({
                           </div>
                         ))}
                     </div>
-                    <p className="mt-3 text-[11px] text-slate-500">{t("economy.maint.hint")}</p>
+                    <p className="mt-3 text-[11px] text-sf-muted">{t("economy.maint.hint")}</p>
                   </div>
                 </div>
               )}

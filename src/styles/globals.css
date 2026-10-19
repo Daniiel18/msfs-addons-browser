@@ -20,12 +20,33 @@
  * body tenía `@apply bg-slate-950 text-slate-100` sin variantes.
  * Ahora el switch sí cambia visualmente la app.
  */
+/*
+ * (Rediseño F1) Tokens del sistema visual — canales RGB para que Tailwind
+ * pueda aplicar opacidad (`bg-sf-surface/80`). Se consumen vía las clases
+ * `sf-*` definidas en tailwind.config.js. Cada token tiene variante clara.
+ */
 :root {
   color-scheme: dark;
+  --sf-bg: 11 16 32;          /* #0B1020 fondo de la app */
+  --sf-surface: 18 27 43;     /* #121B2B paneles / sidebar */
+  --sf-raised: 25 36 56;      /* #192438 hover / elevado */
+  --sf-border: 34 48 74;      /* #22304A bordes suaves */
+  --sf-text: 228 234 243;     /* #E4EAF3 texto principal */
+  --sf-muted: 143 158 180;    /* #8F9EB4 texto secundario */
+  --sf-accent: 53 205 178;    /* #35CDB2 acento */
+  --sf-warning: 240 180 91;   /* #F0B45B advertencia */
 }
 
 html.light {
   color-scheme: light;
+  --sf-bg: 243 246 250;
+  --sf-surface: 255 255 255;
+  --sf-raised: 235 240 246;
+  --sf-border: 213 221 232;
+  --sf-text: 15 23 42;
+  --sf-muted: 91 107 130;
+  --sf-accent: 20 144 124;
+  --sf-warning: 183 121 31;
 }
 
 html, body, #root {
@@ -49,6 +70,8 @@ html, body {
 
 body {
   @apply bg-slate-950 text-slate-100 antialiased;
+  /* (Rediseño F1) Inter empaquetada con @fontsource (offline), cargada en
+     main.tsx. Fallback a la fuente del sistema. */
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   /* Scrollbar GLOBAL invisible — pedido del usuario: "elimina el
      scrollbar que esta en la pantalla addons, la app debe ser
@@ -59,6 +82,11 @@ body {
   /* Overscroll contenido: el wheel sobre la app NO arrastra el
      navegador padre (pull-to-refresh, history navigation). */
   overscroll-behavior: none;
+}
+/* (Rediseño F1) El OSD de aterrizaje (ventana auxiliar "osd") conserva la
+   tipografía del sistema que tenía antes del rediseño. */
+html[data-window="osd"] body {
+  font-family: system-ui, -apple-system, sans-serif;
 }
 body::-webkit-scrollbar,
 *::-webkit-scrollbar {
@@ -90,14 +118,17 @@ html.light body {
   color: #0f172a;
 }
 
+/* (Rediseño F1) El shell, el sidebar y la barra superior usan los tokens
+   `sf-*`, que ya cambian solos con `html.light`; aquí sólo se asegura que
+   ningún override de slate los pise. */
 html.light .app-shell {
-  background: linear-gradient(to bottom, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%) !important;
+  background: rgb(var(--sf-bg)) !important;
 }
 
 html.light .app-shell-header {
-  background-color: rgba(248, 250, 252, 0.92) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.5) !important;
-  color: #0f172a;
+  background-color: rgb(var(--sf-bg)) !important;
+  border-bottom-color: rgb(var(--sf-border)) !important;
+  color: rgb(var(--sf-text));
 }
 
 /* Superficies de cards/paneles: slate-900/40 → blanco semi-transparente.
@@ -166,11 +197,16 @@ html.light input[type="number"] {
    (v3.5.0) — antes mapeaba a indigo por accidente; el brand de la
    app es verde (#1ea45d) así que aquí el tinte y el texto deben
    alinearse con la paleta brand para que se sienta consistente. */
-html.light [class*="bg-brand-500/15"],
-html.light [class*="bg-brand-500/10"],
-html.light [class*="bg-brand-500/20"] {
-  background-color: rgba(30, 164, 93, 0.16) !important;
-  color: #0a432b !important;
+/* (Rediseño F2) `~=` (token exacto) en vez de `*=` (subcadena): con *= un
+   `hover:bg-brand-500/15` dejaba el tinte puesto SIEMPRE en tema claro. */
+html.light [class~="bg-brand-500/15"],
+html.light [class~="bg-brand-500/10"],
+html.light [class~="bg-brand-500/20"],
+html.light [class~="hover:bg-brand-500/15"]:hover,
+html.light [class~="hover:bg-brand-500/10"]:hover,
+html.light [class~="hover:bg-brand-500/20"]:hover {
+  background-color: rgba(20, 144, 124, 0.16) !important;
+  color: #0b4f47 !important;
 }
 
 /* (v2.0.0) Refuerzos adicionales del tema claro — el usuario reportó
@@ -204,14 +240,18 @@ html.light .divide-slate-800 > * + * {
 
 /* Tab activa de la nav principal con border ring + tinte brand.
    (v3.5.0) — antes referenciaba indigo; el brand de la app es verde. */
-html.light .ring-brand-500\/30,
-html.light [class*="ring-brand-500\/30"],
-html.light [class*="ring-brand-500\/40"],
-html.light [class*="border-brand-500\/30"],
-html.light [class*="border-brand-500\/40"],
-html.light [class*="border-brand-500\/50"] {
-  --tw-ring-color: rgba(30, 164, 93, 0.55) !important;
-  border-color: rgba(30, 164, 93, 0.55) !important;
+/* (Rediseño F2) Token exacto (`~=`): con subcadena, `hover:border-brand-500/40`
+   pintaba el borde turquesa permanente en tema claro. */
+html.light [class~="ring-brand-500/30"],
+html.light [class~="ring-brand-500/40"],
+html.light [class~="border-brand-500/30"],
+html.light [class~="border-brand-500/40"],
+html.light [class~="border-brand-500/50"],
+html.light [class~="hover:border-brand-500/30"]:hover,
+html.light [class~="hover:border-brand-500/40"]:hover,
+html.light [class~="hover:border-brand-500/50"]:hover {
+  --tw-ring-color: rgba(20, 144, 124, 0.55) !important;
+  border-color: rgba(20, 144, 124, 0.55) !important;
 }
 
 /* Texto brand-* — los acentos verdes en cards/botones. Sobre claro
@@ -220,11 +260,11 @@ html.light .text-brand-100,
 html.light .text-brand-200,
 html.light .text-brand-300,
 html.light .text-brand-400 {
-  color: #0f693d !important;
+  color: #0f6e62 !important;
 }
 html.light .hover\:text-brand-200:hover,
 html.light .hover\:text-brand-300:hover {
-  color: #0a432b !important;
+  color: #0b4f47 !important;
 }
 
 /* Scrollbar a claro. */
@@ -235,9 +275,13 @@ html.light ::-webkit-scrollbar-thumb:hover {
   background: rgba(71, 85, 105, 0.55);
 }
 
-/* Botones primary (bg-brand-500 sólido) sobre claro siguen siendo
-   azul/indigo — sólo aseguramos contraste de texto. */
-html.light .bg-brand-500 {
+/* Botones primary (bg-brand-* sólido) sobre claro. (Rediseño F1) El
+   turquesa #35CDB2 es demasiado claro para texto blanco: en tema claro el
+   sólido baja al acento oscuro del token y el texto queda blanco. */
+html.light .bg-brand-400,
+html.light .bg-brand-500,
+html.light .bg-brand-600 {
+  background-color: rgb(var(--sf-accent)) !important;
   color: #ffffff !important;
 }
 
@@ -310,33 +354,68 @@ html.light .text-red-300,
 html.light .text-red-400 {
   color: #dc2626 !important;
 }
+/* (Rediseño F2) Acentos que usa Inicio (avisos GSX/AIRAC/Wrapped y badge
+   de calificación D) y que no tenían variante clara. */
+html.light .text-cyan-200,
+html.light .text-cyan-300 {
+  color: #0e7490 !important;
+}
+html.light .text-indigo-200,
+html.light .text-indigo-300 {
+  color: #4338ca !important;
+}
+html.light .text-fuchsia-200,
+html.light .text-fuchsia-300 {
+  color: #a21caf !important;
+}
+html.light .text-orange-200,
+html.light .text-orange-300 {
+  color: #c2410c !important;
+}
 
 /* (v3.5.0) Tintes de fondo con color de estado — los bg-emerald-500/10
    sobre claro pierden visibilidad. Subimos opacidad y oscurecemos el
    texto interno para que el contraste sea legible. */
-html.light [class*="bg-emerald-500/10"],
-html.light [class*="bg-emerald-500/15"],
-html.light [class*="bg-emerald-500/20"] {
+/* (Rediseño F3) Token exacto (~=): con subcadena, un hover:bg-…/10 dejaba
+   el tinte fijo en tema claro. */
+html.light [class~="bg-emerald-500/10"],
+html.light [class~="bg-emerald-500/15"],
+html.light [class~="hover:bg-emerald-500/10"]:hover,
+html.light [class~="hover:bg-emerald-500/15"]:hover,
+html.light [class~="bg-emerald-500/20"],
+html.light [class~="hover:bg-emerald-500/20"]:hover {
   background-color: rgba(16, 185, 129, 0.18) !important;
 }
-html.light [class*="bg-amber-500/10"],
-html.light [class*="bg-amber-500/15"],
-html.light [class*="bg-amber-500/20"] {
+html.light [class~="bg-amber-500/10"],
+html.light [class~="bg-amber-500/15"],
+html.light [class~="hover:bg-amber-500/10"]:hover,
+html.light [class~="hover:bg-amber-500/15"]:hover,
+html.light [class~="bg-amber-500/20"],
+html.light [class~="hover:bg-amber-500/20"]:hover {
   background-color: rgba(245, 158, 11, 0.18) !important;
 }
-html.light [class*="bg-rose-500/10"],
-html.light [class*="bg-rose-500/15"],
-html.light [class*="bg-rose-500/20"] {
+html.light [class~="bg-rose-500/10"],
+html.light [class~="bg-rose-500/15"],
+html.light [class~="hover:bg-rose-500/10"]:hover,
+html.light [class~="hover:bg-rose-500/15"]:hover,
+html.light [class~="bg-rose-500/20"],
+html.light [class~="hover:bg-rose-500/20"]:hover {
   background-color: rgba(244, 63, 94, 0.18) !important;
 }
-html.light [class*="bg-violet-500/10"],
-html.light [class*="bg-violet-500/15"],
-html.light [class*="bg-violet-500/20"] {
+html.light [class~="bg-violet-500/10"],
+html.light [class~="bg-violet-500/15"],
+html.light [class~="hover:bg-violet-500/10"]:hover,
+html.light [class~="hover:bg-violet-500/15"]:hover,
+html.light [class~="bg-violet-500/20"],
+html.light [class~="hover:bg-violet-500/20"]:hover {
   background-color: rgba(139, 92, 246, 0.18) !important;
 }
-html.light [class*="bg-sky-500/10"],
-html.light [class*="bg-sky-500/15"],
-html.light [class*="bg-sky-500/20"] {
+html.light [class~="bg-sky-500/10"],
+html.light [class~="bg-sky-500/15"],
+html.light [class~="hover:bg-sky-500/10"]:hover,
+html.light [class~="hover:bg-sky-500/15"]:hover,
+html.light [class~="bg-sky-500/20"],
+html.light [class~="hover:bg-sky-500/20"]:hover {
   background-color: rgba(56, 189, 248, 0.18) !important;
 }
 

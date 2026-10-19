@@ -188,37 +188,37 @@ function IncompleteFlightCard({
       <motion.div
         initial={{ opacity: 0, y: 10, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        className="w-full max-w-lg overflow-hidden rounded-2xl border border-amber-500/30 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+        className="w-full max-w-lg overflow-hidden rounded-2xl border border-amber-500/30 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
       >
         {/* Header */}
-        <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+        <div className="flex items-center justify-between gap-2 border-b border-sf-border px-4 py-3">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-300" />
-            <h2 className="text-sm font-semibold text-slate-100">
+            <h2 className="text-sm font-semibold text-sf-text">
               {t("fb.incomplete.title")}
             </h2>
           </div>
           {total > 1 && (
-            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+            <span className="rounded bg-sf-raised px-1.5 py-0.5 text-[11px] text-sf-muted">
               1 / {total}
             </span>
           )}
         </div>
 
         {/* Mini routemap con el track recorrido */}
-        <div ref={mapContainerRef} className="h-48 w-full bg-slate-900" />
+        <div ref={mapContainerRef} className="h-48 w-full bg-sf-surface" />
 
         {/* Detalle */}
         <div className="space-y-3 p-4">
-          <p className="text-xs leading-relaxed text-slate-400">
+          <p className="text-xs leading-relaxed text-sf-muted">
             {t("fb.incomplete.body")}
           </p>
           <div className="flex items-baseline gap-3 font-mono">
-            <span className="text-lg font-bold text-slate-100">
+            <span className="text-lg font-bold text-sf-text">
               {entry.originIcao ?? "?"}
             </span>
             <span className="text-amber-400">→</span>
-            <span className="text-lg font-bold text-slate-100">
+            <span className="text-lg font-bold text-sf-text">
               {entry.destinationIcao ?? "?"}
             </span>
             {(entry.callsign || entry.flightNumber) && (
@@ -228,29 +228,29 @@ function IncompleteFlightCard({
             )}
           </div>
           <div className="grid grid-cols-3 gap-1.5 text-center">
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5">
+              <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                 {t("fb.incomplete.started")}
               </div>
-              <div className="font-mono text-[11px] text-slate-200">
+              <div className="font-mono text-[11px] text-sf-text">
                 {startedLocal}
               </div>
             </div>
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5">
+              <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                 {t("fb.incomplete.max_alt")}
               </div>
-              <div className="font-mono text-[11px] text-slate-200">
+              <div className="font-mono text-[11px] text-sf-text">
                 {entry.maxAltitudeFt != null
                   ? `${entry.maxAltitudeFt.toLocaleString()} ft`
                   : "—"}
               </div>
             </div>
-            <div className="rounded-lg bg-slate-900/70 px-2 py-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+            <div className="rounded-lg bg-sf-surface/70 px-2 py-1.5">
+              <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                 {t("fb.incomplete.aircraft")}
               </div>
-              <div className="truncate font-mono text-[11px] text-slate-200">
+              <div className="truncate font-mono text-[11px] text-sf-text">
                 {cleanAtcType(entry.aircraftAtcType) ??
                   entry.aircraftModel ??
                   entry.aircraftTitle ??

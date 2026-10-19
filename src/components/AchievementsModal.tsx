@@ -35,25 +35,25 @@ function AchievementCard({ a }: { a: AchievementProgress }) {
 
   return (
     <div
-      className={`flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-3 transition-colors hover:border-slate-700 ${
+      className={`flex items-center gap-3 rounded-xl border border-sf-border bg-sf-surface p-3 transition-colors hover:border-sf-border ${
         locked ? "opacity-55" : ""
       }`}
     >
       <MedalBadge icon={a.icon} tier={a.tier} size={58} />
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-semibold text-slate-100">
+        <div className="text-[13px] font-semibold text-sf-text">
           {t(`ach.${a.id}.name`)}
         </div>
-        <div className="mt-0.5 line-clamp-2 text-[11px] text-slate-500">
+        <div className="mt-0.5 line-clamp-2 text-[11px] text-sf-muted">
           {t(`ach.${a.id}.desc`)}
         </div>
-        <div className="mt-2 h-[5px] overflow-hidden rounded-full bg-slate-800">
+        <div className="mt-2 h-[5px] overflow-hidden rounded-full bg-sf-raised">
           <div
             className="h-full rounded-full bg-gradient-to-r from-sky-400 to-violet-400"
             style={{ width: `${pct}%` }}
           />
         </div>
-        <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">
+        <div className="mt-1 flex items-center justify-between text-[11px] text-sf-muted">
           <span className="tabular-nums">{fmt(a.id, a.current)}</span>
           <span>
             {maxed
@@ -121,16 +121,16 @@ export function AchievementsModal({ onClose }: { onClose: () => void }) {
           exit={{ opacity: 0, scale: 0.97, y: 8 }}
           transition={{ duration: 0.15 }}
           onClick={(e) => e.stopPropagation()}
-          className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
-          <header className="flex items-center justify-between gap-3 border-b border-slate-800 px-5 py-4">
+          <header className="flex items-center justify-between gap-3 border-b border-sf-border px-5 py-4">
             <div className="flex items-center gap-3">
               <Trophy className="h-5 w-5 text-amber-300" />
               <div>
-                <h2 className="text-sm font-semibold text-slate-100">
+                <h2 className="text-sm font-semibold text-sf-text">
                   {t("ach.title")}
                 </h2>
-                <p className="mt-0.5 text-xs text-slate-400">
+                <p className="mt-0.5 text-xs text-sf-muted">
                   {t("ach.summary", {
                     n: String(unlocked),
                     total: String(list.length),
@@ -140,12 +140,12 @@ export function AchievementsModal({ onClose }: { onClose: () => void }) {
             </div>
             <div className="flex items-center gap-2">
               {loading && (
-                <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+                <Loader2 className="h-4 w-4 animate-spin text-sf-muted" />
               )}
               <button
                 onClick={onClose}
                 title={t("common.dismiss")}
-                className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -156,11 +156,11 @@ export function AchievementsModal({ onClose }: { onClose: () => void }) {
             {list.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
                 {loading ? (
-                  <Loader2 className="h-6 w-6 animate-spin text-slate-600" />
+                  <Loader2 className="h-6 w-6 animate-spin text-sf-muted/70" />
                 ) : (
                   <>
-                    <Trophy className="h-8 w-8 text-slate-700" />
-                    <p className="text-sm text-slate-400">{t("ach.empty")}</p>
+                    <Trophy className="h-8 w-8 text-sf-muted/70" />
+                    <p className="text-sm text-sf-muted">{t("ach.empty")}</p>
                   </>
                 )}
               </div>
@@ -171,9 +171,9 @@ export function AchievementsModal({ onClose }: { onClose: () => void }) {
                 const got = items.filter((a) => a.unlocked).length;
                 return (
                   <section key={cat} className="mb-5 last:mb-0">
-                    <h3 className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <h3 className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
                       {t(`ach.cat.${cat}`)}
-                      <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-slate-500">
+                      <span className="rounded-full bg-sf-raised px-2 py-0.5 text-[11px] font-medium normal-case tracking-normal text-sf-muted">
                         {got}/{items.length}
                       </span>
                     </h3>

@@ -215,12 +215,12 @@ export function WhatsNewModal() {
             transition={{ duration: 0.16 }}
             role="dialog"
             aria-modal="true"
-            className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-7 text-center shadow-2xl ring-1 ring-slate-800"
+            className="w-full max-w-md rounded-2xl border border-sf-border bg-sf-surface p-7 text-center shadow-2xl ring-1 ring-sf-border"
           >
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-sky-500 text-white">
               <Plane className="h-8 w-8" />
             </div>
-            <h2 className="mb-6 text-xl font-semibold text-slate-100">{ui.title}</h2>
+            <h2 className="mb-6 text-xl font-semibold text-sf-text">{ui.title}</h2>
 
             <AnimatePresence mode="wait">
               <motion.ul
@@ -237,8 +237,8 @@ export function WhatsNewModal() {
                     <li key={title} className="flex gap-3">
                       <f.Icon className="mt-0.5 h-5 w-5 shrink-0 text-sky-300" />
                       <div>
-                        <p className="text-sm font-medium text-slate-100">{title}</p>
-                        <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{desc}</p>
+                        <p className="text-sm font-medium text-sf-text">{title}</p>
+                        <p className="mt-0.5 text-xs leading-relaxed text-sf-muted">{desc}</p>
                       </div>
                     </li>
                   );
@@ -251,7 +251,7 @@ export function WhatsNewModal() {
                 <span
                   key={n}
                   className={`h-1.5 rounded-full transition-all ${
-                    n === page ? "w-5 bg-sky-400" : "w-1.5 bg-slate-700"
+                    n === page ? "w-5 bg-sky-400" : "w-1.5 bg-sf-border"
                   }`}
                 />
               ))}
@@ -262,7 +262,7 @@ export function WhatsNewModal() {
               disabled={waiting}
               className={`mt-5 inline-flex h-11 min-w-[150px] items-center justify-center rounded-full px-6 text-sm font-semibold transition-colors ${
                 waiting
-                  ? "cursor-not-allowed bg-slate-800 text-slate-500"
+                  ? "cursor-not-allowed bg-sf-raised text-sf-muted"
                   : "bg-sky-500 text-sky-950 hover:bg-sky-400"
               }`}
             >

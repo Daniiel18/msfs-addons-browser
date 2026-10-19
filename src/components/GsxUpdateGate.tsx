@@ -41,7 +41,7 @@ export function GsxUpdateGate() {
             initial={{ scale: 0.95, y: 10 }}
             animate={{ scale: 1, y: 0 }}
             exit={{ scale: 0.95, y: 10 }}
-            className="w-[min(440px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+            className="w-[min(440px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-amber-500/40 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
           >
             <div className="flex items-start gap-3 border-b border-amber-500/20 bg-amber-500/10 px-5 py-4">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
@@ -61,14 +61,14 @@ export function GsxUpdateGate() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex items-center gap-2 px-5 py-4 text-sm text-slate-300">
+            <div className="flex items-center gap-2 px-5 py-4 text-sm text-sf-text/90">
               <Loader2 className="h-4 w-4 animate-spin text-amber-300" />
               {t("gsx.gate.waiting")}
             </div>
-            <div className="flex justify-end border-t border-slate-800 px-5 py-3">
+            <div className="flex justify-end border-t border-sf-border px-5 py-3">
               <button
                 onClick={cancelInstall}
-                className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+                className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:bg-sf-raised"
               >
                 {t("common.cancel")}
               </button>

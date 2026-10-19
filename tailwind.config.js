@@ -9,21 +9,41 @@ export default {
   theme: {
     extend: {
       colors: {
+        // (Rediseño F1) Acento turquesa #35CDB2 (= brand-500). Antes era
+        // verde #1ea45d; el verde "éxito" sigue viviendo en emerald-*.
         brand: {
-          50:  "#eefbf3",
-          100: "#d5f5e1",
-          200: "#adeac5",
-          300: "#77d8a1",
-          400: "#3fbf78",
-          500: "#1ea45d",
-          600: "#12844a",
-          700: "#0f693d",
-          800: "#0d5333",
-          900: "#0a432b",
+          50:  "#eefcf9",
+          100: "#d3f7ef",
+          200: "#a6eedf",
+          300: "#6fe0cb",
+          400: "#48d4bb",
+          500: "#35cdb2",
+          600: "#22a893",
+          700: "#1d8778",
+          800: "#1c6b61",
+          900: "#1a5850",
+          950: "#0c3330",
+        },
+        // (Rediseño F1) Tokens del sistema visual. Los valores viven como
+        // variables CSS en globals.css (con variante `html.light`), así el
+        // tema claro se adapta sin overrides por clase.
+        sf: {
+          bg:      "rgb(var(--sf-bg) / <alpha-value>)",
+          surface: "rgb(var(--sf-surface) / <alpha-value>)",
+          raised:  "rgb(var(--sf-raised) / <alpha-value>)",
+          border:  "rgb(var(--sf-border) / <alpha-value>)",
+          text:    "rgb(var(--sf-text) / <alpha-value>)",
+          muted:   "rgb(var(--sf-muted) / <alpha-value>)",
+          accent:  "rgb(var(--sf-accent) / <alpha-value>)",
+          warning: "rgb(var(--sf-warning) / <alpha-value>)",
         },
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+      },
+      width: {
+        "sidebar-collapsed": "68px",
+        "sidebar-expanded": "232px",
       },
       animation: {
         "fade-in": "fadeIn 0.25s ease-out",

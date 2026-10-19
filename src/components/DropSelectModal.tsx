@@ -315,7 +315,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
           exit={{ y: 16, opacity: 0 }}
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
-          className={`w-full rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ${
+          className={`w-full rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ${
             installedOk || deletePrompt ? "max-w-sm" : "max-w-2xl"
           }`}
         >
@@ -329,15 +329,15 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
             />
           ) : (
             <>
-              <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+              <header className="flex items-center justify-between border-b border-sf-border px-5 py-3">
                 <div className="flex items-center gap-2">
                   <FileDown className="h-4 w-4 text-brand-300" />
                   <div>
-                    <h2 className="text-sm font-semibold text-slate-100">
+                    <h2 className="text-sm font-semibold text-sf-text">
                       {t("drop.modal.title")}
                     </h2>
                     <p
-                      className="truncate text-[11px] text-slate-500 max-w-[450px]"
+                      className="truncate text-[11px] text-sf-muted max-w-[450px]"
                       title={inspection.archivePath}
                     >
                       {inspection.archivePath.split(/[\\/]/).pop()}
@@ -347,7 +347,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                 <button
                   onClick={onCancel}
                   disabled={installing}
-                  className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+                  className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-50"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -374,23 +374,23 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
 
               {/* (v2.2.0) Paginación cuando hay varios archivos. */}
               {inspections.length > 1 && (
-                <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/30 px-5 py-2">
+                <div className="flex items-center justify-between gap-2 border-b border-sf-border bg-sf-surface/60 px-5 py-2">
                   <button
                     onClick={() => setPageIdx((i) => Math.max(0, i - 1))}
                     disabled={pageIdx === 0 || installing}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
+                    className="inline-flex items-center gap-1 rounded-md border border-sf-border bg-sf-surface px-2 py-1 text-[11px] text-sf-text/90 hover:border-sf-border disabled:opacity-30"
                   >
                     <ChevronLeft className="h-3 w-3" />
                     {t("drop.modal.prev")}
                   </button>
-                  <div className="text-center text-[11px] text-slate-300">
+                  <div className="text-center text-[11px] text-sf-text/90">
                     <span className="font-mono">
                       {t("drop.modal.file_of", {
                         n: pageIdx + 1,
                         total: inspections.length,
                       })}
                     </span>
-                    <span className="ml-2 text-slate-500">
+                    <span className="ml-2 text-sf-muted">
                       {t("drop.modal.selected_here", {
                         sel: (
                           selectionsBySession[inspection.sessionId] ?? new Set()
@@ -406,7 +406,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                       )
                     }
                     disabled={pageIdx === inspections.length - 1 || installing}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
+                    className="inline-flex items-center gap-1 rounded-md border border-sf-border bg-sf-surface px-2 py-1 text-[11px] text-sf-text/90 hover:border-sf-border disabled:opacity-30"
                   >
                     {t("drop.modal.next")}
                     <ChevronRight className="h-3 w-3" />
@@ -414,8 +414,8 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                 </div>
               )}
 
-              <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-5 py-2 text-[11px]">
-                <span className="text-slate-500">
+              <div className="flex items-center justify-between gap-2 border-b border-sf-border px-5 py-2 text-[11px]">
+                <span className="text-sf-muted">
                   {t("drop.modal.items_detected", {
                     count: inspection.items.length,
                   })}{" "}
@@ -427,13 +427,13 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                 <div className="flex gap-1">
                   <button
                     onClick={selectAll}
-                    className="rounded border border-slate-800 px-2 py-0.5 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    className="rounded border border-sf-border px-2 py-0.5 text-sf-muted hover:border-sf-border hover:text-sf-text"
                   >
                     {t("drop.modal.select_all")}
                   </button>
                   <button
                     onClick={selectNone}
-                    className="rounded border border-slate-800 px-2 py-0.5 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    className="rounded border border-sf-border px-2 py-0.5 text-sf-muted hover:border-sf-border hover:text-sf-text"
                   >
                     {t("drop.modal.select_none")}
                   </button>
@@ -528,7 +528,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                 {otherItems.length > 0 && (
                   <Section
                     title={t("drop.tab.other")}
-                    icon={<AlertCircle className="h-3 w-3 text-slate-500" />}
+                    icon={<AlertCircle className="h-3 w-3 text-sf-muted" />}
                     items={otherItems}
                     selected={selected}
                     toggle={toggle}
@@ -537,15 +537,15 @@ export function DropSelectModal({ inspections, routing, onClose, onDone }: Props
                 )}
               </div>
 
-              <footer className="flex items-center justify-between gap-2 border-t border-slate-800 bg-slate-900/40 px-5 py-3">
-                <span className="text-[11px] text-slate-500">
+              <footer className="flex items-center justify-between gap-2 border-t border-sf-border bg-sf-surface px-5 py-3">
+                <span className="text-[11px] text-sf-muted">
                   {t("drop.modal.footer_hint")}
                 </span>
                 <div className="flex gap-2">
                   <button
                     onClick={onCancel}
                     disabled={installing}
-                    className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
+                    className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:border-sf-border disabled:opacity-50"
                   >
                     {t("drop.modal.cancel")}
                   </button>
@@ -601,10 +601,10 @@ function InstalledSuccess({ reports }: { reports: DropCommitReport[] }) {
       >
         <CheckCircle2 className="h-7 w-7 text-emerald-300" />
       </motion.div>
-      <h2 className="text-sm font-semibold text-slate-100">
+      <h2 className="text-sm font-semibold text-sf-text">
         {t("drop.modal.installed_ok")}
       </h2>
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-sf-muted">
         {t("drop.modal.installed_ok_sub", { count })}
       </p>
     </div>
@@ -631,14 +631,14 @@ export function DeleteConfirm({
           <Trash2 className="h-5 w-5 text-rose-300" />
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-slate-100">
+          <h2 className="text-sm font-semibold text-sf-text">
             {t("drop.modal.delete_title")}
           </h2>
-          <p className="mt-1 text-xs leading-relaxed text-slate-400">
+          <p className="mt-1 text-xs leading-relaxed text-sf-muted">
             {t("drop.modal.delete_body")}
           </p>
           <div className="mt-3">
-            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
               {t("drop.modal.delete_files")}
             </p>
             <ul className="max-h-32 space-y-1 overflow-y-auto">
@@ -646,7 +646,7 @@ export function DeleteConfirm({
                 <li
                   key={p}
                   title={p}
-                  className="truncate rounded border border-slate-800 bg-slate-900/40 px-2 py-1 font-mono text-[11px] text-slate-300"
+                  className="truncate rounded border border-sf-border bg-sf-surface px-2 py-1 font-mono text-[11px] text-sf-text/90"
                 >
                   {p.split(/[\\/]/).pop()}
                 </li>
@@ -660,7 +660,7 @@ export function DeleteConfirm({
         <button
           onClick={() => onResolve(false)}
           disabled={deleting}
-          className="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700 disabled:opacity-50"
+          className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:border-sf-border disabled:opacity-50"
         >
           {t("drop.modal.delete_no")}
         </button>
@@ -704,7 +704,7 @@ function Section({
 }) {
   return (
     <section className="mb-4 last:mb-0">
-      <h3 className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+      <h3 className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
         {icon}
         {title} ({items.length})
         {(onSelectAll || onSelectNone) && (
@@ -712,7 +712,7 @@ function Section({
             {onSelectAll && (
               <button
                 onClick={onSelectAll}
-                className="rounded border border-slate-800 px-1.5 py-0.5 text-[9px] normal-case text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                className="rounded border border-sf-border px-1.5 py-0.5 text-[11px] normal-case text-sf-muted hover:border-sf-border hover:text-sf-text"
               >
                 {t("drop.modal.select_all")}
               </button>
@@ -720,7 +720,7 @@ function Section({
             {onSelectNone && (
               <button
                 onClick={onSelectNone}
-                className="rounded border border-slate-800 px-1.5 py-0.5 text-[9px] normal-case text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                className="rounded border border-sf-border px-1.5 py-0.5 text-[11px] normal-case text-sf-muted hover:border-sf-border hover:text-sf-text"
               >
                 {t("drop.modal.select_none")}
               </button>
@@ -728,7 +728,7 @@ function Section({
           </span>
         )}
         {destinationHint && (
-          <span className="ml-auto font-mono text-[9px] text-slate-600">
+          <span className="ml-auto font-mono text-[11px] text-sf-muted/70">
             → {destinationHint}
           </span>
         )}
@@ -745,7 +745,7 @@ function Section({
               className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 text-xs transition-colors ${
                 selected.has(it.sourcePath)
                   ? "border-emerald-500/40 bg-emerald-500/5"
-                  : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
+                  : "border-sf-border bg-sf-surface hover:border-sf-border"
               }`}
             >
               <input
@@ -763,7 +763,7 @@ function Section({
                       {it.icao}
                     </span>
                   )}
-                  <span className="truncate font-medium text-slate-200">
+                  <span className="truncate font-medium text-sf-text">
                     {displayName}
                   </span>
                 </div>
@@ -773,7 +773,7 @@ function Section({
                     {it.variants.map((v, i) => (
                       <span
                         key={i}
-                        className={`inline-flex items-center rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${variantChipClass(
+                        className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] uppercase tracking-wide ${variantChipClass(
                           v,
                         )}`}
                       >
@@ -783,16 +783,16 @@ function Section({
                   </div>
                 )}
                 {/* Subfolder + size */}
-                <div className="mt-0.5 truncate font-mono text-[10px] text-slate-500">
+                <div className="mt-0.5 truncate font-mono text-[11px] text-sf-muted">
                   {it.relativePath} · {formatBytes(it.sizeBytes)}
                 </div>
                 {/* Description (.ini header preview) */}
                 {it.description && (
-                  <details className="mt-1 text-[10px] text-slate-400">
-                    <summary className="cursor-pointer text-slate-500 hover:text-slate-300">
+                  <details className="mt-1 text-[11px] text-sf-muted">
+                    <summary className="cursor-pointer text-sf-muted hover:text-sf-text/90">
                       {t("drop.modal.see_first_lines")}
                     </summary>
-                    <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-slate-800 bg-slate-950/50 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-slate-400">
+                    <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-sf-border bg-sf-bg/50 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-sf-muted">
                       {it.description}
                     </pre>
                   </details>
@@ -863,5 +863,5 @@ function variantChipClass(variant: string): string {
   if (v.startsWith("variant")) {
     return "bg-brand-500/15 text-brand-300 ring-1 ring-brand-500/30";
   }
-  return "bg-slate-700/40 text-slate-300 ring-1 ring-slate-700";
+  return "bg-slate-700/40 text-sf-text/90 ring-1 ring-sf-border";
 }

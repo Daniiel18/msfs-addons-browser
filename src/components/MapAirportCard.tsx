@@ -175,7 +175,7 @@ export function MapAirportCard({
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 16, scale: 0.98 }}
       transition={{ duration: 0.18 }}
-      className="absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[330px] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl ring-1 ring-slate-800 backdrop-blur"
+      className="absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[330px] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg/95 shadow-2xl ring-1 ring-sf-border backdrop-blur"
     >
       {/* Cabecera con preview — se mantiene del popover original. */}
       <div className="relative h-32 w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
@@ -189,14 +189,14 @@ export function MapAirportCard({
             }}
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center text-slate-700">
+          <div className="flex h-full w-full items-center justify-center text-sf-muted/70">
             <MapPin className="h-10 w-10" />
           </div>
         )}
         <button
           onClick={onClose}
           disabled={busy !== "none"}
-          className="absolute right-2 top-2 rounded-md bg-slate-950/70 p-1 text-slate-300 backdrop-blur hover:bg-slate-900 hover:text-slate-100 disabled:opacity-50"
+          className="absolute right-2 top-2 rounded-md bg-slate-950/70 p-1 text-sf-text/90 backdrop-blur hover:bg-sf-surface hover:text-sf-text disabled:opacity-50"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -207,12 +207,12 @@ export function MapAirportCard({
             </span>
           )}
           {pkg.contentType && (
-            <span className="rounded bg-slate-950/80 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-300 ring-1 ring-slate-700">
+            <span className="rounded bg-slate-950/80 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sf-text/90 ring-1 ring-sf-border">
               {pkg.contentType}
             </span>
           )}
           {update && (
-            <span className="rounded bg-amber-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-950 shadow">
+            <span className="rounded bg-amber-500/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 shadow">
               Update {update.installedVersion} → {update.latestVersion}
             </span>
           )}
@@ -224,12 +224,12 @@ export function MapAirportCard({
           {/* (v4.31.0) Nombre real del aeropuerto como título (los
               packs DominicDesignTeam traen title genérico "Airport"). */}
           <h3
-            className="truncate text-sm font-semibold text-slate-100"
+            className="truncate text-sm font-semibold text-sf-text"
             title={pkg.airportName ?? pkg.title}
           >
             {pkg.airportName ?? pkg.title}
           </h3>
-          <p className="mt-0.5 truncate text-[11px] text-slate-500">
+          <p className="mt-0.5 truncate text-[11px] text-sf-muted">
             {pkg.creator ?? "—"}
             {pkg.packageVersion && ` · v${pkg.packageVersion}`}
           </p>
@@ -239,11 +239,11 @@ export function MapAirportCard({
         <div className="px-4 pb-3 pt-2">
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="flex w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs font-medium text-slate-200 transition-colors hover:border-brand-500/40 hover:bg-slate-900"
+            className="flex w-full items-center justify-between rounded-lg border border-sf-border bg-sf-surface px-3 py-2 text-xs font-medium text-sf-text transition-colors hover:border-brand-500/40 hover:bg-sf-surface"
           >
             {t("map.card.tech_info")}
             <ChevronDown
-              className={`h-3.5 w-3.5 text-slate-400 transition-transform ${
+              className={`h-3.5 w-3.5 text-sf-muted transition-transform ${
                 expanded ? "rotate-180" : ""
               }`}
             />
@@ -300,7 +300,7 @@ export function MapAirportCard({
             <div className="mt-2 flex justify-end gap-2">
               <button
                 onClick={() => setConfirmingUninstall(false)}
-                className="rounded-md border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800"
+                className="rounded-md border border-sf-border px-3 py-1 text-sf-text hover:bg-sf-raised"
               >
                 {t("common.cancel")}
               </button>
@@ -323,11 +323,11 @@ export function MapAirportCard({
 
       {/* Acciones críticas SIEMPRE visibles — nunca dentro del acordeón.
           Open Folder (izq) · Reinstall (centro) · Uninstall (rojo, der). */}
-      <footer className="flex shrink-0 items-center gap-1.5 border-t border-slate-800 px-3 py-2.5">
+      <footer className="flex shrink-0 items-center gap-1.5 border-t border-sf-border px-3 py-2.5">
         <button
           onClick={() => void api.openLocalPath(pkg.installPath)}
           disabled={busy !== "none"}
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 hover:border-brand-500/40 hover:bg-slate-800 disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-lg border border-sf-border bg-sf-raised px-2.5 py-1.5 text-[11px] font-medium text-sf-text hover:border-brand-500/40 hover:bg-sf-raised disabled:opacity-50"
         >
           <Folder className="h-3 w-3" />
           {t("pkg.open_folder")}

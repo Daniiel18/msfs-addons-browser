@@ -1,27 +1,35 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Minus, Square, X, Copy } from "lucide-react";
-import { Plane, Globe2 } from "lucide-react";
-import { LiveUpdateBadge } from "./LiveUpdateBadge";
+import { isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
 
 /**
- * Custom titlebar dark — reemplaza al titlebar nativo de Windows.
+ * Barra superior única de la app (Rediseño F1).
  *
- * La ventana corre con `decorations: false` en `tauri.conf.json`,
- * por eso pintamos nuestro propio header con:
- *   · `data-tauri-drag-region` para arrastrar la ventana.
- *   · Logo + nombre alineados a la izquierda.
- *   · Botones de minimizar / restaurar-maximizar / cerrar a la derecha.
+ * Antes había DOS filas: el titlebar custom (36px, logo + controles de
+ * ventana) y la cabecera de la app (logo repetido + accesos). Ahora es
+ * una sola fila de 44px a la derecha del menú lateral:
+ *   · `leading`  → buscador global (abre la paleta Ctrl+K).
+ *   · `actions`  → accesos globales (notificaciones, descargas, piloto…).
+ *   · Controles de ventana (minimizar / maximizar / cerrar) a la derecha.
  *
- * La altura fija es 36px para no robar demasiado espacio al
- * contenido. El color de fondo (`bg-slate-950`) es el mismo del
- * resto del chrome de la app para que se sienta continuo.
+ * La ventana corre con `decorations: false` en `tauri.conf.json`, así que
+ * esta barra conserva `data-tauri-drag-region`: el fondo y el espaciador
+ * arrastran la ventana (y doble clic maximiza); los botones no.
  */
-export function TitleBar() {
+export function TitleBar({
+  leading,
+  actions,
+}: {
+  leading?: ReactNode;
+  actions?: ReactNode;
+}) {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
+    if (!isTauri) return;
     let cancelled = false;
+    let unlisten: (() => void) | null = null;
     (async () => {
       try {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -30,20 +38,20 @@ export function TitleBar() {
         if (!cancelled) setMaximized(m);
         // Re-leer cuando el usuario maximiza/restaura por otra vía
         // (doble-click en el drag region, atajos OS).
-        const unlisten = await win.onResized(async () => {
+        const off = await win.onResized(async () => {
           if (cancelled) return;
           const next = await win.isMaximized().catch(() => false);
           setMaximized(next);
         });
-        return () => {
-          unlisten();
-        };
+        if (cancelled) off();
+        else unlisten = off;
       } catch {
         // No-Tauri (vitest, demo) — silenciamos.
       }
     })();
     return () => {
       cancelled = true;
+      unlisten?.();
     };
   }, []);
 
@@ -60,64 +68,50 @@ export function TitleBar() {
   };
 
   return (
-    <div
+    <header
       data-tauri-drag-region
-      // (v1.1.2) Sticky al top con z-index alto para que los botones
-      // de minimizar/maximizar/cerrar nunca se pierdan al scrollear.
-      // Antes la barra scroleaba con el contenido y el usuario se
-      // quedaba sin manera de cerrar/maximizar la ventana.
-      className="sticky top-0 z-50 flex h-9 select-none items-center justify-between border-b border-slate-800/80 bg-slate-950 px-3 relative"
+      className="app-shell-header relative z-40 flex h-11 shrink-0 select-none items-center gap-3 border-b border-sf-border/70 bg-sf-bg pl-4"
     >
-      {/* Logo + título — atrapados también por el drag-region porque
-          son hijos del div padre con data-tauri-drag-region. */}
-      <div
-        data-tauri-drag-region
-        className="pointer-events-none flex items-center gap-2"
-      >
-        <div className="flex h-5 w-5 items-center justify-center rounded-md bg-emerald-500/20 ring-1 ring-emerald-500/40">
-          <Plane className="h-3 w-3 text-emerald-300" />
+      {leading}
+
+      {/* Espaciador: zona libre de arrastre entre el buscador y los accesos. */}
+      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
+
+      {actions && (
+        <div className="flex shrink-0 items-center gap-2">{actions}</div>
+      )}
+
+      {isTauri ? (
+        <div className="ml-1 flex h-full shrink-0 items-center border-l border-sf-border/70">
+          <button
+            onClick={() => callWin("minimize")}
+            title={t("titlebar.minimize")}
+            className="inline-flex h-full w-11 items-center justify-center text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => callWin("toggleMaximize")}
+            title={maximized ? t("titlebar.restore") : t("titlebar.maximize")}
+            className="inline-flex h-full w-11 items-center justify-center text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+          >
+            {maximized ? (
+              <Copy className="h-3 w-3" />
+            ) : (
+              <Square className="h-3 w-3" />
+            )}
+          </button>
+          <button
+            onClick={() => callWin("close")}
+            title={t("common.close")}
+            className="inline-flex h-full w-11 items-center justify-center text-sf-muted hover:bg-rose-500/90 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <span className="text-[11px] font-semibold tracking-wide text-slate-300">
-          SimFleet
-        </span>
-        <Globe2 className="h-3 w-3 text-slate-500" />
-      </div>
-
-      {/* (v2.1.0) Badge de update en vivo — entre el título y los
-          controles de ventana, centrado en el titlebar. Sólo visible
-          cuando hay una versión más nueva disponible. */}
-      <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-        <LiveUpdateBadge />
-      </div>
-
-      {/* Window controls */}
-      <div className="flex items-center">
-        <button
-          onClick={() => callWin("minimize")}
-          title={t("titlebar.minimize")}
-          className="inline-flex h-9 w-10 items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-        >
-          <Minus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={() => callWin("toggleMaximize")}
-          title={maximized ? t("titlebar.restore") : t("titlebar.maximize")}
-          className="inline-flex h-9 w-10 items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-        >
-          {maximized ? (
-            <Copy className="h-3 w-3" />
-          ) : (
-            <Square className="h-3 w-3" />
-          )}
-        </button>
-        <button
-          onClick={() => callWin("close")}
-          title={t("common.close")}
-          className="inline-flex h-9 w-10 items-center justify-center text-slate-400 hover:bg-rose-500/90 hover:text-white"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
+      ) : (
+        <div className="w-2 shrink-0" />
+      )}
+    </header>
   );
 }

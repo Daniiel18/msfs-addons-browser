@@ -444,7 +444,7 @@ export function MapView() {
       <button
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
         title={sidebarCollapsed ? t("map.sidebar.expand") : t("map.sidebar.collapse")}
-        className="flex items-center justify-center rounded-2xl border border-slate-800 bg-slate-900/40 text-slate-500 hover:bg-slate-800/60 hover:text-slate-200"
+        className="flex items-center justify-center rounded-2xl border border-sf-border bg-sf-surface text-sf-muted hover:bg-sf-raised hover:text-sf-text"
       >
         {sidebarCollapsed ? (
           <ChevronRight className="h-4 w-4" />
@@ -471,11 +471,11 @@ export function MapView() {
         />
       )}
 
-      <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+      <div className="relative overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
         <div ref={containerRef} className="absolute inset-0" />
 
         <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-2">
-          <div className="pointer-events-auto inline-flex items-center gap-2 rounded-md bg-slate-950/80 px-3 py-1.5 text-xs text-slate-200 backdrop-blur ring-1 ring-slate-800">
+          <div className="pointer-events-auto inline-flex items-center gap-2 rounded-md bg-slate-950/80 px-3 py-1.5 text-xs text-sf-text backdrop-blur ring-1 ring-sf-border">
             <MapPin className="h-3.5 w-3.5 text-emerald-300" />
             {distinctAirports} {distinctAirports === 1 ? t("map.airport_singular") : t("map.airport_plural")}
             {/* El contador del mapa muestra sólo updates de SCENERY
@@ -556,17 +556,17 @@ function Sidebar({
   };
 
   return (
-    <aside className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-      <header className="flex items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+    <aside className="flex flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
+      <header className="flex items-center justify-between gap-2 border-b border-sf-border px-4 py-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100">
+          <h3 className="text-sm font-semibold text-sf-text">
             {t("map.installed")} ({totalPackages})
           </h3>
         </div>
       </header>
 
       {updatesCount > 0 && (
-        <div className="border-b border-slate-800 bg-amber-500/5 px-3 py-2">
+        <div className="border-b border-sf-border bg-amber-500/5 px-3 py-2">
           <button
             onClick={onUpdateAll}
             className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/20 hover:bg-amber-400"
@@ -577,15 +577,15 @@ function Sidebar({
         </div>
       )}
 
-      <div className="space-y-2 border-b border-slate-800 px-3 py-2">
+      <div className="space-y-2 border-b border-sf-border px-3 py-2">
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sf-muted" />
           <input
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder={t("map.filter_placeholder")}
-            className="w-full rounded-md border border-slate-800 bg-slate-950/50 py-1.5 pl-7 pr-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
+            className="w-full rounded-md border border-sf-border bg-sf-bg/50 py-1.5 pl-7 pr-2 text-xs text-sf-text placeholder:text-sf-muted focus:border-brand-500/40 focus:outline-none focus:ring-1 focus:ring-brand-500/30"
           />
         </div>
         {/* (v4.0.0 — P2) Chips GSX / NO GSX. Mutuamente exclusivos.
@@ -610,13 +610,13 @@ function Sidebar({
 
       <div className="flex-1 overflow-y-auto">
         {visible.length === 0 && (
-          <div className="px-4 py-8 text-center text-xs text-slate-500">
+          <div className="px-4 py-8 text-center text-xs text-sf-muted">
             {totalPackages === 0
               ? t("map.empty.no_packages")
               : t("map.empty.no_match")}
           </div>
         )}
-        <ul className="divide-y divide-slate-800">
+        <ul className="divide-y divide-sf-border">
           {visible.map((p) => {
             const update = updatesByFolder.get(p.folderName);
             const isFocused = focused === p.folderName;
@@ -633,7 +633,7 @@ function Sidebar({
               <li
                 key={p.folderName}
                 className={`group flex items-start gap-2 px-3 py-2.5 transition-colors ${
-                  isFocused ? "bg-brand-500/15" : "hover:bg-slate-800/50"
+                  isFocused ? "bg-brand-500/15" : "hover:bg-sf-raised/70"
                 }`}
               >
                 {/* Click principal: enfocar en el mapa. (v4.25.0) El
@@ -661,7 +661,7 @@ function Sidebar({
                       )}
                       {p.icao && hasGsx && !gsxUpdate && (
                         <span
-                          className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
+                          className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
                           title={t("map.gsx_detected_tooltip", { icao: p.icao! })}
                         >
                           ✓ GSX
@@ -684,7 +684,7 @@ function Sidebar({
                               )}`,
                             );
                           }}
-                          className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
+                          className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
                           title={t("map.gsx_update_tooltip", {
                             icao: p.icao!,
                             version: gsxUpdate.latestVersion
@@ -709,7 +709,7 @@ function Sidebar({
                             )}`;
                             void api.openLiveryBrowser(url);
                           }}
-                          className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
+                          className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
                           title={t("map.gsx_missing_tooltip", { icao: p.icao! })}
                         >
                           ✗ GSX
@@ -727,11 +727,11 @@ function Sidebar({
                         genérico ("Airport" en los DominicDesignTeam);
                         airportName da "Chubu Centrair International
                         Airport". Fallback al title si no hay nombre. */}
-                    <div className="mt-0.5 truncate text-xs text-slate-200">
+                    <div className="mt-0.5 truncate text-xs text-sf-text">
                       {p.airportName ?? p.title}
                     </div>
                     {p.creator && (
-                      <div className="mt-0.5 truncate text-[11px] text-slate-500">
+                      <div className="mt-0.5 truncate text-[11px] text-sf-muted">
                         {p.creator}
                         {p.packageVersion && ` · v${p.packageVersion}`}
                       </div>
@@ -811,14 +811,14 @@ function GsxFilterChip({
   const activeClass =
     tone === "violet"
       ? "border-violet-500 bg-violet-500/15 text-violet-100"
-      : "border-slate-500 bg-slate-500/15 text-slate-100";
+      : "border-slate-500 bg-slate-500/15 text-sf-text";
   const idleClass =
-    "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60";
+    "border-sf-border bg-sf-surface text-sf-text/90 hover:border-sf-border hover:bg-sf-raised";
   const countBgActive =
     tone === "violet"
       ? "bg-violet-500/30 text-violet-100"
-      : "bg-slate-500/30 text-slate-100";
-  const countBgIdle = "bg-slate-800 text-slate-400";
+      : "bg-slate-500/30 text-sf-text";
+  const countBgIdle = "bg-sf-raised text-sf-muted";
   return (
     <button
       onClick={onClick}

@@ -453,10 +453,10 @@ export function DragDropOverlay() {
           >
             <div className="rounded-2xl border-2 border-dashed border-brand-400 bg-slate-950/80 px-8 py-10 text-center shadow-2xl">
               <Upload className="mx-auto h-12 w-12 text-brand-300" />
-              <p className="mt-3 text-base font-semibold text-slate-100">
+              <p className="mt-3 text-base font-semibold text-sf-text">
                 {t("drop.drop_to_install")}
               </p>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-sf-muted">
                 {t("drop.formats_hint")}
               </p>
             </div>
@@ -482,7 +482,7 @@ export function DragDropOverlay() {
           fast-path (liveries y cualquier drop de 1 item). */}
       {fastDelete && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950 shadow-2xl ring-1 ring-slate-800/70">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-sf-border/80 bg-sf-bg shadow-2xl ring-1 ring-sf-border/70">
             <DeleteConfirm
               archives={fastDelete.archives}
               deleting={fastDeleting}
@@ -577,16 +577,16 @@ function PasswordModal({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+        className="w-full max-w-sm rounded-xl border border-sf-border bg-sf-surface p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-amber-300" />
-          <h3 className="text-sm font-semibold text-slate-100">
+          <h3 className="text-sm font-semibold text-sf-text">
             {t("drop.pw.title")}
           </h3>
         </div>
-        <p className="mt-1.5 truncate font-mono text-[11px] text-slate-400" title={fileName}>
+        <p className="mt-1.5 truncate font-mono text-[11px] text-sf-muted" title={fileName}>
           {fileName}
         </p>
         <input
@@ -599,7 +599,7 @@ function PasswordModal({
             else if (e.key === "Escape") onCancel();
           }}
           placeholder={t("drop.pw.placeholder")}
-          className="mt-3 w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-brand-500/50 focus:outline-none"
+          className="mt-3 w-full rounded-md border border-sf-border bg-sf-bg/60 px-3 py-2 text-sm text-sf-text placeholder:text-sf-muted/70 focus:border-brand-500/50 focus:outline-none"
         />
         {wrong && (
           <p className="mt-1.5 text-[11px] text-rose-300">{t("drop.pw.wrong")}</p>
@@ -607,14 +607,14 @@ function PasswordModal({
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+            className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text/90 hover:bg-sf-raised"
           >
             {t("common.cancel")}
           </button>
           <button
             onClick={() => pw.trim() && onSubmit(pw)}
             disabled={!pw.trim()}
-            className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-400 disabled:opacity-50"
+            className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-slate-950 hover:bg-brand-400 disabled:opacity-50"
           >
             {t("drop.pw.unlock")}
           </button>
@@ -650,22 +650,22 @@ function DropResultsToast({
       r.state !== "awaiting_password",
   );
   return (
-    <div className="fixed bottom-4 right-4 z-40 w-[min(440px,calc(100vw-2rem))] rounded-xl border border-slate-800 bg-slate-950/95 shadow-2xl ring-1 ring-slate-800 backdrop-blur">
-      <header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-100">
+    <div className="fixed bottom-4 right-4 z-40 w-[min(440px,calc(100vw-2rem))] rounded-xl border border-sf-border bg-sf-bg/95 shadow-2xl ring-1 ring-sf-border backdrop-blur">
+      <header className="flex items-center justify-between border-b border-sf-border px-4 py-2.5">
+        <div className="flex items-center gap-2 text-sm font-medium text-sf-text">
           <FileDown className="h-4 w-4 text-brand-300" />
           {allDone ? t("drop.results") : t("drop.processing")}
         </div>
         {allDone && (
           <button
             onClick={onClear}
-            className="text-xs text-slate-400 hover:text-slate-200"
+            className="text-xs text-sf-muted hover:text-sf-text"
           >
             {t("common.close")}
           </button>
         )}
       </header>
-      <ul className="max-h-72 overflow-y-auto divide-y divide-slate-800">
+      <ul className="max-h-72 overflow-y-auto divide-y divide-sf-border">
         {results.map((r, i) => (
           <DropResultItem key={i} result={r} />
         ))}
@@ -682,7 +682,7 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
         <div className="mt-0.5 shrink-0">
           {(result.state === "inspecting" ||
             result.state === "awaiting_modal") && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-sf-muted" />
           )}
           {result.state === "installed" && (
             <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
@@ -691,16 +691,16 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
             <AlertCircle className="h-3.5 w-3.5 text-rose-400" />
           )}
           {result.state === "cancelled" && (
-            <AlertCircle className="h-3.5 w-3.5 text-slate-500" />
+            <AlertCircle className="h-3.5 w-3.5 text-sf-muted" />
           )}
           {result.state === "awaiting_password" && (
             <KeyRound className="h-3.5 w-3.5 text-amber-300" />
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-slate-200">{fileName}</div>
+          <div className="truncate font-mono text-sf-text">{fileName}</div>
           {result.state === "inspecting" && (
-            <p className="text-[11px] text-slate-500">
+            <p className="text-[11px] text-sf-muted">
               {t("drop.extracting")}
             </p>
           )}
@@ -717,7 +717,7 @@ function DropResultItem({ result }: { result: DropFlowResult }) {
             <p className="text-[11px] text-rose-300">{result.error}</p>
           )}
           {result.state === "cancelled" && (
-            <p className="text-[11px] text-slate-500">{t("drop.cancelled")}</p>
+            <p className="text-[11px] text-sf-muted">{t("drop.cancelled")}</p>
           )}
         </div>
       </div>

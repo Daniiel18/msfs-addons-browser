@@ -182,17 +182,17 @@ export function DiskCleanupModal({ onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative flex max-h-[calc(100vh-3rem)] w-[min(680px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="relative flex max-h-[calc(100vh-3rem)] w-[min(680px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
-          <header className="flex items-center gap-3 border-b border-slate-800 px-5 py-3.5">
+          <header className="flex items-center gap-3 border-b border-sf-border px-5 py-3.5">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/20 text-sky-300">
               <HardDrive className="h-5 w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-semibold text-slate-100">
+              <h2 className="text-sm font-semibold text-sf-text">
                 {t("cleanup.title")}
               </h2>
-              <p className="mt-0.5 text-xs text-slate-400">
+              <p className="mt-0.5 text-xs text-sf-muted">
                 {reclaimable > 0
                   ? t("cleanup.subtitle", { size: formatBytes(reclaimable) })
                   : t("cleanup.subtitle_none")}
@@ -200,7 +200,7 @@ export function DiskCleanupModal({ onClose }: Props) {
             </div>
             <button
               onClick={onClose}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <X className="h-4 w-4" />
             </button>
@@ -208,18 +208,18 @@ export function DiskCleanupModal({ onClose }: Props) {
 
           <div className="flex-1 overflow-y-auto px-5 py-4">
             {/* Escenarios nunca volados */}
-            <h3 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <h3 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
               <Plane className="h-3.5 w-3.5 text-amber-300" />
               {t("cleanup.scenery.title")}
               {neverFlown.length > 0 && (
-                <span className="rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+                <span className="rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[11px] font-bold text-amber-200">
                   {neverFlown.length}
                 </span>
               )}
             </h3>
 
             {neverFlown.length === 0 ? (
-              <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-3 text-[11px] text-slate-500">
+              <p className="rounded-xl border border-sf-border bg-sf-surface px-3.5 py-3 text-[11px] text-sf-muted">
                 {t("cleanup.scenery.empty")}
               </p>
             ) : (
@@ -227,25 +227,25 @@ export function DiskCleanupModal({ onClose }: Props) {
                 {neverFlown.map((p) => (
                   <li
                     key={p.folderName}
-                    className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-2.5"
+                    className="flex items-center gap-3 rounded-xl border border-sf-border bg-sf-surface px-3.5 py-2.5"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="flex items-center gap-1.5 truncate text-xs font-medium text-slate-200">
+                      <p className="flex items-center gap-1.5 truncate text-xs font-medium text-sf-text">
                         {p.icao && (
-                          <span className="rounded bg-slate-800 px-1 py-0.5 font-mono text-[10px] text-slate-400">
+                          <span className="rounded bg-sf-raised px-1 py-0.5 font-mono text-[11px] text-sf-muted">
                             {p.icao}
                           </span>
                         )}
                         <span className="truncate">{p.title}</span>
                       </p>
-                      <p className="mt-0.5 text-[11px] text-slate-500">
+                      <p className="mt-0.5 text-[11px] text-sf-muted">
                         {formatBytes(p.sizeBytes ?? 0)} · {t("cleanup.scenery.never")}
                       </p>
                     </div>
                     <button
                       onClick={() => void api.openLocalPath(p.installPath)}
                       title={t("cleanup.reveal")}
-                      className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                      className="shrink-0 rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
                     >
                       <FolderOpen className="h-3.5 w-3.5" />
                     </button>
@@ -265,7 +265,7 @@ export function DiskCleanupModal({ onClose }: Props) {
                         </button>
                         <button
                           onClick={() => setConfirmPkg(null)}
-                          className="rounded-md px-2 py-1.5 text-[11px] text-slate-400 hover:text-slate-200"
+                          className="rounded-md px-2 py-1.5 text-[11px] text-sf-muted hover:text-sf-text"
                         >
                           {t("cleanup.cancel")}
                         </button>
@@ -273,7 +273,7 @@ export function DiskCleanupModal({ onClose }: Props) {
                     ) : (
                       <button
                         onClick={() => setConfirmPkg(p.folderName)}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-rose-200 hover:bg-slate-700"
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-sf-raised px-2.5 py-1.5 text-[11px] font-semibold text-rose-200 hover:bg-sf-border"
                       >
                         <Trash2 className="h-3 w-3" />
                         {t("cleanup.uninstall")}
@@ -285,55 +285,55 @@ export function DiskCleanupModal({ onClose }: Props) {
             )}
 
             {/* Grabaciones de aterrizaje */}
-            <h3 className="mb-2 mt-5 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <h3 className="mb-2 mt-5 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
               <Video className="h-3.5 w-3.5 text-fuchsia-300" />
               {t("cleanup.clips.title")}
               {sortedClips.length > 0 && (
-                <span className="rounded-full bg-fuchsia-500/20 px-1.5 py-0.5 text-[10px] font-bold text-fuchsia-200">
+                <span className="rounded-full bg-fuchsia-500/20 px-1.5 py-0.5 text-[11px] font-bold text-fuchsia-200">
                   {sortedClips.length}
                 </span>
               )}
             </h3>
 
             {clips === null ? (
-              <div className="inline-flex items-center gap-2 text-xs text-slate-500">
+              <div className="inline-flex items-center gap-2 text-xs text-sf-muted">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {t("cleanup.clips.loading")}
               </div>
             ) : sortedClips.length === 0 ? (
-              <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-3 text-[11px] text-slate-500">
+              <p className="rounded-xl border border-sf-border bg-sf-surface px-3.5 py-3 text-[11px] text-sf-muted">
                 {t("cleanup.clips.empty")}
               </p>
             ) : (
               <>
-                <p className="mb-2 text-[10px] text-slate-600">{t("cleanup.clips.hint")}</p>
+                <p className="mb-2 text-[11px] text-sf-muted/70">{t("cleanup.clips.hint")}</p>
                 <ul className="space-y-2">
                   {sortedClips.map((c) => (
                     <li
                       key={c.id}
-                      className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-2.5"
+                      className="flex items-center gap-3 rounded-xl border border-sf-border bg-sf-surface px-3.5 py-2.5"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="flex items-center gap-1.5 truncate text-xs font-medium text-slate-200">
+                        <p className="flex items-center gap-1.5 truncate text-xs font-medium text-sf-text">
                           {c.favorite && <Star className="h-3 w-3 shrink-0 text-amber-400" fill="currentColor" />}
                           <span className="truncate">
                             {c.airportIcao ? `${c.airportIcao} · ` : ""}
                             {c.model ?? t("cleanup.clips.clip")}
                           </span>
                           {c.isTest && (
-                            <span className="rounded bg-slate-800 px-1 py-0.5 text-[9px] uppercase text-slate-500">
+                            <span className="rounded bg-sf-raised px-1 py-0.5 text-[11px] uppercase text-sf-muted">
                               {t("cleanup.clips.test")}
                             </span>
                           )}
                         </p>
-                        <p className="mt-0.5 text-[11px] text-slate-500">
+                        <p className="mt-0.5 text-[11px] text-sf-muted">
                           {fmtDate(c.recordedAt)} · {fmtDur(c.durationS)}
                         </p>
                       </div>
                       <button
                         onClick={() => void api.openLocalPath(c.path)}
                         title={t("cleanup.reveal")}
-                        className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                        className="shrink-0 rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
                       >
                         <FolderOpen className="h-3.5 w-3.5" />
                       </button>
@@ -347,7 +347,7 @@ export function DiskCleanupModal({ onClose }: Props) {
                           </button>
                           <button
                             onClick={() => setConfirmClip(null)}
-                            className="rounded-md px-2 py-1.5 text-[11px] text-slate-400 hover:text-slate-200"
+                            className="rounded-md px-2 py-1.5 text-[11px] text-sf-muted hover:text-sf-text"
                           >
                             {t("cleanup.cancel")}
                           </button>
@@ -356,7 +356,7 @@ export function DiskCleanupModal({ onClose }: Props) {
                         <button
                           onClick={() => setConfirmClip(c.id)}
                           title={t("cleanup.clips.delete")}
-                          className="shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-800 hover:text-rose-300"
+                          className="shrink-0 rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-rose-300"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>

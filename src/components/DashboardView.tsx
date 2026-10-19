@@ -1,27 +1,36 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  BookOpen,
   CheckCircle2,
-  Download,
+  ChevronRight,
+  ClipboardCheck,
+  Compass,
   HardDrive,
   HeartPulse,
-  Landmark,
   Layers,
   Loader2,
+  Navigation,
   Package,
   Plane,
+  PlaneTakeoff,
   Rocket,
   Sparkles,
   Trash2,
   Trophy,
   Truck,
-  Navigation,
   Unlink,
   Users,
   X,
 } from "lucide-react";
-import type { AddonHealth, DashboardStats } from "../lib/types";
+import type {
+  AddonHealth,
+  DashboardStats,
+  FlightLogEntry,
+  PilotProfile,
+} from "../lib/types";
 import { api } from "../lib/tauri";
+import { useAppStore } from "../stores/useAppStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import {
   useGsxUpdateStore,
@@ -34,34 +43,48 @@ import {
 import { useNewSceneryStore } from "../stores/useNewSceneryStore";
 import { useToastStore } from "../stores/useToastStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { usePreflight } from "../lib/usePreflight";
 import { usePreflightStore } from "../stores/usePreflightStore";
+import { useUnits } from "../lib/units";
+import { cleanAtcType } from "../lib/aircraft";
 import { DiskCleanupModal } from "./DiskCleanupModal";
 import { ShareCardModal } from "./ShareCardModal";
+import { cleanAircraftLabel } from "./FlightBookView";
+import { effectiveRoute, phaseDisplay } from "./FlyingNowBadge";
 import { computeWrapped } from "../lib/wrapped";
 import { buildWrappedSvg } from "../lib/shareCards";
 import { getActiveLocale } from "../lib/i18n";
-import type { PilotProfile } from "../lib/types";
 import { derivedType } from "../lib/packageType";
+import { cn } from "../lib/cn";
 import { t } from "../lib/i18n";
 
 const RADAR_THROTTLE_MS = 30 * 60 * 1000;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+/** Un OFP de SimBrief cuenta como "próximo vuelo" durante 36 h. */
+const NEXT_OFP_MAX_AGE_MS = 36 * 60 * 60 * 1000;
 
 /**
- * Dashboard — totales agregados de Community.
+ * Inicio (antes "Dashboard de Community").
  *
- * Layout responsive: en pantallas pequeñas todo apila en columna
- * única; en md/lg/xl crece a 4 KPIs arriba y dos columnas debajo.
- * El bloque "más grandes" tiene un gráfico de barras horizontal
- * con el peso real, no porcentaje del top 1 (eso da mejor
- * intuición del consumo real de disco).
+ * (Rediseño F2) Estructura de arriba abajo:
+ *   1. Bienvenida + tarjeta de vuelo (en curso → próximo OFP → último).
+ *   2. Accesos rápidos (Explorar, Instalados, FlightBook, Preparar vuelo).
+ *   3. KPIs: addons instalados, espacio ocupado, updates, vuelos.
+ *   4. Últimos vuelos + Avisos y actualizaciones (GSX, AIRAC, radar de
+ *      escenarios, pre-vuelo, salud, Wrapped) — antes eran banners
+ *      apilados a todo el ancho.
+ *   5. Datos de Community: desglose por tipo, top desarrolladores, más
+ *      pesados, añadidos recientemente y centro de salud.
  */
 export function DashboardView() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [health, setHealth] = useState<AddonHealth | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const setView = useAppStore((s) => s.setView);
+  const healthRef = useRef<HTMLDivElement | null>(null);
 
   // (v6.2.4) Aviso de update de GSX (FSDreamTeam) — el chequeo horario vive en
   // App.tsx; aquí leemos el resultado compartido.
@@ -173,6 +196,33 @@ export function DashboardView() {
     return { aircraftCount: ac, liveriesCount: lv };
   }, [packages]);
 
+  // (Rediseño F2) Paquetes cuya carpeta cambió en los últimos 7 días
+  // (instalados o actualizados esta semana).
+  const addonsThisWeek = useMemo(() => {
+    const now = Date.now();
+    return packages.filter((p) => {
+      const ts = p.folderModifiedAt ? Date.parse(p.folderModifiedAt) : NaN;
+      return Number.isFinite(ts) && now - ts < WEEK_MS;
+    }).length;
+  }, [packages]);
+
+  // (Rediseño F2) Vuelos completados (los que muestra el FlightBook),
+  // del más reciente al más antiguo.
+  const completedFlights = useMemo(
+    () =>
+      logEntries
+        .filter((e) => e.status === "completed")
+        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)),
+    [logEntries],
+  );
+  const flightsThisMonth = useMemo(() => {
+    const now = new Date();
+    return completedFlights.filter((e) => {
+      const d = new Date(e.startedAt);
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    }).length;
+  }, [completedFlights]);
+
   const load = () => {
     setLoading(true);
     setError(null);
@@ -194,66 +244,96 @@ export function DashboardView() {
     if (!scanning) load();
   }, [scanning, packagesCount]);
 
+  // (Rediseño F2) Avisos que antes eran banners sueltos. Cada uno conserva
+  // la misma acción que tenía.
+  const notices: Notice[] = [];
+  if (stats && stats.updatesAvailable > 0) {
+    notices.push({
+      key: "updates",
+      icon: <Sparkles className="h-4 w-4" />,
+      tone: "amber",
+      title: t("home.notices.addon_updates"),
+      desc: t("home.notices.addon_updates_desc", { n: String(stats.updatesAvailable) }),
+      onClick: () => window.dispatchEvent(new Event("simfleet:notifications")),
+    });
+  }
+  if (showGsx && gsxInfo) {
+    notices.push({
+      key: "gsx",
+      icon: <Truck className="h-4 w-4" />,
+      tone: "cyan",
+      title: t("notifications.gsx_update"),
+      desc: `${gsxInfo.installedVersion} → ${gsxInfo.latestVersion}`,
+      meta: gsxInfo.latestDate ?? undefined,
+      onClick: () => gsxRequestInstall(),
+    });
+  }
+  if (showAirac && airacInfo) {
+    notices.push({
+      key: "airac",
+      icon: <Navigation className="h-4 w-4" />,
+      tone: "indigo",
+      title: t("notifications.airac_update"),
+      desc: `${t("notifications.airac_cycle")} ${airacInfo.installedCycle} → ${airacInfo.latestCycle}`,
+      meta: airacInfo.effectiveDate ?? undefined,
+      onClick: () => void airacOpenUpdater(),
+    });
+  }
+  if (freshScenery.length > 0) {
+    notices.push({
+      key: "fresh",
+      icon: <Package className="h-4 w-4" />,
+      tone: "brand",
+      title: t("home.notices.fresh"),
+      desc: t("preflight.cta.fresh", { n: String(freshScenery.length) }),
+      onClick: () => openPreflight(true),
+    });
+  }
+  if (preflightIssues > 0) {
+    notices.push({
+      key: "preflight",
+      icon: <ClipboardCheck className="h-4 w-4" />,
+      tone: "amber",
+      title: t("home.notices.preflight"),
+      desc: t("preflight.cta.issues", { n: String(preflightIssues) }),
+      onClick: () => openPreflight(true),
+    });
+  }
+  if (health && health.issueCount > 0) {
+    notices.push({
+      key: "health",
+      icon: <HeartPulse className="h-4 w-4" />,
+      tone: "rose",
+      title: t("home.notices.health"),
+      desc: t("dashboard.health.to_review", { n: String(health.issueCount) }),
+      onClick: () =>
+        healthRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    });
+  }
+  if (wrappedFlights > 0 && !wrappedDismissed) {
+    notices.push({
+      key: "wrapped",
+      icon: <Sparkles className="h-4 w-4" />,
+      tone: "fuchsia",
+      title: t("wrapped.cta.title", { year: String(wrappedYear) }),
+      desc: t("wrapped.cta.hint", { n: String(wrappedFlights) }),
+      onClick: () => setShowWrapped(true),
+      onDismiss: dismissWrapped,
+    });
+  }
+
   return (
-    <div className="space-y-4">
-      <header>
-        <h2 className="text-base font-semibold text-slate-100">
-          {t("dashboard.title.community")}
-        </h2>
-      </header>
+    <div className="space-y-4 pb-2">
+      <WelcomeHero pilotName={pilot?.name ?? null} lastFlight={completedFlights[0] ?? null} />
 
-      {/* (v6.2.26 / R3) Acceso al chequeo "¿Listo para volar?". */}
-      <button
-        onClick={() => openPreflight(true)}
-        className="flex w-full items-center gap-3 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-sky-500/10 px-4 py-3 text-left transition-colors hover:from-emerald-500/15 hover:to-sky-500/15"
-      >
-        <Rocket className="h-5 w-5 shrink-0 text-emerald-300" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-emerald-100">
-            {t("preflight.cta.title")}
-          </div>
-          <div className="text-xs text-emerald-200/70">
-            {preflightIssues > 0
-              ? t("preflight.cta.issues", { n: String(preflightIssues) })
-              : freshScenery.length > 0
-                ? t("preflight.cta.fresh", { n: String(freshScenery.length) })
-                : t("preflight.cta.ready")}
-          </div>
-        </div>
-        {preflightBadge > 0 && (
-          <span className="inline-flex shrink-0 items-center rounded-full bg-emerald-500/30 px-2.5 py-1 text-[11px] font-bold text-emerald-100">
-            {preflightBadge}
-          </span>
-        )}
-      </button>
-
-      {/* (v6.2.33) Wrapped del año YA terminado — sólo si hay vuelos de
-          ese año y no se ha descartado (no "siempre presente"). */}
-      {wrappedFlights > 0 && !wrappedDismissed && (
-        <div className="flex w-full items-center gap-2 rounded-xl border border-fuchsia-500/30 bg-gradient-to-r from-fuchsia-500/10 to-violet-500/10 px-4 py-3">
-          <button
-            onClick={() => setShowWrapped(true)}
-            className="flex min-w-0 flex-1 items-center gap-3 text-left"
-          >
-            <Sparkles className="h-5 w-5 shrink-0 text-fuchsia-300" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold text-fuchsia-100">
-                {t("wrapped.cta.title", { year: String(wrappedYear) })}
-              </div>
-              <div className="text-xs text-fuchsia-200/70">
-                {t("wrapped.cta.hint", { n: String(wrappedFlights) })}
-              </div>
-            </div>
-          </button>
-          <button
-            onClick={dismissWrapped}
-            title={t("common.dismiss")}
-            className="shrink-0 rounded-md p-1.5 text-fuchsia-200/60 hover:bg-fuchsia-500/15 hover:text-fuchsia-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
+      <QuickActions
+        preflightBadge={preflightBadge}
+        preflightWarn={preflightIssues > 0}
+        onExplore={() => setView("search")}
+        onInstalled={() => setView("addons")}
+        onFlightBook={() => setView("flightbook")}
+        onPreflight={() => openPreflight(true)}
+      />
 
       {showCleanup && (
         <DiskCleanupModal onClose={() => setShowCleanup(false)} />
@@ -266,52 +346,6 @@ export function DashboardView() {
         />
       )}
 
-      {/* (v6.2.4) Banner de update de GSX — clic abre el FSDT Installer. */}
-      {showGsx && gsxInfo && (
-        <button
-          onClick={() => gsxRequestInstall()}
-          className="flex w-full items-center gap-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-left transition-colors hover:bg-cyan-500/15"
-        >
-          <Truck className="h-5 w-5 shrink-0 text-cyan-300" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-cyan-100">
-              {t("notifications.gsx_update")}
-            </div>
-            <div className="text-xs text-cyan-200/80">
-              {gsxInfo.installedVersion} →{" "}
-              <strong>{gsxInfo.latestVersion}</strong>
-              {gsxInfo.latestDate ? ` · ${gsxInfo.latestDate}` : ""}
-            </div>
-          </div>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-cyan-500/30 px-2.5 py-1 text-[11px] font-medium text-cyan-100">
-            <Download className="h-3 w-3" /> {t("notifications.gsx_update_now")}
-          </span>
-        </button>
-      )}
-
-      {/* (v6.2.8) Banner de update de AIRAC — clic abre Navigraph Hub. */}
-      {showAirac && airacInfo && (
-        <button
-          onClick={() => void airacOpenUpdater()}
-          className="flex w-full items-center gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-left transition-colors hover:bg-indigo-500/15"
-        >
-          <Navigation className="h-5 w-5 shrink-0 text-indigo-300" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-indigo-100">
-              {t("notifications.airac_update")}
-            </div>
-            <div className="text-xs text-indigo-200/80">
-              {t("notifications.airac_cycle")} {airacInfo.installedCycle} →{" "}
-              <strong>{airacInfo.latestCycle}</strong>
-              {airacInfo.effectiveDate ? ` · ${airacInfo.effectiveDate}` : ""}
-            </div>
-          </div>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-indigo-500/30 px-2.5 py-1 text-[11px] font-medium text-indigo-100">
-            <Download className="h-3 w-3" /> {t("notifications.airac_update_now")}
-          </span>
-        </button>
-      )}
-
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
           <AlertCircle className="h-3.5 w-3.5" />
@@ -319,18 +353,75 @@ export function DashboardView() {
         </div>
       )}
 
+      {/* KPIs — 4 columnas en xl, 2 en sm. */}
+      {stats && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            icon={<Package className="h-5 w-5" />}
+            label={t("home.kpi.addons")}
+            value={stats.totalPackages.toLocaleString("es-ES")}
+            hint={
+              addonsThisWeek > 0
+                ? t("home.kpi.addons_week", { n: String(addonsThisWeek) })
+                : t("dashboard.kpi.airports.hint", { aircraft: aircraftCount, liveries: liveriesCount })
+            }
+            hintTone={addonsThisWeek > 0 ? "positive" : "muted"}
+          />
+          <button
+            onClick={() => setShowCleanup(true)}
+            title={t("cleanup.cta")}
+            className="rounded-xl text-left outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-brand-500/60"
+          >
+            <StatCard
+              icon={<HardDrive className="h-5 w-5" />}
+              // (v7.4.2) Es lo que OCUPAN los addons de la Community, no el
+              // espacio libre del disco.
+              label={t("home.kpi.disk")}
+              value={formatBytes(stats.totalSizeBytes)}
+              hint={t("home.kpi.disk_hint")}
+            />
+          </button>
+          <StatCard
+            icon={<Sparkles className="h-5 w-5" />}
+            label={t("home.kpi.updates")}
+            value={stats.updatesAvailable.toLocaleString("es-ES")}
+            valueTone={stats.updatesAvailable > 0 ? "warning" : undefined}
+            hint={
+              stats.updatesAvailable === 0
+                ? t("dashboard.kpi.updates.all_clear")
+                : t("home.kpi.updates_pending")
+            }
+            hintTone={stats.updatesAvailable > 0 ? "warning" : "muted"}
+          />
+          <StatCard
+            icon={<PlaneTakeoff className="h-5 w-5" />}
+            label={t("home.kpi.flights")}
+            value={completedFlights.length.toLocaleString("es-ES")}
+            hint={t("home.kpi.flights_month", { n: String(flightsThisMonth) })}
+          />
+        </div>
+      )}
+
       {!stats && loading && (
-        <div className="flex items-center justify-center rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-sm text-slate-500">
+        <div className="flex items-center justify-center rounded-xl border border-sf-border/80 bg-sf-surface px-4 py-12 text-sm text-sf-muted">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           {t("dashboard.computing")}
         </div>
       )}
 
+      <div className="grid items-stretch gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <RecentFlights
+          entries={completedFlights.slice(0, 5)}
+          onOpenFlightBook={() => setView("flightbook")}
+        />
+        <NoticesPanel notices={notices} />
+      </div>
+
       {stats && stats.totalPackages === 0 && !loading && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center text-sm text-slate-500">
-          <Package className="mx-auto mb-3 h-8 w-8 text-slate-700" />
+        <div className="rounded-xl border border-sf-border/80 bg-sf-surface px-4 py-12 text-center text-sm text-sf-muted">
+          <Package className="mx-auto mb-3 h-8 w-8 text-sf-muted/60" />
           <p>{t("dashboard.empty.title")}</p>
-          <p className="mt-1 text-xs text-slate-600">
+          <p className="mt-1 text-xs text-sf-muted/80">
             {t("dashboard.empty.hint")}
           </p>
         </div>
@@ -338,66 +429,21 @@ export function DashboardView() {
 
       {stats && stats.totalPackages > 0 && (
         <>
-          {/* KPIs — 4 columnas en md+, 2 en sm, 1 en xs. */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard
-              icon={<Package className="h-4 w-4" />}
-              label={t("dashboard.kpi.total_packages")}
-              value={stats.totalPackages.toLocaleString("es-ES")}
-              hint={t("dashboard.kpi.total_packages.hint")}
-              tone="brand"
-            />
-            <button
-              onClick={() => setShowCleanup(true)}
-              title={t("cleanup.cta")}
-              className="text-left transition-transform hover:-translate-y-0.5"
-            >
-              <KpiCard
-                icon={<HardDrive className="h-4 w-4" />}
-                // (v7.4.2) Es lo que OCUPAN los addons de la Community, no el
-                // espacio libre del disco ("Espacio en disco" se leía como lo
-                // que le queda al disco).
-                label={t("dashboard.kpi.disk_space")}
-                value={formatBytes(stats.totalSizeBytes)}
-                hint={t("dashboard.kpi.disk_space.hint")}
-                tone="cyan"
-              />
-            </button>
-            <KpiCard
-              icon={<Landmark className="h-4 w-4" />}
-              label={t("dashboard.kpi.airports")}
-              value={stats.airportsCount.toLocaleString("es-ES")}
-              hint={t("dashboard.kpi.airports.hint", { aircraft: aircraftCount, liveries: liveriesCount })}
-              tone="emerald"
-            />
-            <KpiCard
-              icon={<Sparkles className="h-4 w-4" />}
-              label={t("dashboard.kpi.updates")}
-              value={stats.updatesAvailable.toLocaleString("es-ES")}
-              hint={
-                stats.updatesAvailable === 0
-                  ? t("dashboard.kpi.updates.all_clear")
-                  : t("dashboard.kpi.updates.check_notifications")
-              }
-              tone={stats.updatesAvailable > 0 ? "amber" : "slate"}
-            />
-          </div>
-
-          <Card title={t("dashboard.card.by_type")} icon={<Rocket className="h-3.5 w-3.5" />}>
+          <Card title={t("dashboard.card.by_type")} icon={<Rocket className="h-4 w-4" />}>
             <TypeBreakdown stats={stats} />
           </Card>
 
           {/* Top devs y largest packages se estiran a la misma
-              altura usando `grid-flow-row-dense` + `items-stretch`,
-              y dentro las cards crecen con `h-full + flex-col`. */}
+              altura usando `items-stretch`, y dentro las cards crecen
+              con `h-full + flex-col`. */}
           <div className="grid items-stretch gap-3 lg:grid-cols-2">
             <Card
               title={t("dashboard.card.top_devs")}
-              icon={<Users className="h-3.5 w-3.5" />}
+              icon={<Users className="h-4 w-4" />}
               hint={t("dashboard.card.top_devs.hint")}
             >
               {stats.topCreators.length === 0 ? (
-                <p className="px-1 py-2 text-xs text-slate-500">
+                <p className="px-1 py-2 text-xs text-sf-muted">
                   {t("dashboard.card.top_devs.empty")}
                 </p>
               ) : (
@@ -407,11 +453,11 @@ export function DashboardView() {
 
             <Card
               title={t("dashboard.card.largest")}
-              icon={<Trophy className="h-3.5 w-3.5" />}
+              icon={<Trophy className="h-4 w-4" />}
               hint={t("dashboard.card.largest.hint")}
             >
               {stats.largestPackages.length === 0 ? (
-                <p className="px-1 py-2 text-xs text-slate-500">
+                <p className="px-1 py-2 text-xs text-sf-muted">
                   {t("dashboard.card.largest.empty")}
                 </p>
               ) : (
@@ -424,17 +470,17 @@ export function DashboardView() {
           </div>
 
           {stats.recentlyAdded.length > 0 && (
-            <Card title={t("dashboard.card.recently_added")} icon={<Plane className="h-3.5 w-3.5" />}>
-              <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+            <Card title={t("dashboard.card.recently_added")} icon={<Plane className="h-4 w-4" />}>
+              <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {stats.recentlyAdded.map((p) => (
                   <li
                     key={p.folderName}
-                    className="flex items-center gap-2 rounded-md border border-slate-800/60 bg-slate-950/40 px-2.5 py-1.5 text-xs"
+                    className="flex items-center gap-2.5 rounded-lg border border-sf-border/60 bg-sf-bg/40 px-3 py-2 text-[13px]"
                   >
-                    <Package className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                    <Package className="h-4 w-4 shrink-0 text-sf-muted" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-slate-200">{p.title}</div>
-                      <div className="truncate text-[10px] text-slate-500">
+                      <div className="truncate text-sf-text">{p.title}</div>
+                      <div className="truncate text-[11px] text-sf-muted">
                         {p.creator ?? t("dashboard.unknown_author")}
                         {p.sizeBytes != null && ` · ${formatBytes(p.sizeBytes)}`}
                       </div>
@@ -445,11 +491,527 @@ export function DashboardView() {
             </Card>
           )}
 
-          {health && <HealthCenter health={health} onChanged={load} />}
+          {health && (
+            <div ref={healthRef} className="scroll-mt-4">
+              <HealthCenter health={health} onChanged={load} />
+            </div>
+          )}
         </>
       )}
     </div>
   );
+}
+
+// ----------------------------------------------------------------------------
+// (Rediseño F2) Bienvenida + tarjeta de vuelo
+// ----------------------------------------------------------------------------
+
+function WelcomeHero({
+  pilotName,
+  lastFlight,
+}: {
+  pilotName: string | null;
+  lastFlight: FlightLogEntry | null;
+}) {
+  return (
+    <section className="relative overflow-hidden rounded-2xl border border-sf-border/80 bg-gradient-to-br from-sf-surface via-sf-surface to-brand-500/15">
+      <RouteArt className="pointer-events-none absolute inset-y-0 right-0 h-full w-full text-brand-400/25 lg:w-3/4" />
+      <div className="relative flex flex-col gap-5 p-6 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight text-sf-text">
+            {pilotName
+              ? t("home.hero.welcome_named", { name: pilotName })
+              : t("home.hero.welcome")}
+          </h1>
+          <p className="mt-1.5 max-w-xl text-sm text-sf-muted">
+            {t("home.hero.subtitle")}
+          </p>
+        </div>
+        <FlightCard lastFlight={lastFlight} />
+      </div>
+    </section>
+  );
+}
+
+/** Trazos de rutas decorativos (SVG puro, sin imágenes). */
+function RouteArt({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 640 220"
+      preserveAspectRatio="xMaxYMid slice"
+      className={className}
+      fill="none"
+      aria-hidden
+    >
+      <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="2 7">
+        <path d="M40 190 C 200 40, 420 30, 610 120" />
+        <path d="M150 210 C 260 110, 430 90, 600 40" />
+        <path d="M300 200 C 380 150, 500 150, 630 175" />
+      </g>
+      <g fill="currentColor">
+        <circle cx="40" cy="190" r="3.5" />
+        <circle cx="610" cy="120" r="3.5" />
+        <circle cx="600" cy="40" r="3" />
+        <circle cx="630" cy="175" r="3" />
+      </g>
+      <path
+        d="M404 66 l18 -6 l-6 18 l-3 -7 z"
+        fill="currentColor"
+        opacity="0.9"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Tarjeta de vuelo del hero, por prioridad:
+ *   1. Vuelo en curso (SimConnect conectado).
+ *   2. Próximo vuelo: el OFP de SimBrief más reciente (< 36 h).
+ *   3. Último vuelo completado del FlightBook.
+ * Sin ninguno de los tres no se muestra.
+ */
+function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
+  const status = useFlightLogStore((s) => s.status);
+  const ofps = useSimBriefStore((s) => s.flights);
+  const setView = useAppStore((s) => s.setView);
+  const u = useUnits();
+
+  const latestOfp = useMemo(() => {
+    let best: (typeof ofps)[number] | null = null;
+    let bestTs = 0;
+    for (const f of ofps) {
+      const ts = f.generatedAt ? parseInt(f.generatedAt, 10) * 1000 : 0;
+      if (ts > bestTs) {
+        best = f;
+        bestTs = ts;
+      }
+    }
+    return best && Date.now() - bestTs < NEXT_OFP_MAX_AGE_MS ? best : null;
+  }, [ofps]);
+
+  let kind: "live" | "next" | "last";
+  let origin: string | null;
+  let destination: string | null;
+  let originName: string | null = null;
+  let destinationName: string | null = null;
+  let pill: { label: string; dot: string } | null = null;
+  let cells: { label: string; value: string }[];
+
+  const live =
+    !!status?.simRunning &&
+    status.simconnectConnected &&
+    !!(status.currentAirportIcao || status.originIcao);
+
+  if (live && status) {
+    const r = effectiveRoute(status, ofps);
+    const phase = phaseDisplay(status.phaseLabel);
+    kind = "live";
+    origin = r.effectiveOrigin;
+    destination = r.effectiveDestination;
+    originName = status.originName ?? r.matchedOfp?.originName ?? null;
+    destinationName = status.destinationName ?? r.matchedOfp?.destinationName ?? null;
+    pill = { label: phase.short, dot: phase.dotClass };
+    cells = [
+      { label: t("home.flight.altitude"), value: u.fmt.altitude(status.currentAltFt) },
+      { label: t("home.flight.speed"), value: u.fmt.speed(status.currentGroundSpeedKt) },
+      { label: t("home.flight.distance"), value: u.fmt.distance(status.distanceNm ?? r.matchedOfp?.distanceNm ?? null) },
+    ];
+  } else if (latestOfp) {
+    kind = "next";
+    origin = latestOfp.originIcao;
+    destination = latestOfp.destinationIcao;
+    originName = latestOfp.originName;
+    destinationName = latestOfp.destinationName;
+    pill = { label: "SimBrief", dot: "bg-sky-400" };
+    cells = [
+      { label: t("home.flight.aircraft"), value: latestOfp.aircraftIcao ?? "—" },
+      { label: t("home.flight.distance"), value: u.fmt.distance(latestOfp.distanceNm) },
+      { label: t("home.flight.ete"), value: formatDuration(latestOfp.estTimeEnrouteS) },
+    ];
+  } else if (lastFlight) {
+    kind = "last";
+    origin = lastFlight.originIcao;
+    destination = lastFlight.destinationIcao;
+    originName = lastFlight.originName;
+    destinationName = lastFlight.destinationName;
+    pill = { label: formatShortDate(lastFlight.startedAt), dot: "bg-slate-400" };
+    cells = [
+      { label: t("home.flight.aircraft"), value: aircraftLabel(lastFlight) },
+      { label: t("home.flight.duration"), value: formatDuration(lastFlight.flightTimeS) },
+      { label: t("home.flight.landing"), value: u.fmt.vs(lastFlight.landingFpm) },
+    ];
+  } else {
+    return null;
+  }
+
+  const title =
+    kind === "live"
+      ? t("home.flight.current")
+      : kind === "next"
+        ? t("home.flight.next")
+        : t("home.flight.last");
+
+  return (
+    <button
+      onClick={() => setView("flightbook")}
+      className="w-full shrink-0 rounded-xl border border-sf-border bg-sf-bg/70 p-4 text-left outline-none transition-colors hover:border-brand-500/40 focus-visible:ring-2 focus-visible:ring-brand-500/60 lg:w-[22rem]"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-sf-muted">{title}</span>
+        {pill && (
+          <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-xs text-sf-muted">
+            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", pill.dot)} />
+            {pill.label}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 flex items-center gap-2 font-mono text-xl font-semibold text-sf-text">
+        <span>{origin ?? "····"}</span>
+        <span className="text-brand-300">→</span>
+        <span>{destination ?? "····"}</span>
+      </div>
+      {(originName || destinationName) && (
+        <div className="mt-0.5 truncate text-xs text-sf-muted">
+          {originName ?? "—"} → {destinationName ?? "—"}
+        </div>
+      )}
+      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-sf-border/70 pt-3">
+        {cells.map((c) => (
+          <div key={c.label} className="min-w-0">
+            <div className="truncate text-[11px] uppercase tracking-wide text-sf-muted">
+              {c.label}
+            </div>
+            <div className="mt-0.5 truncate text-sm font-semibold tabular-nums text-sf-text">
+              {c.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (Rediseño F2) Accesos rápidos
+// ----------------------------------------------------------------------------
+
+function QuickActions({
+  preflightBadge,
+  preflightWarn,
+  onExplore,
+  onInstalled,
+  onFlightBook,
+  onPreflight,
+}: {
+  preflightBadge: number;
+  preflightWarn: boolean;
+  onExplore: () => void;
+  onInstalled: () => void;
+  onFlightBook: () => void;
+  onPreflight: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <QuickAction
+        primary
+        icon={<Compass className="h-5 w-5" />}
+        title={t("home.quick.explore.title")}
+        desc={t("home.quick.explore.desc")}
+        onClick={onExplore}
+      />
+      <QuickAction
+        icon={<Package className="h-5 w-5" />}
+        title={t("home.quick.installed.title")}
+        desc={t("home.quick.installed.desc")}
+        onClick={onInstalled}
+      />
+      <QuickAction
+        icon={<BookOpen className="h-5 w-5" />}
+        title={t("home.quick.flightbook.title")}
+        desc={t("home.quick.flightbook.desc")}
+        onClick={onFlightBook}
+      />
+      <QuickAction
+        icon={<ClipboardCheck className="h-5 w-5" />}
+        title={t("home.quick.preflight.title")}
+        desc={t("home.quick.preflight.desc")}
+        onClick={onPreflight}
+        badge={preflightBadge > 0 ? preflightBadge : undefined}
+        badgeWarn={preflightWarn}
+      />
+    </div>
+  );
+}
+
+function QuickAction({
+  icon,
+  title,
+  desc,
+  onClick,
+  primary,
+  badge,
+  badgeWarn,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  onClick: () => void;
+  primary?: boolean;
+  badge?: number;
+  badgeWarn?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group relative flex items-start gap-3 rounded-xl border p-4 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-500/60",
+        primary
+          ? "border-brand-400/30 bg-gradient-to-br from-brand-600 to-brand-800 text-white hover:from-brand-500 hover:to-brand-700"
+          : "border-sf-border/80 bg-sf-surface hover:border-brand-500/40 hover:bg-sf-raised",
+      )}
+    >
+      <div
+        className={cn(
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+          primary ? "bg-white/15 text-white" : "bg-sf-raised text-brand-300",
+        )}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className={cn("text-sm font-semibold", primary ? "text-white" : "text-sf-text")}>
+          {title}
+        </div>
+        <div className={cn("mt-0.5 text-xs leading-snug", primary ? "text-white/80" : "text-sf-muted")}>
+          {desc}
+        </div>
+      </div>
+      {badge !== undefined && (
+        <span
+          className={cn(
+            "absolute right-3 top-3 inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold",
+            badgeWarn ? "bg-amber-500/20 text-amber-300" : "bg-brand-500/20 text-brand-200",
+          )}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (Rediseño F2) Últimos vuelos
+// ----------------------------------------------------------------------------
+
+function RecentFlights({
+  entries,
+  onOpenFlightBook,
+}: {
+  entries: FlightLogEntry[];
+  onOpenFlightBook: () => void;
+}) {
+  const u = useUnits();
+  return (
+    <Card
+      title={t("home.recent.title")}
+      icon={<BookOpen className="h-4 w-4" />}
+      action={
+        entries.length > 0 ? (
+          <button
+            onClick={onOpenFlightBook}
+            className="inline-flex items-center gap-0.5 text-xs font-medium text-brand-300 hover:text-brand-200"
+          >
+            {t("home.recent.see_all")}
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        ) : undefined
+      }
+    >
+      {entries.length === 0 ? (
+        <p className="px-1 py-6 text-center text-sm text-sf-muted">
+          {t("home.recent.empty")}
+        </p>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-sf-border/60">
+          <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1.1fr)_4.5rem_6.5rem] items-center gap-3 border-b border-sf-border/60 bg-sf-raised/50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
+            <span>{t("home.recent.col.date")}</span>
+            <span>{t("home.recent.col.aircraft")}</span>
+            <span>{t("home.recent.col.route")}</span>
+            <span className="text-right">{t("home.recent.col.duration")}</span>
+            <span className="text-right">{t("home.recent.col.result")}</span>
+          </div>
+          <ul className="divide-y divide-sf-border/50">
+            {entries.map((e) => (
+              <li key={e.id}>
+                <button
+                  onClick={onOpenFlightBook}
+                  className="grid w-full grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1.1fr)_4.5rem_6.5rem] items-center gap-3 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-sf-raised/60"
+                >
+                  <span className="text-sf-muted">{formatShortDate(e.startedAt)}</span>
+                  <span className="truncate text-sf-text" title={e.aircraftTitle ?? undefined}>
+                    {aircraftLabel(e)}
+                  </span>
+                  <span className="truncate font-mono text-xs text-sf-text">
+                    {e.originIcao ?? "?"} → {e.destinationIcao ?? "?"}
+                  </span>
+                  <span className="text-right tabular-nums text-sf-muted">
+                    {formatDuration(e.flightTimeS)}
+                  </span>
+                  <span className="flex items-center justify-end gap-1.5">
+                    {e.landingFpm !== null && (
+                      <span className="truncate text-xs tabular-nums text-sf-muted">
+                        {u.fmt.vs(e.landingFpm)}
+                      </span>
+                    )}
+                    {e.scoreGrade && (
+                      <span
+                        className={cn(
+                          "shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] font-bold",
+                          gradeClass(e.scoreGrade),
+                        )}
+                      >
+                        {e.scoreGrade}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (Rediseño F2) Avisos y actualizaciones
+// ----------------------------------------------------------------------------
+
+type NoticeTone = "brand" | "amber" | "cyan" | "indigo" | "rose" | "fuchsia";
+
+interface Notice {
+  key: string;
+  icon: React.ReactNode;
+  tone: NoticeTone;
+  title: string;
+  desc?: string;
+  meta?: string;
+  onClick?: () => void;
+  onDismiss?: () => void;
+}
+
+const noticeTone: Record<NoticeTone, string> = {
+  brand: "bg-brand-500/15 text-brand-300",
+  amber: "bg-amber-500/15 text-amber-300",
+  cyan: "bg-cyan-500/15 text-cyan-300",
+  indigo: "bg-indigo-500/15 text-indigo-300",
+  rose: "bg-rose-500/15 text-rose-300",
+  fuchsia: "bg-fuchsia-500/15 text-fuchsia-300",
+};
+
+function NoticesPanel({ notices }: { notices: Notice[] }) {
+  return (
+    <Card title={t("home.notices.title")} icon={<Sparkles className="h-4 w-4" />}>
+      {notices.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 py-6 text-center">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/15">
+            <CheckCircle2 className="h-5 w-5 text-emerald-300" />
+          </div>
+          <p className="text-sm text-sf-muted">{t("home.notices.empty")}</p>
+        </div>
+      ) : (
+        <ul className="space-y-1">
+          {notices.map((n) => (
+            <li key={n.key} className="group flex items-center gap-1 rounded-lg hover:bg-sf-raised/60">
+              <button
+                onClick={n.onClick}
+                className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+              >
+                <span
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+                    noticeTone[n.tone],
+                  )}
+                >
+                  {n.icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium text-sf-text">
+                    {n.title}
+                  </span>
+                  {n.desc && (
+                    <span className="block truncate text-xs text-sf-muted">{n.desc}</span>
+                  )}
+                </span>
+                {n.meta && (
+                  <span className="shrink-0 text-[11px] text-sf-muted">{n.meta}</span>
+                )}
+                {!n.onDismiss && (
+                  <ChevronRight className="h-4 w-4 shrink-0 text-sf-muted/70" />
+                )}
+              </button>
+              {n.onDismiss && (
+                <button
+                  onClick={n.onDismiss}
+                  title={t("common.dismiss")}
+                  aria-label={t("common.dismiss")}
+                  className="mr-1 shrink-0 rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (Rediseño F2) Formato
+// ----------------------------------------------------------------------------
+
+function aircraftLabel(e: FlightLogEntry): string {
+  return (
+    cleanAircraftLabel(e.aircraftTitle) ||
+    cleanAtcType(e.aircraftAtcType) ||
+    e.aircraftModel ||
+    "—"
+  );
+}
+
+function formatShortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const locale = getActiveLocale() === "es" ? "es-ES" : "en-US";
+  return d.toLocaleDateString(locale, { day: "numeric", month: "short" });
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return "—";
+  const total = Math.round(seconds / 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+/** Badge de calificación del vuelo — mismo código de color que el FlightBook. */
+function gradeClass(grade: string): string {
+  switch (grade) {
+    case "A":
+      return "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/40";
+    case "B":
+      return "bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/40";
+    case "C":
+      return "bg-amber-500/20 text-amber-200 ring-1 ring-amber-500/40";
+    case "D":
+      return "bg-orange-500/20 text-orange-200 ring-1 ring-orange-500/40";
+    default:
+      return "bg-rose-500/20 text-rose-200 ring-1 ring-rose-500/40";
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -505,15 +1067,15 @@ function HealthGroup({
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-slate-100">{title}</span>
+            <span className="text-sm font-medium text-sf-text">{title}</span>
             <span
-              className={`rounded-full px-1.5 text-[10px] font-medium ${c.badge}`}
+              className={`rounded-full px-1.5 text-[11px] font-medium ${c.badge}`}
             >
               {count}
             </span>
           </div>
           {desc && (
-            <div className="truncate text-[11px] leading-snug text-slate-500">
+            <div className="truncate text-xs leading-snug text-sf-muted">
               {desc}
             </div>
           )}
@@ -541,17 +1103,17 @@ function HealthRow({
 }) {
   const c = healthTone[tone];
   return (
-    <li className="flex items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-950/40 px-2.5 py-1.5 text-xs">
+    <li className="flex items-center gap-2.5 rounded-lg border border-sf-border/60 bg-sf-bg/40 px-3 py-2 text-[13px]">
       <span className={`shrink-0 ${c.icon}`}>{icon}</span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-slate-200">{title}</div>
+        <div className="truncate text-sf-text">{title}</div>
         {subtitle && (
-          <div className="truncate text-[10px] text-slate-500">{subtitle}</div>
+          <div className="truncate text-[11px] text-sf-muted">{subtitle}</div>
         )}
       </div>
       {badge && (
         <span
-          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${c.badge}`}
+          className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${c.badge}`}
         >
           {badge}
         </span>
@@ -580,20 +1142,20 @@ function RowAction({
   onCancel: () => void;
 }) {
   if (busy) {
-    return <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />;
+    return <Loader2 className="h-3.5 w-3.5 animate-spin text-sf-muted" />;
   }
   if (confirming) {
     return (
       <div className="flex items-center gap-1">
         <button
           onClick={onConfirm}
-          className="rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-medium text-rose-200 hover:bg-rose-500/25"
+          className="rounded border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[11px] font-medium text-rose-200 hover:bg-rose-500/25"
         >
           {t("dashboard.health.confirm")}
         </button>
         <button
           onClick={onCancel}
-          className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-800"
+          className="rounded border border-sf-border px-2 py-0.5 text-[11px] text-sf-muted hover:bg-sf-raised"
         >
           {t("common.cancel")}
         </button>
@@ -603,10 +1165,10 @@ function RowAction({
   return (
     <button
       onClick={onAsk}
-      className={`rounded border px-2 py-0.5 text-[10px] font-medium ${
+      className={`rounded border px-2 py-0.5 text-[11px] font-medium ${
         danger
           ? "border-rose-500/30 text-rose-300 hover:bg-rose-500/15"
-          : "border-slate-700 text-slate-300 hover:bg-slate-800"
+          : "border-sf-border text-sf-text hover:bg-sf-raised"
       }`}
     >
       {label}
@@ -671,7 +1233,7 @@ function HealthCenter({
   return (
     <Card
       title={t("dashboard.health.title")}
-      icon={<HeartPulse className="h-3.5 w-3.5" />}
+      icon={<HeartPulse className="h-4 w-4" />}
     >
       {ok ? (
         <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-6 text-center">
@@ -690,11 +1252,11 @@ function HealthCenter({
               <AlertCircle className="h-5 w-5 text-rose-300" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-slate-100">
+              <div className="text-sm font-medium text-sf-text">
                 {t("dashboard.health.to_review", { n: String(health.issueCount) })}
               </div>
               {health.reclaimableBytes > 0 && (
-                <div className="text-[11px] text-slate-400">
+                <div className="text-xs text-sf-muted">
                   {formatBytes(health.reclaimableBytes)}{" "}
                   {t("dashboard.health.reclaimable")}
                 </div>
@@ -822,78 +1384,85 @@ function HealthCenter({
 // Helpers de presentación
 // ----------------------------------------------------------------------------
 
-type Tone = "brand" | "cyan" | "emerald" | "amber" | "slate";
-
-function KpiCard({
+/** (Rediseño F2) KPI: icono en baldosa + etiqueta, valor y pista. */
+function StatCard({
   icon,
   label,
   value,
   hint,
-  tone,
+  valueTone,
+  hintTone = "muted",
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   hint?: string;
-  tone: Tone;
+  valueTone?: "warning";
+  hintTone?: "muted" | "positive" | "warning";
 }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-      <div className={`inline-flex items-center gap-1.5 ${toneClass(tone)}`}>
+    <div className="flex h-full items-start gap-3 rounded-xl border border-sf-border/80 bg-sf-surface p-4">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sf-raised text-brand-300">
         {icon}
-        <span className="text-[11px] font-medium uppercase tracking-wider">
-          {label}
-        </span>
       </div>
-      <div className="mt-1 text-2xl font-semibold text-slate-100">{value}</div>
-      {hint && <div className="mt-0.5 text-[11px] text-slate-500">{hint}</div>}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-medium text-sf-muted">{label}</div>
+        <div
+          className={cn(
+            "mt-0.5 text-2xl font-semibold tabular-nums",
+            valueTone === "warning" ? "text-sf-warning" : "text-sf-text",
+          )}
+        >
+          {value}
+        </div>
+        {hint && (
+          <div
+            className={cn(
+              "mt-0.5 truncate text-xs",
+              hintTone === "positive"
+                ? "text-emerald-300"
+                : hintTone === "warning"
+                  ? "text-sf-warning"
+                  : "text-sf-muted",
+            )}
+          >
+            {hint}
+          </div>
+        )}
+      </div>
     </div>
   );
-}
-
-function toneClass(t: Tone): string {
-  switch (t) {
-    case "brand":
-      return "text-brand-300";
-    case "cyan":
-      return "text-cyan-300";
-    case "emerald":
-      return "text-emerald-300";
-    case "amber":
-      return "text-amber-300";
-    default:
-      return "text-slate-400";
-  }
 }
 
 function Card({
   title,
   icon,
   hint,
+  action,
   children,
 }: {
   title: string;
   icon?: React.ReactNode;
   hint?: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900/40">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 px-4 py-2.5">
-        <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-300">
-          {icon}
-          {title}
+    <div className="flex h-full flex-col rounded-xl border border-sf-border/80 bg-sf-surface">
+      <header className="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-3.5">
+        <div className="inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-sf-text">
+          {icon && <span className="shrink-0 text-sf-muted">{icon}</span>}
+          <span className="truncate">{title}</span>
         </div>
-        {hint && (
-          <span className="text-[10px] font-normal normal-case text-slate-500">
-            {hint}
-          </span>
-        )}
+        {action ??
+          (hint && (
+            <span className="truncate text-xs text-sf-muted">{hint}</span>
+          ))}
       </header>
       {/* `flex-1` consume el espacio sobrante; el contenido se
           estira para llenar la card cuando hay otra card más alta
           al lado. */}
-      <div className="flex flex-1 flex-col p-3">{children}</div>
+      <div className="flex flex-1 flex-col p-4 pt-2.5">{children}</div>
     </div>
   );
 }
@@ -940,7 +1509,7 @@ function TypeBreakdown({ stats }: { stats: DashboardStats }) {
   const sorted = [...stats.byType].sort((a, b) => b.count - a.count);
   return (
     <div className="space-y-3">
-      <div className="flex h-2.5 overflow-hidden rounded-full bg-slate-950 ring-1 ring-slate-800">
+      <div className="flex h-2.5 overflow-hidden rounded-full bg-sf-bg ring-1 ring-sf-border/70">
         {sorted.map((t) => {
           const pct = (t.count / total) * 100;
           return (
@@ -953,25 +1522,25 @@ function TypeBreakdown({ stats }: { stats: DashboardStats }) {
           );
         })}
       </div>
-      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {sorted.map((t) => {
           const pct = (t.count / total) * 100;
           return (
             <div
               key={t.label}
-              className="flex items-center gap-2 rounded-md border border-slate-800/60 bg-slate-950/40 px-2.5 py-1.5 text-xs"
+              className="flex items-center gap-2.5 rounded-lg border border-sf-border/60 bg-sf-bg/40 px-3 py-2 text-[13px]"
             >
               <span
                 className={`inline-block h-2.5 w-2.5 shrink-0 rounded-sm ${colors[t.label] ?? "bg-slate-600"}`}
               />
-              <span className="flex-1 truncate text-slate-200">{translateTypeLabel(t.label)}</span>
-              <span className="shrink-0 font-mono text-[11px] text-slate-300">
+              <span className="flex-1 truncate text-sf-text">{translateTypeLabel(t.label)}</span>
+              <span className="shrink-0 font-mono text-xs text-sf-text">
                 {t.count}
               </span>
-              <span className="w-16 shrink-0 text-right text-[10px] tabular-nums text-slate-500">
+              <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-sf-muted">
                 {formatBytes(t.sizeBytes)}
               </span>
-              <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-slate-600">
+              <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-sf-muted/80">
                 {pct.toFixed(0)}%
               </span>
             </div>
@@ -983,9 +1552,8 @@ function TypeBreakdown({ stats }: { stats: DashboardStats }) {
 }
 
 /** Tabla de top creators con cabecera explícita ("Paquetes" / "Tamaño")
- *  y columnas alineadas. Reemplaza la barra de progreso por el rank;
- *  el peso queda en su propia columna numérica para no confundir
- *  con el conteo. */
+ *  y columnas alineadas. El peso queda en su propia columna numérica
+ *  para no confundir con el conteo. */
 function CreatorsTable({
   creators,
 }: {
@@ -993,37 +1561,37 @@ function CreatorsTable({
 }) {
   const maxCount = creators[0]?.count ?? 1;
   return (
-    <div className="overflow-hidden rounded-md border border-slate-800/60">
-      <div className="grid grid-cols-[2rem_1fr_4rem_5.5rem] items-center gap-2 border-b border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+    <div className="overflow-hidden rounded-lg border border-sf-border/60">
+      <div className="grid grid-cols-[2rem_1fr_4.5rem_5.5rem] items-center gap-2 border-b border-sf-border/60 bg-sf-raised/50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
         <span>#</span>
         <span>{t("dashboard.col.developer")}</span>
         <span className="text-right">{t("dashboard.col.packages")}</span>
         <span className="text-right">{t("dashboard.col.size")}</span>
       </div>
-      <ul className="divide-y divide-slate-800/60">
+      <ul className="divide-y divide-sf-border/50">
         {creators.map((c, idx) => {
           const pct = (c.count / maxCount) * 100;
           return (
             <li
               key={c.creator}
-              className="grid grid-cols-[2rem_1fr_4rem_5.5rem] items-center gap-2 px-2.5 py-1.5 text-xs"
+              className="grid grid-cols-[2rem_1fr_4.5rem_5.5rem] items-center gap-2 px-3 py-2 text-[13px]"
             >
-              <span className="font-mono text-[10px] text-slate-500">
+              <span className="font-mono text-[11px] text-sf-muted">
                 #{idx + 1}
               </span>
               <div className="min-w-0">
-                <div className="truncate text-slate-200">{c.creator}</div>
-                <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-900">
+                <div className="truncate text-sf-text">{c.creator}</div>
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-sf-raised">
                   <div
                     className="h-full rounded-full bg-brand-500/70"
                     style={{ width: `${pct}%` }}
                   />
                 </div>
               </div>
-              <span className="text-right font-mono tabular-nums text-slate-200">
+              <span className="text-right font-mono tabular-nums text-sf-text">
                 {c.count}
               </span>
-              <span className="text-right font-mono text-[11px] tabular-nums text-slate-400">
+              <span className="text-right font-mono text-xs tabular-nums text-sf-muted">
                 {formatBytes(c.sizeBytes)}
               </span>
             </li>
@@ -1050,37 +1618,37 @@ function LargestTable({
   maxBytes: number;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-slate-800/60">
-      <div className="grid grid-cols-[2rem_1fr_5.5rem] items-center gap-2 border-b border-slate-800 bg-slate-900/60 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+    <div className="overflow-hidden rounded-lg border border-sf-border/60">
+      <div className="grid grid-cols-[2rem_1fr_5.5rem] items-center gap-2 border-b border-sf-border/60 bg-sf-raised/50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
         <span>#</span>
         <span>{t("dashboard.col.package")}</span>
         <span className="text-right">{t("dashboard.col.size")}</span>
       </div>
-      <ul className="divide-y divide-slate-800/60">
+      <ul className="divide-y divide-sf-border/50">
         {rows.map((p, idx) => {
           const bytes = p.sizeBytes ?? 0;
           const pct = (bytes / maxBytes) * 100;
           return (
             <li
               key={p.folderName}
-              className="grid grid-cols-[2rem_1fr_5.5rem] items-center gap-2 px-2.5 py-1.5 text-xs"
+              className="grid grid-cols-[2rem_1fr_5.5rem] items-center gap-2 px-3 py-2 text-[13px]"
             >
-              <span className="font-mono text-[10px] text-slate-500">
+              <span className="font-mono text-[11px] text-sf-muted">
                 #{idx + 1}
               </span>
               <div className="min-w-0">
-                <div className="truncate text-slate-200">{p.title}</div>
-                <div className="truncate text-[10px] text-slate-500">
+                <div className="truncate text-sf-text">{p.title}</div>
+                <div className="truncate text-[11px] text-sf-muted">
                   {p.creator ?? t("dashboard.unknown_author")}
                 </div>
-                <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-900">
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-sf-raised">
                   <div
-                    className="h-full rounded-full bg-cyan-500/70"
+                    className="h-full rounded-full bg-sky-500/70"
                     style={{ width: `${pct}%` }}
                   />
                 </div>
               </div>
-              <span className="text-right font-mono text-[11px] tabular-nums text-slate-300">
+              <span className="text-right font-mono text-xs tabular-nums text-sf-text">
                 {formatBytes(bytes)}
               </span>
             </li>

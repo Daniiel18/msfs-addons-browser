@@ -75,29 +75,29 @@ function PilotMenu({ profile }: { profile: PilotProfile }) {
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 py-1 pl-1 pr-2 hover:border-brand-500/40"
+        className="flex h-8 items-center gap-2 rounded-lg border border-sf-border bg-sf-surface pl-0.5 pr-2 hover:border-brand-500/40"
       >
-        <Avatar avatar={avatar} identity={profile.identity} size={28} />
+        <Avatar avatar={avatar} identity={profile.identity} size={26} />
         <div className="hidden text-left sm:block">
-          <div className="text-xs font-semibold leading-tight text-slate-100">
+          <div className="text-xs font-semibold leading-tight text-sf-text">
             {profile.name}
           </div>
-          <div className="text-[10px] leading-tight text-brand-300">
+          <div className="text-[11px] leading-tight text-brand-300">
             {t("hangar.profile.level", { n: String(profile.level) })}
           </div>
         </div>
-        <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+        <ChevronDown className="h-3.5 w-3.5 text-sf-muted" />
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-64 rounded-2xl border border-slate-800 bg-slate-950 p-4 shadow-2xl ring-1 ring-slate-800">
+        <div className="absolute right-0 z-50 mt-2 w-64 rounded-2xl border border-sf-border bg-sf-bg p-4 shadow-2xl ring-1 ring-sf-border">
           <div className="flex flex-col items-center">
             <div className="relative">
               <Avatar avatar={avatar} identity={profile.identity} size={64} />
               <button
                 onClick={() => fileRef.current?.click()}
                 title={t("hangar.profile.change_photo")}
-                className="absolute -bottom-1 -right-1 rounded-full border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:bg-slate-700"
+                className="absolute -bottom-1 -right-1 rounded-full border border-sf-border bg-sf-raised p-1.5 text-sf-text/90 hover:bg-sf-border"
               >
                 <Camera className="h-3 w-3" />
               </button>
@@ -109,7 +109,7 @@ function PilotMenu({ profile }: { profile: PilotProfile }) {
                 onChange={onPick}
               />
             </div>
-            <div className="mt-2 text-sm font-semibold text-slate-100">
+            <div className="mt-2 text-sm font-semibold text-sf-text">
               {profile.name}
             </div>
             <button
@@ -121,23 +121,23 @@ function PilotMenu({ profile }: { profile: PilotProfile }) {
           </div>
 
           {/* Nivel + XP */}
-          <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+          <div className="mt-4 rounded-xl border border-sf-border bg-sf-surface p-3">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-200">
+              <span className="font-semibold text-sf-text">
                 {t("hangar.profile.level", { n: String(profile.level) })}
               </span>
-              <span className="text-slate-500">
+              <span className="text-sf-muted">
                 {profile.xpInLevel.toLocaleString()} /{" "}
                 {profile.xpForNext.toLocaleString()} XP
               </span>
             </div>
-            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-sf-raised">
               <div
                 className="h-full bg-gradient-to-r from-brand-500 to-brand-400"
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <div className="mt-1.5 text-[10px] text-slate-500">
+            <div className="mt-1.5 text-[11px] text-sf-muted">
               {t("hangar.profile.to_next", {
                 n: Math.max(
                   0,
@@ -148,19 +148,19 @@ function PilotMenu({ profile }: { profile: PilotProfile }) {
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-2 text-center">
-            <div className="rounded-lg bg-slate-900/50 p-2">
-              <div className="text-sm font-semibold text-slate-100">
+            <div className="rounded-lg bg-sf-surface p-2">
+              <div className="text-sm font-semibold text-sf-text">
                 {profile.totalXp.toLocaleString()}
               </div>
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+              <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                 {t("hangar.profile.total_xp")}
               </div>
             </div>
-            <div className="rounded-lg bg-slate-900/50 p-2">
-              <div className="text-sm font-semibold text-slate-100">
+            <div className="rounded-lg bg-sf-surface p-2">
+              <div className="text-sm font-semibold text-sf-text">
                 {profile.flightsScored.toLocaleString()}
               </div>
-              <div className="text-[9px] uppercase tracking-wide text-slate-500">
+              <div className="text-[11px] uppercase tracking-wide text-sf-muted">
                 {t("hangar.profile.flights")}
               </div>
             </div>

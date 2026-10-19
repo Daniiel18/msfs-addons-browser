@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Boxes,
   CircleOff,
   Cog,
   GitBranch,
   Globe2,
   HardDrive,
   LayoutGrid,
+  List,
   Loader2,
+  MoreHorizontal,
   Music,
   Package,
   Pencil,
@@ -124,11 +125,11 @@ export function AddonsView() {
   // (pedido del usuario), persistente entre sesiones. Las píldoras y
   // el buscador SOLO se muestran cuando la vista es grid (el Link Map
   // tiene su propio search/Manage Links en el lienzo).
-  const [view, setView] = useState<"grid" | "linkmap">(() => {
+  // (Rediseño F3) + vista "list" (tabla como en el mockup).
+  const [view, setView] = useState<"grid" | "list" | "linkmap">(() => {
     try {
-      return localStorage.getItem("simfleet.addons.view") === "grid"
-        ? "grid"
-        : "linkmap";
+      const saved = localStorage.getItem("simfleet.addons.view");
+      return saved === "grid" || saved === "list" ? saved : "linkmap";
     } catch {
       return "linkmap";
     }
@@ -149,7 +150,7 @@ export function AddonsView() {
   const clearAddonsSeed = useAppStore((s) => s.clearAddonsSeed);
   useEffect(() => {
     if (addonsSeed == null) return;
-    setView("grid");
+    setView((v) => (v === "linkmap" ? "grid" : v));
     setFilter(addonsSeed);
     setTypeFilter("ALL");
     setSearchActive(1);
@@ -339,49 +340,46 @@ export function AddonsView() {
        cards/grafo). El body de la app NO scrollea — la rueda sobre
        Addons mueve solo el grid/lienzo, no la app entera. */
     <div className="flex h-full flex-col gap-3 overflow-hidden">
-      {/* Header — título + métricas globales + batch actions + search. */}
-      <header className="shrink-0 space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Boxes className="h-4 w-4 text-brand-300" />
-            <h2 className="text-sm font-semibold text-slate-100">
+      {/* (Rediseño F3) Cabecera: título + métricas a la izquierda, acciones
+          en lote y selector de vista a la derecha. Debajo, en una sola fila,
+          los filtros por tipo y el buscador (sólo Grid/Lista: el Link Map
+          tiene su propio buscador en el lienzo). */}
+      <header className="shrink-0 space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight text-sf-text">
               {t("addons.title")}
-            </h2>
+            </h1>
+            {/* (v4.25.0) Fila de métricas con micro-iconos. */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+              <MetricChip
+                icon={<Package className="h-3.5 w-3.5 text-brand-300" />}
+                value={metrics.total}
+                label={t("addons.metrics.addons")}
+              />
+              <MetricChip
+                icon={<Power className="h-3.5 w-3.5 text-emerald-400" />}
+                value={metrics.enabled}
+                label={t("addons.metrics.enabled")}
+              />
+              <MetricChip
+                icon={<CircleOff className="h-3.5 w-3.5 text-sf-muted" />}
+                value={metrics.disabled}
+                label={t("addons.metrics.disabled")}
+              />
+              <MetricChip
+                icon={<HardDrive className="h-3.5 w-3.5 text-sky-300" />}
+                value={formatStorage(metrics.bytes)}
+                label={t("addons.metrics.storage")}
+              />
+            </div>
           </div>
 
-          {/* (v4.25.0) Fila de métricas con micro-iconos. */}
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-            <MetricChip
-              icon={<Package className="h-3 w-3 text-brand-300" />}
-              value={metrics.total}
-              label={t("addons.metrics.addons")}
-            />
-            <MetricChip
-              icon={<Power className="h-3 w-3 text-emerald-400" />}
-              value={metrics.enabled}
-              label={t("addons.metrics.enabled")}
-            />
-            <MetricChip
-              icon={<CircleOff className="h-3 w-3 text-slate-500" />}
-              value={metrics.disabled}
-              label={t("addons.metrics.disabled")}
-            />
-            <MetricChip
-              icon={<HardDrive className="h-3 w-3 text-sky-300" />}
-              value={formatStorage(metrics.bytes)}
-              label={t("addons.metrics.storage")}
-            />
-          </div>
-        </div>
-
-        {/* (v5.0.0) SEGUNDA fila: acciones a la izquierda + búsqueda
-            expandida a la derecha. Dos filas para que respiren (antes
-            todo iba apretado en una sola línea). */}
-        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Batch actions — operan sobre los addons visibles. */}
             <div
               data-tour-id="addons-batch"
-              className="inline-flex shrink-0 divide-x divide-slate-700 overflow-hidden rounded-lg border border-slate-700"
+              className="inline-flex shrink-0 divide-x divide-sf-border overflow-hidden rounded-lg border border-sf-border bg-sf-surface"
             >
               <button
                 onClick={() => {
@@ -389,9 +387,9 @@ export function AddonsView() {
                   setConfirmBatch("enable");
                 }}
                 disabled={batchBusy || visible.length === 0}
-                className="inline-flex items-center gap-1.5 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
               >
-                <Power className="h-3 w-3" />
+                <Power className="h-3.5 w-3.5" />
                 {t("addons.batch.enable_all")}
               </button>
               <button
@@ -400,169 +398,163 @@ export function AddonsView() {
                   setConfirmBatch("disable");
                 }}
                 disabled={batchBusy || visible.length === 0}
-                className="inline-flex items-center gap-1.5 bg-slate-900/40 px-2.5 py-1.5 text-[11px] font-medium text-slate-300 hover:bg-rose-500/10 hover:text-rose-200 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-sf-muted hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-50"
               >
-                <PowerOff className="h-3 w-3" />
+                <PowerOff className="h-3.5 w-3.5" />
                 {t("addons.batch.disable_all")}
               </button>
               <button
                 onClick={() => void rescan()}
                 disabled={scanning}
-                className="inline-flex items-center gap-1.5 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/20 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-500/10 disabled:opacity-50"
               >
                 {scanning ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <RefreshCcw className="h-3 w-3" />
+                  <RefreshCcw className="h-3.5 w-3.5" />
                 )}
                 {t("addons.batch.refresh")}
               </button>
             </div>
 
-            {/* (v4.25.0) Switch de vista Grid ⇄ Link Map. */}
+            {/* (v4.25.0 · Rediseño F3) Selector de vista Grid / Lista / Link Map. */}
             <div
               data-tour-id="addons-view-switch"
-              className="flex shrink-0 overflow-hidden rounded-lg border border-slate-700"
+              className="flex shrink-0 overflow-hidden rounded-lg border border-sf-border bg-sf-surface p-0.5"
             >
-              <button
+              <ViewModeButton
+                active={view === "grid"}
                 onClick={() => setView("grid")}
-                title={t("addons.view.grid")}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                  view === "grid"
-                    ? "bg-brand-500/20 text-brand-100"
-                    : "bg-slate-900/40 text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                <LayoutGrid className="h-3 w-3" />
-                {t("addons.view.grid")}
-              </button>
-              <button
+                icon={<LayoutGrid className="h-3.5 w-3.5" />}
+                label={t("addons.view.grid")}
+              />
+              <ViewModeButton
+                active={view === "list"}
+                onClick={() => setView("list")}
+                icon={<List className="h-3.5 w-3.5" />}
+                label={t("addons.view.list")}
+              />
+              <ViewModeButton
+                active={view === "linkmap"}
                 onClick={() => setView("linkmap")}
-                title={t("addons.view.linkmap")}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                  view === "linkmap"
-                    ? "bg-amber-500/20 text-amber-100"
-                    : "bg-slate-900/40 text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                <GitBranch className="h-3 w-3" />
-                {t("addons.view.linkmap")}
-              </button>
+                icon={<GitBranch className="h-3.5 w-3.5" />}
+                label={t("addons.view.linkmap")}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* (v4.25.0) Píldoras de categoría — All / Aircraft / Liveries /
+            Utilities / Others. SIN Airports (viven en Map scenery).
+            (v4.27.0) Solo fuera del Link Map: el grafo se centra en
+            relaciones, no en filtros por tipo. */}
+        {view !== "linkmap" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+              <TypeChip
+                active={typeFilter === "ALL"}
+                onClick={() => setTypeFilter("ALL")}
+                icon={<Package className="h-3.5 w-3.5" />}
+                label={t("addons.chip.all")}
+                count={addons.length}
+              />
+              <TypeChip
+                active={typeFilter === "AIRCRAFT"}
+                onClick={() => setTypeFilter("AIRCRAFT")}
+                icon={<Plane className="h-3.5 w-3.5" />}
+                label={t("addons.chip.aircraft")}
+                count={counts.get("AIRCRAFT") ?? 0}
+              />
+              <TypeChip
+                active={typeFilter === "LIVERY"}
+                onClick={() => setTypeFilter("LIVERY")}
+                icon={<Palette className="h-3.5 w-3.5" />}
+                label={t("addons.chip.liveries")}
+                count={counts.get("LIVERY") ?? 0}
+              />
+              <TypeChip
+                active={typeFilter === "SOUND_MISC"}
+                onClick={() => setTypeFilter("SOUND_MISC")}
+                icon={<Music className="h-3.5 w-3.5" />}
+                label={t("addons.chip.sound_misc")}
+                count={(counts.get("MISC") ?? 0) + (counts.get("SCENERY") ?? 0)}
+              />
+              <TypeChip
+                active={typeFilter === "UTILITIES"}
+                onClick={() => setTypeFilter("UTILITIES")}
+                icon={<Cog className="h-3.5 w-3.5" />}
+                label={t("addons.chip.utilities")}
+                count={counts.get("INSTRUMENT") ?? 0}
+              />
+              <TypeChip
+                active={typeFilter === "UNCLASSIFIED"}
+                onClick={() => setTypeFilter("UNCLASSIFIED")}
+                icon={<HelpCircle className="h-3.5 w-3.5" />}
+                label={t("addons.chip.unclassified")}
+                count={counts.get("UNKNOWN") ?? 0}
+              />
+              {/* (v6.2.72) Centro de flightsim.to: filtra a lo que bajaste de ahí.
+                  (v7.2.1) Basamos el chip en los items REALMENTE instalados
+                  (flightsimItems), no en el nº de filas rastreadas: si una fila quedó
+                  huérfana (el addon se desinstaló fuera de la app) el filtro no la
+                  puede mostrar → antes el chip decía "2" pero el grid salía vacío. */}
+              {flightsimItems.length > 0 && (
+                <>
+                  <span className="mx-0.5 h-5 w-px self-center bg-sf-border" aria-hidden />
+                  <button
+                    onClick={() => setFlightsimOnly((v) => !v)}
+                    title={t("addons.fsto.tooltip")}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
+                      flightsimOnly
+                        ? "border-sky-500 bg-sky-500/15 text-sky-100"
+                        : "border-sf-border bg-sf-surface text-sf-text/90 hover:bg-sf-raised"
+                    }`}
+                  >
+                    <Globe2 className="h-3.5 w-3.5 text-sky-400" />
+                    flightsim.to
+                    <span
+                      className={`ml-0.5 rounded-full px-1.5 text-[11px] font-medium ${
+                        flightsimOnly ? "bg-sky-500/30 text-sky-100" : "bg-sf-raised text-sf-muted"
+                      }`}
+                    >
+                      {flightsimItems.length}
+                    </span>
+                  </button>
+                </>
+              )}
             </div>
 
-            {/* (v4.33.0) Search find-in-page SÓLO en grid (el Link Map
-                tiene el suyo en el lienzo). Contador actual/total +
-                flechas que hacen scroll a la card siguiente/anterior. */}
-            {view === "grid" && (
-              <div className="ml-auto shrink-0">
-                <FindSearch
-                  value={filter}
-                  onChange={(v) => {
-                    setFilter(v);
-                    setSearchActive(1);
-                  }}
-                  total={visible.length}
-                  active={visible.length === 0 ? 0 : searchActive}
-                  onPrev={() => stepSearch(-1)}
-                  onNext={() => stepSearch(1)}
-                  onClose={() => setFilter("")}
-                />
-              </div>
-            )}
-        </div>
-      </header>
-
-      {/* (v4.25.0) Píldoras de categoría — All / Aircraft / Liveries /
-          Utilities / Others. SIN Airports (viven en Map scenery).
-          (v4.27.0) Solo visibles en modo grid: el Link Map se centra
-          en relaciones, no en filtros por tipo. */}
-      {view === "grid" && (
-      <div className="flex flex-wrap gap-1.5">
-        <TypeChip
-          active={typeFilter === "ALL"}
-          onClick={() => setTypeFilter("ALL")}
-          icon={<Package className="h-3.5 w-3.5" />}
-          label={t("addons.chip.all")}
-          count={addons.length}
-        />
-        <TypeChip
-          active={typeFilter === "AIRCRAFT"}
-          onClick={() => setTypeFilter("AIRCRAFT")}
-          icon={<Plane className="h-3.5 w-3.5" />}
-          label={t("addons.chip.aircraft")}
-          count={counts.get("AIRCRAFT") ?? 0}
-        />
-        <TypeChip
-          active={typeFilter === "LIVERY"}
-          onClick={() => setTypeFilter("LIVERY")}
-          icon={<Palette className="h-3.5 w-3.5" />}
-          label={t("addons.chip.liveries")}
-          count={counts.get("LIVERY") ?? 0}
-        />
-        <TypeChip
-          active={typeFilter === "SOUND_MISC"}
-          onClick={() => setTypeFilter("SOUND_MISC")}
-          icon={<Music className="h-3.5 w-3.5" />}
-          label={t("addons.chip.sound_misc")}
-          count={(counts.get("MISC") ?? 0) + (counts.get("SCENERY") ?? 0)}
-        />
-        <TypeChip
-          active={typeFilter === "UTILITIES"}
-          onClick={() => setTypeFilter("UTILITIES")}
-          icon={<Cog className="h-3.5 w-3.5" />}
-          label={t("addons.chip.utilities")}
-          count={counts.get("INSTRUMENT") ?? 0}
-        />
-        <TypeChip
-          active={typeFilter === "UNCLASSIFIED"}
-          onClick={() => setTypeFilter("UNCLASSIFIED")}
-          icon={<HelpCircle className="h-3.5 w-3.5" />}
-          label={t("addons.chip.unclassified")}
-          count={counts.get("UNKNOWN") ?? 0}
-        />
-        {/* (v6.2.72) Centro de flightsim.to: filtra a lo que bajaste de ahí.
-            (v7.2.1) Basamos el chip en los items REALMENTE instalados
-            (flightsimItems), no en el nº de filas rastreadas: si una fila quedó
-            huérfana (el addon se desinstaló fuera de la app) el filtro no la
-            puede mostrar → antes el chip decía "2" pero el grid salía vacío. */}
-        {flightsimItems.length > 0 && (
-          <>
-            <span className="mx-0.5 h-5 w-px self-center bg-slate-800" aria-hidden />
-            <button
-              onClick={() => setFlightsimOnly((v) => !v)}
-              title={t("addons.fsto.tooltip")}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
-                flightsimOnly
-                  ? "border-sky-500 bg-sky-500/15 text-sky-100"
-                  : "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60"
-              }`}
-            >
-              <Globe2 className="h-3.5 w-3.5 text-sky-400" />
-              flightsim.to
-              <span
-                className={`ml-0.5 rounded-full px-1.5 text-[10px] font-medium ${
-                  flightsimOnly ? "bg-sky-500/30 text-sky-100" : "bg-slate-800 text-slate-400"
-                }`}
-              >
-                {flightsimItems.length}
-              </span>
-            </button>
-          </>
+            {/* (v4.33.0) Search find-in-page. Contador actual/total + flechas
+                que hacen scroll a la card/fila siguiente/anterior. */}
+            <div className="ml-auto shrink-0">
+              <FindSearch
+                value={filter}
+                onChange={(v) => {
+                  setFilter(v);
+                  setSearchActive(1);
+                }}
+                total={visible.length}
+                active={visible.length === 0 ? 0 : searchActive}
+                onPrev={() => stepSearch(-1)}
+                onNext={() => stepSearch(1)}
+                onClose={() => setFilter("")}
+              />
+            </div>
+          </div>
         )}
-      </div>
-      )}
+      </header>
 
       {/* (v4.29.0) Cuerpo scrolleable: en modo grid las cards pueden
           ser muchas (~300) y necesitan scroll vertical INTERNO; en
           Link Map el lienzo llena el espacio sin scroll. */}
-      <div className={`min-h-0 flex-1 ${view === "grid" ? "overflow-y-auto pr-1" : "overflow-hidden"}`}>
+      <div className={`min-h-0 flex-1 ${view !== "linkmap" ? "overflow-y-auto pr-1" : "overflow-hidden"}`}>
       {view === "linkmap" ? (
         <LinkMapView addons={addons} airports={airports} />
       ) : (
         <>
           {/* (v6.2.72) Centro de flightsim.to: resumen cuando el filtro está on. */}
           {flightsimOnly && (
-            <div className="mb-3 flex items-center gap-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-2 text-xs text-slate-300">
+            <div className="mb-3 flex items-center gap-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-2 text-xs text-sf-text/90">
               <Globe2 className="h-4 w-4 shrink-0 text-sky-400" />
               <span>
                 {t("addons.fsto.summary", {
@@ -579,7 +571,8 @@ export function AddonsView() {
             />
           ) : typeFilter !== "ALL" || filter.trim() !== "" || flightsimOnly ? (
             // Lista plana — el usuario ya filtró, no agrupamos.
-            <CardsGrid
+            <ItemsView
+              mode={view}
               items={visible}
               updates={updates}
               flightsimUpdates={flightsimUpdates}
@@ -594,14 +587,15 @@ export function AddonsView() {
                 if (items.length === 0) return null;
                 return (
                   <section key={t}>
-                    <h3 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <h3 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
                       {typeIcon(t)}
                       {typeLabel(t)}
-                      <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                      <span className="rounded-full bg-sf-raised px-2 py-0.5 text-[10px] font-medium text-sf-muted normal-case tracking-normal">
                         {items.length}
                       </span>
                     </h3>
-                    <CardsGrid
+                    <ItemsView
+                      mode={view}
                       items={items}
                       updates={updates}
                       flightsimUpdates={flightsimUpdates}
@@ -646,9 +640,9 @@ export function AddonsView() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-[min(420px,calc(100vw-2rem))] rounded-xl border border-slate-800 bg-slate-950 p-5 shadow-2xl ring-1 ring-slate-800"
+            className="w-[min(420px,calc(100vw-2rem))] rounded-xl border border-sf-border bg-sf-bg p-5 shadow-2xl ring-1 ring-sf-border"
           >
-            <h3 className="text-sm font-semibold text-slate-100">
+            <h3 className="text-sm font-semibold text-sf-text">
               {confirmBatch === "enable"
                 ? t("addons.batch.confirm_enable.title", {
                     n: visible.length + (batchInclAirports ? airports.length : 0),
@@ -657,14 +651,14 @@ export function AddonsView() {
                     n: visible.length + (batchInclAirports ? airports.length : 0),
                   })}
             </h3>
-            <p className="mt-2 text-xs text-slate-400">
+            <p className="mt-2 text-xs text-sf-muted">
               {confirmBatch === "enable"
                 ? t("addons.batch.confirm_enable.body")
                 : t("addons.batch.confirm_disable.body")}
             </p>
             {/* (v5.0.0 N4) Opción para incluir también los aeropuertos. */}
             {airports.length > 0 && (
-              <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2 text-xs text-slate-300">
+              <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-md border border-sf-border bg-sf-surface px-3 py-2 text-xs text-sf-text/90">
                 <input
                   type="checkbox"
                   checked={batchInclAirports}
@@ -679,7 +673,7 @@ export function AddonsView() {
               <button
                 onClick={() => setConfirmBatch(null)}
                 disabled={batchBusy}
-                className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text hover:bg-sf-raised disabled:opacity-50"
               >
                 {t("common.cancel")}
               </button>
@@ -720,10 +714,10 @@ function MetricChip({
   label: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/50 px-2 py-1">
+    <span className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-sf-bg/50 px-2 py-1">
       {icon}
-      <span className="font-semibold tabular-nums text-slate-100">{value}</span>
-      <span className="text-slate-500">{label}</span>
+      <span className="font-semibold tabular-nums text-sf-text">{value}</span>
+      <span className="text-sf-muted">{label}</span>
     </span>
   );
 }
@@ -764,7 +758,7 @@ function vendorLabel(vendor: string): { name: string; tone: string } {
     default:
       return {
         name: vendor.charAt(0).toUpperCase() + vendor.slice(1),
-        tone: "text-slate-300",
+        tone: "text-sf-text/90",
       };
   }
 }
@@ -848,7 +842,7 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
 
   if (loading) {
     return (
-      <section className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-xs text-slate-500">
+      <section className="rounded-xl border border-sf-border bg-sf-surface px-4 py-8 text-center text-xs text-sf-muted">
         {t("addons.liveries.scanning")}
       </section>
     );
@@ -905,20 +899,20 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
         return (
           <section
             key={vendor}
-            className="rounded-xl border border-slate-800 bg-slate-900/40"
+            className="rounded-xl border border-sf-border bg-sf-surface"
           >
             <header
-              className="flex cursor-pointer items-center gap-2 border-b border-slate-800 px-4 py-3 hover:bg-slate-900/60"
+              className="flex cursor-pointer items-center gap-2 border-b border-sf-border px-4 py-3 hover:bg-sf-surface"
               onClick={() => toggleVendor(vendor)}
             >
               <Plane className={`h-4 w-4 ${v.tone}`} />
               <h3 className={`text-sm font-semibold ${v.tone}`}>
                 {v.name} Liveries
               </h3>
-              <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-400">
+              <span className="rounded-full bg-sf-raised px-2 py-0.5 text-[10px] font-medium text-sf-muted">
                 {items.length}
               </span>
-              <span className="ml-auto text-[11px] text-slate-500">
+              <span className="ml-auto text-[11px] text-sf-muted">
                 {isOpen ? t("addons.liveries.collapse") : t("addons.liveries.expand")}
               </span>
             </header>
@@ -928,9 +922,9 @@ function AircraftLiveriesSection({ filter }: { filter: string }) {
                   .sort(([a], [b]) => a.localeCompare(b))
                   .map(([model, modelItems]) => (
                     <div key={model}>
-                      <h4 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      <h4 className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
                         {modelLabel(vendor, model)}
-                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-500 normal-case tracking-normal">
+                        <span className="rounded-full bg-sf-raised px-2 py-0.5 text-[10px] font-medium text-sf-muted normal-case tracking-normal">
                           {modelItems.length}
                         </span>
                       </h4>
@@ -988,9 +982,9 @@ function LiveryCard({
   };
 
   return (
-    <li className="group relative flex h-full flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60 transition-colors hover:border-brand-500/40 hover:bg-slate-900">
+    <li className="group relative flex h-full flex-col overflow-hidden rounded-xl border border-sf-border bg-sf-bg/60 transition-colors hover:border-brand-500/40 hover:bg-sf-surface">
       {/* Thumbnail rectangular arriba (~16:9), igual que PackageCard. */}
-      <div className="relative h-28 w-full overflow-hidden bg-slate-900">
+      <div className="relative h-28 w-full overflow-hidden bg-sf-surface">
         {liv.thumbnailDataUrl ? (
           <img
             src={liv.thumbnailDataUrl}
@@ -999,11 +993,11 @@ function LiveryCard({
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
-            <Plane className="h-10 w-10 text-slate-700" />
+            <Plane className="h-10 w-10 text-sf-muted/70" />
           </div>
         )}
         {liv.tailNumber && (
-          <span className="absolute right-2 top-2 rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] font-medium text-slate-100 ring-1 ring-slate-700">
+          <span className="absolute right-2 top-2 rounded bg-slate-950/80 px-1.5 py-0.5 font-mono text-[10px] font-medium text-sf-text ring-1 ring-sf-border">
             {liv.tailNumber}
           </span>
         )}
@@ -1013,20 +1007,20 @@ function LiveryCard({
           <button
             onClick={() => setConfirming(true)}
             title={t("livery.uninstall")}
-            className="absolute left-2 top-2 rounded bg-slate-950/80 p-1 text-slate-400 opacity-0 ring-1 ring-slate-700 transition group-hover:opacity-100 hover:text-rose-300"
+            className="absolute left-2 top-2 rounded bg-slate-950/80 p-1 text-sf-muted opacity-0 ring-1 ring-sf-border transition group-hover:opacity-100 hover:text-rose-300"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/90 px-3 text-center">
-            <p className="text-[11px] text-slate-200">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-sf-bg/90 px-3 text-center">
+            <p className="text-[11px] text-sf-text">
               {t("livery.uninstall.confirm")}
             </p>
             <div className="flex gap-2">
               <button
                 onClick={() => setConfirming(false)}
                 disabled={busy}
-                className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+                className="rounded border border-sf-border px-2 py-0.5 text-[11px] text-sf-text/90 hover:bg-sf-raised"
               >
                 {t("drop.modal.cancel")}
               </button>
@@ -1047,16 +1041,16 @@ function LiveryCard({
         )}
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
-        <p className="line-clamp-2 text-xs font-medium leading-tight text-slate-100">
+        <p className="line-clamp-2 text-xs font-medium leading-tight text-sf-text">
           {liv.airline || liv.variation || liv.title}
         </p>
         {liv.variation && liv.airline && liv.variation !== liv.airline && (
-          <p className="line-clamp-1 text-[10px] text-slate-500">
+          <p className="line-clamp-1 text-[10px] text-sf-muted">
             {liv.variation}
           </p>
         )}
         {liv.texture && (
-          <p className="mt-auto truncate text-[10px] font-mono text-slate-600">
+          <p className="mt-auto truncate text-[10px] font-mono text-sf-muted/70">
             {liv.texture}
           </p>
         )}
@@ -1099,6 +1093,223 @@ function CardsGrid({
   );
 }
 
+/** (Rediseño F3) Elige Grid o Lista para un conjunto de addons. */
+function ItemsView({
+  mode,
+  ...rest
+}: {
+  mode: "grid" | "list" | "linkmap";
+  items: { p: CommunityPackage; t: DerivedType }[];
+  updates: { folderName: string }[];
+  flightsimUpdates: Map<string, FlightsimUpdate>;
+  onFlightsimUpdate: (u: FlightsimUpdate) => void;
+  onOpen: (folder: string) => void;
+}) {
+  return mode === "list" ? <PackageTable {...rest} /> : <CardsGrid {...rest} />;
+}
+
+/** (Rediseño F3) Columnas compartidas por la cabecera y las filas de la Lista. */
+const LIST_COLS =
+  "grid-cols-[minmax(0,1fr)_7.5rem_6rem_5.5rem_8.5rem_2.25rem]";
+
+/** (Rediseño F3) Vista Lista: una fila por addon con miniatura, tipo,
+ *  versión, tamaño, interruptor y acceso a detalles. Mismas acciones que
+ *  las tarjetas del Grid. */
+function PackageTable({
+  items,
+  updates,
+  flightsimUpdates,
+  onFlightsimUpdate,
+  onOpen,
+}: {
+  items: { p: CommunityPackage; t: DerivedType }[];
+  updates: { folderName: string }[];
+  flightsimUpdates: Map<string, FlightsimUpdate>;
+  onFlightsimUpdate: (u: FlightsimUpdate) => void;
+  onOpen: (folder: string) => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-sf-border/80 bg-sf-surface">
+      <div
+        className={`grid ${LIST_COLS} items-center gap-3 border-b border-sf-border/70 bg-sf-raised/40 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-sf-muted`}
+      >
+        <span>{t("addons.list.col.name")}</span>
+        <span>{t("addons.list.col.type")}</span>
+        <span>{t("addons.list.col.version")}</span>
+        <span className="text-right">{t("addons.list.col.size")}</span>
+        <span>{t("addons.list.col.status")}</span>
+        <span className="sr-only">{t("addons.list.col.actions")}</span>
+      </div>
+      <ul className="divide-y divide-sf-border/50">
+        {items.map(({ p, t: ty }) => (
+          <PackageRow
+            key={p.folderName}
+            pkg={p}
+            derived={ty}
+            hasUpdate={updates.some((u) => u.folderName === p.folderName)}
+            flightsimUpdate={flightsimUpdates.get(p.folderName)}
+            onFlightsimUpdate={onFlightsimUpdate}
+            onClick={() => onOpen(p.folderName)}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PackageRow({
+  pkg,
+  derived,
+  hasUpdate,
+  flightsimUpdate,
+  onFlightsimUpdate,
+  onClick,
+}: {
+  pkg: CommunityPackage;
+  derived: DerivedType;
+  hasUpdate: boolean;
+  flightsimUpdate?: FlightsimUpdate;
+  onFlightsimUpdate: (u: FlightsimUpdate) => void;
+  onClick: () => void;
+}) {
+  // Mismas fuentes de miniatura que PackageCard.
+  const skipThumb = looksLikePlaceholderTitle(pkg.title);
+  const thumb = useThumbnail(pkg.folderName, skipThumb);
+  const fstoThumb = useFlightsimUpdateStore((s) => s.thumbs).get(pkg.folderName);
+  const shownThumb = fstoThumb ?? thumb;
+  const sizeLabel =
+    pkg.sizeBytes != null ? formatStorage(pkg.sizeBytes) : null;
+  const { enabled, busy, toggle } = usePackageToggle(pkg);
+
+  return (
+    <li>
+      {/* div clickable (no <button>): la fila anida el toggle y el botón
+          de detalles. data-addon-card: lo usa el find-in-page. */}
+      <div
+        data-addon-card={pkg.folderName}
+        onClick={onClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" && onClick()}
+        className={`grid ${LIST_COLS} cursor-pointer items-center gap-3 px-4 py-2 transition-colors hover:bg-sf-raised/50`}
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="h-10 w-16 shrink-0 overflow-hidden rounded-md bg-sf-raised">
+            {shownThumb ? (
+              <img
+                src={shownThumb}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                className={`h-full w-full object-cover ${enabled ? "" : "opacity-40 grayscale"}`}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
+              />
+            ) : (
+              <div className={`h-full w-full ${enabled ? "" : "opacity-40 grayscale"}`}>
+                <AddonFallbackArt derived={derived} title={pkg.title} />
+              </div>
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span
+                className={`truncate text-[13px] font-medium ${
+                  enabled ? "text-sf-text" : "text-sf-muted"
+                }`}
+                title={pkg.title}
+              >
+                {pkg.title}
+              </span>
+              {hasUpdate && (
+                <span className="shrink-0 rounded bg-amber-500 px-1.5 py-px text-[10px] font-bold uppercase tracking-wide text-amber-950">
+                  Update
+                </span>
+              )}
+              {flightsimUpdate && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onFlightsimUpdate(flightsimUpdate);
+                  }}
+                  title={t("addons.card.fsto_update_tip")}
+                  className="shrink-0 rounded bg-sky-500 px-1.5 py-px text-[10px] font-bold uppercase tracking-wide text-sky-950 hover:bg-sky-400"
+                >
+                  ⬆ flightsim.to
+                </button>
+              )}
+              {is3rdParty(pkg) && (
+                <span className="shrink-0 rounded bg-orange-500/20 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-orange-300">
+                  {t("addons.card.third_party")}
+                </span>
+              )}
+            </div>
+            <div className="truncate text-xs text-sf-muted">
+              {pkg.creator ?? t("dashboard.unknown_author")}
+            </div>
+          </div>
+        </div>
+        <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-sf-muted">
+          {typeIcon(derived)}
+          <span className="truncate">{typeLabel(derived)}</span>
+        </span>
+        <span className="truncate font-mono text-xs text-sf-muted">
+          {pkg.packageVersion ? `v${pkg.packageVersion}` : "—"}
+        </span>
+        <span className="text-right font-mono text-xs tabular-nums text-sf-muted">
+          {sizeLabel ?? "—"}
+        </span>
+        <span className="flex items-center gap-2">
+          <ToggleSwitch on={enabled} busy={busy} onToggle={toggle} small />
+          <span className={`text-xs ${enabled ? "text-emerald-300" : "text-sf-muted"}`}>
+            {enabled ? t("addons.list.enabled") : t("addons.list.disabled")}
+          </span>
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick();
+          }}
+          title={t("addons.card.edit_title")}
+          aria-label={t("addons.card.edit_title")}
+          className="justify-self-end rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/** (Rediseño F3) Botón del selector de vista Grid / Lista / Link Map. */
+function ViewModeButton({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+        active ? "bg-brand-500/15 text-brand-200" : "text-sf-muted hover:text-sf-text"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 function TypeChip({
   active,
   onClick,
@@ -1118,14 +1329,14 @@ function TypeChip({
       className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
         active
           ? "border-brand-500 bg-brand-500/15 text-brand-100"
-          : "border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60"
+          : "border-sf-border bg-sf-surface text-sf-text/90 hover:border-sf-border hover:bg-sf-raised"
       }`}
     >
       {icon}
       {label}
       <span
         className={`ml-0.5 rounded-full px-1.5 text-[10px] font-medium ${
-          active ? "bg-brand-500/30 text-brand-100" : "bg-slate-800 text-slate-400"
+          active ? "bg-brand-500/30 text-brand-100" : "bg-sf-raised text-sf-muted"
         }`}
       >
         {count}
@@ -1143,10 +1354,10 @@ function EmptyState({
 }) {
   if (!hasAny) {
     return (
-      <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center">
-        <Package className="mx-auto mb-3 h-8 w-8 text-slate-700" />
-        <p className="text-sm text-slate-400">{t("addons.empty.non_scenery")}</p>
-        <p className="mt-1 text-xs text-slate-600">
+      <div className="rounded-xl border border-sf-border bg-sf-surface px-4 py-12 text-center">
+        <Package className="mx-auto mb-3 h-8 w-8 text-sf-muted/70" />
+        <p className="text-sm text-sf-muted">{t("addons.empty.non_scenery")}</p>
+        <p className="mt-1 text-xs text-sf-muted/70">
           {t("addons.empty.install_hint")}
         </p>
       </div>
@@ -1154,7 +1365,7 @@ function EmptyState({
   }
   if (hasFilter) {
     return (
-      <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-12 text-center text-xs text-slate-500">
+      <div className="rounded-xl border border-sf-border bg-sf-surface px-4 py-12 text-center text-xs text-sf-muted">
         {t("addons.empty.no_filter_match")}
       </div>
     );
@@ -1204,7 +1415,7 @@ function PackageCard({
         role="button"
         tabIndex={0}
         onKeyDown={(e) => e.key === "Enter" && onClick()}
-        className="group flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-brand-500/40 hover:bg-slate-900"
+        className="group flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-xl border border-sf-border bg-sf-surface text-left transition-colors hover:border-brand-500/40 hover:bg-sf-surface"
       >
         {/* Thumbnail rectangular arriba (16:9). Cuando el addon está
             apagado, la imagen se apaga con él (grayscale + dim). */}
@@ -1262,7 +1473,7 @@ function PackageCard({
               </button>
             )}
             {!enabled && (
-              <span className="rounded bg-slate-900/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400 ring-1 ring-slate-700">
+              <span className="rounded bg-sf-surface/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sf-muted ring-1 ring-sf-border">
                 {t("addons.card.disabled_badge")}
               </span>
             )}
@@ -1272,12 +1483,12 @@ function PackageCard({
         <div className="flex flex-1 flex-col p-3">
           <div
             className={`line-clamp-2 text-sm font-medium leading-snug ${
-              enabled ? "text-slate-100" : "text-slate-500"
+              enabled ? "text-sf-text" : "text-sf-muted"
             }`}
           >
             {pkg.title}
           </div>
-          <div className="mt-1 truncate text-[11px] text-slate-500">
+          <div className="mt-1 truncate text-[11px] text-sf-muted">
             {pkg.creator ?? t("dashboard.unknown_author")}
             {pkg.packageVersion && ` · v${pkg.packageVersion}`}
           </div>
@@ -1291,11 +1502,11 @@ function PackageCard({
                 onClick();
               }}
               title={t("addons.card.edit_title")}
-              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              className="rounded p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <Pencil className="h-3 w-3" />
             </button>
-            <span className="ml-auto shrink-0 text-[10px] font-medium tabular-nums text-slate-500">
+            <span className="ml-auto shrink-0 text-[10px] font-medium tabular-nums text-sf-muted">
               {sizeLabel}
             </span>
           </div>
@@ -1352,6 +1563,6 @@ function typeBadgeClass(t: DerivedType): string {
     case "MISC":
       return `${base} bg-amber-500/80 text-amber-950`;
     default:
-      return `${base} bg-slate-700/80 text-slate-200`;
+      return `${base} bg-slate-700/80 text-sf-text`;
   }
 }

@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BookOpen,
+  Compass,
   CornerDownLeft,
-  LayoutDashboard,
+  Home,
   Map as MapIcon,
+  MapPinned,
   Package,
   Plane,
   Rocket,
@@ -126,7 +128,8 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-dashboard",
         group: "nav",
         label: t("nav.dashboard"),
-        icon: <LayoutDashboard className="h-4 w-4 text-slate-400" />,
+        // (Rediseño F5) Mismos iconos que el menú lateral.
+        icon: <Home className="h-4 w-4 text-sf-muted" />,
         haystack: "dashboard inicio home",
         run: () => {
           close();
@@ -138,7 +141,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         group: "nav",
         label: t("preflight.cta.title"),
         sublabel: t("palette.on_dashboard"),
-        icon: <Rocket className="h-4 w-4 text-emerald-300" />,
+        icon: <Rocket className="h-4 w-4 text-brand-300" />,
         haystack: "listo volar preflight ready fly checklist",
         run: () => {
           close();
@@ -149,7 +152,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-search",
         group: "nav",
         label: t("nav.search"),
-        icon: <Search className="h-4 w-4 text-slate-400" />,
+        icon: <Compass className="h-4 w-4 text-sf-muted" />,
         haystack: "buscar search catalog catálogo",
         run: () => {
           close();
@@ -160,7 +163,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-map",
         group: "nav",
         label: t("nav.map"),
-        icon: <MapIcon className="h-4 w-4 text-slate-400" />,
+        icon: <MapPinned className="h-4 w-4 text-sf-muted" />,
         haystack: "mapa map escenarios scenery",
         run: () => {
           close();
@@ -171,7 +174,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-addons",
         group: "nav",
         label: t("nav.addons"),
-        icon: <Package className="h-4 w-4 text-slate-400" />,
+        icon: <Package className="h-4 w-4 text-sf-muted" />,
         haystack: "addons paquetes aviones liveries",
         run: () => {
           close();
@@ -182,7 +185,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-flightbook",
         group: "nav",
         label: t("nav.flightbook"),
-        icon: <BookOpen className="h-4 w-4 text-slate-400" />,
+        icon: <BookOpen className="h-4 w-4 text-sf-muted" />,
         haystack: "flightbook logbook vuelos flights bitácora",
         run: () => {
           close();
@@ -193,7 +196,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-hangar",
         group: "nav",
         label: t("nav.hangar"),
-        icon: <Warehouse className="h-4 w-4 text-slate-400" />,
+        icon: <Warehouse className="h-4 w-4 text-sf-muted" />,
         haystack: "hangar flota fleet matrícula",
         run: () => {
           close();
@@ -204,7 +207,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-economy",
         group: "nav",
         label: t("nav.economy"),
-        icon: <Wallet className="h-4 w-4 text-slate-400" />,
+        icon: <Wallet className="h-4 w-4 text-sf-muted" />,
         haystack: "finanzas economy dinero aerolínea",
         run: () => {
           close();
@@ -215,7 +218,7 @@ export function CommandPalette({ onOpenSettings }: Props) {
         id: "nav-settings",
         group: "nav",
         label: t("settings.title"),
-        icon: <SettingsIcon className="h-4 w-4 text-slate-400" />,
+        icon: <SettingsIcon className="h-4 w-4 text-sf-muted" />,
         haystack: "ajustes settings configuración config opciones",
         run: () => {
           close();
@@ -318,26 +321,26 @@ export function CommandPalette({ onOpenSettings }: Props) {
           exit={{ opacity: 0, scale: 0.98, y: -8 }}
           transition={{ duration: 0.14 }}
           onClick={(e) => e.stopPropagation()}
-          className="flex max-h-[70vh] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="flex max-h-[70vh] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
-          <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-3">
-            <Search className="h-4 w-4 shrink-0 text-slate-500" />
+          <div className="flex items-center gap-3 border-b border-sf-border px-4 py-3">
+            <Search className="h-4 w-4 shrink-0 text-sf-muted" />
             <input
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onInputKey}
               placeholder={t("palette.placeholder")}
-              className="flex-1 bg-transparent text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none"
+              className="flex-1 bg-transparent text-sm text-sf-text placeholder:text-sf-muted/70 focus:outline-none"
             />
-            <kbd className="hidden shrink-0 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 sm:inline">
+            <kbd className="hidden shrink-0 rounded border border-sf-border bg-sf-surface px-1.5 py-0.5 text-[11px] font-medium text-sf-muted sm:inline">
               Esc
             </kbd>
           </div>
 
           <ul ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-2">
             {items.length === 0 && (
-              <li className="px-3 py-6 text-center text-xs text-slate-500">
+              <li className="px-3 py-6 text-center text-xs text-sf-muted">
                 {t("palette.no_results")}
               </li>
             )}
@@ -347,29 +350,29 @@ export function CommandPalette({ onOpenSettings }: Props) {
                   onClick={() => it.run()}
                   onMouseEnter={() => setActive(idx)}
                   className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
-                    active === idx ? "bg-slate-800" : "hover:bg-slate-900"
+                    active === idx ? "bg-sf-raised" : "hover:bg-sf-surface"
                   }`}
                 >
                   <span className="shrink-0">{it.icon}</span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm text-slate-200">
+                    <span className="block truncate text-sm text-sf-text">
                       {it.label}
                     </span>
                     {it.sublabel && (
-                      <span className="block truncate text-[11px] text-slate-500">
+                      <span className="block truncate text-[11px] text-sf-muted">
                         {it.sublabel}
                       </span>
                     )}
                   </span>
                   {active === idx && (
-                    <CornerDownLeft className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                    <CornerDownLeft className="h-3.5 w-3.5 shrink-0 text-sf-muted" />
                   )}
                 </button>
               </li>
             ))}
           </ul>
 
-          <div className="flex items-center justify-between gap-2 border-t border-slate-800 px-4 py-2 text-[10px] text-slate-600">
+          <div className="flex items-center justify-between gap-2 border-t border-sf-border px-4 py-2 text-[11px] text-sf-muted/70">
             <span className="inline-flex items-center gap-1.5">
               <Sparkles className="h-3 w-3" />
               {t("palette.hint")}

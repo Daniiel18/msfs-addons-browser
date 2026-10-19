@@ -138,16 +138,16 @@ export function PreflightModal({ onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative flex max-h-[calc(100vh-3rem)] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="relative flex max-h-[calc(100vh-3rem)] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
           {/* Header con veredicto */}
           <header
-            className={`flex items-center gap-3 border-b border-slate-800 px-5 py-3.5 ${
+            className={`flex items-center gap-3 border-b border-sf-border px-5 py-3.5 ${
               ready
                 ? "bg-emerald-500/10"
                 : issues > 0
                   ? "bg-amber-500/10"
-                  : "bg-slate-900/60"
+                  : "bg-sf-surface"
             }`}
           >
             <div
@@ -160,37 +160,37 @@ export function PreflightModal({ onClose }: Props) {
               <Rocket className="h-5 w-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-semibold text-slate-100">
+              <h2 className="text-sm font-semibold text-sf-text">
                 {ready ? t("preflight.ready") : t("preflight.almost", { n: String(issues) })}
               </h2>
               {route ? (
-                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-400">
+                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-sf-muted">
                   <Plane className="h-3 w-3" />
-                  <span className="font-mono font-semibold text-slate-300">
+                  <span className="font-mono font-semibold text-sf-text/90">
                     {route.originIcao}
                   </span>
-                  <span className="text-slate-600">→</span>
-                  <span className="font-mono font-semibold text-slate-300">
+                  <span className="text-sf-muted/70">→</span>
+                  <span className="font-mono font-semibold text-sf-text/90">
                     {route.destinationIcao}
                   </span>
                   {route.aircraftIcao && (
-                    <span className="ml-1 truncate text-slate-500">
+                    <span className="ml-1 truncate text-sf-muted">
                       · {route.aircraftIcao}
                     </span>
                   )}
-                  <span className="ml-1 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+                  <span className="ml-1 rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
                     {route.fromPlan ? t("preflight.from_ofp") : t("preflight.from_sim")}
                   </span>
                 </p>
               ) : (
-                <p className="mt-0.5 text-xs text-slate-500">
+                <p className="mt-0.5 text-xs text-sf-muted">
                   {t("preflight.no_route")}
                 </p>
               )}
             </div>
             <button
               onClick={onClose}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <X className="h-4 w-4" />
             </button>
@@ -202,7 +202,7 @@ export function PreflightModal({ onClose }: Props) {
               {checks.map((c) => (
                 <li
                   key={c.id}
-                  className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-2.5"
+                  className="flex items-start gap-3 rounded-xl border border-sf-border bg-sf-surface px-3.5 py-2.5"
                 >
                   <span className="mt-0.5 shrink-0">
                     {c.status === "ok" && (
@@ -216,18 +216,18 @@ export function PreflightModal({ onClose }: Props) {
                     )}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-slate-200">
+                    <p className="text-xs font-medium text-sf-text">
                       {t(c.titleKey, c.titleArgs)}
                     </p>
                     {c.detailKey && (
-                      <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                      <p className="mt-0.5 text-[11px] leading-snug text-sf-muted">
                         {t(c.detailKey, c.detailArgs)}
                       </p>
                     )}
                     {/* (v6.2.34) Bypass "usar escenario por defecto" — para
                         cuando el escenario no existe o no lo quieres. */}
                     {c.bypassIcao && (
-                      <label className="mt-1.5 inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-200">
+                      <label className="mt-1.5 inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-sf-muted hover:text-sf-text">
                         <input
                           type="checkbox"
                           className="h-3 w-3 accent-emerald-500"
@@ -244,7 +244,7 @@ export function PreflightModal({ onClose }: Props) {
                     <button
                       onClick={() => void runAction(c)}
                       disabled={busyId === c.id}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-700 disabled:opacity-50"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-sf-raised px-2.5 py-1.5 text-[11px] font-semibold text-sf-text hover:bg-sf-border disabled:opacity-50"
                     >
                       {busyId === c.id ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
@@ -263,11 +263,11 @@ export function PreflightModal({ onClose }: Props) {
             {/* Radar de escenarios nuevos */}
             <div className="mt-5">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <h3 className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <h3 className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-sf-muted">
                   <Sparkles className="h-3.5 w-3.5 text-fuchsia-300" />
                   {t("preflight.radar.title")}
                   {fresh.length > 0 && (
-                    <span className="rounded-full bg-fuchsia-500/20 px-1.5 py-0.5 text-[10px] font-bold text-fuchsia-200">
+                    <span className="rounded-full bg-fuchsia-500/20 px-1.5 py-0.5 text-[11px] font-bold text-fuchsia-200">
                       {fresh.length}
                     </span>
                   )}
@@ -275,7 +275,7 @@ export function PreflightModal({ onClose }: Props) {
                 {fresh.length > 0 && (
                   <button
                     onClick={() => acknowledgeAll()}
-                    className="text-[11px] font-medium text-slate-400 hover:text-slate-200"
+                    className="text-[11px] font-medium text-sf-muted hover:text-sf-text"
                   >
                     {t("preflight.radar.mark_seen")}
                   </button>
@@ -283,14 +283,14 @@ export function PreflightModal({ onClose }: Props) {
               </div>
 
               {radarLoading && fresh.length === 0 && (
-                <div className="inline-flex items-center gap-2 text-xs text-slate-500">
+                <div className="inline-flex items-center gap-2 text-xs text-sf-muted">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {t("preflight.radar.loading")}
                 </div>
               )}
 
               {!radarLoading && fresh.length === 0 && (
-                <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-3.5 py-3 text-[11px] text-slate-500">
+                <p className="rounded-xl border border-sf-border bg-sf-surface px-3.5 py-3 text-[11px] text-sf-muted">
                   {t("preflight.radar.empty")}
                 </p>
               )}
@@ -300,7 +300,7 @@ export function PreflightModal({ onClose }: Props) {
                   {fresh.slice(0, 8).map((a) => (
                     <li
                       key={a.id}
-                      className="group flex items-center gap-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40 pr-2 transition-colors hover:border-fuchsia-500/30"
+                      className="group flex items-center gap-3 overflow-hidden rounded-xl border border-sf-border bg-sf-surface pr-2 transition-colors hover:border-fuchsia-500/30"
                     >
                       <button
                         onClick={() => openScenery(a.icao, a.title)}
@@ -311,26 +311,26 @@ export function PreflightModal({ onClose }: Props) {
                             src={a.imageUrl}
                             alt=""
                             loading="lazy"
-                            className="h-10 w-14 shrink-0 rounded-md object-cover ring-1 ring-slate-800"
+                            className="h-10 w-14 shrink-0 rounded-md object-cover ring-1 ring-sf-border"
                           />
                         ) : (
-                          <div className="flex h-10 w-14 shrink-0 items-center justify-center rounded-md bg-slate-800 text-slate-600">
+                          <div className="flex h-10 w-14 shrink-0 items-center justify-center rounded-md bg-sf-raised text-sf-muted/70">
                             <Plane className="h-4 w-4" />
                           </div>
                         )}
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs font-medium text-slate-200">
+                          <p className="truncate text-xs font-medium text-sf-text">
                             {a.title}
                           </p>
-                          <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-500">
+                          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-sf-muted">
                             {a.icao && (
-                              <span className="rounded bg-slate-800 px-1 py-0.5 font-mono text-slate-400">
+                              <span className="rounded bg-sf-raised px-1 py-0.5 font-mono text-sf-muted">
                                 {a.icao}
                               </span>
                             )}
                             {a.developer && <span className="truncate">{a.developer}</span>}
                             {a.releasedAt && (
-                              <span className="ml-auto shrink-0 text-slate-600">
+                              <span className="ml-auto shrink-0 text-sf-muted/70">
                                 {fmtDate(a.releasedAt)}
                               </span>
                             )}
@@ -340,14 +340,14 @@ export function PreflightModal({ onClose }: Props) {
                       <button
                         onClick={() => api.openExternal(a.pageUrl)}
                         title={t("preflight.radar.open")}
-                        className="rounded-md p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                        className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
                       >
                         <ExternalLink className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={() => dismissScenery(a.id)}
                         title={t("preflight.radar.dismiss")}
-                        className="rounded-md p-1.5 text-slate-600 hover:bg-slate-800 hover:text-slate-300"
+                        className="rounded-md p-1.5 text-sf-muted/70 hover:bg-sf-raised hover:text-sf-text/90"
                       >
                         <X className="h-3.5 w-3.5" />
                       </button>

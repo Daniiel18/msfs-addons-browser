@@ -36,7 +36,7 @@ function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.2 } }}
       transition={{ type: "spring", stiffness: 400, damping: 30 }}
-      className={`pointer-events-auto flex items-start gap-3 overflow-hidden rounded-xl border bg-slate-950/95 p-3 shadow-xl backdrop-blur ring-1 ${palette.ring}`}
+      className={`pointer-events-auto flex items-start gap-3 overflow-hidden rounded-xl border bg-sf-surface p-3 shadow-xl shadow-black/30 ring-1 ${palette.ring}`}
     >
       <motion.div
         // Pulso sutil en el icono cuando entra. Da sensación de
@@ -55,12 +55,12 @@ function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
       >
         <p className={`text-sm font-medium ${palette.titleColor}`}>{toast.title}</p>
         {toast.message && (
-          <p className="mt-0.5 text-xs text-slate-400">{toast.message}</p>
+          <p className="mt-0.5 text-xs text-sf-muted">{toast.message}</p>
         )}
       </button>
       <button
         onClick={onClose}
-        className="shrink-0 rounded-md p-1 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200"
+        className="shrink-0 rounded-md p-1 text-sf-muted transition-colors hover:bg-sf-raised hover:text-sf-text"
         title={tr("common.close")}
       >
         <X className="h-3.5 w-3.5" />
@@ -74,7 +74,7 @@ const palettes = {
     Icon: Download,
     ring: "ring-brand-500/40 border-brand-500/30",
     iconColor: "text-brand-300",
-    titleColor: "text-slate-100",
+    titleColor: "text-sf-text",
   },
   success: {
     Icon: CheckCircle2,

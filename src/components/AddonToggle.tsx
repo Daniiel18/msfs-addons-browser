@@ -13,7 +13,7 @@ import { t } from "../lib/i18n";
  * en AddonsView crearía un import circular con LinkMapView.
  */
 
-/** Interruptor físico reactivo. Emerald = activo, slate = apagado,
+/** Interruptor físico reactivo. Turquesa (brand) = activo, gris = apagado,
  *  spinner en el knob mientras el backend renombra layout.json. */
 export function ToggleSwitch({
   on,
@@ -35,7 +35,8 @@ export function ToggleSwitch({
       disabled={busy}
       title={on ? t("addons.toggle.on_title") : t("addons.toggle.off_title")}
       className={`relative inline-flex ${w} shrink-0 items-center rounded-full transition-colors disabled:cursor-wait ${
-        on ? "bg-emerald-500" : "bg-slate-700"
+        // (Rediseño F3) Acento turquesa encendido; apagado con el token de borde.
+        on ? "bg-brand-500" : "bg-sf-border"
       }`}
     >
       <span

@@ -287,7 +287,7 @@ export function PerformanceModal({
         exit={{ opacity: 0, scale: 0.97, y: 8 }}
         transition={{ duration: 0.18 }}
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[min(680px,calc(100vh-3rem))] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+        className="flex max-h-[min(680px,calc(100vh-3rem))] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
       >
         {/* (v5.0.0) Vista previa del escenario arriba del contenedor. */}
         <div className="relative h-28 w-full shrink-0 overflow-hidden bg-gradient-to-br from-slate-800 to-slate-950">
@@ -301,23 +301,23 @@ export function PerformanceModal({
               }}
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-slate-700">
+            <div className="flex h-full w-full items-center justify-center text-sf-muted/70">
               <MapPin className="h-10 w-10" />
             </div>
           )}
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
         </div>
 
-        <header className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+        <header className="flex items-center justify-between border-b border-sf-border px-5 py-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-500/40">
               <Gauge className="h-4 w-4 text-emerald-300" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-100">
+              <h3 className="text-sm font-semibold text-sf-text">
                 {t("perf.title")}
               </h3>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] text-sf-muted">
                 {pkg.airportName ?? pkg.title}
                 {pkg.icao && <span className="font-mono"> · {pkg.icao}</span>}
               </p>
@@ -325,22 +325,22 @@ export function PerformanceModal({
           </div>
           <button
             onClick={onClose}
-            className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
           >
             <X className="h-4 w-4" />
           </button>
         </header>
 
         {/* Nota explicativa del comportamiento del switch. */}
-        <div className="flex items-start gap-2 border-b border-slate-800 bg-slate-900/40 px-5 py-2.5 text-[11px] text-slate-400">
+        <div className="flex items-start gap-2 border-b border-sf-border bg-sf-surface px-5 py-2.5 text-[11px] text-sf-muted">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
           <p>{t("perf.help")}</p>
         </div>
 
         {/* (v5.0.0) Acciones masivas + contador de aplicadas. */}
         {!loading && options.length > 0 && (
-          <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-5 py-2">
-            <span className="text-[11px] font-medium text-slate-300">
+          <div className="flex items-center justify-between gap-2 border-b border-sf-border px-5 py-2">
+            <span className="text-[11px] font-medium text-sf-text/90">
               {t("perf.applied_count", {
                 n: String(savedCount),
                 total: String(options.length),
@@ -362,7 +362,7 @@ export function PerformanceModal({
               <button
                 onClick={() => void setAll(false)}
                 disabled={bulkBusy || !!busyId || savedCount === 0}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800/60 px-2 py-1 text-[11px] font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-md border border-sf-border bg-sf-raised px-2 py-1 text-[11px] font-medium text-sf-text/90 hover:bg-sf-raised disabled:opacity-40"
               >
                 <RotateCcw className="h-3 w-3" />
                 {t("perf.unmark_all")}
@@ -373,16 +373,16 @@ export function PerformanceModal({
 
         <div className="perf-scroll min-h-0 flex-1 overflow-y-scroll px-5 py-3">
           {loading ? (
-            <div className="flex items-center justify-center py-12 text-slate-500">
+            <div className="flex items-center justify-center py-12 text-sf-muted">
               <Loader2 className="h-5 w-5 animate-spin" />
             </div>
           ) : options.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
-              <Sparkles className="h-7 w-7 text-slate-600" />
-              <p className="text-sm font-medium text-slate-300">
+              <Sparkles className="h-7 w-7 text-sf-muted/70" />
+              <p className="text-sm font-medium text-sf-text/90">
                 {t("perf.empty.title")}
               </p>
-              <p className="max-w-xs text-[12px] text-slate-500">
+              <p className="max-w-xs text-[12px] text-sf-muted">
                 {t("perf.empty.body")}
               </p>
             </div>
@@ -416,24 +416,24 @@ export function PerformanceModal({
                   className={`rounded-xl border px-3.5 py-3 transition-colors ${
                     opt.applied
                       ? "border-emerald-600/40 bg-emerald-950/20"
-                      : "border-slate-800 bg-slate-900/40"
+                      : "border-sf-border bg-sf-surface"
                   }`}
                 >
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="truncate text-[13px] font-semibold text-slate-100">
+                        <p className="truncate text-[13px] font-semibold text-sf-text">
                           {optLabel(opt)}
                         </p>
-                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 ring-1 ring-amber-500/30">
+                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-bold text-amber-300 ring-1 ring-amber-500/30">
                           <Zap className="h-2.5 w-2.5" />
                           {opt.fpsHint}
                         </span>
                       </div>
-                      <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                      <p className="mt-1 text-[11px] leading-relaxed text-sf-muted">
                         {optDesc(opt)}
                       </p>
-                      <p className="mt-1 text-[10px] text-slate-600">
+                      <p className="mt-1 text-[11px] text-sf-muted/70">
                         {opt.ops.length === 1
                           ? t("perf.one_file")
                           : t("perf.n_files", { n: String(opt.ops.length) })}
@@ -450,7 +450,7 @@ export function PerformanceModal({
                         busy={busyId === opt.id}
                         onToggle={() => void toggle(opt)}
                       />
-                      <span className="text-[9px] uppercase tracking-wide text-slate-600">
+                      <span className="text-[11px] uppercase tracking-wide text-sf-muted/70">
                         {opt.applied ? t("perf.on") : t("perf.off")}
                       </span>
                     </div>
@@ -462,8 +462,8 @@ export function PerformanceModal({
           )}
         </div>
 
-        <footer className="flex items-center justify-between gap-2 border-t border-slate-800 px-5 py-2.5">
-          <span className="text-[11px] text-slate-500">
+        <footer className="flex items-center justify-between gap-2 border-t border-sf-border px-5 py-2.5">
+          <span className="text-[11px] text-sf-muted">
             {savedCount > 0
               ? t("perf.footer_saving", { n: String(savedCount) })
               : t("perf.footer_full")}
@@ -472,7 +472,7 @@ export function PerformanceModal({
             onClick={() => void enrich()}
             disabled={enriching || !pkg.icao}
             title={t("perf.enrich_hint")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 hover:border-brand-500/40 hover:bg-slate-800 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-sf-raised px-2.5 py-1.5 text-[11px] font-medium text-sf-text hover:border-brand-500/40 hover:bg-sf-raised disabled:opacity-50"
           >
             {enriching ? (
               <Loader2 className="h-3 w-3 animate-spin" />

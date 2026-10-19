@@ -3,6 +3,7 @@ import { Plane, Radio } from "lucide-react";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useUnits } from "../lib/units";
+import type { FlightStatus, SimBriefFlight } from "../lib/types";
 
 /**
  * Badge "Volando ahora" — visible en el header cuando MSFS
@@ -36,32 +37,10 @@ export function FlyingNowBadge() {
   if (live && !status.currentAirportIcao && !status.originIcao) {
     return null;
   }
-  // (v3.4.13) Match SimBrief OFP — ahora aceptamos match contra
-  // `originIcao` del watcher (post-OUT) o `currentAirportIcao`
-  // (preflight). Esto hace que el destino aparezca en el header
-  // incluso antes de disparar el OUT.
-  const matchedOfp = (() => {
-    if (!flights.length) return null;
-    const sorted = [...flights].sort((a, b) => {
-      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
-      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
-      return bTs - aTs;
-    });
-    const watcherOrigin = status.originIcao || status.currentAirportIcao;
-    if (!watcherOrigin) return null;
-    return sorted.find((f) => f.originIcao === watcherOrigin) ?? null;
-  })();
-  // (v3.4.13) Origen y destino efectivos.
-  //   · origen — prioridad: status.originIcao (watcher detectó OUT)
-  //     > currentAirportIcao (avión spawneado, aún sin OUT).
-  //   · destino — prioridad: status.destinationIcao (raro en preflight)
-  //     > matchedOfp.destinationIcao (lo más común). Si no hay OFP que
-  //     matchee y el avión no está en vuelo, el destino queda null y
-  //     mostramos sólo "AT KATL".
-  const effectiveOrigin =
-    status.originIcao ?? status.currentAirportIcao ?? null;
-  const effectiveDestination =
-    status.destinationIcao ?? matchedOfp?.destinationIcao ?? null;
+  const { matchedOfp, effectiveOrigin, effectiveDestination } = effectiveRoute(
+    status,
+    flights,
+  );
   const hasFullPlan = !!effectiveOrigin && !!effectiveDestination;
   const hasFlight = hasFullPlan;
   const phase = phaseDisplay(status.phaseLabel);
@@ -229,11 +208,51 @@ function haversineNm(
 }
 
 /**
+ * Ruta efectiva del vuelo en curso. (Rediseño F2) Extraída del badge
+ * para que la tarjeta "Vuelo actual" de Inicio muestre lo mismo.
+ *
+ * (v3.4.13) Match SimBrief OFP — aceptamos match contra `originIcao`
+ * del watcher (post-OUT) o `currentAirportIcao` (preflight). Esto hace
+ * que el destino aparezca incluso antes de disparar el OUT.
+ *   · origen — prioridad: status.originIcao (watcher detectó OUT)
+ *     > currentAirportIcao (avión spawneado, aún sin OUT).
+ *   · destino — prioridad: status.destinationIcao (raro en preflight)
+ *     > matchedOfp.destinationIcao (lo más común). Si no hay OFP que
+ *     matchee y el avión no está en vuelo, el destino queda null y
+ *     mostramos sólo "AT KATL".
+ */
+export function effectiveRoute(
+  status: FlightStatus,
+  flights: SimBriefFlight[],
+): {
+  matchedOfp: SimBriefFlight | null;
+  effectiveOrigin: string | null;
+  effectiveDestination: string | null;
+} {
+  const matchedOfp = (() => {
+    if (!flights.length) return null;
+    const sorted = [...flights].sort((a, b) => {
+      const aTs = a.generatedAt ? parseInt(a.generatedAt, 10) : 0;
+      const bTs = b.generatedAt ? parseInt(b.generatedAt, 10) : 0;
+      return bTs - aTs;
+    });
+    const watcherOrigin = status.originIcao || status.currentAirportIcao;
+    if (!watcherOrigin) return null;
+    return sorted.find((f) => f.originIcao === watcherOrigin) ?? null;
+  })();
+  const effectiveOrigin =
+    status.originIcao ?? status.currentAirportIcao ?? null;
+  const effectiveDestination =
+    status.destinationIcao ?? matchedOfp?.destinationIcao ?? null;
+  return { matchedOfp, effectiveOrigin, effectiveDestination };
+}
+
+/**
  * Traduce el `phaseLabel` del backend a un display amigable + paleta
  * de colores adecuada para cada fase. Por defecto (sin phase o
  * fallback de proceso-only) usa la paleta verde original.
  */
-function phaseDisplay(phase: string | null): {
+export function phaseDisplay(phase: string | null): {
   short: string;
   long: string;
   toneClass: string;

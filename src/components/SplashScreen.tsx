@@ -93,7 +93,7 @@ export function SplashScreen({
     // efecto de bootstrap.
     <div
       data-tauri-drag-region
-      className="fixed inset-0 z-50 overflow-hidden bg-slate-950 text-slate-100"
+      className="fixed inset-0 z-50 overflow-hidden bg-sf-bg text-sf-text"
     >
       <div
         data-tauri-drag-region
@@ -145,7 +145,7 @@ export function SplashScreen({
                 "radial-gradient(circle, transparent 30px, black 31px, black 36px, transparent 37px)",
             }}
           />
-          <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 ring-1 ring-emerald-500/30 shadow-2xl shadow-emerald-500/20">
+          <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-sf-surface ring-1 ring-emerald-500/30 shadow-2xl shadow-emerald-500/20">
             <Plane className="h-8 w-8 text-emerald-300" strokeWidth={1.5} />
           </div>
         </div>
@@ -153,7 +153,7 @@ export function SplashScreen({
         <h1 className="text-center text-xl font-semibold tracking-tight text-slate-50">
           SimFleet
         </h1>
-        <p className="mt-1.5 text-center text-[11px] tracking-wide text-slate-500">
+        <p className="mt-1.5 text-center text-[11px] tracking-wide text-sf-muted">
           {tagline}
         </p>
 
@@ -173,7 +173,7 @@ export function SplashScreen({
                     version: appUpdate!.latestVersion,
                   })}
                 </div>
-                <div className="text-[10px] text-emerald-200/70">
+                <div className="text-[11px] text-emerald-200/70">
                   {t("update.banner.body", {
                     current: appUpdate!.currentVersion,
                   })}
@@ -187,13 +187,13 @@ export function SplashScreen({
               <div className="mt-2">
                 <button
                   onClick={() => setShowChangelog((v) => !v)}
-                  className="inline-flex items-center gap-1 text-[10px] text-emerald-200/80 hover:text-emerald-100"
+                  className="inline-flex items-center gap-1 text-[11px] text-emerald-200/80 hover:text-emerald-100"
                 >
                   {showChangelog ? "▲" : "▼"}{" "}
                   {t("update.banner.view_changes")}
                 </button>
                 {showChangelog && (
-                  <div className="mt-1 max-h-32 overflow-y-auto rounded border border-emerald-500/20 bg-slate-950/50 px-2 py-1.5 text-left text-[10px] leading-relaxed text-emerald-100/85 whitespace-pre-wrap font-mono">
+                  <div className="mt-1 max-h-32 overflow-y-auto rounded border border-emerald-500/20 bg-sf-bg/50 px-2 py-1.5 text-left text-[11px] leading-relaxed text-emerald-100/85 whitespace-pre-wrap font-mono">
                     {appUpdate!.notesMarkdown.slice(0, 4000)}
                     {appUpdate!.notesMarkdown.length > 4000 && (
                       <>
@@ -214,7 +214,7 @@ export function SplashScreen({
             )}
 
             {/* (v2.1.0) Checkbox auto-restart — default true. */}
-            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[10px] text-emerald-100/85">
+            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-emerald-100/85">
               <input
                 type="checkbox"
                 checked={autoRestart}
@@ -238,7 +238,7 @@ export function SplashScreen({
                   setPendingDecision(false);
                   onSkipUpdate();
                 }}
-                className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+                className="rounded-md border border-sf-border px-2 py-1 text-[11px] text-sf-text/90 hover:bg-sf-raised"
               >
                 {t("common.skip")}
               </button>
@@ -254,7 +254,7 @@ export function SplashScreen({
             animate={{ opacity: 1, y: 0 }}
             className="mt-6 w-full max-w-[320px]"
           >
-            <div className="mb-1 flex items-center justify-between text-[10px] text-emerald-200">
+            <div className="mb-1 flex items-center justify-between text-[11px] text-emerald-200">
               <span>
                 {downloadPct !== null
                   ? t("update.progress.downloading_pct", {
@@ -269,14 +269,14 @@ export function SplashScreen({
                 {mbDown ?? "0"} {mbTotal ? `/ ${mbTotal}` : ""} MB
               </span>
             </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
               <div
                 className="h-full bg-emerald-400 transition-all duration-150"
                 style={{ width: downloadPct !== null ? `${downloadPct}%` : "30%" }}
               />
             </div>
             {downloadPct === 100 && (
-              <div className="mt-1 text-[10px] text-emerald-200/80">
+              <div className="mt-1 text-[11px] text-emerald-200/80">
                 {t("update.progress.complete")}
               </div>
             )}
@@ -288,7 +288,7 @@ export function SplashScreen({
             no apilar barras en pantalla. */}
         {!showUpdateBanner && !installing && (
           <div className="mt-7 w-full max-w-[300px]">
-            <div className="relative h-1 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className="relative h-1 w-full overflow-hidden rounded-full bg-sf-raised">
               <motion.div
                 className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-cyan-400"
                 initial={{ width: 0 }}
@@ -305,7 +305,7 @@ export function SplashScreen({
                 }}
               />
             </div>
-            <div className="mt-3 flex h-4 items-center justify-center text-[11px] text-slate-400">
+            <div className="mt-3 flex h-4 items-center justify-center text-[11px] text-sf-muted">
               {errored.length > 0 ? (
                 <span className="text-rose-300">
                   {errored.length}{" "}
@@ -339,7 +339,7 @@ export function SplashScreen({
       </div>
 
       {/* Footer — versión real leída de Tauri en runtime */}
-      <div className="relative flex items-center justify-between border-t border-slate-800/60 bg-slate-950/40 px-5 py-2.5 text-[10px] text-slate-600">
+      <div className="relative flex items-center justify-between border-t border-sf-border/60 bg-sf-bg/40 px-5 py-2.5 text-[11px] text-sf-muted/70">
         <span className="font-mono tabular-nums">
           {done} / {total}
         </span>

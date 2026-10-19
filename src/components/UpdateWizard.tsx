@@ -167,9 +167,9 @@ export function UpdateWizard() {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.16 }}
-            className="w-[min(640px,calc(100vw-2rem))] max-h-[calc(100vh-3rem)] overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl ring-1 ring-amber-500/20"
+            className="w-[min(640px,calc(100vw-2rem))] max-h-[calc(100vh-3rem)] overflow-hidden rounded-2xl border border-amber-500/40 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
           >
-            <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
+            <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-amber-300">
                   <Sparkles className="h-3.5 w-3.5" />
@@ -178,13 +178,13 @@ export function UpdateWizard() {
                     {initialTotal - total + 1} / {initialTotal}
                   </span>
                 </div>
-                <h2 className="mt-1.5 truncate text-base font-semibold text-slate-100">
+                <h2 className="mt-1.5 truncate text-base font-semibold text-sf-text">
                   {current.title}
                 </h2>
-                <p className="mt-0.5 text-xs text-slate-400">
+                <p className="mt-0.5 text-xs text-sf-muted">
                   <span className="font-mono text-emerald-300">{current.icao}</span>
                   {" · "}
-                  <span className="text-slate-300">v{current.installedVersion}</span>
+                  <span className="text-sf-text/90">v{current.installedVersion}</span>
                   {" → "}
                   <span className="font-medium text-amber-200">v{current.latestVersion}</span>
                 </p>
@@ -192,7 +192,7 @@ export function UpdateWizard() {
               <button
                 onClick={cancel}
                 disabled={busy}
-                className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+                className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text disabled:opacity-50"
                 title={t("wizard.cancel_tooltip")}
               >
                 <X className="h-4 w-4" />
@@ -208,12 +208,12 @@ export function UpdateWizard() {
               )}
 
               {searching ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-400">
+                <div className="flex items-center justify-center gap-2 py-8 text-xs text-sf-muted">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {t("wizard.searching", { query: deriveUpdateSearchQuery(current.icao, current.title) })}
                 </div>
               ) : grouped.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-500">
+                <p className="py-6 text-center text-xs text-sf-muted">
                   {t("wizard.no_methods")}
                 </p>
               ) : (
@@ -221,15 +221,15 @@ export function UpdateWizard() {
                   {grouped.map((g, gi) => (
                     <li
                       key={`${g.source}-${gi}`}
-                      className="rounded-lg border border-slate-800 bg-slate-900/50 p-3"
+                      className="rounded-lg border border-sf-border bg-sf-surface p-3"
                     >
                       <div className="mb-1.5 flex items-center gap-2 text-[11px]">
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-slate-300">
+                        <span className="rounded bg-sf-raised px-1.5 py-0.5 font-semibold uppercase tracking-wide text-sf-text/90">
                           {g.source}
                         </span>
-                        {g.version && <span className="text-slate-500">v{g.version}</span>}
+                        {g.version && <span className="text-sf-muted">v{g.version}</span>}
                       </div>
-                      <p className="mb-2 truncate text-xs text-slate-200">{g.title}</p>
+                      <p className="mb-2 truncate text-xs text-sf-text">{g.title}</p>
                       <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                         {g.methods.map((mm, mi) => (
                           <button
@@ -239,7 +239,7 @@ export function UpdateWizard() {
                             className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors disabled:opacity-50 ${
                               mm.kind === "torrent"
                                 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20"
-                                : "border-slate-700 bg-slate-800/60 text-slate-200 hover:border-brand-500/40 hover:bg-slate-800"
+                                : "border-sf-border bg-sf-raised text-sf-text hover:border-brand-500/40 hover:bg-sf-raised"
                             }`}
                           >
                             {busy ? (
@@ -248,7 +248,7 @@ export function UpdateWizard() {
                               <Download className="h-3.5 w-3.5 shrink-0" />
                             )}
                             <span className="min-w-0 flex-1 truncate">{mm.name}</span>
-                            <span className="shrink-0 rounded bg-slate-900/60 px-1.5 py-0.5 text-[10px] uppercase">
+                            <span className="shrink-0 rounded bg-sf-surface px-1.5 py-0.5 text-[11px] uppercase">
                               {mm.kind}
                             </span>
                           </button>
@@ -260,16 +260,16 @@ export function UpdateWizard() {
               )}
             </div>
 
-            <footer className="flex items-center justify-between gap-2 border-t border-slate-800 px-5 py-3 text-xs">
+            <footer className="flex items-center justify-between gap-2 border-t border-sf-border px-5 py-3 text-xs">
               <button
                 onClick={skip}
                 disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md border border-sf-border px-3 py-1.5 text-sf-text/90 hover:bg-sf-raised disabled:opacity-50"
               >
                 <SkipForward className="h-3.5 w-3.5" />
                 {t("wizard.skip")}
               </button>
-              <span className="text-slate-500">
+              <span className="text-sf-muted">
                 {total - 1 > 0
                   ? t("wizard.more_after", { n: total - 1 })
                   : t("wizard.last")}
@@ -277,7 +277,7 @@ export function UpdateWizard() {
               <button
                 onClick={cancel}
                 disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md border border-sf-border px-3 py-1.5 text-sf-text/90 hover:bg-sf-raised disabled:opacity-50"
               >
                 <Check className="h-3.5 w-3.5" />
                 {t("wizard.finish")}

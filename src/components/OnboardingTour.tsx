@@ -39,6 +39,10 @@ interface TourStep {
   setView?: TourView;
   /** Abre (true) / cierra (false/undefined) el modal de Configuración. */
   openSettings?: boolean;
+  /** (Rediseño F6) Grupo de Ajustes que debe estar abierto para que el
+   *  target exista (desde v6.2.19 Ajustes sólo pinta las secciones del
+   *  grupo activo; sin esto los pasos Carpetas/Drive no encontraban nada). */
+  settingsGroup?: "general" | "flight" | "data" | "storage";
   /** Selector del elemento a destacar (`[data-tour-id="X"]`). Opcional:
    *  sin él, el tooltip va centrado. */
   target?: string;
@@ -61,21 +65,21 @@ function buildSteps(): TourStep[] {
       target: "[data-tour-id='nav-dashboard']",
       title: t("tour.dashboard.title"),
       body: t("tour.dashboard.body"),
-      placement: "bottom",
+      placement: "right",
     },
     {
       setView: "search",
       target: "[data-tour-id='nav-search']",
       title: t("tour.search.title"),
       body: t("tour.search.body"),
-      placement: "bottom",
+      placement: "right",
     },
     {
       setView: "map",
       target: "[data-tour-id='nav-map']",
       title: t("tour.map.title"),
       body: t("tour.map.body"),
-      placement: "bottom",
+      placement: "right",
     },
     // (v5.0.0) Optimizador de FPS — vive en la card del aeropuerto del
     // Map; se explica centrado porque la card solo aparece al seleccionar.
@@ -89,7 +93,7 @@ function buildSteps(): TourStep[] {
       target: "[data-tour-id='nav-addons']",
       title: t("tour.addons.title"),
       body: t("tour.addons.body"),
-      placement: "bottom",
+      placement: "right",
     },
     // (v5.0.0) Link Map + auto-organizar + aeropuertos por región.
     {
@@ -112,7 +116,7 @@ function buildSteps(): TourStep[] {
       target: "[data-tour-id='nav-flightbook']",
       title: t("tour.flightbook.title"),
       body: t("tour.flightbook.body"),
-      placement: "bottom",
+      placement: "right",
     },
     // 6 — Notificaciones (chrome global).
     {
@@ -121,17 +125,18 @@ function buildSteps(): TourStep[] {
       body: t("tour.notifications.body"),
       placement: "bottom",
     },
-    // 7 — La rueda de Configuración (aún sin abrir el modal).
+    // 7 — Ajustes en el menú lateral (aún sin abrir el modal).
     {
       openSettings: false,
       target: "[data-tour-id='header-settings']",
       title: t("tour.settings.title"),
       body: t("tour.settings.body"),
-      placement: "bottom",
+      placement: "right",
     },
     // 8..10 — Dentro de Configuración: secciones esenciales.
     {
       openSettings: true,
+      settingsGroup: "general",
       target: "[data-tour-id='settings-general']",
       title: t("tour.settings_units.title"),
       body: t("tour.settings_units.body"),
@@ -139,6 +144,7 @@ function buildSteps(): TourStep[] {
     },
     {
       openSettings: true,
+      settingsGroup: "storage",
       target: "[data-tour-id='settings-folders']",
       title: t("tour.settings_folders.title"),
       body: t("tour.settings_folders.body"),
@@ -146,6 +152,7 @@ function buildSteps(): TourStep[] {
     },
     {
       openSettings: true,
+      settingsGroup: "data",
       target: "[data-tour-id='settings-cloud']",
       title: t("tour.settings_cloud.title"),
       body: t("tour.settings_cloud.body"),
@@ -182,6 +189,11 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
       useAppStore.getState().setView(step.setView);
     }
     onSettingsOpenChange(!!step.openSettings);
+    if (step.openSettings && step.settingsGroup) {
+      window.dispatchEvent(
+        new CustomEvent("simfleet:settings-group", { detail: step.settingsGroup }),
+      );
+    }
 
     let cancelled = false;
     const timers: number[] = [];
@@ -276,7 +288,8 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
               height: rect.height + 12,
               boxShadow: "0 0 0 9999px rgba(2, 6, 23, 0.78)",
               borderRadius: 12,
-              border: "2px solid rgb(34, 197, 94)",
+              // (Rediseño F5) Acento turquesa del sistema (antes verde).
+              border: "2px solid rgb(var(--sf-accent))",
               transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
             }}
             onClick={(e) => e.stopPropagation()}
@@ -297,32 +310,32 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
             left: tooltipPos.left,
             maxWidth: 360,
           }}
-          className="pointer-events-auto absolute rounded-2xl border border-emerald-500/40 bg-slate-950/95 p-4 shadow-2xl backdrop-blur"
+          className="pointer-events-auto absolute rounded-2xl border border-brand-500/40 bg-sf-surface p-4 shadow-2xl shadow-black/40"
         >
           <div className="flex items-start gap-2">
-            <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-500/40">
-              <Sparkles className="h-3.5 w-3.5 text-emerald-300" />
+            <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 ring-1 ring-brand-500/40">
+              <Sparkles className="h-3.5 w-3.5 text-brand-300" />
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-400">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-brand-300">
                   {t("tour.step_of", {
                     current: String(stepIdx + 1),
                     total: String(STEPS.length),
                   })}
                 </span>
               </div>
-              <h3 className="mt-1 text-sm font-semibold text-slate-100">
+              <h3 className="mt-1 text-sm font-semibold text-sf-text">
                 {step.title}
               </h3>
-              <p className="mt-1 text-[12px] leading-relaxed text-slate-300">
+              <p className="mt-1 text-[12px] leading-relaxed text-sf-text/90">
                 {step.body}
               </p>
             </div>
             <button
               onClick={finish}
               title={t("tour.skip")}
-              className="shrink-0 rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-100"
+              className="shrink-0 rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -334,7 +347,7 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
               <div
                 key={i}
                 className={`h-1 flex-1 rounded-full transition-colors ${
-                  i <= stepIdx ? "bg-emerald-400" : "bg-slate-800"
+                  i <= stepIdx ? "bg-brand-400" : "bg-sf-raised"
                 }`}
               />
             ))}
@@ -343,7 +356,7 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
           <div className="mt-3 flex items-center justify-between gap-2">
             <button
               onClick={finish}
-              className="text-[11px] text-slate-400 hover:text-slate-200"
+              className="text-[11px] text-sf-muted hover:text-sf-text"
             >
               {t("tour.skip")}
             </button>
@@ -351,14 +364,14 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
               <button
                 onClick={prev}
                 disabled={stepIdx === 0}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-800 px-2.5 py-1 text-[11px] text-slate-300 hover:border-slate-700 disabled:opacity-30"
+                className="inline-flex items-center gap-1 rounded-md border border-sf-border px-2.5 py-1 text-[11px] text-sf-text/90 hover:border-sf-border disabled:opacity-30"
               >
                 <ChevronLeft className="h-3 w-3" />
                 {t("common.back")}
               </button>
               <button
                 onClick={next}
-                className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1 text-[11px] font-medium text-emerald-950 hover:bg-emerald-400"
+                className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-brand-400"
               >
                 {isLast ? t("tour.finish") : t("tour.next")}
                 {!isLast && <ChevronRight className="h-3 w-3" />}

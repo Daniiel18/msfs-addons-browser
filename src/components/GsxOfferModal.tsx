@@ -120,16 +120,16 @@ export function GsxOfferModal() {
             exit={{ opacity: 0, scale: 0.97, y: 8 }}
             transition={{ duration: 0.14 }}
             onClick={(e) => e.stopPropagation()}
-            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
           >
-            <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
+            <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-4">
               <div className="flex min-w-0 items-start gap-3">
                 <Truck className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" />
                 <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-slate-100">
+                  <h3 className="text-sm font-semibold text-sf-text">
                     {t("gsxoffer.title", { icao: offer.icao })}
                   </h3>
-                  <p className="mt-0.5 truncate text-xs text-slate-400">
+                  <p className="mt-0.5 truncate text-xs text-sf-muted">
                     {offer.airportTitle}
                     {profiles.length > 0
                       ? ` · ${t("gsxoffer.subtitle", { n: String(profiles.length) })}`
@@ -140,7 +140,7 @@ export function GsxOfferModal() {
               <button
                 onClick={dismissToPending}
                 title={t("common.dismiss")}
-                className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                className="shrink-0 rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -148,11 +148,11 @@ export function GsxOfferModal() {
 
             {cards.length === 0 ? (
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto px-6 py-14 text-center">
-                <CircleOff className="h-8 w-8 text-slate-600" />
-                <p className="text-sm text-slate-300">
+                <CircleOff className="h-8 w-8 text-sf-muted/70" />
+                <p className="text-sm text-sf-text/90">
                   {t("gsxoffer.empty", { airport: offer.airportTitle })}
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-sf-muted">
                   {t("gsxoffer.empty_icao", { icao: offer.icao })}
                 </p>
               </div>
@@ -162,9 +162,9 @@ export function GsxOfferModal() {
                   <button
                     key={p.id}
                     onClick={() => openProfile(p.link)}
-                    className="group flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/50 text-left transition-colors hover:border-cyan-500/40 hover:bg-slate-900"
+                    className="group flex flex-col overflow-hidden rounded-lg border border-sf-border bg-sf-surface text-left transition-colors hover:border-cyan-500/40 hover:bg-sf-surface"
                   >
-                    <div className="relative h-36 w-full shrink-0 overflow-hidden bg-slate-800">
+                    <div className="relative h-36 w-full shrink-0 overflow-hidden bg-sf-raised">
                       {p.thumbnail && (
                         <img
                           src={p.thumbnail}
@@ -182,13 +182,13 @@ export function GsxOfferModal() {
                           Compatible (esmeralda). Pueden salir ambas. */}
                       <div className="absolute left-2 top-2 flex flex-wrap gap-1">
                         {popular && (
-                          <span className="inline-flex items-center gap-1 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 shadow">
+                          <span className="inline-flex items-center gap-1 rounded bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-amber-950 shadow">
                             <Flame className="h-3 w-3" />
                             {t("gsxoffer.most_popular")}
                           </span>
                         )}
                         {compatible && (
-                          <span className="inline-flex items-center rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-950 shadow">
+                          <span className="inline-flex items-center rounded bg-emerald-500 px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-emerald-950 shadow">
                             {t("gsxoffer.compatible")}
                           </span>
                         )}
@@ -196,10 +196,10 @@ export function GsxOfferModal() {
                       <ExternalLink className="absolute right-2 top-2 h-4 w-4 text-white/70 drop-shadow" />
                     </div>
                     <div className="flex flex-1 flex-col p-3">
-                      <div className="line-clamp-2 text-sm font-medium text-slate-100">
+                      <div className="line-clamp-2 text-sm font-medium text-sf-text">
                         {p.title}
                       </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-sf-muted">
                         <span className="inline-flex items-center gap-1">
                           <Download className="h-3 w-3" />
                           {(typeof p.downloads === "number"
@@ -215,7 +215,7 @@ export function GsxOfferModal() {
                         </span>
                       </div>
                       {p.authorName && (
-                        <div className="mt-1 truncate text-[11px] text-slate-500">
+                        <div className="mt-1 truncate text-[11px] text-sf-muted">
                           {p.authorName}
                         </div>
                       )}
@@ -225,7 +225,7 @@ export function GsxOfferModal() {
               </div>
             )}
 
-            <footer className="border-t border-slate-800 px-5 py-2 text-center text-[11px] text-slate-500">
+            <footer className="border-t border-sf-border px-5 py-2 text-center text-[11px] text-sf-muted">
               {t("gsxoffer.hint")}
             </footer>
           </motion.div>

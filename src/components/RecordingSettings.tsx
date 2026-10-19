@@ -38,7 +38,7 @@ export function RecordingSettings() {
   };
 
   return (
-    <div className="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+    <div className="rounded-md border border-sf-border bg-sf-surface px-3 py-2.5">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -48,14 +48,14 @@ export function RecordingSettings() {
         <span className="flex items-center gap-2">
           <Film className="h-4 w-4 text-brand-400" />
           <span>
-            <span className="text-xs text-slate-200">{t("rec.title")}</span>
-            <span className="mt-0.5 block text-[11px] text-slate-500">
+            <span className="text-xs text-sf-text">{t("rec.title")}</span>
+            <span className="mt-0.5 block text-[11px] text-sf-muted">
               {t("rec.subtitle")}
             </span>
           </span>
         </span>
         <ChevronDown
-          className={`h-4 w-4 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`h-4 w-4 text-sf-muted transition-transform ${open ? "rotate-180" : ""}`}
         />
       </button>
 
@@ -81,7 +81,7 @@ export function RecordingSettings() {
           />
           <button
             onClick={() => api.osdTest().catch(() => {})}
-            className="self-start rounded-md border border-slate-800 bg-slate-900/60 px-2.5 py-1 text-[11px] text-slate-300 hover:border-brand-500/40"
+            className="self-start rounded-md border border-sf-border bg-sf-surface px-2.5 py-1 text-[11px] text-sf-text/90 hover:border-brand-500/40"
           >
             {t("rec.osd_test")}
           </button>
@@ -117,7 +117,7 @@ export function RecordingSettings() {
                 void setKey("rec_fps", String(v));
               }}
             />
-            <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+            <p className="mt-1 text-[11px] leading-relaxed text-sf-muted/70">
               {t("rec.fps_hint")}
             </p>
           </Field>
@@ -129,19 +129,19 @@ export function RecordingSettings() {
           {/* Carpeta */}
           <Field label={t("rec.folder")}>
             <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1 truncate rounded-md border border-slate-800 bg-slate-950/40 px-2 py-1.5 font-mono text-[11px] text-slate-300">
+              <div className="min-w-0 flex-1 truncate rounded-md border border-sf-border bg-sf-bg/40 px-2 py-1.5 font-mono text-[11px] text-sf-text/90">
                 {cfg.outputPath}
               </div>
               <button
                 onClick={pickFolder}
-                className="rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1.5 text-[11px] text-slate-300 hover:border-brand-500/40"
+                className="rounded-md border border-sf-border bg-sf-surface px-2 py-1.5 text-[11px] text-sf-text/90 hover:border-brand-500/40"
               >
                 {t("rec.change")}
               </button>
               <button
                 onClick={() => api.openLocalPath(cfg.outputPath).catch(() => {})}
                 title={t("rec.open_folder")}
-                className="rounded-md border border-slate-800 bg-slate-900/60 p-1.5 text-slate-300 hover:border-brand-500/40"
+                className="rounded-md border border-sf-border bg-sf-surface p-1.5 text-sf-text/90 hover:border-brand-500/40"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
               </button>
@@ -149,11 +149,11 @@ export function RecordingSettings() {
           </Field>
 
           {/* Estado del motor */}
-          <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/40 px-2.5 py-2 text-[11px]">
+          <div className="flex items-center gap-1.5 rounded-lg border border-sf-border bg-sf-bg/40 px-2.5 py-2 text-[11px]">
             {engine?.available ? (
               <>
                 <CheckCircle2 className="h-3.5 w-3.5 text-brand-400" />
-                <span className="text-slate-400">
+                <span className="text-sf-muted">
                   {t("rec.engine_ok", { engine: engine.engine })}
                 </span>
               </>
@@ -162,7 +162,7 @@ export function RecordingSettings() {
             )}
           </div>
 
-          <p className="text-[11px] leading-relaxed text-slate-600">
+          <p className="text-[11px] leading-relaxed text-sf-muted/70">
             {t("rec.note")}
           </p>
         </div>
@@ -184,7 +184,7 @@ function RecToggle({
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="flex items-center gap-1.5 text-xs text-slate-300">
+      <span className="flex items-center gap-1.5 text-xs text-sf-text/90">
         {icon}
         {label}
       </span>
@@ -194,7 +194,7 @@ function RecToggle({
         className={`relative h-6 w-11 shrink-0 rounded-full border p-0 transition-colors ${
           checked
             ? "border-brand-400 bg-brand-500"
-            : "border-slate-600 bg-slate-700"
+            : "border-slate-600 bg-sf-border"
         }`}
       >
         <span
@@ -216,7 +216,7 @@ function Field({
 }) {
   return (
     <div>
-      <div className="mb-1 text-[11px] text-slate-500">{label}</div>
+      <div className="mb-1 text-[11px] text-sf-muted">{label}</div>
       {children}
     </div>
   );
@@ -240,7 +240,7 @@ function Segmented({
           className={`rounded-md border px-2 py-1.5 text-[11px] ${
             value === o.value
               ? "border-brand-500/50 bg-brand-500/15 text-brand-200"
-              : "border-slate-800 bg-slate-900/60 text-slate-400 hover:text-slate-200"
+              : "border-sf-border bg-sf-surface text-sf-muted hover:text-sf-text"
           }`}
         >
           {o.label}

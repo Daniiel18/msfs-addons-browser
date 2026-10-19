@@ -43,7 +43,7 @@ export function DamageBadge({ flightId }: { flightId: number }) {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-1.5 rounded-md bg-slate-800/60 px-2 py-1 text-[11px] text-slate-400 ring-1 ring-slate-700/60">
+      <div className="flex items-center gap-1.5 rounded-md bg-sf-raised px-2 py-1 text-[11px] text-sf-muted ring-1 ring-sf-border/60">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         {t("fb.damage.analyzing")}
       </div>
@@ -73,7 +73,7 @@ export function DamageBadge({ flightId }: { flightId: number }) {
             }
           : {
               Icon: HelpCircle,
-              cls: "bg-slate-700/40 text-slate-400 ring-slate-600/40",
+              cls: "bg-slate-700/40 text-sf-muted ring-slate-600/40",
               label: t("fb.damage.verdict.no_data"),
             };
   const Icon = cfg.Icon;
@@ -96,7 +96,7 @@ export function DamageBadge({ flightId }: { flightId: number }) {
         {t("fb.damage.label")}: {cfg.label}
       </span>
       {report.hasData && report.maxG != null && (
-        <span className="ml-1 font-mono text-[10px] opacity-80">
+        <span className="ml-1 font-mono text-[11px] opacity-80">
           {report.maxG.toFixed(1)}g
         </span>
       )}

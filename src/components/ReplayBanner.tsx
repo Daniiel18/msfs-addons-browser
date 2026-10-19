@@ -69,7 +69,7 @@ export function ReplayBanner() {
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-rose-200">
             <PauseCircle size={14} className="text-rose-300" />
             <span>{t("flight.replay.banner")}</span>
-            <span className="rounded bg-rose-900/80 px-1.5 py-0.5 font-mono text-[10px] text-rose-100">
+            <span className="rounded bg-rose-900/80 px-1.5 py-0.5 font-mono text-[11px] text-rose-100">
               {state.isExternalReplay
                 ? "REPLAY"
                 : state.isSlew

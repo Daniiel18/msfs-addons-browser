@@ -90,25 +90,25 @@ export function ChangelogModal({
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative w-[min(600px,calc(100vw-2rem))] max-h-[calc(100vh-3rem)] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl ring-1 ring-slate-800"
+          className="relative w-[min(600px,calc(100vw-2rem))] max-h-[calc(100vh-3rem)] overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
-          <header className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-3">
+          <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-3">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-xs text-slate-400">
+              <div className="flex items-center gap-2 text-xs text-sf-muted">
                 <FileText className="h-3.5 w-3.5 text-brand-300" />
                 <span>Changelog</span>
                 {sourceLabel && (
-                  <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                  <span className="rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
                     {sourceLabel}
                   </span>
                 )}
                 {version && (
-                  <span className="font-mono text-[10px] text-slate-500">
+                  <span className="font-mono text-[11px] text-sf-muted">
                     v{version}
                   </span>
                 )}
               </div>
-              <h2 className="mt-1 truncate text-sm font-semibold text-slate-100">
+              <h2 className="mt-1 truncate text-sm font-semibold text-sf-text">
                 {title}
               </h2>
             </div>
@@ -116,13 +116,13 @@ export function ChangelogModal({
               <button
                 onClick={() => api.openExternal(pageUrl)}
                 title={t("changelog.open_source")}
-                className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
               >
                 <ExternalLink className="h-4 w-4" />
               </button>
               <button
                 onClick={onClose}
-                className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -131,7 +131,7 @@ export function ChangelogModal({
 
           <div className="overflow-y-auto px-5 py-4 text-xs">
             {loading && (
-              <div className="inline-flex items-center gap-2 text-slate-400">
+              <div className="inline-flex items-center gap-2 text-sf-muted">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {t("changelog.loading")}
               </div>
@@ -143,19 +143,19 @@ export function ChangelogModal({
               </div>
             )}
             {!loading && !error && lines && lines.length === 0 && (
-              <p className="text-slate-500">
+              <p className="text-sf-muted">
                 {t("changelog.not_found")}
               </p>
             )}
             {!loading && !error && lines && lines.length > 0 && (
-              <ul className="ml-3 list-disc space-y-1 text-slate-300">
+              <ul className="ml-3 list-disc space-y-1 text-sf-text/90">
                 {lines.slice(0, 80).map((l, i) => (
                   <li key={i} className="leading-snug">
                     {l}
                   </li>
                 ))}
                 {lines.length > 80 && (
-                  <li className="italic text-slate-500">
+                  <li className="italic text-sf-muted">
                     {t("changelog.more_lines", { count: String(lines.length - 80) })}
                   </li>
                 )}
