@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Clicking a maintenance alert (or "View maintenance" in "Ready to fly?") for an aircraft that is in Fenix or PMDG TechLog but was never flown with SimFleet now opens that aircraft's maintenance. These aircraft now appear in the Hangar fleet, marked "TechLog only", instead of the Hangar staying on the fleet overview.
+- After updating, the taskbar and tray now show the new SimFleet logo: the installer refreshes Windows' icon cache, which kept showing the old icon.
 
 ## [8.1.0]
 

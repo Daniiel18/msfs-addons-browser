@@ -72,6 +72,11 @@
       "resources/airports.csv": "resources/airports.csv",
       "resources/SimConnect.dll": "./SimConnect.dll",
       "resources/ublock-lite.zip": "resources/ublock-lite.zip"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
+      }
     }
   }
 }
