@@ -727,6 +727,8 @@ export function FlightBookView() {
             {checklistOpen && selectedFlightId != null && (
               <ChecklistWidget
                 flightId={selectedFlightId}
+                flight={selectedFlight}
+                techlogManaged={!!selectedFlight && techlogManaged(selectedFlight.aircraftRegistration)}
                 onClose={() => setChecklistOpen(false)}
               />
             )}
@@ -2473,9 +2475,14 @@ const phaseOrder = (p: string): number =>
 
 function ChecklistWidget({
   flightId,
+  flight,
+  techlogManaged,
   onClose,
 }: {
   flightId: number;
+  /** (21/10) Para mostrar la nota del Tech Log del vuelo dentro del puntaje. */
+  flight?: FlightLogEntry | null;
+  techlogManaged?: boolean;
   onClose: () => void;
 }) {
   const [report, setReport] = useState<import("../lib/types").ScoreReport | null>(
@@ -2626,6 +2633,12 @@ function ChecklistWidget({
             {t("fb.checklist.empty")}
           </div>
         )}
+        {/* (21/10) Nota y eventos del Tech Log del vuelo (TechLog o SimFleet). */}
+        {flight && (
+          <div className="mb-2">
+            <TechLogFlightCard flight={flight} own={!techlogManaged} fallback={null} />
+          </div>
+        )}
         {byPhase.map((group) => {
           const isOpen = openPhases.has(group.phase);
           const pct =
@@ -2671,6 +2684,7 @@ function ChecklistWidget({
                     // / — no aplica (datos ausentes, o no aplica a este
                     // tipo de avión). Los "—" NO penalizan el % de la fase.
                     const ruleLabel = ruleLabelText(it.ruleId, it.label);
+                    const why = evidenceText(it);
                     const icon =
                       it.status === "done"
                         ? "✓"
@@ -2706,6 +2720,10 @@ function ChecklistWidget({
                           }`}
                         >
                           {ruleLabel}
+                          {/* (21/10) Por qué: lo medido (✗) o el motivo (—). */}
+                          {why && (
+                            <span className="block text-[9px] text-sf-muted">{why}</span>
+                          )}
                         </span>
                       </li>
                     );
@@ -2730,6 +2748,46 @@ function phaseLabelText(phase: string): string {
     return phase.replace(/_/g, " ");
   }
   return translated;
+}
+
+/** (21/10) Evidencia técnica que no aporta al piloto. */
+const HIDDEN_EVIDENCE = new Set([
+  "samples",
+  "samples_considered",
+  "takeoff_roll_samples_skipped",
+  "rollout_exit_samples_skipped",
+  "app",
+  "limit_kt",
+]);
+/** (21/10) Contadores que sólo dicen algo cuando no son 0. */
+const COUNT_EVIDENCE = new Set(["gear_up", "flaps_not_landing", "sink_over_1100_fpm", "bank_over_15", "warnings", "cautions"]);
+
+/** (21/10) Por qué de un ítem: en los ✗, los valores medidos ("IAS máx.: 305");
+ *  en los — (sin datos), el motivo si se conoce. */
+function evidenceText(it: import("../lib/types").ScoreItem): string | null {
+  const ev = it.evidence as Record<string, unknown> | null;
+  if (!ev || typeof ev !== "object") return null;
+  if (it.status === "na") {
+    const reason = ev.reason;
+    if (typeof reason !== "string") return null;
+    const key = `fb.reason.${reason}`;
+    const text = t(key);
+    return text === key ? null : text;
+  }
+  if (it.status !== "missed") return null;
+  const parts = Object.entries(ev)
+    .filter(
+      ([k, v]) =>
+        !HIDDEN_EVIDENCE.has(k) && v !== null && typeof v !== "object" && !(COUNT_EVIDENCE.has(k) && v === 0),
+    )
+    .map(([k, v]) => {
+      const key = `fb.ev.${k}`;
+      const label = t(key) === key ? k.replace(/_/g, " ") : t(key);
+      const value =
+        typeof v === "boolean" ? t(v ? "common.yes" : "common.no") : typeof v === "number" ? v.toLocaleString() : String(v);
+      return `${label}: ${value}`;
+    });
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /** (v3.7.0 Phase O) Mapea el rule_id estable a un label traducido.

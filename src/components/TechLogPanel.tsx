@@ -625,7 +625,8 @@ export function TechLogFlightCard({
     };
   }, [own, flight.id, flight.aircraftRegistration, flight.startedAt, flight.endedAt, epoch]);
   if (data === undefined) return null;
-  if (data === null && own) return <>{fallback ?? null}</>;
+  // (21/10) Con `fallback` (aunque sea null) se muestra eso en lugar del aviso.
+  if (data === null && (own || fallback !== undefined)) return <>{fallback ?? null}</>;
   if (data === null) {
     return (
       <div className="rounded-lg border border-sf-border bg-sf-surface px-3 py-2 text-[11px] text-sf-muted">

@@ -65,6 +65,11 @@ pub async fn flight_closed(pool: &SqlitePool, app: &AppHandle, flight_id: i64, l
     match store::commit_flight(pool, rec, landing_fpm).await {
         Ok(()) => {
             let _ = app.emit("mx://changed", flight_id);
+            // (21/10) El puntaje del FlightBook se calcula antes de que el
+            // registro del Tech Log exista: se recalcula para sus reglas.
+            if let Err(e) = crate::scoring::score_flight(pool, flight_id).await {
+                tracing::debug!(target: "mx", "recalcular puntaje del vuelo {flight_id}: {e:#}");
+            }
         }
         Err(e) => tracing::warn!(target: "mx", "no pude aplicar el vuelo {flight_id} al Tech Log: {e}"),
     }

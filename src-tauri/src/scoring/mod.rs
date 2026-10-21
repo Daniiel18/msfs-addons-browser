@@ -85,11 +85,16 @@ pub struct FlightContext {
     /// `aircraft_category()` para decidir qué ítems del checklist aplican.
     pub aircraft_title: Option<String>,
     pub aircraft_atc_type: Option<String>,
+    /// (21/10) Matrícula, rebote en el toque y registro del Tech Log del
+    /// vuelo (Fenix/PMDG TechLog o el de SimFleet) para las reglas nuevas.
+    pub aircraft_registration: Option<String>,
+    pub bounced: Option<bool>,
+    pub techlog: Option<crate::techlog::TechLogFlight>,
     pub track: Vec<TrackSample>,
     pub phases: Vec<PhaseRange>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TrackSample {
     pub ts: String, // ISO-8601 UTC
     pub lat: f64,
@@ -247,6 +252,26 @@ struct FlightRow {
     arrival_gate: Option<String>,
     aircraft_title: Option<String>,
     aircraft_atc_type: Option<String>,
+    aircraft_registration: Option<String>,
+    bounced: Option<i64>,
+}
+
+/// (21/10) Registro del Tech Log del vuelo: el de Fenix/PMDG TechLog si el
+/// avión lo tiene, si no el del Tech Log de SimFleet. `None` si no hay.
+async fn load_techlog_record(
+    pool: &SqlitePool,
+    flight_id: i64,
+    registration: Option<&str>,
+    started_at: &str,
+    ended_at: Option<&str>,
+) -> Option<crate::techlog::TechLogFlight> {
+    if let Some(reg) = registration {
+        let managed = crate::techlog::managed_registrations().await;
+        if managed.contains_key(&crate::techlog::normalize_reg(reg)) {
+            return crate::techlog::flight_for(reg, started_at, ended_at).await.ok().flatten();
+        }
+    }
+    crate::mx::store::flight_view(pool, flight_id).await.ok().flatten()
 }
 
 /// Cargar el FlightContext desde DB para un vuelo dado.
@@ -259,7 +284,8 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
                max_altitude_ft, landing_fpm,
                max_ground_speed_kt, max_true_airspeed_kt,
                flight_number, callsign, airline_icao, status,
-               arrival_gate, aircraft_title, aircraft_atc_type
+               arrival_gate, aircraft_title, aircraft_atc_type,
+               aircraft_registration, bounced
         FROM flight_log
         WHERE id = ?1
         "#,
@@ -301,6 +327,15 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
     .fetch_all(pool)
     .await?;
 
+    let techlog = load_techlog_record(
+        pool,
+        flight_id,
+        row.aircraft_registration.as_deref(),
+        &row.started_at,
+        row.ended_at.as_deref(),
+    )
+    .await;
+
     Ok(FlightContext {
         flight_id,
         started_at: row.started_at,
@@ -324,6 +359,9 @@ pub async fn load_context(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<F
         arrival_gate: row.arrival_gate,
         aircraft_title: row.aircraft_title,
         aircraft_atc_type: row.aircraft_atc_type,
+        aircraft_registration: row.aircraft_registration,
+        bounced: row.bounced.map(|b| b != 0),
+        techlog,
         track: track
             .into_iter()
             .map(|r| {
@@ -453,8 +491,13 @@ pub async fn score_flight(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<S
     let grade = grade_for_percentage(percentage);
 
     // Persistencia idempotente: UPSERT cada item, luego actualizar
-    // las columnas resumen.
+    // las columnas resumen. (21/10) Antes se borran los del vuelo: una regla
+    // retirada o que cambió de fase dejaba filas viejas al recalcular.
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM flight_log_score_item WHERE flight_id = ?1")
+        .bind(flight_id)
+        .execute(&mut *tx)
+        .await?;
     for item in &items {
         sqlx::query(
             r#"
@@ -510,6 +553,54 @@ pub async fn score_flight(pool: &SqlitePool, flight_id: i64) -> anyhow::Result<S
         grade,
         items,
     })
+}
+
+/// (21/10) ¿Alguna regla del Tech Log quedó "sin registro"? (para recalcular
+/// cuando el registro del vuelo llega después del puntaje).
+pub fn techlog_record_pending(rep: &ScoreReport) -> bool {
+    rep.items.iter().any(|i| {
+        matches!(i.rule_id.as_str(), "general_techlog_exceedances" | "predep_dispatch_ok")
+            && i.evidence.get("reason").and_then(|r| r.as_str()) == Some("no_techlog_record")
+    })
+}
+
+/// (21/10) Versión de la rúbrica. Al cambiarla, los vuelos ya puntuados se
+/// recalculan una vez al arrancar (`rescore_all_if_needed`).
+pub const RUBRIC_VERSION: &str = "2026-10-21";
+const RUBRIC_VERSION_KEY: &str = "score_rubric_version";
+
+/// (21/10) Recalcula una sola vez, con la rúbrica actual, todos los vuelos que
+/// ya tenían puntaje. Devuelve cuántos se recalcularon.
+pub async fn rescore_all_if_needed(pool: &SqlitePool) -> anyhow::Result<usize> {
+    let current: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
+        .bind(RUBRIC_VERSION_KEY)
+        .fetch_optional(pool)
+        .await?;
+    if current.as_deref() == Some(RUBRIC_VERSION) {
+        return Ok(0);
+    }
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT flight_id FROM flight_log_score_item ORDER BY flight_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut done = 0usize;
+    for id in &ids {
+        match score_flight(pool, *id).await {
+            Ok(_) => done += 1,
+            Err(e) => tracing::warn!(target: "scoring", "recalcular vuelo {id}: {e:#}"),
+        }
+    }
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(RUBRIC_VERSION_KEY)
+    .bind(RUBRIC_VERSION)
+    .execute(pool)
+    .await?;
+    tracing::info!(target: "scoring", "rúbrica {RUBRIC_VERSION}: {done}/{} vuelos recalculados", ids.len());
+    Ok(done)
 }
 
 /// Carga el ScoreReport **sin recomputar** (si ya hay items
@@ -819,4 +910,35 @@ fn grade_for_percentage(p: f32) -> String {
         _ => "F",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Recalcula con la rúbrica actual una COPIA de una base real y resume el
+    /// resultado. Nunca la base de la app instalada:
+    /// `SCORE_DB=<copia.db> cargo test --lib rescore_db_copy -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn rescore_db_copy() {
+        let path = std::env::var("SCORE_DB").expect("SCORE_DB = ruta a una COPIA de la base");
+        let lower = path.to_lowercase();
+        assert!(
+            !lower.contains("program files") && !lower.contains("simfleet-pruebas"),
+            "sólo sobre copias: {path}"
+        );
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{path}"))
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM settings WHERE key = ?1")
+            .bind(RUBRIC_VERSION_KEY)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let n = rescore_all_if_needed(&pool).await.unwrap();
+        println!("recalculados: {n}");
+    }
 }

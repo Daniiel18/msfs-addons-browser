@@ -45,11 +45,33 @@ pub async fn score_get_report(
         .await
         .map_err(|e| e.to_string())?
     {
+        // (21/10) Si las reglas del Tech Log quedaron sin registro (TechLog lo
+        // guarda al terminar el vuelo, a veces después del puntaje), se
+        // recalcula: si ya existe, entran; si no, todo sigue igual.
+        Some(rep) if scoring::techlog_record_pending(&rep) && ended_recently(&state.db, flight_id).await => {
+            scoring::score_flight(&state.db, flight_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
         Some(rep) => Ok(rep),
         None => scoring::score_flight(&state.db, flight_id)
             .await
             .map_err(|e| e.to_string()),
     }
+}
+
+/// (21/10) ¿El vuelo terminó en las últimas 48 h? (sólo entonces merece la
+/// pena volver a buscar su registro del Tech Log).
+async fn ended_recently(pool: &sqlx::SqlitePool, flight_id: i64) -> bool {
+    let ended: Option<String> = sqlx::query_scalar("SELECT ended_at FROM flight_log WHERE id = ?1")
+        .bind(flight_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    ended
+        .and_then(|e| chrono::DateTime::parse_from_rfc3339(&e).ok())
+        .is_some_and(|e| chrono::Utc::now().signed_duration_since(e) < chrono::Duration::hours(48))
 }
 
 /// Una aerolínea identificada en el historial de vuelos del usuario.

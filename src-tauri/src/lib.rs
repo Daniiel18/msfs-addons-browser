@@ -197,6 +197,17 @@ pub fn run() {
             let techlog_pool = state.db.clone();
             app.manage(state);
             techlog::spawn_watchers(app.handle().clone(), techlog_pool.clone());
+            // (21/10) Recalcula una vez los vuelos ya puntuados si cambió la
+            // rúbrica (lecturas por avión, fases por altitud, reglas nuevas).
+            {
+                let pool = techlog_pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    if let Err(e) = scoring::rescore_all_if_needed(&pool).await {
+                        tracing::warn!(target: "scoring", "recalcular vuelos: {e:#}");
+                    }
+                });
+            }
             // (19/10) Etapa 3B: mantenimiento nocturno de la aerolínea.
             mx::spawn_nightly(app.handle().clone(), techlog_pool);
             // (v7.4.2) Título de la instancia de pruebas (taskbar / Alt-Tab).

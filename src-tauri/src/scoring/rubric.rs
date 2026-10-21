@@ -162,6 +162,8 @@ pub fn rule_applies_to(rule_id: &str, cat: Category) -> bool {
                 | "pushback_doors_closed"
                 // (v4.22.0) GA no tiene ground spoilers auto-deploy.
                 | "landing_spoilers_deployed"
+                // (21/10) Criterio de aerolínea (flaps de aterrizaje ≥ 50 %).
+                | "final_approach_stabilized"
         ),
     }
 }
@@ -232,6 +234,16 @@ pub static RULES: &[Rule] = &[
         points_max: 100,
         evaluator: eval_max_service_ceiling,
     },
+    // (21/10) Excedencias que registró el Tech Log del vuelo (Fenix/PMDG
+    // TechLog o el de SimFleet): sobrevelocidad de flaps/tren, frenos
+    // calientes, golpe de cola, aterrizaje duro…
+    Rule {
+        id: "general_techlog_exceedances",
+        label: "No exceedances recorded by the Tech Log",
+        phase: Phase::General,
+        points_max: 60,
+        evaluator: eval_techlog_exceedances,
+    },
     // ============================================================
     // PRE-DEPARTURE (300 pts) — Antes del pushback
     // ============================================================
@@ -241,6 +253,14 @@ pub static RULES: &[Rule] = &[
         phase: Phase::PreDeparture,
         points_max: 70,
         evaluator: eval_predep_parking_brake,
+    },
+    // (21/10) Despachado sin ítems NO-GO abiertos (según el Tech Log).
+    Rule {
+        id: "predep_dispatch_ok",
+        label: "Dispatched without NO-GO items",
+        phase: Phase::PreDeparture,
+        points_max: 60,
+        evaluator: eval_predep_dispatch_ok,
     },
     Rule {
         id: "predep_engines_off",
@@ -487,6 +507,23 @@ pub static RULES: &[Rule] = &[
         points_max: 100,
         evaluator: eval_final_approach_ias_limit,
     },
+    // (21/10) Aproximación estabilizada (criterio de aerolínea): de 1.000 ft
+    // a la recogida, tren abajo, flaps de aterrizaje, descenso ≤ ~1.000 fpm
+    // y alas casi niveladas.
+    Rule {
+        id: "final_approach_stabilized",
+        label: "Stabilized approach from 1,000 ft",
+        phase: Phase::FinalApproach,
+        points_max: 60,
+        evaluator: eval_final_approach_stabilized,
+    },
+    Rule {
+        id: "final_approach_stable_speed",
+        label: "Stable speed below 500 ft",
+        phase: Phase::FinalApproach,
+        points_max: 40,
+        evaluator: eval_final_approach_stable_speed,
+    },
     // ============================================================
     // LANDING (90 pts) — Touchdown
     // ============================================================
@@ -508,6 +545,21 @@ pub static RULES: &[Rule] = &[
         phase: Phase::Landing,
         points_max: 40,
         evaluator: eval_landing_spoilers_deployed,
+    },
+    // (21/10) Calidad del toque más allá del fpm.
+    Rule {
+        id: "landing_no_bounce",
+        label: "No bounce on touchdown",
+        phase: Phase::Landing,
+        points_max: 40,
+        evaluator: eval_landing_no_bounce,
+    },
+    Rule {
+        id: "landing_touchdown_g",
+        label: "Touchdown under 1.6 G",
+        phase: Phase::Landing,
+        points_max: 40,
+        evaluator: eval_landing_touchdown_g,
     },
     // ============================================================
     // TAXI-IN (80 pts) — Rollout + rodaje a gate
@@ -745,6 +797,97 @@ fn samples_taxi_in_settled<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
     s[start..].to_vec()
 }
 
+/// (21/10) Segundos (epoch) del `ts` ISO-8601 de una muestra.
+fn ts_secs(ts: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp())
+}
+
+/// (21/10) Racha continua más larga (en segundos) en la que `f` fue `true`.
+fn longest_true_run_secs<F>(samples: &[&TrackSample], f: F) -> i64
+where
+    F: Fn(&TrackSample) -> Option<bool>,
+{
+    let mut best = 0;
+    let mut start: Option<i64> = None;
+    for s in samples {
+        if f(s) == Some(true) {
+            let t = ts_secs(&s.ts);
+            if start.is_none() {
+                start = t;
+            }
+            if let (Some(a), Some(b)) = (start, t) {
+                best = best.max(b - a);
+            }
+        } else {
+            start = None;
+        }
+    }
+    best
+}
+
+/// (21/10) Elevación (MSL) de la pista de llegada: la altitud del avión ya en
+/// tierra tras aterrizar. El track guarda altitud sobre el mar; con esto se
+/// estima la altura sobre la pista en la aproximación final.
+fn arrival_elevation_ft(ctx: &FlightContext) -> Option<i64> {
+    let mut alts: Vec<i64> = ctx
+        .track
+        .iter()
+        .filter(|s| matches!(s.scoring_phase.as_deref(), Some("landing" | "taxi_in" | "arrived")))
+        .filter_map(|s| s.alt_ft)
+        .collect();
+    if alts.is_empty() {
+        return None;
+    }
+    alts.sort_unstable();
+    Some(alts[alts.len() / 2])
+}
+
+/// (21/10) Muestras de la aproximación final con altura estimada sobre la
+/// pista en (lo, hi] ft, con esa altura.
+fn final_approach_between(ctx: &FlightContext, lo: i64, hi: i64) -> Vec<(&TrackSample, i64)> {
+    let Some(elev) = arrival_elevation_ft(ctx) else {
+        return Vec::new();
+    };
+    samples_final_approach(ctx)
+        .into_iter()
+        .filter_map(|s| {
+            let agl = s.alt_ft? - elev;
+            (agl > lo && agl <= hi).then_some((s, agl))
+        })
+        .collect()
+}
+
+/// (21/10) Aproximación inicial por debajo de 10.000 ft SOBRE EL MAR. El
+/// límite de 250 kt y el encendido de las luces van por altitud, pero la fase
+/// se etiqueta por altura sobre el terreno: cerca de aeropuertos altos o sobre
+/// montañas incluía tramos a 12.000–15.000 ft MSL (y 280–300 kt legales).
+fn samples_initial_approach_below_10k<'a>(ctx: &'a FlightContext) -> Vec<&'a TrackSample> {
+    samples_initial_approach(ctx)
+        .into_iter()
+        .filter(|s| s.alt_ft.map(|a| a < 10_000).unwrap_or(false))
+        .collect()
+}
+
+/// (21/10) ¿El título del avión contiene alguna de estas claves?
+fn title_has(ctx: &FlightContext, keys: &[&str]) -> bool {
+    let t = format!(
+        "{} {}",
+        ctx.aircraft_title.as_deref().unwrap_or(""),
+        ctx.aircraft_atc_type.as_deref().unwrap_or("")
+    )
+    .to_uppercase();
+    keys.iter().any(|k| t.contains(k))
+}
+
+/// (21/10) Aviones cuyo freno de parking no llega a la simvar estándar
+/// (`BRAKE PARKING POSITION`): FlyByWire y FSLabs usan su propia variable. Si
+/// en todo el vuelo nunca se vio puesto, no hay dato fiable → no se penaliza.
+/// (Los vuelos nuevos del FBW leen su variable `A32NX_PARK_BRAKE_LEVER_POS`.)
+fn parking_brake_unpublished(ctx: &FlightContext) -> bool {
+    title_has(ctx, &["FBW", "A32NX", "A380X", "FSLABS"])
+        && !ctx.track.iter().any(|s| s.parking_brake == Some(true))
+}
+
 /// (v4.6.2) Núcleo del crucero — sólo muestras dentro de 3000 ft del techo
 /// del vuelo. El detector de fase también etiqueta "cruise" a las
 /// nivelaciones BAJAS (banda 1800..10000 ft nivelado: escalones de ATC,
@@ -912,7 +1055,10 @@ fn eval_g_force_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if !any_present(&ctx.track.iter().collect::<Vec<_>>(), |s| s.g_force) {
         return skip(rule, "no_g_force_data");
     }
-    let max_g = max_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.g_force).unwrap_or(1.0);
+    // (21/10) > 4 G = dato basura del simulador (cargas, reposicionamientos):
+    // no cuenta. Un airliner no aguanta esa carga sin romperse.
+    let max_g = max_f64(&ctx.track.iter().collect::<Vec<_>>(), |s| s.g_force.filter(|g| *g <= 4.0))
+        .unwrap_or(1.0);
     let evidence = json!({ "max_g_force": max_g });
     match max_g {
         v if v <= 2.0 => pass(rule, evidence),
@@ -988,6 +1134,9 @@ fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     if all.is_empty() {
         return skip(rule, "no_pre_departure_phase");
     }
+    if parking_brake_unpublished(ctx) {
+        return skip(rule, "aircraft_parking_brake_not_published");
+    }
     // (v4.6.2) Solo el periodo ESTÁTICO en el gate (gs < 1 kt). Soltar el
     // freno para el pushback (ya en movimiento) es lo normal y no debe
     // penalizar. Antes medíamos sobre TODA la fase pre_departure — que
@@ -1006,14 +1155,21 @@ fn eval_predep_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
         return skip(rule, "no_parking_brake_data");
     }
     let pct = pct_bool_true(&samples, |s| s.parking_brake).unwrap_or(0.0);
-    let evidence = json!({ "parking_brake_set_pct_static": (pct * 100.0) as i32 });
+    // (21/10) Racha continua más larga con el freno puesto. Soltarlo en el
+    // gate para el pushback (GSX lo pide antes de que llegue el remolcador)
+    // es lo correcto: basta con que haya estado puesto un rato seguido.
+    let run_s = longest_true_run_secs(&samples, |s| s.parking_brake);
+    let evidence = json!({
+        "parking_brake_set_pct_static": (pct * 100.0) as i32,
+        "longest_set_s": run_s,
+    });
     // (v4.15.0 #3) Umbrales tolerantes a la lectura INTERMITENTE del simvar
     // BRAKE PARKING POSITION en aviones complejos (PMDG/iFly), que provoca
     // falsos negativos: sobre el periodo estático en el gate, con que el
     // freno haya estado puesto la mayor parte del tiempo basta para ✓.
-    if pct >= 0.5 {
+    if pct >= 0.5 || run_s >= 60 {
         pass(rule, evidence)
-    } else if pct >= 0.25 {
+    } else if pct >= 0.25 || run_s > 0 {
         partial(rule, (rule.points_max * 2) / 3, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
@@ -1186,8 +1342,9 @@ fn eval_taxi_out_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
         "max_gs_kt": max_gs,
         "takeoff_roll_samples_skipped": gss.len() - slice.len(),
     });
+    // (21/10) 30 kt + 2 de margen por el muestreo (fallaba con 31–32 kt).
     match max_gs {
-        n if n <= 30 => pass(rule, evidence),
+        n if n <= 32 => pass(rule, evidence),
         n if n <= 40 => partial(rule, (rule.points_max * 2) / 3, evidence),
         n if n <= 50 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
@@ -1215,6 +1372,11 @@ fn eval_taxi_out_transponder(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     let samples = ctx.samples_in_phase("taxi_out");
     if samples.is_empty() {
         return skip(rule, "no_taxi_out_phase");
+    }
+    // (21/10) El iFly 737 no publica su código de transpondedor en la simvar
+    // estándar (se queda en 7000 todo el vuelo aunque el piloto lo ponga).
+    if title_has(ctx, &["IFLY"]) {
+        return skip(rule, "aircraft_transponder_not_published");
     }
     if !any_present(&samples, |s| s.transponder_code) {
         return skip(rule, "no_transponder_data");
@@ -1594,9 +1756,9 @@ fn eval_initial_approach_flaps_deployed(ctx: &FlightContext, rule: &Rule) -> Sco
 }
 
 fn eval_initial_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_initial_approach(ctx);
+    let samples = samples_initial_approach_below_10k(ctx);
     if samples.is_empty() {
-        return skip(rule, "no_initial_approach_data");
+        return skip(rule, "no_initial_approach_below_10000ft");
     }
     if !any_present(&samples, |s| s.ias_kt) {
         return skip(rule, "no_ias_data");
@@ -1615,9 +1777,20 @@ fn eval_initial_approach_ias_limit(ctx: &FlightContext, rule: &Rule) -> ScoreIte
 }
 
 fn eval_initial_approach_landing_light(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
-    let samples = samples_initial_approach(ctx);
+    // (21/10) Por debajo de 10.000 ft MSL, que es donde se encienden. En
+    // aeropuertos altos (Bogotá, Lhasa…) toda la aproximación va por encima:
+    // ahí se miran los últimos 5.000 ft sobre la pista.
+    let mut samples = samples_initial_approach_below_10k(ctx);
     if samples.is_empty() {
-        return skip(rule, "no_initial_approach_data");
+        if let Some(elev) = arrival_elevation_ft(ctx) {
+            samples = samples_initial_approach(ctx)
+                .into_iter()
+                .filter(|s| s.alt_ft.map(|a| a - elev < 5_000).unwrap_or(false))
+                .collect();
+        }
+    }
+    if samples.is_empty() {
+        return skip(rule, "no_initial_approach_below_10000ft");
     }
     if !any_present(&samples, |s| s.light_landing) {
         return skip(rule, "no_light_landing_data");
@@ -1674,6 +1847,25 @@ fn eval_final_approach_flaps_deployed(ctx: &FlightContext, rule: &Rule) -> Score
 }
 
 fn eval_final_approach_gear_down(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    // (21/10) La fase final empieza a 1.800 ft sobre el terreno y el tren se
+    // baja normalmente hacia los 1.500–2.000 ft: medir toda la fase daba ✗ por
+    // el tramo previo. Lo exigible es tren abajo desde 1.000 ft sobre la pista.
+    let low = final_approach_between(ctx, -100, 1000);
+    if low.iter().any(|(s, _)| s.gear_down.is_some()) {
+        let samples: Vec<&TrackSample> = low.iter().map(|(s, _)| *s).collect();
+        let pct_down = pct_bool_true(&samples, |s| s.gear_down).unwrap_or(0.0);
+        let evidence = json!({
+            "gear_down_pct_below_1000ft": (pct_down * 100.0) as i32,
+            "samples": samples.len(),
+        });
+        return if pct_down >= 0.95 {
+            pass(rule, evidence)
+        } else if pct_down >= 0.5 {
+            partial(rule, rule.points_max / 2, evidence)
+        } else {
+            fail(rule, "fail", 0, evidence)
+        };
+    }
     let samples = samples_final_approach(ctx);
     if samples.is_empty() {
         return skip(rule, "no_final_approach_data");
@@ -1765,6 +1957,133 @@ fn eval_landing_smooth(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
 }
 
 // =============================================================================
+// (21/10) Reglas nuevas: aproximación estabilizada, calidad del toque y Tech Log
+// =============================================================================
+
+/// Aproximación estabilizada de 1.000 ft a la recogida (50 ft): configurado
+/// (tren abajo y flaps de aterrizaje, ≥ 50 % de la palanca) por debajo de
+/// 900 ft, sin descenso de más de ~1.100 fpm ni alabeo de más de 15° de forma
+/// SOSTENIDA (dos o más muestras: una punta aislada no desestabiliza).
+fn eval_final_approach_stabilized(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let win = final_approach_between(ctx, 50, 1000);
+    if win.len() < 2 {
+        return skip(rule, "no_final_approach_below_1000ft");
+    }
+    let (mut gear_up, mut flaps_low, mut sink, mut bank) = (0, 0, 0, 0);
+    for (s, agl) in &win {
+        if *agl <= 900 {
+            gear_up += i32::from(s.gear_down == Some(false));
+            flaps_low += i32::from(s.flaps_pct.map(|p| p < 50).unwrap_or(false));
+        }
+        sink += i32::from(s.vs_fpm.map(|v| v < -1100).unwrap_or(false));
+        bank += i32::from(s.bank_deg.map(|b| b.abs() > 15.0).unwrap_or(false));
+    }
+    let config_bad = gear_up > 0 || flaps_low > 0;
+    let path_bad = [sink >= 2, bank >= 2].iter().filter(|b| **b).count();
+    let evidence = json!({
+        "samples": win.len(),
+        "gear_up": gear_up,
+        "flaps_not_landing": flaps_low,
+        "sink_over_1100_fpm": sink,
+        "bank_over_15": bank,
+    });
+    match (config_bad, path_bad) {
+        (false, 0) => pass(rule, evidence),
+        (false, 1) => partial(rule, rule.points_max / 2, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+/// Velocidad estable por debajo de 500 ft: variación de IAS (máx − mín) entre
+/// 500 y 50 ft sobre la pista.
+fn eval_final_approach_stable_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let ias: Vec<i64> = final_approach_between(ctx, 50, 500)
+        .iter()
+        .filter_map(|(s, _)| s.ias_kt)
+        .collect();
+    if ias.len() < 2 {
+        return skip(rule, "no_final_approach_below_500ft");
+    }
+    let (lo, hi) = (*ias.iter().min().unwrap_or(&0), *ias.iter().max().unwrap_or(&0));
+    let spread = hi - lo;
+    let evidence = json!({ "ias_min_kt": lo, "ias_max_kt": hi, "spread_kt": spread });
+    match spread {
+        n if n <= 15 => pass(rule, evidence),
+        n if n <= 25 => partial(rule, rule.points_max / 2, evidence),
+        _ => fail(rule, "fail", 0, evidence),
+    }
+}
+
+fn eval_landing_no_bounce(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    match ctx.bounced {
+        None => skip(rule, "no_bounce_data"),
+        Some(false) => pass(rule, json!({ "bounced": false })),
+        Some(true) => fail(rule, "fail", 0, json!({ "bounced": true })),
+    }
+}
+
+/// G en el toque: pico de G de las muestras del aterrizaje y de los últimos
+/// 50 ft. Normal ≤ 1,6 G; hasta 2,0 G es un toque duro.
+fn eval_landing_touchdown_g(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let mut samples = ctx.samples_in_phase("landing");
+    samples.extend(final_approach_between(ctx, -100, 50).into_iter().map(|(s, _)| s));
+    // Más de 4 G es un dato basura del simulador (picos de 9 G al cargar o
+    // reposicionar), no un toque real: se descarta.
+    let peak = samples
+        .iter()
+        .filter_map(|s| s.g_force)
+        .filter(|g| g.is_finite() && *g > 0.0 && *g <= 4.0)
+        .fold(None, |acc: Option<f64>, g| Some(acc.map_or(g, |a| a.max(g))));
+    let Some(peak) = peak else {
+        return skip(rule, "no_g_force_data");
+    };
+    let evidence = json!({ "peak_g": (peak * 100.0).round() / 100.0 });
+    if peak <= 1.6 {
+        pass(rule, evidence)
+    } else if peak <= 2.0 {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        fail(rule, "fail", 0, evidence)
+    }
+}
+
+/// Excedencias que registró el Tech Log del vuelo. Warning → ✗, Caution → parcial.
+fn eval_techlog_exceedances(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let Some(tl) = &ctx.techlog else {
+        return skip(rule, "no_techlog_record");
+    };
+    let is = |e: &crate::techlog::TlFlightEvent, sev: &str| e.severity.eq_ignore_ascii_case(sev);
+    let warnings: Vec<&str> = tl.events.iter().filter(|e| is(e, "warning")).map(|e| e.text.as_str()).collect();
+    let cautions: Vec<&str> = tl.events.iter().filter(|e| is(e, "caution")).map(|e| e.text.as_str()).collect();
+    let evidence = json!({
+        "app": tl.app_name,
+        "warnings": warnings.len(),
+        "cautions": cautions.len(),
+        "first": warnings.first().or(cautions.first()),
+    });
+    if !warnings.is_empty() {
+        fail(rule, "fail", 0, evidence)
+    } else if !cautions.is_empty() {
+        partial(rule, rule.points_max / 2, evidence)
+    } else {
+        pass(rule, evidence)
+    }
+}
+
+/// Despachado sin ítems NO-GO abiertos (violación de despacho del Tech Log).
+fn eval_predep_dispatch_ok(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
+    let Some(tl) = &ctx.techlog else {
+        return skip(rule, "no_techlog_record");
+    };
+    let evidence = json!({ "app": tl.app_name, "dispatch_violation": tl.dispatch_violation });
+    if tl.dispatch_violation {
+        fail(rule, "fail", 0, evidence)
+    } else {
+        pass(rule, evidence)
+    }
+}
+
+// =============================================================================
 // Evaluadores — TAXI-IN
 // =============================================================================
 
@@ -1773,10 +2092,22 @@ fn eval_taxi_in_landing_light_off(ctx: &FlightContext, rule: &Rule) -> ScoreItem
     // luces de aterrizaje) ocurre mientras aún frenas en pista, y ese
     // tramo cae en "taxi_in". Excluyéndolo, medimos las luces ya
     // maniobrando en calle de rodaje, donde deben estar apagadas.
-    let samples = samples_taxi_in_settled(ctx);
-    if samples.is_empty() {
+    let settled = samples_taxi_in_settled(ctx);
+    if settled.is_empty() {
         return skip(rule, "no_taxi_in_data");
     }
+    // (21/10) Primer minuto de gracia: el after-landing flow (apagar luces)
+    // se hace al dejar la pista, que aún cae al principio del taxi-in.
+    let t0 = settled.first().and_then(|s| ts_secs(&s.ts));
+    let after_grace: Vec<&TrackSample> = match t0 {
+        Some(t0) => settled
+            .iter()
+            .copied()
+            .filter(|s| ts_secs(&s.ts).map(|t| t - t0 >= 60).unwrap_or(true))
+            .collect(),
+        None => settled.clone(),
+    };
+    let samples = if after_grace.is_empty() { settled } else { after_grace };
     if !any_present(&samples, |s| s.light_landing) {
         return skip(rule, "no_light_landing_data");
     }
@@ -1821,8 +2152,9 @@ fn eval_taxi_in_speed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
         "max_gs_kt_taxi_in": max_gs,
         "rollout_exit_samples_skipped": skipped,
     });
+    // (21/10) 30 kt + 2 de margen por el muestreo.
     match max_gs {
-        n if n <= 30 => pass(rule, evidence),
+        n if n <= 32 => pass(rule, evidence),
         n if n <= 40 => partial(rule, (rule.points_max * 2) / 3, evidence),
         n if n <= 50 => partial(rule, rule.points_max / 3, evidence),
         _ => fail(rule, "fail", 0, evidence),
@@ -1891,6 +2223,9 @@ fn eval_arrived_parking_brake(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
     // máquina de fases oscila si reposiciona). Por eso evaluamos la
     // VENTANA FINAL del vuelo con gs ≈ 0 (avión parqueado), no sólo la
     // fase 'arrived'. Une los samples 'arrived' con la cola detenida.
+    if parking_brake_unpublished(ctx) {
+        return skip(rule, "aircraft_parking_brake_not_published");
+    }
     let mut samples: Vec<&TrackSample> = samples_arrived(ctx);
     // Cola detenida: últimos samples del track con gs < 3 kt.
     for s in ctx.track.iter().rev() {
@@ -1984,5 +2319,176 @@ fn eval_arrived_spoilers_stowed(ctx: &FlightContext, rule: &Rule) -> ScoreItem {
         pass(rule, evidence)
     } else {
         fail(rule, "fail", 0, evidence)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scoring::FlightContext;
+
+    fn ctx(title: &str, track: Vec<TrackSample>) -> FlightContext {
+        FlightContext {
+            flight_id: 1,
+            started_at: "2026-10-21T10:00:00Z".into(),
+            ended_at: None,
+            origin_icao: None,
+            origin_lat: 0.0,
+            origin_lon: 0.0,
+            destination_icao: None,
+            destination_lat: None,
+            destination_lon: None,
+            distance_nm: None,
+            flight_time_s: None,
+            max_altitude_ft: None,
+            landing_fpm: None,
+            max_ground_speed_kt: None,
+            max_true_airspeed_kt: None,
+            flight_number: None,
+            callsign: None,
+            airline_icao: None,
+            status: "finished".into(),
+            arrival_gate: None,
+            aircraft_title: Some(title.into()),
+            aircraft_atc_type: None,
+            aircraft_registration: None,
+            bounced: None,
+            techlog: None,
+            track,
+            phases: Vec::new(),
+        }
+    }
+
+    /// Muestra `i` (10 s entre muestras) en una fase.
+    fn s(i: i64, phase: &str) -> TrackSample {
+        let t = chrono::DateTime::parse_from_rfc3339("2026-10-21T10:00:00Z").unwrap()
+            + chrono::Duration::seconds(i * 10);
+        TrackSample {
+            ts: t.to_rfc3339(),
+            scoring_phase: Some(phase.into()),
+            gs_kt: Some(0),
+            ..Default::default()
+        }
+    }
+
+    fn rule(id: &str) -> &'static Rule {
+        RULES.iter().find(|r| r.id == id).unwrap()
+    }
+
+    fn eval(id: &str, c: &FlightContext) -> ScoreItem {
+        let r = rule(id);
+        (r.evaluator)(c, r)
+    }
+
+    #[test]
+    fn ias_limit_only_counts_below_10000_ft_msl() {
+        let mut t = Vec::new();
+        // 12.000 ft MSL a 290 kt (legal: por encima de 10.000) y 8.000 ft a 240 kt.
+        for i in 0..5 {
+            t.push(TrackSample { alt_ft: Some(12_000), ias_kt: Some(290), ..s(i, "initial_approach") });
+        }
+        for i in 5..10 {
+            t.push(TrackSample { alt_ft: Some(8_000), ias_kt: Some(240), ..s(i, "initial_approach") });
+        }
+        let item = eval("initial_approach_ias_limit", &ctx("Fenix A320", t));
+        assert_eq!(item.status, "done", "{:?}", item.evidence);
+    }
+
+    #[test]
+    fn gear_down_is_checked_from_1000_ft_above_the_runway() {
+        let mut t = Vec::new();
+        // Pista a 1.000 ft MSL. Tren arriba a 1.800 ft AGL, abajo desde 1.200.
+        t.push(TrackSample { alt_ft: Some(2_800), gear_down: Some(false), ..s(0, "final_approach") });
+        t.push(TrackSample { alt_ft: Some(2_500), gear_down: Some(false), ..s(1, "final_approach") });
+        for (i, a) in [2_200, 1_900, 1_500, 1_200].into_iter().enumerate() {
+            t.push(TrackSample { alt_ft: Some(a), gear_down: Some(true), ..s(2 + i as i64, "final_approach") });
+        }
+        for i in 6..10 {
+            t.push(TrackSample { alt_ft: Some(1_000), ..s(i, "landing") });
+        }
+        let item = eval("final_approach_gear_down", &ctx("Fenix A320", t));
+        assert_eq!(item.status, "done", "{:?}", item.evidence);
+    }
+
+    #[test]
+    fn parking_brake_released_for_the_pushback_still_counts() {
+        // Puesto 90 s seguidos y luego suelto 5 min esperando el pushback.
+        let mut t: Vec<TrackSample> = (0..10)
+            .map(|i| TrackSample { parking_brake: Some(true), ..s(i, "pre_departure") })
+            .collect();
+        t.extend((10..40).map(|i| TrackSample { parking_brake: Some(false), ..s(i, "pre_departure") }));
+        let item = eval("predep_parking_brake", &ctx("iFly 737-MAX8", t));
+        assert_eq!(item.status, "done", "{:?}", item.evidence);
+    }
+
+    #[test]
+    fn fbw_parking_brake_without_data_is_not_penalised() {
+        let t: Vec<TrackSample> = (0..10)
+            .map(|i| TrackSample { parking_brake: Some(false), ..s(i, "pre_departure") })
+            .collect();
+        let item = eval("predep_parking_brake", &ctx("Airbus A320 Neo (FBW)", t.clone()));
+        assert_eq!(item.status, "na");
+        // En otro avión, no ponerlo nunca sí es ✗.
+        let item = eval("predep_parking_brake", &ctx("PMDG 737-800", t));
+        assert_eq!(item.status, "missed");
+    }
+
+    #[test]
+    fn ifly_transponder_is_skipped() {
+        let t: Vec<TrackSample> = (0..5)
+            .map(|i| TrackSample { transponder_code: Some(7000), ..s(i, "taxi_out") })
+            .collect();
+        assert_eq!(eval("taxi_out_transponder", &ctx("iFly 737-MAX8", t.clone())).status, "na");
+        assert_eq!(eval("taxi_out_transponder", &ctx("PMDG 737-800", t)).status, "missed");
+    }
+
+    #[test]
+    fn unstable_approach_fails_and_stable_one_passes() {
+        let mk = |vs: i64| {
+            let mut t = Vec::new();
+            for (i, a) in [1_900, 1_700, 1_500, 1_300, 1_100].into_iter().enumerate() {
+                t.push(TrackSample {
+                    alt_ft: Some(a),
+                    gear_down: Some(true),
+                    flaps_pct: Some(100),
+                    vs_fpm: Some(vs),
+                    bank_deg: Some(2.0),
+                    ias_kt: Some(140),
+                    ..s(i as i64, "final_approach")
+                });
+            }
+            for i in 5..9 {
+                t.push(TrackSample { alt_ft: Some(1_000), ..s(i, "landing") });
+            }
+            ctx("Fenix A320", t)
+        };
+        assert_eq!(eval("final_approach_stabilized", &mk(-750)).status, "done");
+        assert_eq!(eval("final_approach_stabilized", &mk(-1_600)).status, "missed");
+        assert_eq!(eval("final_approach_stable_speed", &mk(-750)).status, "done");
+    }
+
+    #[test]
+    fn techlog_rules_use_the_flight_record() {
+        let mut c = ctx("Fenix A320", Vec::new());
+        assert_eq!(eval("general_techlog_exceedances", &c).status, "na");
+        c.techlog = Some(crate::techlog::TechLogFlight {
+            source: crate::techlog::TlSource::Fenix,
+            app_name: "Fenix TechLog".into(),
+            flight_id: 7,
+            status: "closed".into(),
+            score: Some(82.0),
+            score_notes: Vec::new(),
+            summary: None,
+            events: vec![crate::techlog::TlFlightEvent {
+                phase: None,
+                kind: "FLAPS_OVERSPEED".into(),
+                severity: "Warning".into(),
+                text: "Flaps overspeed".into(),
+            }],
+            wear: Vec::new(),
+            dispatch_violation: true,
+        });
+        assert_eq!(eval("general_techlog_exceedances", &c).status, "missed");
+        assert_eq!(eval("predep_dispatch_ok", &c).status, "missed");
     }
 }

@@ -778,6 +778,30 @@ mod windows_simconnect {
     const REQUEST_ID_MX_BRAKES: u32 = 5;
     const DEFINE_ID_MX_WARN: u32 = 6;
     const REQUEST_ID_MX_WARN: u32 = 6;
+    /// (21/10) Freno de parking del FlyByWire: su palanca vive en la variable
+    /// local `L:A32NX_PARK_BRAKE_LEVER_POS` (la simvar estándar `BRAKE PARKING
+    /// POSITION` no cambia en el FBW). Definición aparte: si el simulador no
+    /// acepta variables `L:` por SimConnect, sólo se pierde esta.
+    const DEFINE_ID_FBW_PB: u32 = 7;
+    const REQUEST_ID_FBW_PB: u32 = 7;
+    /// -1 = sin dato, 0 = suelto, 1 = puesto.
+    static FBW_PARK_BRAKE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+    /// El avión cargado es un FlyByWire (por su título).
+    static AIRCRAFT_IS_FBW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Freno de parking a guardar en el track: el de la palanca del FBW si es
+    /// un FBW y hay dato; si no, la simvar estándar.
+    fn effective_parking_brake(sim_value: f64) -> bool {
+        use std::sync::atomic::Ordering;
+        if AIRCRAFT_IS_FBW.load(Ordering::Relaxed) {
+            match FBW_PARK_BRAKE.load(Ordering::Relaxed) {
+                1 => return true,
+                0 => return false,
+                _ => {}
+            }
+        }
+        sim_value >= 0.5
+    }
     /// ID local arbitrario para el evento "Pause" — sólo nosotros
     /// usamos esta ID dentro del proceso, no choca con nada.
     const EVENT_ID_PAUSE: u32 = 100;
@@ -1513,7 +1537,7 @@ mod windows_simconnect {
         // principal: un fallo aquí no toca el registro de vuelos).
         {
             let u = |s: &str| sc::cstr(s);
-            let groups: [(u32, u32, &str, Vec<(&str, std::ffi::CString)>); 3] = [
+            let groups: [(u32, u32, &str, Vec<(&str, std::ffi::CString)>); 4] = [
                 (
                     DEFINE_ID_MX,
                     REQUEST_ID_MX,
@@ -1552,6 +1576,12 @@ mod windows_simconnect {
                         ("FLAP SPEED EXCEEDED", u("bool")),
                         ("GEAR SPEED EXCEEDED", u("bool")),
                     ],
+                ),
+                (
+                    DEFINE_ID_FBW_PB,
+                    REQUEST_ID_FBW_PB,
+                    "FBW_PB",
+                    vec![("L:A32NX_PARK_BRAKE_LEVER_POS", u("number"))],
                 ),
             ];
             for (define_id, request_id, label, vars) in groups.iter() {
@@ -1596,7 +1626,7 @@ mod windows_simconnect {
                     }
                 }
             }
-            tracing::info!(target: "simconnect", "Tech Log: flujos MX / MX_BRAKES / MX_WARN registrados");
+            tracing::info!(target: "simconnect", "Tech Log: flujos MX / MX_BRAKES / MX_WARN / FBW_PB registrados");
         }
 
         // (v0.1.25) Subscribe al evento "Pause" para no contar el
@@ -2430,6 +2460,7 @@ mod windows_simconnect {
                     if request_id == REQUEST_ID_MX
                         || request_id == REQUEST_ID_MX_BRAKES
                         || request_id == REQUEST_ID_MX_WARN
+                        || request_id == REQUEST_ID_FBW_PB
                     {
                         let base = unsafe {
                             let header_size =
@@ -2437,6 +2468,17 @@ mod windows_simconnect {
                             (p_data as *const u8).add(header_size - 4)
                         };
                         if in_replay_mode || base.is_null() {
+                            continue;
+                        }
+                        if request_id == REQUEST_ID_FBW_PB {
+                            // (21/10) Palanca del freno de parking del FBW (0/1).
+                            let v = unsafe { std::ptr::read_unaligned(base as *const f64) };
+                            if v.is_finite() {
+                                FBW_PARK_BRAKE.store(
+                                    i8::from(v >= 0.5),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                            }
                             continue;
                         }
                         if request_id == REQUEST_ID_MX {
@@ -2492,6 +2534,20 @@ mod windows_simconnect {
                         let raw_reg = read_cstr(&meta.atc_id);
                         // (19/10) Tech Log: perfil (familia/variante/motor).
                         crate::mx::recorder::set_aircraft(title.clone(), atc_type.clone());
+                        // (21/10) ¿FlyByWire? Su freno de parking va por su variable.
+                        {
+                            let t = format!(
+                                "{} {}",
+                                title.as_deref().unwrap_or(""),
+                                atc_type.as_deref().unwrap_or("")
+                            )
+                            .to_uppercase();
+                            let fbw = ["FBW", "A32NX", "A380X", "FLYBYWIRE"].iter().any(|k| t.contains(k));
+                            let was = AIRCRAFT_IS_FBW.swap(fbw, std::sync::atomic::Ordering::Relaxed);
+                            if was != fbw {
+                                FBW_PARK_BRAKE.store(-1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
                         let airline = crate::livery_meta::smart_airline(
                             raw_airline.as_deref(),
                             title.as_deref(),
@@ -3614,7 +3670,8 @@ mod windows_simconnect {
         let on_ground = data.on_ground >= 0.5;
         let vs = data.vertical_speed_fpm;
         let tas = data.true_airspeed_kt;
-        let parking_brake_set = data.parking_brake >= 0.5;
+        // (21/10) En el FBW, su palanca (la simvar estándar no cambia).
+        let parking_brake_set = effective_parking_brake(data.parking_brake);
         // Suma de los 4 slots de ENG COMBUSTION. >= 0.5 en CUALQUIER
         // slot significa que ese motor está encendido. "Todos
         // apagados" = ningún slot ≥ 0.5. Para aviones < 4 motores
@@ -4427,7 +4484,7 @@ mod windows_simconnect {
                             lon,
                             alt_ft: Some(alt as i64),
                             gs_kt: Some(gs as i64),
-                            parking_brake: Some(data.parking_brake >= 0.5),
+                            parking_brake: Some(effective_parking_brake(data.parking_brake)),
                             flaps_pct: Some(
                                 (data.flaps_handle_pct * 100.0).round() as i64,
                             ),
@@ -4509,6 +4566,7 @@ mod windows_simconnect {
                     on_ground,
                     gs,
                     data.alt_above_ground_ft,
+                    data.altitude_ft,
                     vs,
                     any_engine_running,
                     *passed_taxi_threshold,
@@ -4690,6 +4748,7 @@ mod windows_simconnect {
                 on_ground,
                 gs,
                 data.alt_above_ground_ft,
+                data.altitude_ft,
                 vs,
                 any_engine_running,
                 *passed_taxi_threshold,
@@ -5744,12 +5803,17 @@ mod windows_simconnect {
     ///   initial_climb    1000..10000 ft AGL (subiendo)
     ///   final_approach   < 1800 ft AGL (bajando)
     ///   initial_approach 1800..10000 ft AGL (bajando)
+    ///
+    /// (21/10) El límite de 10.000 ft (250 kt, luces) es ALTITUD sobre el mar:
+    /// `msl_ft` decide initial_climb/climb e initial_approach/descent; la
+    /// altura sobre el terreno sigue mandando para 1.000 y 1.800 ft.
     #[allow(clippy::too_many_arguments)]
     fn derive_scoring_phase(
         phase: FlightPhase,
         on_ground: bool,
         gs: f64,
         agl_ft: f64,
+        msl_ft: f64,
         vs_fpm: f64,
         any_engine_running: bool,
         passed_taxi_threshold: bool,
@@ -5814,7 +5878,7 @@ mod windows_simconnect {
                 if climbing {
                     if agl_ft < 1000.0 {
                         Some("takeoff_accel".to_string())
-                    } else if agl_ft < 10_000.0 {
+                    } else if msl_ft < 10_000.0 {
                         Some("initial_climb".to_string())
                     } else {
                         Some("climb".to_string())
@@ -5822,7 +5886,7 @@ mod windows_simconnect {
                 } else if descending {
                     if agl_ft < 1800.0 {
                         Some("final_approach".to_string())
-                    } else if agl_ft < 10_000.0 {
+                    } else if msl_ft < 10_000.0 {
                         Some("initial_approach".to_string())
                     } else {
                         Some("descent".to_string())
@@ -5832,7 +5896,7 @@ mod windows_simconnect {
                     if agl_ft < 1800.0 {
                         // Nivelado bajo = final approach (steady glide).
                         Some("final_approach".to_string())
-                    } else if agl_ft >= 10_000.0 {
+                    } else if msl_ft >= 10_000.0 {
                         Some("cruise".to_string())
                     } else {
                         // 1800..10000 nivelado — transición, lo más
