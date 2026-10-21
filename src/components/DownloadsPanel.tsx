@@ -65,6 +65,7 @@ export function DownloadsPanel({ open, onClose }: Props) {
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={{ type: "spring", stiffness: 320, damping: 34 }}
+            data-sf-overlay
             className="fixed bottom-0 right-0 top-11 z-[47] flex w-full max-w-md flex-col border-l border-sf-border bg-sf-bg shadow-2xl"
           >
             <header className="flex items-center justify-between border-b border-sf-border px-5 py-4">

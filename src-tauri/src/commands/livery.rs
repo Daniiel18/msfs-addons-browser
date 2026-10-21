@@ -47,6 +47,37 @@ const MIRROR_DL_DIR: &str = "simfleet-mirror-dl";
 const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+/// (v7) Driver de la página de flightsim.to (acelera la cuenta atrás de la
+/// descarga). (19/10) A nivel de módulo: lo comparten la ventana de liveries y
+/// el flightsim.to embebido en Explore (`flightsim_embed`).
+const LIVERY_DRIVER_JS: &str = r#"
+(function(){
+  try { window.__simfleetLivery = true; } catch(e){}
+  function fastCountdown(){
+    try {
+      var _sto = window.setTimeout, _sti = window.setInterval;
+      function clamp(d){ return (typeof d === 'number' && d >= 500 && d <= 2000) ? 40 : d; }
+      window.setTimeout = function(fn, d){
+        var a = Array.prototype.slice.call(arguments, 2);
+        return _sto.apply(window, [fn, clamp(d)].concat(a));
+      };
+      window.setInterval = function(fn, d){
+        var a = Array.prototype.slice.call(arguments, 2);
+        return _sti.apply(window, [fn, clamp(d)].concat(a));
+      };
+    } catch(e){}
+  }
+  try {
+    if (document.readyState === 'complete') { setTimeout(fastCountdown, 2000); }
+    else { window.addEventListener('load', function(){ setTimeout(fastCountdown, 2000); }); }
+  } catch(e){}
+  // (v7 fix) El overlay NO se dispara por el texto del countdown (eso tapaba y
+  // bloqueaba el botón de Download que aparece DESPUÉS). El overlay aparece
+  // cuando la descarga ARRANCA de verdad (on_download Requested → eval), igual
+  // que en los hosters, y se quita al terminar (on_download Finished → eval).
+})();
+"#;
+
 /// Navegador embebido de flightsim.to con captura de descarga.
 #[tauri::command]
 pub async fn open_livery_browser(
@@ -106,53 +137,10 @@ pub async fn open_livery_browser(
     // overlay bloqueante NO va desde el arranque — aparece SÓLO cuando arranca
     // la descarga (aparece el texto del contador), bloquea ~5 s (cubre la
     // cuenta atrás acelerada) y se apaga solo para seguir navegando.
-    const LIVERY_DRIVER_JS: &str = r#"
-(function(){
-  try { window.__simfleetLivery = true; } catch(e){}
-  function fastCountdown(){
-    try {
-      var _sto = window.setTimeout, _sti = window.setInterval;
-      function clamp(d){ return (typeof d === 'number' && d >= 500 && d <= 2000) ? 40 : d; }
-      window.setTimeout = function(fn, d){
-        var a = Array.prototype.slice.call(arguments, 2);
-        return _sto.apply(window, [fn, clamp(d)].concat(a));
-      };
-      window.setInterval = function(fn, d){
-        var a = Array.prototype.slice.call(arguments, 2);
-        return _sti.apply(window, [fn, clamp(d)].concat(a));
-      };
-    } catch(e){}
-  }
-  try {
-    if (document.readyState === 'complete') { setTimeout(fastCountdown, 2000); }
-    else { window.addEventListener('load', function(){ setTimeout(fastCountdown, 2000); }); }
-  } catch(e){}
-  // (v7 fix) El overlay NO se dispara por el texto del countdown (eso tapaba y
-  // bloqueaba el botón de Download que aparece DESPUÉS). El overlay aparece
-  // cuando la descarga ARRANCA de verdad (on_download Requested → eval), igual
-  // que en los hosters, y se quita al terminar (on_download Finished → eval).
-})();
-"#;
 
     // Overlay compartido + driver de liveries, con el idioma de la app.
-    let lang = {
-        match app.try_state::<crate::AppState>() {
-            Some(state) => sqlx::query_as::<_, (String,)>(
-                "SELECT value FROM settings WHERE key='pref_language'",
-            )
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .map(|r| r.0)
-            .unwrap_or_default(),
-            None => String::new(),
-        }
-    };
-    let livery_init = top_frame_only(&format!(
-        "{}\n{OVERLAY_JS}\n{LIVERY_DRIVER_JS}",
-        lang_prefix(&lang)
-    ));
+    let lang = pref_language(&app).await;
+    let livery_init = flightsim_init_script(&lang);
 
     let mut builder = WebviewWindowBuilder::new(&app, LIVERY_WIN, WebviewUrl::External(parsed))
         .initialization_script(livery_init.as_str())
@@ -198,66 +186,8 @@ pub async fn open_livery_browser(
             );
         })
         .on_download(move |webview, event| {
-            use tauri::webview::DownloadEvent;
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    let fname = download_filename(&url);
-                    let target = dl_dir_cb.join(&fname);
-                    tracing::info!(target: "livery", "descarga interceptada: {} → {}", url, target.display());
-                    // (v7) La descarga ARRANCÓ (el usuario ya clicó el botón de
-                    // Download que aparece tras el countdown) → recién AHORA
-                    // ponemos el overlay bloqueante. Aviso también al front.
-                    let _ = webview.eval(
-                        "window.__sfDownloading=true;if(window.__sfSet)window.__sfSet('block');",
-                    );
-                    let _ = app_emit.emit("embedded-download://started", fname.clone());
-                    *destination = target;
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    tracing::info!(target: "livery", "descarga terminada ok={} url={} path={:?}", success, url, path);
-                    // (v7) La ventana de liveries NO se auto-cierra (el usuario
-                    // sigue navegando para bajar más), así que quitamos el
-                    // overlay al terminar la descarga.
-                    let _ = webview.eval(
-                        "window.__sfDownloading=false;if(window.__sfSet)window.__sfSet('off');",
-                    );
-                    if success {
-                        if let Some(p) = path {
-                            // (v7) Misma corrección de extensión por firma que en
-                            // hosters (por si un CDN sirve el archivo sin nombre).
-                            let fixed = fix_archive_extension(&p);
-                            let ps = fixed.to_string_lossy().to_string();
-                            // (v6.2.60) Asociar la descarga con la página de
-                            // flightsim.to de la que salió → tracking de updates.
-                            // Fuente primaria: la URL ACTUAL del webview (cubre la
-                            // navegación SPA, que no dispara on_navigation).
-                            // Respaldo: la última página de archivo navegada.
-                            let live = webview
-                                .url()
-                                .ok()
-                                .map(|u| u.to_string())
-                                .filter(|u| crate::flightsim_track::file_id_from_url(u).is_some());
-                            let src_url = live.or_else(|| {
-                                lfp_dl.lock().ok().and_then(|g| g.clone())
-                            });
-                            if let Some(fid) = src_url
-                                .as_deref()
-                                .and_then(crate::flightsim_track::file_id_from_url)
-                            {
-                                if let Some(state) = app_emit.try_state::<crate::AppState>() {
-                                    if let Ok(mut m) = state.livery_downloads.lock() {
-                                        tracing::info!(target: "livery", "descarga {} ↔ flightsim file_id={}", ps, fid);
-                                        m.insert(ps.clone(), fid);
-                                    }
-                                }
-                            }
-                            let _ = app_emit.emit("livery-download://finished", ps);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            true
+            // (19/10) Lógica compartida con el flightsim.to embebido en Explore.
+            handle_flightsim_download(&app_emit, &dl_dir_cb, &lfp_dl, &webview, event)
         });
     // (v7) uBlock Origin Lite también en la ventana de flightsim.to (misma
     // extensión; si no cargó, se ignora).
@@ -277,8 +207,8 @@ pub async fn open_livery_browser(
     // (v7) Liveries sin bloqueo de popups (comportamiento de siempre).
     #[cfg(target_os = "windows")]
     {
-        install_web_guards(&win, false);
-        install_download_progress(&win);
+        install_web_guards(win.as_ref(), false);
+        install_download_progress(win.as_ref());
     }
 
     tracing::info!(target: "livery", "navegador embebido de liveries abierto → {}", start);
@@ -558,6 +488,106 @@ const HOSTER_DRIVER_JS: &str = r#"
 /// Turnstile: le inyectaban nodos, un sondeo cada 400 ms y timers alterados →
 /// Turnstile detectaba la manipulación y respondía "Verification failed" por
 /// mucho que el usuario marcara "soy humano" (mixdrop / get.php / flightsim.to).
+/// (19/10) Idioma de la app (setting `pref_language`), para el overlay.
+pub(crate) async fn pref_language(app: &tauri::AppHandle) -> String {
+    match app.try_state::<crate::AppState>() {
+        Some(state) => sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM settings WHERE key='pref_language'",
+        )
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.0)
+        .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// (19/10) Script de inicio de las páginas de flightsim.to (overlay de
+/// descarga + driver), sólo en el frame principal.
+pub(crate) fn flightsim_init_script(lang: &str) -> String {
+    top_frame_only(&format!(
+        "{}\n{OVERLAY_JS}\n{LIVERY_DRIVER_JS}",
+        lang_prefix(lang)
+    ))
+}
+
+/// (19/10) Carpeta de extensiones (uBlock Origin Lite), si se preparó.
+pub(crate) fn extensions_dir() -> Option<&'static PathBuf> {
+    UBOL_DIR.get()
+}
+
+/// (19/10) Manejo COMPARTIDO de las descargas de flightsim.to (ventana de
+/// liveries y flightsim.to embebido en Explore): las desvía a la carpeta
+/// temporal, pone/quita el overlay, asocia el archivo a su `file_id` de
+/// flightsim.to (tracking de updates) y avisa al front para instalarlo.
+pub(crate) fn handle_flightsim_download(
+    app_emit: &tauri::AppHandle,
+    dl_dir: &Path,
+    last_file_page: &Arc<Mutex<Option<String>>>,
+    webview: &tauri::Webview,
+    event: tauri::webview::DownloadEvent<'_>,
+) -> bool {
+    use tauri::webview::DownloadEvent;
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            let fname = download_filename(&url);
+            let target = dl_dir.join(&fname);
+            tracing::info!(target: "livery", "descarga interceptada: {} → {}", url, target.display());
+            // (v7) La descarga ARRANCÓ (el usuario ya clicó el botón de
+            // Download que aparece tras el countdown) → recién AHORA
+            // ponemos el overlay bloqueante. Aviso también al front.
+            let _ = webview.eval(
+                "window.__sfDownloading=true;if(window.__sfSet)window.__sfSet('block');",
+            );
+            let _ = app_emit.emit("embedded-download://started", fname.clone());
+            *destination = target;
+        }
+        DownloadEvent::Finished { url, path, success } => {
+            tracing::info!(target: "livery", "descarga terminada ok={} url={} path={:?}", success, url, path);
+            // (v7) La página NO se cierra (el usuario sigue navegando para
+            // bajar más), así que quitamos el overlay al terminar.
+            let _ = webview.eval(
+                "window.__sfDownloading=false;if(window.__sfSet)window.__sfSet('off');",
+            );
+            if success {
+                if let Some(p) = path {
+                    // (v7) Corrección de extensión por firma (por si un CDN
+                    // sirve el archivo sin nombre).
+                    let fixed = fix_archive_extension(&p);
+                    let ps = fixed.to_string_lossy().to_string();
+                    // (v6.2.60) Asociar la descarga con la página de
+                    // flightsim.to de la que salió → tracking de updates.
+                    // Fuente primaria: la URL ACTUAL del webview (cubre la
+                    // navegación SPA, que no dispara on_navigation).
+                    // Respaldo: la última página de archivo navegada.
+                    let live = webview
+                        .url()
+                        .ok()
+                        .map(|u| u.to_string())
+                        .filter(|u| crate::flightsim_track::file_id_from_url(u).is_some());
+                    let src_url = live.or_else(|| last_file_page.lock().ok().and_then(|g| g.clone()));
+                    if let Some(fid) = src_url
+                        .as_deref()
+                        .and_then(crate::flightsim_track::file_id_from_url)
+                    {
+                        if let Some(state) = app_emit.try_state::<crate::AppState>() {
+                            if let Ok(mut m) = state.livery_downloads.lock() {
+                                tracing::info!(target: "livery", "descarga {} ↔ flightsim file_id={}", ps, fid);
+                                m.insert(ps.clone(), fid);
+                            }
+                        }
+                    }
+                    let _ = app_emit.emit("livery-download://finished", ps);
+                }
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 fn top_frame_only(js: &str) -> String {
     format!("if (window.top === window.self) {{\n{js}\n}}")
 }
@@ -826,8 +856,8 @@ pub(crate) fn open_hoster_download(
     // anuncios / sin barra de progreso.
     #[cfg(target_os = "windows")]
     {
-        install_web_guards(&win, true);
-        install_download_progress(&win);
+        install_web_guards(win.as_ref(), true);
+        install_download_progress(win.as_ref());
     }
     #[cfg(not(target_os = "windows"))]
     let _ = &win;
@@ -853,7 +883,7 @@ pub(crate) fn open_hoster_download(
 ///     blanco cuando se pisaba `window.open` desde JS). Liveries lo dejan en
 ///     `false` (comportamiento idéntico al de siempre).
 #[cfg(target_os = "windows")]
-fn install_web_guards(win: &tauri::WebviewWindow, block_new_windows: bool) {
+pub(crate) fn install_web_guards(win: &tauri::Webview, block_new_windows: bool) {
     let _ = win.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             ICoreWebView2Settings3, ICoreWebView2_2, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
@@ -962,7 +992,7 @@ fn install_web_guards(win: &tauri::WebviewWindow, block_new_windows: bool) {
 /// se calcula con estado capturado (Δbytes/Δt) sin locks. Verificado contra
 /// webview2-com 0.38.2.
 #[cfg(target_os = "windows")]
-fn install_download_progress(win: &tauri::WebviewWindow) {
+pub(crate) fn install_download_progress(win: &tauri::Webview) {
     let _ = win.with_webview(move |webview| {
         use std::time::Instant;
         use webview2_com::Microsoft::Web::WebView2::Win32::{

@@ -338,6 +338,48 @@ fn status_of(wear: f64) -> &'static str {
 /// Multiplicador del COSTE de servicio según el nivel de mantenimiento de la
 /// aerolínea: premium usa repuestos/talleres mejores (más caro), básico más
 /// barato. Así premium ≠ standard ≠ básico, como pidió el usuario.
+/// (19/10) Multiplicador de coste del nivel de mantenimiento de la aerolínea
+/// que opera una matrícula (premium/standard/básico). Lo usa la sincronía con
+/// TechLog para cobrar su mantenimiento al precio de esa aerolínea.
+pub(crate) async fn level_mult_for_registration(pool: &SqlitePool, registration: &str) -> f64 {
+    level_cost_mult(airline_for_registration(pool, registration).await.0)
+}
+
+/// (19/10) Nivel de mantenimiento (0 básico, 1 estándar, 2 premium) y
+/// aerolínea (clave, nombre) que opera una matrícula, por sus vuelos.
+pub(crate) async fn airline_for_registration(
+    pool: &SqlitePool,
+    registration: &str,
+) -> (i64, Option<String>, Option<String>) {
+    let reg = normalize_reg(registration);
+    let Ok(flights) = flight_log::list_entries(pool).await else {
+        return (1, None, None);
+    };
+    let learned = airline_economy::learn_airline_icaos(&flights);
+    let canon = flights
+        .iter()
+        .filter(|f| f.aircraft_registration.as_deref().map(normalize_reg).as_deref() == Some(reg.as_str()))
+        .find_map(|f| {
+            airline_economy::canonical_airline(
+                f.airline_icao.as_deref(),
+                f.callsign.as_deref(),
+                f.aircraft_airline.as_deref(),
+                f.aircraft_title.as_deref(),
+                &learned,
+            )
+        });
+    match canon {
+        Some(c) => {
+            let level = airline_economy::get_policy(pool, &c.key)
+                .await
+                .map(|p| p.maintenance_level)
+                .unwrap_or(1);
+            (level, Some(c.key.clone()), Some(c.name.clone()))
+        }
+        None => (1, None, None),
+    }
+}
+
 fn level_cost_mult(level: i64) -> f64 {
     match level {
         0 => 0.75,
@@ -504,12 +546,20 @@ pub struct MaintAlert {
     pub severity: String,
     /// Nº de componentes en estado "due" de esta matrícula.
     pub due_count: i64,
+    /// (19/10) Texto ya listo (avisos del Tech Log). `None` en los del
+    /// sistema viejo, que se etiquetan con `component`.
+    pub label: Option<String>,
 }
 
 /// (v6.2.19) Escanea TODAS las matrículas voladas y devuelve las que tienen
 /// componentes próximos a mantenimiento (>=75%). Una alerta por matrícula,
 /// con su peor componente. Alimenta la campanita de notificaciones.
 pub async fn maintenance_alerts(pool: &SqlitePool) -> Result<Vec<MaintAlert>> {
+    // (19/10) Etapa 3: el sistema viejo está retirado; los avisos salen del
+    // Tech Log de SimFleet y de Fenix/PMDG TechLog.
+    if !crate::mx::LEGACY_WEAR_ENABLED {
+        return crate::mx::store::alerts(pool).await;
+    }
     const SOON_AT: f64 = 75.0;
     let flights = flight_log::list_entries(pool).await?;
     let learned = airline_economy::learn_airline_icaos(&flights);
@@ -585,6 +635,7 @@ pub async fn maintenance_alerts(pool: &SqlitePool) -> Result<Vec<MaintAlert>> {
                 wear_pct: w.wear_pct,
                 severity: if w.wear_pct >= 80.0 { "due" } else { "soon" }.to_string(),
                 due_count,
+                label: None,
             });
         }
     }
@@ -604,6 +655,11 @@ pub async fn maintenance_alerts(pool: &SqlitePool) -> Result<Vec<MaintAlert>> {
 /// de mantenimiento de esa aerolínea — entra en las cuentas de Finanzas.
 /// Corre al inicio de cada `recompute()` (cada vez que se abre Finanzas).
 pub async fn auto_service_worn(pool: &SqlitePool) -> Result<u64> {
+    // (19/10) Etapa 3: el auto-servicio viejo ya no cobra; el mantenimiento
+    // lo llevan el Tech Log de SimFleet (`mx`) y Fenix/PMDG TechLog.
+    if !crate::mx::LEGACY_WEAR_ENABLED {
+        return Ok(0);
+    }
     let flights = flight_log::list_entries(pool).await?;
     let learned = airline_economy::learn_airline_icaos(&flights);
     let services = last_services(pool).await?;
@@ -633,6 +689,10 @@ pub async fn auto_service_worn(pool: &SqlitePool) -> Result<u64> {
         }
     }
 
+    // (19/10) Los aviones con TechLog los mantiene TechLog (fuente de
+    // verdad): nada de auto-servicio de SimFleet para ellos.
+    let managed = crate::techlog::managed_registrations().await;
+    by_reg.retain(|reg, _| !managed.contains_key(reg));
     // Multiplicador de coste por aerolínea (cacheado — una query por aerolínea).
     let mut mult_of: HashMap<String, f64> = HashMap::new();
     let mut count = 0u64;

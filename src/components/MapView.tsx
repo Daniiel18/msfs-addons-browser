@@ -8,7 +8,12 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import type { AvailableUpdate, CommunityPackage } from "../lib/types";
+import type {
+  AvailableUpdate,
+  CommunityPackage,
+  GsxAirportParkings,
+} from "../lib/types";
+import { GSX_KIND_COLORS } from "../lib/gsxKinds";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
@@ -380,11 +385,20 @@ export function MapView() {
       fitToData();
     };
 
-    // (v4.26.0) `styledata` en vez de `load`: `load` dispara una sola
-    // vez en la vida del mapa, pero tras un setStyle (tema) hay que
-    // esperar a que el estilo NUEVO cargue para re-añadir el source.
-    if (map.isStyleLoaded()) apply();
-    else map.once("style.load", apply);
+    // (v4.26.0) Tras un setStyle (tema) hay que esperar a que el estilo
+    // NUEVO cargue para re-añadir el source (styleEpoch re-ejecuta esto).
+    // (19/10 fix) NO usar `isStyleLoaded()`: es false mientras cargan
+    // teselas (al mover el mapa) y `style.load` no vuelve a dispararse, así
+    // que la actualización se perdía. `apply` hace setData si el source
+    // existe; si el estilo aún no admite capas, reintentamos en `idle`.
+    const run = () => {
+      try {
+        apply();
+      } catch {
+        map.once("idle", run);
+      }
+    };
+    run();
   }, [geojson, setFocused, styleEpoch]);
 
   // Cuando cambia el paquete enfocado (por click en sidebar o
@@ -396,6 +410,170 @@ export function MapView() {
     const coords: [number, number] = [focusedPkg.longitude, focusedPkg.latitude];
     map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 9), duration: 600 });
   }, [focusedPkg]);
+
+  // (19/10) GATES Y PARKINGS DEL PERFIL GSX. Al enfocar un aeropuerto con
+  // perfil GSX instalado cargamos sus posiciones (INI de GSX en disco), el
+  // mapa se acerca al aeropuerto y cada gate/parking aparece como un pin con
+  // su nombre. A ese zoom entra el satélite para reconocer la plataforma.
+  const [gsxParkings, setGsxParkings] = useState<GsxAirportParkings | null>(null);
+  const [pickedParking, setPickedParking] = useState<string | null>(null);
+  const focusedIcao = focusedPkg?.icao?.toUpperCase() ?? null;
+  const focusedHasGsx = !!focusedIcao && gsxInstalledIcaos.has(focusedIcao);
+  useEffect(() => {
+    setGsxParkings(null);
+    setPickedParking(null);
+    if (!focusedIcao || !focusedHasGsx) return;
+    let cancelled = false;
+    api
+      .gsxAirportParkings(focusedIcao)
+      .then((r) => {
+        if (!cancelled) setGsxParkings(r && r.parkings.length > 0 ? r : null);
+      })
+      .catch(() => {
+        if (!cancelled) setGsxParkings(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedIcao, focusedHasGsx]);
+
+  // Capas: satélite (sólo con zoom de aeropuerto) + pines + etiquetas.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const data: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features: (gsxParkings?.parkings ?? []).map((p) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [p.lon, p.lat] },
+        properties: { name: p.name, kind: p.kind },
+      })),
+    };
+    const apply = () => {
+      const src = map.getSource("gsx-parkings") as GeoJSONSource | undefined;
+      if (src) {
+        src.setData(data);
+        return;
+      }
+      map.addSource("gsx-sat", {
+        type: "raster",
+        tiles: [
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Imagery © Esri",
+      });
+      // Debajo de los aeropuertos y pines; aparece desde zoom 12.5.
+      map.addLayer(
+        {
+          id: "gsx-sat",
+          type: "raster",
+          source: "gsx-sat",
+          minzoom: 12,
+          paint: {
+            "raster-opacity": ["interpolate", ["linear"], ["zoom"], 12, 0, 13.5, 1],
+          },
+        },
+        map.getLayer("package-point") ? "package-point" : undefined,
+      );
+      map.addSource("gsx-parkings", { type: "geojson", data });
+      map.addLayer({
+        id: "gsx-parking-point",
+        type: "circle",
+        source: "gsx-parkings",
+        minzoom: 12,
+        paint: {
+          "circle-color": GSX_KIND_COLOR_EXPR,
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 3, 15, 5, 18, 8],
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "rgba(11, 26, 28, 0.9)",
+        },
+      });
+      map.addLayer({
+        id: "gsx-parking-label",
+        type: "symbol",
+        source: "gsx-parkings",
+        minzoom: 14.5,
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Open Sans Semibold"],
+          "text-size": 11,
+          "text-offset": [0, 1.1],
+          "text-anchor": "top",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#ffffff",
+          "text-halo-color": "rgba(11, 26, 28, 0.95)",
+          "text-halo-width": 1.4,
+        },
+      });
+      map.addLayer({
+        id: "gsx-parking-picked",
+        type: "circle",
+        source: "gsx-parkings",
+        filter: ["==", ["get", "name"], ""],
+        paint: {
+          "circle-color": "rgba(0,0,0,0)",
+          "circle-radius": 13,
+          "circle-stroke-width": 2.5,
+          "circle-stroke-color": "#35cdb2",
+        },
+      });
+      map.on("click", "gsx-parking-point", (e) => {
+        const name = e.features?.[0]?.properties?.name;
+        if (typeof name === "string") setPickedParking(name);
+      });
+      map.on("mouseenter", "gsx-parking-point", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "gsx-parking-point", () => {
+        map.getCanvas().style.cursor = "";
+      });
+    };
+    // (19/10 fix) Al pasar de un aeropuerto a otro el mapa está cargando
+    // teselas: `isStyleLoaded()` daba false y esperábamos un `style.load`
+    // que nunca llega → se quedaban los gates del aeropuerto anterior.
+    const run = () => {
+      try {
+        apply();
+      } catch {
+        map.once("idle", run);
+      }
+    };
+    run();
+  }, [gsxParkings, styleEpoch]);
+
+  // Encuadre: al llegar las posiciones, el mapa se acerca al aeropuerto
+  // (dejando sitio a la tarjeta de la derecha).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !gsxParkings) return;
+    const b = new maplibregl.LngLatBounds();
+    for (const p of gsxParkings.parkings) b.extend([p.lon, p.lat]);
+    map.fitBounds(b, {
+      padding: { top: 60, bottom: 60, left: 60, right: 380 },
+      maxZoom: 16.5,
+      duration: 900,
+    });
+  }, [gsxParkings]);
+
+  // Gate elegido (lista de la tarjeta o click en el pin): resaltar y centrar.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("gsx-parking-picked")) return;
+    map.setFilter("gsx-parking-picked", ["==", ["get", "name"], pickedParking ?? ""]);
+    const p = gsxParkings?.parkings.find((x) => x.name === pickedParking);
+    if (p) {
+      map.easeTo({
+        center: [p.lon, p.lat],
+        zoom: Math.max(map.getZoom(), 17),
+        padding: { top: 0, bottom: 0, left: 0, right: 340 },
+        duration: 600,
+      });
+    }
+  }, [pickedParking, gsxParkings]);
 
   // NOTA: las líneas de rutas SimBrief + SimConnect vivían acá
   // antes; las migramos al componente `RoutesMapView` que se monta
@@ -470,6 +648,9 @@ export function MapView() {
               pkg={focusedPkg}
               update={focusedUpdate}
               onClose={() => setFocused(null)}
+              gsxParkings={gsxParkings}
+              pickedParking={pickedParking}
+              onPickParking={setPickedParking}
             />
           )}
         </AnimatePresence>
@@ -801,6 +982,15 @@ function GsxFilterChip({
 /** (v4.26.0) Basemap según el tema de la app: CARTO dark_all (mismo
  *  proveedor de labels que usa el FlightBook) cuando la app está en
  *  oscuro, OSM estándar en claro. */
+// (19/10) Color de cada tipo de posición GSX (paleta compartida con la
+// lista de la tarjeta, en lib/gsxKinds.ts).
+const GSX_KIND_COLOR_EXPR = [
+  "match",
+  ["get", "kind"],
+  ...Object.entries(GSX_KIND_COLORS).flat(),
+  GSX_KIND_COLORS.other,
+] as unknown as maplibregl.ExpressionSpecification;
+
 function styleFor(theme: string): maplibregl.StyleSpecification {
   return theme === "light" ? OSM_STYLE : DARK_STYLE;
 }

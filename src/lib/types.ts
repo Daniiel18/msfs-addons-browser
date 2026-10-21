@@ -1221,6 +1221,189 @@ export interface AiracUpdateInfo {
 /** Perfil GSX Pro disponible en flightsim.to para un ICAO concreto.
  *  Espejo serializado de `gsx::GsxProfile` (Rust) — el comando
  *  `gsx_lookup` devuelve cero o varios. */
+/** (19/10) Etapa 2 — sincronía con Fenix/PMDG TechLog. */
+export type TechLogSource = "fenix" | "pmdg" | "simfleet";
+
+export interface TechLogDefect {
+  id: number;
+  ata: number;
+  title: string;
+  detail: string | null;
+  /** "NoGo" | "A" | "B" | "C" | "D" | … */
+  category: string;
+  /** "Open" | "Deferred" */
+  status: string;
+  melId: string | null;
+  position: string | null;
+  raisedUtc: string | null;
+  deferredUntil: string | null;
+  latestDeferral: string | null;
+  canDefer: boolean;
+  failure: string | null;
+  placard: string | null;
+  restrictions: string | null;
+}
+
+export interface TechLogPart {
+  id: number;
+  key: string;
+  name: string;
+  position: string | null;
+  ata: number;
+  system: string;
+  kind: string;
+  remainingPct: number;
+  /** "Ok" | "Degraded" | "Failed" */
+  status: string;
+  repairs: number;
+}
+
+export interface TechLogConsumable {
+  key: string;
+  position: string | null;
+  name: string;
+  unit: string;
+  level: number;
+  capacity: number;
+  minDispatch: number;
+  low: number;
+  fills: boolean;
+  /** "ok" | "low" | "below_min" */
+  status: string;
+  serviceKind: string;
+  serviceLabel: string;
+}
+
+export interface TechLogCheck {
+  key: string;
+  name: string;
+  lastDoneUtc: string | null;
+  dueUtc: string | null;
+  overdue: boolean;
+  hoursLeft: number | null;
+}
+
+export interface TechLogAircraft {
+  source: TechLogSource;
+  appName: string;
+  tabletUrl: string;
+  /** TechLog abierto. */
+  running: boolean;
+  /** Este avión es el activo de un TechLog abierto → acciones posibles. */
+  active: boolean;
+  airframeId: number;
+  registration: string;
+  variant: string;
+  engine: string;
+  maintenance: string;
+  flightHours: number;
+  cycles: number;
+  egtMarginC: number[];
+  dispatch: { status: "GO" | "GO_MEL" | "NO_GO" | string; reasons: string[] };
+  defects: TechLogDefect[];
+  parts: TechLogPart[];
+  /** (20/10) `avgRemainingPct` = vida media restante de todas las piezas. */
+  condition: { good: number; low: number; failed: number; avgRemainingPct: number };
+  consumables: TechLogConsumable[];
+  checks: TechLogCheck[];
+  lastSeenUtc: string | null;
+}
+
+export interface TechLogAppStatus {
+  source: TechLogSource;
+  appName: string;
+  installed: boolean;
+  running: boolean;
+  tabletUrl: string;
+  airframes: number;
+}
+
+export type TechLogActionKind =
+  | "fix"
+  | "defer"
+  | "deferAll"
+  | "partFix"
+  | "partReplace"
+  | "service"
+  | "check"
+  | "callMaintenance";
+
+export interface TechLogActionRequest {
+  registration: string;
+  action: TechLogActionKind;
+  id?: number;
+  ids?: number[];
+  until?: string;
+  key?: string;
+  /** (20/10) Texto de la orden si queda en cola ("Reparar · Brake 3"). */
+  label?: string;
+}
+
+/** (20/10) Resultado de una orden: `queued` = en cola (el sim tiene otro avión). */
+export interface TechLogActionResult {
+  ok: boolean;
+  message: string;
+  queued?: boolean;
+}
+
+/** (20/10) Orden en cola para Fenix/PMDG TechLog. */
+export interface TechLogPendingOrder {
+  id: number;
+  source: TechLogSource;
+  registration: string;
+  action: TechLogActionKind;
+  label: string | null;
+  createdAt: string;
+}
+
+/** (20/10) Orden de la cola ya aplicada (evento `techlog://pending`). */
+export interface TechLogPendingResult {
+  registration: string;
+  label: string;
+  ok: boolean;
+  message: string;
+}
+
+export interface TechLogFlight {
+  source: TechLogSource;
+  appName: string;
+  flightId: number;
+  status: string;
+  score: number | null;
+  scoreNotes: string[];
+  summary: string | null;
+  events: { phase: string | null; kind: string; severity: string; text: string }[];
+  wear: { item: string; amount: number; unit: string }[];
+  /** (19/10) Despegó con ítems NO-GO abiertos (violación de despacho). */
+  dispatchViolation: boolean;
+}
+
+/** (19/10) Tipo de posición de un perfil GSX (para colorear pines). */
+export type GsxParkingKind =
+  | "gate"
+  | "parking"
+  | "ramp"
+  | "cargo"
+  | "military"
+  | "pad"
+  | "other";
+
+/** (19/10) Un gate/parking del perfil GSX instalado de un aeropuerto. */
+export interface GsxParking {
+  name: string;
+  lat: number;
+  lon: number;
+  kind: GsxParkingKind;
+}
+
+/** (19/10) Gates y parkings del perfil GSX instalado de un aeropuerto. */
+export interface GsxAirportParkings {
+  icao: string;
+  /** INI de GSX del que salen (el más reciente de ese ICAO). */
+  fileName: string;
+  parkings: GsxParking[];
+}
+
 export interface GsxProfile {
   id: number;
   title: string;

@@ -6,11 +6,11 @@ import {
   KeyRound,
   Loader2,
   Lock,
-  Plane,
   Sparkles,
 } from "lucide-react";
 import type { UpdateInfo } from "../lib/types";
 import { t } from "../lib/i18n";
+import { BrandMark } from "./BrandMark";
 
 /**
  * Splash screen — pantalla de carga inicial.
@@ -134,9 +134,8 @@ export function SplashScreen({
                   "radial-gradient(circle, transparent 42px, black 43px, black 47px, transparent 48px)",
               }}
             />
-            <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-2xl shadow-brand-500/30">
-              <Plane className="h-8 w-8 text-white" strokeWidth={1.75} />
-            </div>
+            {/* (19/10) Logo nuevo (monograma S), el mismo del icono de la app. */}
+            <BrandMark className="relative h-16 w-16 rounded-2xl shadow-2xl shadow-brand-500/30" />
           </div>
 
           <h1 className="text-center text-2xl font-semibold tracking-tight text-sf-text">

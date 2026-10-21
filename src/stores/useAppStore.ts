@@ -93,6 +93,20 @@ interface AppState {
   requestCrewVs: (origin: string, dest: string, at: number) => void;
   /** Limpia la petición tras consumirla. */
   clearCrewVsRequest: () => void;
+  /** (19/10) Petición de enfocar un vuelo concreto en el FlightBook (p. ej.
+   *  al clicar un vuelo reciente en Inicio). FlightBookView la consume:
+   *  selecciona el vuelo, quita filtros que lo oculten y lo trae a la vista.
+   *  `null` = sin petición. */
+  flightFocusRequest: number | null;
+  /** Salta al FlightBook y pide enfocar ese vuelo. */
+  requestFlightFocus: (flightId: number) => void;
+  /** Limpia la petición tras consumirla. */
+  clearFlightFocusRequest: () => void;
+  /** (19/10) Petición de abrir el mantenimiento de una matrícula en el Hangar
+   *  (preflight / avisos). HangarView la consume. */
+  hangarFocusRequest: string | null;
+  requestHangarFocus: (registration: string) => void;
+  clearHangarFocusRequest: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -186,6 +200,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   requestCrewVs: (origin, dest, at) =>
     set({ view: "flightbook", crewVsRequest: { origin, dest, at } }),
   clearCrewVsRequest: () => set({ crewVsRequest: null }),
+
+  flightFocusRequest: null,
+  requestFlightFocus: (flightId) =>
+    set({ view: "flightbook", flightFocusRequest: flightId }),
+  clearFlightFocusRequest: () => set({ flightFocusRequest: null }),
+
+  hangarFocusRequest: null,
+  requestHangarFocus: (registration) =>
+    set({ view: "hangar", hangarFocusRequest: registration }),
+  clearHangarFocusRequest: () => set({ hangarFocusRequest: null }),
 
   async triggerSearch(query, sourceId) {
     const targetSource = sourceId ?? get().activeSourceId;

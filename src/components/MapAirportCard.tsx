@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
@@ -15,7 +15,10 @@ import type {
   AvailableUpdate,
   CommunityPackage,
   DownloadMethod,
+  GsxAirportParkings,
+  GsxParkingKind,
 } from "../lib/types";
+import { GSX_KIND_COLORS } from "../lib/gsxKinds";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
@@ -46,10 +49,17 @@ export function MapAirportCard({
   pkg,
   update,
   onClose,
+  gsxParkings,
+  pickedParking,
+  onPickParking,
 }: {
   pkg: CommunityPackage;
   update: AvailableUpdate | null;
   onClose: () => void;
+  /** (19/10) Gates/parkings del perfil GSX (null = sin perfil o cargando). */
+  gsxParkings: GsxAirportParkings | null;
+  pickedParking: string | null;
+  onPickParking: (name: string | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
@@ -283,6 +293,15 @@ export function MapAirportCard({
           </AnimatePresence>
         </div>
 
+        {/* (19/10) Gates y parkings del perfil GSX instalado. */}
+        {gsxParkings && (
+          <GsxParkingList
+            data={gsxParkings}
+            picked={pickedParking}
+            onPick={onPickParking}
+          />
+        )}
+
         {error && (
           <div className="mx-4 mb-2 flex items-start gap-2 rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200 ring-1 ring-rose-500/30">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -379,5 +398,139 @@ export function MapAirportCard({
       </AnimatePresence>
 
     </motion.div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (19/10) Lista de gates/parkings del perfil GSX
+// ----------------------------------------------------------------------------
+
+const GSX_KIND_ORDER: GsxParkingKind[] = [
+  "gate",
+  "parking",
+  "ramp",
+  "cargo",
+  "military",
+  "pad",
+  "other",
+];
+
+function GsxParkingList({
+  data,
+  picked,
+  onPick,
+}: {
+  data: GsxAirportParkings;
+  picked: string | null;
+  onPick: (name: string | null) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const pickedParking = picked ? data.parkings.find((p) => p.name === picked) : undefined;
+  // (19/10) Al elegir un gate (en la lista o con click en su pin del mapa):
+  // si la búsqueda lo oculta la limpiamos y desplazamos la lista hasta él.
+  useEffect(() => {
+    if (!picked) return;
+    if (query.trim() && !picked.toLowerCase().includes(query.trim().toLowerCase())) {
+      setQuery("");
+    }
+    requestAnimationFrame(() =>
+      listRef.current
+        ?.querySelector(`[data-gsx-name="${CSS.escape(picked)}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked]);
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const byKind = new Map<GsxParkingKind, string[]>();
+    for (const p of data.parkings) {
+      if (q && !p.name.toLowerCase().includes(q)) continue;
+      const list = byKind.get(p.kind) ?? [];
+      list.push(p.name);
+      byKind.set(p.kind, list);
+    }
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    return GSX_KIND_ORDER.filter((k) => byKind.has(k)).map((k) => ({
+      kind: k,
+      names: byKind.get(k)!.sort(collator.compare),
+    }));
+  }, [data, query]);
+  return (
+    <div className="px-4 pb-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-sf-text">
+          {t("map.gsx.title", { n: data.parkings.length })}
+        </span>
+        <span className="truncate text-[10px] text-sf-muted" title={data.fileName}>
+          {data.fileName}
+        </span>
+      </div>
+      {pickedParking && (
+        <div className="mb-2 flex items-center gap-2.5 rounded-lg border border-brand-500/40 bg-brand-500/10 px-2.5 py-2">
+          <span
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ backgroundColor: GSX_KIND_COLORS[pickedParking.kind] }}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-mono text-sm font-semibold text-sf-text">
+              {pickedParking.name}
+            </div>
+            <div className="truncate text-[10px] text-sf-muted">
+              {t(`map.gsx.one.${pickedParking.kind}`)} · {pickedParking.lat.toFixed(5)},{" "}
+              {pickedParking.lon.toFixed(5)}
+            </div>
+          </div>
+          <button
+            onClick={() => onPick(null)}
+            title={t("map.gsx.unpick")}
+            aria-label={t("map.gsx.unpick")}
+            className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {data.parkings.length > 12 && (
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("map.gsx.search")}
+          className="mb-2 w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1 text-xs text-sf-text placeholder:text-sf-muted focus:border-brand-500/60 focus:outline-none"
+        />
+      )}
+      <div ref={listRef} className="max-h-56 space-y-2 overflow-y-auto pr-1">
+        {groups.map((g) => (
+          <div key={g.kind}>
+            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sf-muted">
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: GSX_KIND_COLORS[g.kind] }}
+              />
+              {t(`map.gsx.kind.${g.kind}`)} · {g.names.length}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {g.names.map((n) => (
+                <button
+                  key={n}
+                  data-gsx-name={n}
+                  onClick={() => onPick(n)}
+                  className={`rounded px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
+                    picked === n
+                      ? "bg-brand-500 text-slate-950"
+                      : "bg-sf-raised text-sf-text hover:bg-brand-500/20"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {groups.length === 0 && (
+          <p className="py-2 text-center text-[11px] text-sf-muted">{t("map.gsx.no_match")}</p>
+        )}
+      </div>
+    </div>
   );
 }

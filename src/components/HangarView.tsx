@@ -29,7 +29,7 @@ import {
   MoreVertical,
   Info,
   Film,
-  AlertTriangle,
+  Loader2,
   Play,
   Star,
   Trash2,
@@ -39,7 +39,6 @@ import {
   Wrench,
   FileText,
   Printer,
-  Clock,
   X,
   Flame,
   Thermometer,
@@ -52,25 +51,23 @@ import type {
   HangarCount,
   LandingClip,
   FlightLogEntry,
-  AircraftMaint,
   MaintRecord,
+  TechLogAircraft,
 } from "../lib/types";
 import { deriveTelemetry, type FlightTelemetry } from "../lib/flightTelemetry";
 import worldLand from "../lib/worldLand.json";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { TechLogBadge, TechLogPanel, TechLogSummaryCard, useTechLogAircraft } from "./TechLogPanel";
+import { normalizeTechLogReg, useTechLogStore } from "../stores/useTechLogStore";
+import { maintComponentLabel } from "../lib/maintLabels";
 import { useAppStore } from "../stores/useAppStore";
-import { SilhouetteView, zoneWearOf } from "./AircraftMaintenance";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
 import { airportRegion } from "../lib/oaciRegion";
 import { resolveIata } from "../lib/airlineCodes";
-import {
-  deriveMaintenance,
-  type MaintenanceData,
-  type MaintenanceReport,
-} from "../lib/hangarMaintenance";
+import { deriveMaintenance, type MaintenanceReport } from "../lib/hangarMaintenance";
 import { useAircraftPhoto } from "./FlightBookView";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
@@ -178,6 +175,18 @@ export function HangarView() {
 
   // (v6.1 #29) null = vista de resumen de flota (sin avión seleccionado).
   const selected = data?.aircraft.find((a) => a.key === selectedKey) ?? null;
+  // (19/10) Preflight / avisos piden abrir el mantenimiento de una matrícula.
+  const hangarFocusRequest = useAppStore((s) => s.hangarFocusRequest);
+  const [tabRequest, setTabRequest] = useState<{ tab: "maintenance"; n: number } | null>(null);
+  useEffect(() => {
+    if (!hangarFocusRequest || !data) return;
+    const want = normalizeTechLogReg(hangarFocusRequest);
+    const ac = data.aircraft.find((a) => a.registration && normalizeTechLogReg(a.registration) === want);
+    useAppStore.getState().clearHangarFocusRequest();
+    if (!ac) return;
+    setSelectedKey(ac.key);
+    setTabRequest({ tab: "maintenance", n: Date.now() });
+  }, [hangarFocusRequest, data]);
 
   if (loading) {
     return (
@@ -309,6 +318,7 @@ export function HangarView() {
             ac={selected}
             recorded={clips}
             onReloadClips={reloadClips}
+            tabRequest={tabRequest}
           />
         ) : (
           <FleetOverview
@@ -670,21 +680,25 @@ function AircraftDetail({
   ac,
   recorded,
   onReloadClips,
+  tabRequest,
 }: {
   ac: HangarAircraft;
   recorded: LandingClip[];
   onReloadClips: () => void;
+  tabRequest?: { tab: "maintenance"; n: number } | null;
 }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("overview");
+  useEffect(() => {
+    if (tabRequest) setTab(tabRequest.tab);
+  }, [tabRequest]);
   // (v6.1 #26) Foto del avión (planespotters por matrícula) de fondo del banner.
   const photo = useAircraftPhoto(ac.registration ?? null);
-  // (v6.1 #31 #32) Mantenimiento sintético derivado del uso (determinista).
-  const mx = useMemo(() => deriveMaintenance(ac), [ac]);
-  // (v6.1) Mantenimiento REAL (componentes + historial) — fuente única
-  // compartida con Finanzas. Sincroniza la silueta, el tab Mantenimiento,
-  // Historial y Documentos. Se refresca al volver a esta vista.
+  // (v6.1) Servicios REALES cobrados (maintenance_log, los mismos que
+  // Finanzas): Historial y Documentos. (20/10) Etapa 4: el mantenimiento
+  // inventado (deriveMaintenance) y los componentes del sistema viejo ya no
+  // se usan aquí: todo sale del Tech Log (Fenix/PMDG TechLog o el de SimFleet).
+  const tlEpoch = useTechLogStore((s) => s.epoch);
   const [realHistory, setRealHistory] = useState<MaintRecord[]>([]);
-  const [realMaint, setRealMaint] = useState<AircraftMaint | null>(null);
   useEffect(() => {
     let alive = true;
     if (ac.registration) {
@@ -692,19 +706,29 @@ function AircraftDetail({
         .aircraftMaintenanceHistory(ac.registration)
         .then((h) => alive && setRealHistory(h))
         .catch(() => {});
-      api
-        .aircraftMaintenance(ac.registration)
-        .then((m) => alive && setRealMaint(m))
-        .catch(() => {});
     } else {
       setRealHistory([]);
-      setRealMaint(null);
     }
     return () => {
       alive = false;
     };
-  }, [ac.registration]);
+  }, [ac.registration, tlEpoch]);
   const [reportOpen, setReportOpen] = useState(false);
+  // (19/10) Etapa 2: si este avión tiene Fenix/PMDG TechLog, TechLog manda
+  // (resumen, pestaña Mantenimiento y chip del banner salen de TechLog).
+  const tlManaged = useTechLogStore((s) => s.isManaged(ac.registration));
+  // (19/10) Etapa 3: el resto de aviones usa el Tech Log de SimFleet.
+  const techlog = useTechLogAircraft(ac.registration, tlManaged, ac.model);
+  const tl = techlog.data;
+  // (20/10) Estado general = vida media de las piezas; color según despacho.
+  const health = tl ? tl.condition.avgRemainingPct : null;
+  const healthBar = !tl
+    ? "bg-slate-500"
+    : tl.dispatch.status === "NO_GO"
+      ? "bg-rose-400"
+      : tl.dispatch.status === "GO_MEL"
+        ? "bg-amber-400"
+        : "bg-emerald-400";
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
   const location =
     ac.lastAirportName && ac.lastIcao
@@ -756,6 +780,7 @@ function AircraftDetail({
                 <span className="h-1.5 w-1.5 rounded-full bg-brand-400" />
                 {t("hangar.active")}
               </span>
+              {tl && <TechLogBadge data={tl} />}
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={20} />
@@ -784,17 +809,22 @@ function AircraftDetail({
         />
       </div>
       <div className="flex items-center gap-3 border-b border-sf-border/70 px-4 py-2.5">
-        <span className="shrink-0 text-xs text-sf-muted">{t("hangar.health_general")}</span>
+        <span className="shrink-0 text-xs text-sf-muted" title={t("hangar.health_hint")}>
+          {t("hangar.health_general")}
+        </span>
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-sf-raised">
           <div
-            className={`h-full rounded-full ${
-              ac.healthPct >= 75 ? "bg-emerald-400" : ac.healthPct >= 50 ? "bg-amber-400" : "bg-rose-400"
-            }`}
-            style={{ width: `${Math.max(0, Math.min(100, ac.healthPct))}%` }}
+            className={`h-full rounded-full ${healthBar}`}
+            style={{ width: `${Math.max(0, Math.min(100, health ?? 0))}%` }}
           />
         </div>
         <span className="shrink-0 text-xs font-semibold tabular-nums text-sf-text">
-          {Math.round(ac.healthPct)}%
+          {health != null ? `${Math.round(health)}%` : "—"}
+          {tl && (
+            <span className="ml-1.5 font-mono text-[10px] text-sf-muted">
+              {tl.dispatch.status === "NO_GO" ? "NO-GO" : tl.dispatch.status === "GO_MEL" ? "GO · MEL" : "GO"}
+            </span>
+          )}
         </span>
       </div>
 
@@ -822,7 +852,11 @@ function AircraftDetail({
         {tab === "overview" && (
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <GearHealthCard ac={ac} maint={realMaint} />
+              {tl ? (
+                <TechLogSummaryCard data={tl} onOpen={() => setTab("maintenance")} />
+              ) : (
+                <TechLogPending loading={techlog.loading} />
+              )}
               <FpmTrendCard ac={ac} />
             </div>
             <BestLandings
@@ -832,15 +866,20 @@ function AircraftDetail({
             />
           </>
         )}
-        {tab === "performance" && <PerformanceTab ac={ac} mx={mx} />}
-        {tab === "maintenance" && <MaintenanceTab mx={mx} realHistory={realHistory} realMaint={realMaint} />}
+        {tab === "performance" && <PerformanceTab ac={ac} tl={tl} />}
+        {tab === "maintenance" &&
+          (tl ? (
+            <TechLogPanel data={tl} onReload={() => void techlog.reload()} loading={techlog.loading} />
+          ) : (
+            <TechLogPending loading={techlog.loading} />
+          ))}
         {tab === "flights" && <FlightsTab ac={ac} />}
-        {tab === "history" && <HistoryTab mx={mx} realHistory={realHistory} />}
-        {tab === "documents" && <DocumentsTab ac={ac} mx={mx} realHistory={realHistory} />}
+        {tab === "history" && <HistoryTab realHistory={realHistory} />}
+        {tab === "documents" && <DocumentsTab ac={ac} tl={tl} realHistory={realHistory} />}
       </div>
 
       {reportOpen && (
-        <AircraftReportModal ac={ac} mx={mx} onClose={() => setReportOpen(false)} />
+        <AircraftReportModal ac={ac} tl={tl} onClose={() => setReportOpen(false)} />
       )}
     </section>
   );
@@ -854,12 +893,6 @@ function hours(s: number): string {
 function money(n: number): string {
   return `$${Math.round(n).toLocaleString()}`;
 }
-const STATUS_COLOR: Record<string, string> = {
-  good: "#3fbf78",
-  watch: "#f59e0b",
-  alert: "#f43f5e",
-};
-
 /** (Rediseño F4) Celda de la fila de KPIs bajo la foto del avión. */
 function AcKpi({ label, value }: { label: string; value: string }) {
   return (
@@ -880,7 +913,7 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub?: s
   );
 }
 
-function PerformanceTab({ ac, mx }: { ac: HangarAircraft; mx: MaintenanceData }) {
+function PerformanceTab({ ac, tl }: { ac: HangarAircraft; tl: TechLogAircraft | null }) {
   const butter = ac.recentLandings.filter((l) => l.grade === "butter").length;
   const rate =
     ac.recentLandings.length > 0
@@ -892,7 +925,7 @@ function PerformanceTab({ ac, mx }: { ac: HangarAircraft; mx: MaintenanceData })
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
       <StatTile label={t("hangar.kpi.miles")} value={`${Math.round(ac.totalNm).toLocaleString()} nm`} />
       <StatTile label={t("hangar.perf.hours")} value={hours(ac.totalTimeS)} />
-      <StatTile label={t("hangar.perf.cycles")} value={mx.cycles.toLocaleString()} />
+      <StatTile label={t("hangar.perf.cycles")} value={tl ? Math.round(tl.cycles).toLocaleString() : "—"} />
       <StatTile label={t("hangar.perf.avg_leg")} value={`${avgLeg.toLocaleString()} nm`} />
       <StatTile label={t("hangar.fpm.avg")} value={ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)} fpm` : "—"} />
       <StatTile label={t("hangar.perf.worst")} value={ac.worstLandingFpm != null ? `${ac.worstLandingFpm} fpm` : "—"} />
@@ -902,79 +935,15 @@ function PerformanceTab({ ac, mx }: { ac: HangarAircraft; mx: MaintenanceData })
   );
 }
 
-function ComponentBar({ label, health, status, nextDueHours }: {
-  label: string; health: number; status: string; nextDueHours: number;
-}) {
-  const color = STATUS_COLOR[status] ?? "#38bdf8";
+/** (20/10) Mientras llega (o si falla) el Tech Log del avión: sin datos inventados. */
+function TechLogPending({ loading }: { loading: boolean }) {
   return (
-    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-sf-text">{label}</span>
-        <span className="text-xs font-semibold" style={{ color }}>{health}%</span>
-      </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sf-raised">
-        <div className="h-full rounded-full" style={{ width: `${health}%`, backgroundColor: color }} />
-      </div>
-      <div className="mt-1.5 text-[10px] text-sf-muted">
-        {nextDueHours <= 0
-          ? t("hangar.mx.overdue")
-          : t("hangar.mx.next_in", { n: nextDueHours.toLocaleString() })}
-      </div>
+    <div className="flex min-h-[8rem] items-center justify-center gap-2 rounded-xl border border-sf-border bg-sf-bg/40 p-4 text-xs text-sf-muted">
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
+      {t(loading ? "hangar.techlog_loading" : "hangar.techlog_unavailable")}
     </div>
   );
 }
-
-function MaintenanceTab({ mx, realHistory, realMaint }: { mx: MaintenanceData; realHistory: MaintRecord[]; realMaint: AircraftMaint | null }) {
-  const realSpend = realHistory.reduce((s, r) => s + r.cost, 0);
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatTile label={t("hangar.mx.total_hours")} value={`${mx.hours.toLocaleString()} h`} />
-        <StatTile label={t("hangar.perf.cycles")} value={mx.cycles.toLocaleString()} />
-        <StatTile label={t("hangar.mx.next_service")} value={`${Math.max(0, mx.nextServiceHours).toLocaleString()} h`} />
-        <StatTile label={t("hangar.mx.lifetime_cost")} value={money(mx.lifetimeCost)} />
-      </div>
-      {realHistory.length > 0 && (
-        <div className="rounded-xl border border-emerald-700/40 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-300">
-          <Wrench className="mr-1 inline h-3.5 w-3.5" />
-          {t("hangar.mx.real_services", { n: String(realHistory.length) })} · {money(realSpend)}
-        </div>
-      )}
-      <div>
-        <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
-          <Wrench className="h-4 w-4 text-brand-400" />
-          {t("hangar.mx.components")}
-        </h4>
-        {/* (v6.1) Componentes REALES (misma data que Finanzas) cuando hay
-            matrícula; si no, los sintéticos. Salud = 100 − desgaste. */}
-        {realMaint ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {realMaint.components.map((c) => {
-              const health = Math.round(100 - c.wearPct);
-              const status = c.status === "due" ? "alert" : c.status === "watch" ? "watch" : "good";
-              return (
-                <ComponentBar
-                  key={c.id}
-                  label={t(`economy.comp.${c.id}`)}
-                  health={health}
-                  status={status}
-                  nextDueHours={Math.round((100 - c.wearPct) * 2)}
-                />
-              );
-            })}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {mx.components.map((c) => (
-              <ComponentBar key={c.key} label={c.label} health={c.healthPct} status={c.status} nextDueHours={c.nextDueHours} />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function fpmGrade(fpm: number | null): string {
   if (fpm == null) return "acceptable";
   return fpm > -150 ? "butter" : fpm >= -300 ? "acceptable" : "hard";
@@ -1245,7 +1214,10 @@ function maintShopFor(seed: string) {
   return MAINT_SHOPS[h % MAINT_SHOPS.length];
 }
 
-function HistoryTab({ mx, realHistory }: { mx: MaintenanceData; realHistory: MaintRecord[] }) {
+function HistoryTab({ realHistory }: { realHistory: MaintRecord[] }) {
+  if (realHistory.length === 0) {
+    return <p className="py-6 text-center text-xs text-sf-muted">{t("hangar.history.empty")}</p>;
+  }
   return (
     <div className="space-y-2">
       {/* (v6.1) Servicios REALES — mismo estilo de taller que los reportes
@@ -1260,7 +1232,7 @@ function HistoryTab({ mx, realHistory }: { mx: MaintenanceData; realHistory: Mai
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-sf-text">
-                  {t(`economy.comp.${r.component}`)} · {shop.name}
+                  {maintComponentLabel(r.component)} · {shop.name}
                 </span>
                 <span className="shrink-0 text-[11px] text-sf-muted">{fmtDate(r.servicedAt)}</span>
               </div>
@@ -1272,24 +1244,6 @@ function HistoryTab({ mx, realHistory }: { mx: MaintenanceData; realHistory: Mai
           </div>
         );
       })}
-      {mx.reports.map((r) => (
-        <div key={r.id} className="flex items-start gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white" style={{ backgroundColor: r.shop.color }}>
-            {r.shop.code}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-sf-text">{r.type} · {r.shop.name}</span>
-              <span className="shrink-0 text-[11px] text-sf-muted">{fmtDate(r.date)}</span>
-            </div>
-            <p className="mt-0.5 truncate text-[11px] text-sf-muted">{r.summary}</p>
-            <div className="mt-1 flex items-center gap-3 text-[10px] text-sf-muted">
-              <span><Clock className="mr-0.5 inline h-3 w-3" />{r.hoursAtService.toLocaleString()} h</span>
-              <span className="font-semibold text-sf-text/90">{money(r.totalCost)}</span>
-            </div>
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -1303,10 +1257,15 @@ interface DailyClose {
 
 /** Construye un reporte (estilo Continental AeroCare) a partir de TODOS los
  *  servicios reales de un día — si hubo más de uno, salen como líneas/piezas. */
-function buildDailyReport(d: DailyClose, mx: MaintenanceData): MaintenanceReport {
+function buildDailyReport(d: DailyClose, tl: TechLogAircraft | null): MaintenanceReport {
+  // (20/10) Horas, ciclos y próximo check reales del Tech Log.
+  const nextCheckH = tl?.checks
+    .map((c) => c.hoursLeft)
+    .filter((h): h is number => h != null && h > 0)
+    .sort((a, b) => a - b)[0];
   const shop = maintShopFor(d.day);
   const parts = d.records.map((r, i) => ({
-    name: t(`economy.comp.${r.component}`),
+    name: maintComponentLabel(r.component),
     partNumber: `${r.component.slice(0, 3).toUpperCase()}-${1000 + i}`,
     qty: 1,
     reason: t("hangar.history.work"),
@@ -1318,20 +1277,20 @@ function buildDailyReport(d: DailyClose, mx: MaintenanceData): MaintenanceReport
     date: d.day,
     shop,
     mechanic: "Line Maintenance Crew",
-    hoursAtService: mx.hours,
-    cyclesAtService: mx.cycles,
-    type: d.records.length > 1 ? "Line Check" : t(`economy.comp.${d.records[0].component}`),
+    hoursAtService: Math.round(tl?.flightHours ?? 0),
+    cyclesAtService: Math.round(tl?.cycles ?? 0),
+    type: d.records.length > 1 ? "Line Check" : maintComponentLabel(d.records[0].component),
     parts,
     laborCost: Math.round(d.total - partsCost),
     partsCost,
     totalCost: Math.round(d.total),
     summary: t("hangar.docs.daily_summary", { n: String(d.records.length) }),
-    nextDueHours: mx.nextServiceHours,
+    nextDueHours: Math.round(nextCheckH ?? 0),
     nextDueDate: d.day,
   };
 }
 
-function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: MaintenanceData; realHistory: MaintRecord[] }) {
+function DocumentsTab({ ac, tl, realHistory }: { ac: HangarAircraft; tl: TechLogAircraft | null; realHistory: MaintRecord[] }) {
   const [report, setReport] = useState<MaintenanceReport | null>(null);
   // (v6.1) Agrupa los servicios reales por DÍA → un solo reporte/PDF por día.
   const dailyCloses = useMemo<DailyClose[]>(() => {
@@ -1355,7 +1314,7 @@ function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: Mainten
           {dailyCloses.map((d) => (
             <button
               key={d.day}
-              onClick={() => setReport(buildDailyReport(d, mx))}
+              onClick={() => setReport(buildDailyReport(d, tl))}
               className="group flex items-center gap-3 rounded-xl border border-emerald-700/40 bg-emerald-950/20 p-3 text-left hover:border-emerald-500/60"
             >
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-700/40">
@@ -1374,30 +1333,16 @@ function DocumentsTab({ ac, mx, realHistory }: { ac: HangarAircraft; mx: Mainten
           ))}
         </div>
       )}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {mx.reports.map((r) => (
-          <button
-            key={r.id}
-            onClick={() => setReport(r)}
-            className="group flex items-center gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3 text-left hover:border-brand-500/40"
-          >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sf-surface text-brand-300 ring-1 ring-sf-border group-hover:text-brand-200">
-              <FileText className="h-5 w-5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-semibold text-sf-text">
-                {t("hangar.docs.report")} · {r.type}
-              </div>
-              <div className="truncate text-[11px] text-sf-muted">
-                {r.shop.name} · {fmtDate(r.date)}
-              </div>
-              <div className="text-[11px] font-semibold text-sf-text/90">{money(r.totalCost)}</div>
-            </div>
-          </button>
-        ))}
-      </div>
+      {dailyCloses.length === 0 && (
+        <p className="py-6 text-center text-xs text-sf-muted">{t("hangar.history.empty")}</p>
+      )}
       {report && (
-        <ReportModal ac={ac} report={report} hoursTotal={mx.hours} onClose={() => setReport(null)} />
+        <ReportModal
+          ac={ac}
+          report={report}
+          hoursTotal={Math.round(tl?.flightHours ?? 0)}
+          onClose={() => setReport(null)}
+        />
       )}
     </div>
   );
@@ -1642,9 +1587,9 @@ function FlightMapSvg({ flights }: { flights: FlightLogEntry[] }) {
 }
 
 function AircraftReportModal({
-  ac, mx, onClose,
+  ac, tl, onClose,
 }: {
-  ac: HangarAircraft; mx: MaintenanceData; onClose: () => void;
+  ac: HangarAircraft; tl: TechLogAircraft | null; onClose: () => void;
 }) {
   const entries = useFlightLogStore((s) => s.entries);
   const push = useToastStore((s) => s.push);
@@ -1706,11 +1651,11 @@ function AircraftReportModal({
         {/* KPIs */}
         <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">
           <RKpi k={t("hangar.kpi.miles")} v={`${Math.round(ac.totalNm).toLocaleString()} nm`} />
-          <RKpi k={t("hangar.mx.total_hours")} v={`${mx.hours.toLocaleString()} h`} />
-          <RKpi k={t("hangar.perf.cycles")} v={mx.cycles.toLocaleString()} />
+          <RKpi k={t("hangar.mx.total_hours")} v={tl ? `${Math.round(tl.flightHours).toLocaleString()} h` : "—"} />
+          <RKpi k={t("hangar.perf.cycles")} v={tl ? Math.round(tl.cycles).toLocaleString() : "—"} />
           <RKpi k={t("hangar.flights_short")} v={String(flights.length)} />
           <RKpi k={t("hangar.fpm.avg")} v={ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)}` : "—"} />
-          <RKpi k={t("hangar.gear.title")} v={`${ac.healthPct}%`} />
+          <RKpi k={t("hangar.health_general")} v={tl ? `${Math.round(tl.condition.avgRemainingPct)}%` : "—"} />
         </div>
 
         {/* Mapa de rutas */}
@@ -1719,18 +1664,41 @@ function AircraftReportModal({
           <FlightMapSvg flights={flights} />
         </div>
 
-        {/* Salud de componentes */}
-        <div className="mt-5">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sf-muted">{t("hangar.mx.components")}</h3>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
-            {mx.components.map((c) => (
-              <div key={c.key} className="flex justify-between border-b border-slate-200 py-0.5">
-                <span className="text-sf-muted/70">{c.label}</span>
-                <span className="font-semibold">{c.healthPct}%</span>
+        {/* (20/10) Mantenimiento: estado real del Tech Log. */}
+        {tl && (
+          <div className="mt-5">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-sf-muted">
+              {t("hangar.report.maintenance", { app: tl.appName })}
+            </h3>
+            <div className="mb-2 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+              <span>
+                {t("hangar.report.dispatch")}:{" "}
+                <span className="font-semibold">
+                  {tl.dispatch.status === "NO_GO" ? "NO-GO" : tl.dispatch.status === "GO_MEL" ? "GO · MEL" : "GO"}
+                </span>
+              </span>
+              <span>
+                {t("techlog.summary.open")}: <span className="font-semibold">{tl.defects.filter((d) => d.status === "Open").length}</span>
+              </span>
+              <span>
+                {t("techlog.summary.deferred")}: <span className="font-semibold">{tl.defects.filter((d) => d.status === "Deferred").length}</span>
+              </span>
+              <span>
+                {t("techlog.parts.condition", { good: tl.condition.good, low: tl.condition.low, failed: tl.condition.failed })}
+              </span>
+            </div>
+            {tl.parts.length > 0 && (
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
+                {tl.parts.slice(0, 9).map((p) => (
+                  <div key={p.id} className="flex justify-between gap-2 border-b border-slate-200 py-0.5">
+                    <span className="truncate text-sf-muted/70">{p.name}</span>
+                    <span className="font-semibold">{Math.round(p.remainingPct)}%</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </div>
+        )}
 
         {/* Vuelos recientes */}
         <div className="mt-5">
@@ -1777,317 +1745,6 @@ function RKpi({ k, v }: { k: string; v: string }) {
     <div className="rounded-lg bg-slate-100 p-2 text-center">
       <div className="text-base font-bold text-slate-900">{v}</div>
       <div className="text-[10px] uppercase tracking-wide text-sf-muted">{k}</div>
-    </div>
-  );
-}
-
-// ── (v6.1 #24) Tren de aterrizaje por avión (config REAL) ────────────────────
-
-/**
- * Especificación del tren PRINCIPAL por tipo, con los EJES reales:
- *   · 737 / A320 / regional: 1 eje (2 ruedas).
- *   · 757/767/787/747/A330/A350-900: bogie de 2 ejes (4 ruedas).
- *   · 777 / A350-1000 / A380: bogie de 3 ejes (6 ruedas).
- *   · GA: 1 eje, 1 rueda.
- * `maker` cambia el estilo (Boeing: cubos pulidos, sin compuerta; Airbus:
- * compuerta + cubo gris con agujeros).
- */
-interface GearSpec {
-  axles: number; // nº de ejes en tándem (1 = pata simple; 2/3 = bogie)
-  perAxle: number; // ruedas por eje (2 normal, 1 en GA)
-  maker: "boeing" | "airbus" | "regional" | "ga";
-  big: boolean; // widebody (pata más gruesa)
-  door: boolean; // compuerta visible (típico Airbus)
-}
-
-function gearSpec(model: string | null): GearSpec {
-  const m = (model ?? "").toUpperCase();
-  const has = (...ks: string[]) => ks.some((k) => m.includes(k));
-
-  // Aviación general / ligeros — 1 eje, 1 rueda.
-  if (has("C150", "C152", "C172", "C182", "C208", "DA40", "DA42", "SR2", "SR20", "SR22", "TBM", "M20", "P28", "PA-", "DV20", "DA62", "CIRRUS", "CESSNA"))
-    return { axles: 1, perAxle: 1, maker: "ga", big: false, door: false };
-  // Regionales / turbohélice — 1 eje, 2 ruedas.
-  if (has("CRJ", "ERJ", "E135", "E145", "E170", "E175", "E190", "E195", "DH8", "DHC", "Q400", "ATR", "AT4", "AT7", "SF34", "SAAB", "B190", "JS", "D328", "RJ85", "RJ1"))
-    return { axles: 1, perAxle: 2, maker: "regional", big: false, door: false };
-
-  // Bogie de 3 ejes (6 ruedas).
-  if (has("777", "B777", "A35K", "A350-1000", "351", "A380", "388", "389"))
-    return { axles: 3, perAxle: 2, maker: m.includes("A3") ? "airbus" : "boeing", big: true, door: m.includes("A3") };
-  // Bogie de 2 ejes (4 ruedas).
-  if (has("747", "B747", "787", "B787", "767", "B767", "757", "B757", "MD11", "DC10", "L1011"))
-    return { axles: 2, perAxle: 2, maker: "boeing", big: true, door: false };
-  if (has("A330", "A340", "A350", "A359", "A300", "A310", "A33", "A34"))
-    return { axles: 2, perAxle: 2, maker: "airbus", big: true, door: true };
-
-  // Narrowbody Airbus (A320 family) — 1 eje, 1 rueda (pedido del usuario).
-  if (has("A318", "A319", "A320", "A321", "A32", "A20N", "A21N", "A19N", "NEO"))
-    return { axles: 1, perAxle: 1, maker: "airbus", big: false, door: true };
-  // Narrowbody Boeing (737/717/MD80) — 1 eje, 1 rueda (pedido del usuario).
-  if (has("737", "B737", "73", "717", "MD8", "MD9", "DC9", "BBJ"))
-    return { axles: 1, perAxle: 1, maker: "boeing", big: false, door: false };
-
-  // Por defecto: 1 eje, 1 rueda.
-  return { axles: 1, perAxle: 1, maker: "boeing", big: false, door: false };
-}
-
-/** Salud por ZONA del tren (0-100). El rojo parpadea donde hay daño. */
-interface GearDamage {
-  strut: number; // amortiguador / pata
-  wheels: number; // frenos y neumáticos
-  braces: number; // soportes / hidráulico
-}
-
-const DAMAGE_TH = 78; // por debajo de esto, la zona parpadea en rojo
-const redOf = (h: number) => (h >= 70 ? "#f87171" : h >= 45 ? "#ef4444" : "#dc2626");
-
-/**
- * (v6.1 #24) Tren de aterrizaje en VISTA FRONTAL estilo diagrama técnico (como
- * la referencia): horquilla de drag-braces arriba, fitting central, pata-oleo
- * con bandas, pistón, eje y dos ruedas. Las ZONAS con daño (según mantenimiento)
- * parpadean en ROJO: oleo (strut), frenos/neumáticos (wheels) o soportes (braces).
- */
-function LandingGear({ model, damage }: { model: string | null; damage: GearDamage }) {
-  const s = gearSpec(model);
-  const cx = 120;
-  const big = s.big;
-  const wr = big ? 36 : s.maker === "ga" ? 30 : 34;
-  const track = s.perAxle === 1 ? 0 : wr * 0.96;
-  const wy = 198;
-  const hub = s.maker === "airbus" ? "url(#lgHubA)" : "url(#lgHubB)";
-
-  const strutHurt = damage.strut < DAMAGE_TH;
-  const wheelsHurt = damage.wheels < DAMAGE_TH;
-  const bracesHurt = damage.braces < DAMAGE_TH;
-  const redW = damage.strut >= 70 ? 16 : damage.strut >= 45 ? 21 : 26;
-
-  const Limb = ({ x1, y1, x2, y2, w }: { x1: number; y1: number; x2: number; y2: number; w: number }) => (
-    <>
-      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#1e293b" strokeWidth={w + 2.5} strokeLinecap="round" />
-      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="url(#lgStrut)" strokeWidth={w} strokeLinecap="round" />
-    </>
-  );
-
-  const Wheel = ({ x }: { x: number }) => {
-    const detail =
-      s.maker === "airbus"
-        ? Array.from({ length: 5 }, (_, i) => {
-            const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
-            return <circle key={i} cx={x + Math.cos(a) * wr * 0.3} cy={wy + Math.sin(a) * wr * 0.3} r={wr * 0.1} fill="#0f172a" opacity="0.85" />;
-          })
-        : Array.from({ length: 8 }, (_, i) => {
-            const a = (i / 8) * Math.PI * 2;
-            return <circle key={i} cx={x + Math.cos(a) * wr * 0.34} cy={wy + Math.sin(a) * wr * 0.34} r={wr * 0.05} fill="#1e293b" />;
-          });
-    return (
-      <g>
-        <circle cx={x} cy={wy} r={wr} fill="url(#lgTire)" stroke="#000" strokeWidth="1.5" />
-        <circle cx={x} cy={wy} r={wr * 0.74} fill="none" stroke="#0a0a0a" strokeWidth={wr * 0.12} />
-        <circle cx={x} cy={wy} r={wr * 0.52} fill={hub} stroke="#1e293b" strokeWidth="1" />
-        {detail}
-        <circle cx={x} cy={wy} r={wr * 0.16} fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.8" />
-        <ellipse cx={x - wr * 0.28} cy={wy - wr * 0.34} rx={wr * 0.22} ry={wr * 0.11} fill="#fff" opacity="0.12" />
-        {/* Daño en frenos/neumáticos → anillo rojo parpadeante en el cubo */}
-        {wheelsHurt && (
-          <circle
-            className="gear-blink"
-            cx={x}
-            cy={wy}
-            r={wr * 0.62}
-            fill="none"
-            stroke={redOf(damage.wheels)}
-            strokeWidth={wr * 0.16}
-          />
-        )}
-      </g>
-    );
-  };
-
-  return (
-    <svg viewBox="0 0 240 252" width="208" height="218" xmlns="http://www.w3.org/2000/svg" className="select-none" aria-hidden>
-      <defs>
-        <linearGradient id="lgStrut" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stopColor="#5b6675" />
-          <stop offset="0.4" stopColor="#c7d0da" />
-          <stop offset="0.5" stopColor="#eef3f8" />
-          <stop offset="0.6" stopColor="#c7d0da" />
-          <stop offset="1" stopColor="#5b6675" />
-        </linearGradient>
-        <linearGradient id="lgChrome" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stopColor="#64748b" />
-          <stop offset="0.5" stopColor="#fbfdff" />
-          <stop offset="1" stopColor="#64748b" />
-        </linearGradient>
-        <radialGradient id="lgTire" cx="0.42" cy="0.36" r="0.72">
-          <stop offset="0" stopColor="#3a3a3a" />
-          <stop offset="0.55" stopColor="#161616" />
-          <stop offset="1" stopColor="#000000" />
-        </radialGradient>
-        <radialGradient id="lgHubB" cx="0.4" cy="0.34" r="0.78">
-          <stop offset="0" stopColor="#f8fafc" />
-          <stop offset="0.5" stopColor="#c2ccd6" />
-          <stop offset="1" stopColor="#5b6675" />
-        </radialGradient>
-        <radialGradient id="lgHubA" cx="0.4" cy="0.34" r="0.78">
-          <stop offset="0" stopColor="#cfd6dd" />
-          <stop offset="0.5" stopColor="#94a3b1" />
-          <stop offset="1" stopColor="#3f4b59" />
-        </radialGradient>
-        <filter id="lgShadow" x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur stdDeviation="4" />
-        </filter>
-      </defs>
-
-      <ellipse cx={cx} cy={wy + wr + 7} rx={track + wr + 10} ry="8" fill="#000" opacity="0.4" filter="url(#lgShadow)" />
-
-      {/* Horquilla de drag-braces (A-frame), simétrica */}
-      <Limb x1={cx - 6} y1={86} x2={56} y2={42} w={9} />
-      <Limb x1={cx + 6} y1={86} x2={184} y2={42} w={9} />
-      <Limb x1={cx - 4} y1={92} x2={92} y2={50} w={7} />
-      <Limb x1={cx + 4} y1={92} x2={148} y2={50} w={7} />
-      {[[56, 42], [184, 42], [92, 50], [148, 50]].map(([fx, fy], i) => (
-        <g key={i}>
-          <line x1={fx} y1={fy} x2={fx - 7} y2={fy - 11} stroke="#475569" strokeWidth="3.5" strokeLinecap="round" />
-          <line x1={fx} y1={fy} x2={fx + 7} y2={fy - 11} stroke="#475569" strokeWidth="3.5" strokeLinecap="round" />
-        </g>
-      ))}
-      {/* Daño en soportes/hidráulico → parpadeo rojo sobre las braces */}
-      {bracesHurt && (
-        <g className="gear-blink" style={{ mixBlendMode: "screen" }}>
-          <line x1={cx - 6} y1={86} x2={56} y2={42} stroke={redOf(damage.braces)} strokeWidth="9" strokeLinecap="round" />
-          <line x1={cx + 6} y1={86} x2={184} y2={42} stroke={redOf(damage.braces)} strokeWidth="9" strokeLinecap="round" />
-        </g>
-      )}
-
-      {/* Fitting central (trunnion) */}
-      <rect x={cx - 19} y="78" width="38" height="34" rx="6" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="1" />
-      <rect x={cx - 19} y="90" width="38" height="8" fill="#94a3b8" opacity="0.5" />
-
-      {/* Compuerta (Airbus) */}
-      {s.door && (
-        <rect x={cx + 22} y="78" width="15" height="40" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1" opacity="0.85" />
-      )}
-
-      {/* Oleo (pata) con bandas + pistón */}
-      <rect x={cx - 13} y="110" width="26" height="48" rx="6" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.8" />
-      {[120, 132, 144].map((y) => (
-        <rect key={y} x={cx - 13} y={y} width="26" height="3" fill="#1e293b" opacity="0.35" />
-      ))}
-      <rect x={cx - 9} y="156" width="18" height="30" rx="4" fill="url(#lgChrome)" stroke="#334155" strokeWidth="0.6" />
-
-      {/* Daño en el oleo/amortiguador → parpadeo rojo en la pata */}
-      {strutHurt && (
-        <rect
-          className="gear-blink"
-          x={cx - redW / 2}
-          y="108"
-          width={redW}
-          height="80"
-          rx={redW / 2}
-          fill={redOf(damage.strut)}
-          style={{ mixBlendMode: "screen" }}
-        />
-      )}
-
-      {/* Eje + ruedas */}
-      <rect x={cx - track - 6} y={wy - 7} width={track * 2 + 12} height="14" rx="7" fill="url(#lgStrut)" stroke="#1e293b" strokeWidth="0.6" />
-      {s.perAxle === 1 ? (
-        <Wheel x={cx} />
-      ) : (
-        <>
-          <Wheel x={cx - track} />
-          <Wheel x={cx + track} />
-        </>
-      )}
-    </svg>
-  );
-}
-
-function GearHealthCard({ ac, maint }: { ac: HangarAircraft; maint: AircraftMaint | null }) {
-  const pct = ac.healthPct;
-  // (v6.1) Daño por ZONA del tren a partir del mantenimiento sintético
-  // (determinista por matrícula → cada avión "ha sufrido" en sitios distintos).
-  const mx = useMemo(() => deriveMaintenance(ac), [ac]);
-  const compHealth = (k: string) =>
-    mx.components.find((c) => c.key === k)?.healthPct ?? 100;
-  const damage = {
-    strut: ac.healthPct, // el tren propiamente dicho (salud del tren)
-    wheels: compHealth("brakes"),
-    braces: compHealth("hydraulics"),
-  };
-  // (v6.1) Desgaste REAL por zona (misma data que Finanzas) para la silueta.
-  const zoneWear = maint ? zoneWearOf(maint.components) : { engines: 0, gears: 0, fuselage: 0 };
-  const color =
-    pct >= 80 ? "text-brand-400" : pct >= 50 ? "text-amber-400" : "text-rose-400";
-  const barColor =
-    pct >= 80 ? "bg-brand-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-500";
-  const condition =
-    pct >= 80
-      ? t("hangar.gear.good")
-      : pct >= 50
-        ? t("hangar.gear.monitor")
-        : t("hangar.gear.service");
-  // "Próximo mantenimiento" derivado de la salud (sintético, sin tracking real).
-  const nextDue = Math.max(0, Math.round(pct / 10) - 3);
-
-  return (
-    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-4">
-      <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
-        <Gauge className="h-4 w-4 text-brand-400" />
-        {t("hangar.gear.title")}
-        <Info className="h-3 w-3 text-sf-muted/70" />
-      </h3>
-      <div className="flex items-end gap-2">
-        <span className={`text-3xl font-bold ${color}`}>{pct}%</span>
-        <span className="mb-1 text-xs text-sf-muted">{condition}</span>
-      </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full bg-sf-raised">
-        <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
-      </div>
-      {nextDue <= 5 && (
-        <div className="mt-3 flex items-center gap-1.5 text-[11px] text-amber-300">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          {t("hangar.gear.recommend", { n: String(nextDue) })}
-        </div>
-      )}
-      <div className="mt-4 flex flex-col items-center justify-center gap-2">
-        {/* (v6.1) Silueta top-view con desgaste real — MISMA que Mantenimiento
-            en Finanzas. Si no hay matrícula, cae al dibujo del tren (backup). */}
-        {ac.registration ? (
-          <div className="h-56 w-full max-w-[260px]">
-            <SilhouetteView zoneWear={zoneWear} model={ac.model} />
-          </div>
-        ) : (
-          <LandingGear model={ac.model} damage={damage} />
-        )}
-      </div>
-      <div className="mt-3 flex items-center justify-between border-t border-sf-border pt-3 text-[11px]">
-        <div>
-          <div className="text-sf-muted/70">{t("hangar.gear.last_inspection")}</div>
-          <div className="text-sf-text/90">{fmtDate(ac.lastFlightAt)}</div>
-        </div>
-        <div className="text-right">
-          <div className="text-sf-muted/70">{t("hangar.gear.next_due")}</div>
-          <div className="text-sf-text/90">
-            {t("hangar.gear.in_landings", { n: String(nextDue) })}
-          </div>
-        </div>
-      </div>
-      {/* (v6.1) Salta al mantenimiento real (estilo EFB) en Finanzas, con la
-          silueta y los componentes — misma data, todo relacionado. */}
-      {ac.registration && (ac.airlineIcao || ac.airlineName) && (
-        <button
-          onClick={() =>
-            useAppStore
-              .getState()
-              .openEconomy(ac.airlineIcao ?? ac.airlineName ?? null, ac.registration)
-          }
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 py-1.5 text-[11px] font-semibold text-amber-300 transition-colors hover:bg-amber-500/20"
-        >
-          <Wrench className="h-3.5 w-3.5" />
-          {t("hangar.gear.open_maintenance")}
-        </button>
-      )}
     </div>
   );
 }

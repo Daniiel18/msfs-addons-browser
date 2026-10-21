@@ -32,6 +32,8 @@ import { useToastStore } from "../stores/useToastStore";
 import { EditFlightModal } from "./EditFlightModal";
 import { VsCombatModal } from "./VsCombatModal";
 import { DamageBadge } from "./DamageBadge";
+import { TechLogFlightCard } from "./TechLogPanel";
+import { useTechLogStore } from "../stores/useTechLogStore";
 import { AirlineLogo } from "./AirlineLogo";
 import { icaoToName, canonicalAirlineKey } from "../lib/airlineCodes";
 import { Pencil, Minimize2, Maximize2 } from "lucide-react";
@@ -251,6 +253,40 @@ export function FlightBookView() {
     clearCrewVsRequest();
   }, [crewVsRequest, entries, clearCrewVsRequest]);
 
+  // (19/10) Inicio pide enfocar un vuelo concreto (vuelos recientes /
+  // tarjeta "último vuelo"). Esperamos a que los vuelos estén cargados,
+  // quitamos lo que lo ocultaría en la lista (año, aerolínea, búsqueda),
+  // lo seleccionamos y lo traemos a la vista.
+  const flightFocusRequest = useAppStore((s) => s.flightFocusRequest);
+  const clearFlightFocusRequest = useAppStore((s) => s.clearFlightFocusRequest);
+  useEffect(() => {
+    if (flightFocusRequest == null || entries.length === 0) return;
+    const target = entries.find((e) => e.id === flightFocusRequest);
+    clearFlightFocusRequest();
+    if (!target) return;
+    const y = new Date(target.startedAt).getFullYear();
+    if (yearFilter != null && yearFilter !== y) setYearFilter(null);
+    const airline = useFlightLogStore.getState().selectedAirline;
+    if (
+      airline &&
+      canonicalAirlineKey(airline.icao, airline.name) !==
+        canonicalAirlineKey(target.airlineIcao, target.aircraftAirline)
+    ) {
+      useFlightLogStore.getState().setSelectedAirline(null);
+    }
+    setSidebarQuery("");
+    setSelectedFlightId(target.id);
+    // Dos frames: primero se re-renderiza la lista sin filtros.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() =>
+        document
+          .querySelector(`[data-flight-id="${target.id}"]`)
+          ?.scrollIntoView({ block: "center", behavior: "smooth" }),
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flightFocusRequest, entries, clearFlightFocusRequest]);
+
   // Si el vuelo seleccionado desaparece (lo borraron, recarga falló),
   // volvemos al modo globo en lugar de quedar con un id roto.
   useEffect(() => {
@@ -275,6 +311,9 @@ export function FlightBookView() {
   // Lo declaramos ACÁ ARRIBA (antes que useEffects que lo consumen)
   // para evitar TDZ errors.
   const selectedAirline = useFlightLogStore((s) => s.selectedAirline);
+  // (19/10) Matrículas con TechLog (su veredicto sustituye al de SimFleet).
+  const techlogManaged = useTechLogStore((s) => s.isManaged);
+  useTechLogStore((s) => s.managed);
 
   // (v3.6.4 fix K2) Cuando el usuario cambia de tag de aerolínea,
   // deseleccionar el vuelo actual. El usuario reportó: "el focus
@@ -643,10 +682,22 @@ export function FlightBookView() {
               · DetailActionsBar (sólo cuando hay vuelo seleccionado).
               · Map canvas con glass overlays. */}
         <div className="flex min-h-0 flex-col gap-2">
-          {/* (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo. */}
-          {selectedFlightId != null && (
-            <DamageBadge flightId={selectedFlightId} />
-          )}
+          {/* (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo.
+              (19/10) Aviones con TechLog: manda el veredicto de TechLog. */}
+          {selectedFlightId != null &&
+            (selectedFlight && techlogManaged(selectedFlight.aircraftRegistration) ? (
+              <TechLogFlightCard flight={selectedFlight} />
+            ) : selectedFlight ? (
+              // (19/10) Etapa 3B: Tech Log de SimFleet; los vuelos anteriores
+              // al sistema siguen con el veredicto viejo.
+              <TechLogFlightCard
+                flight={selectedFlight}
+                own
+                fallback={<DamageBadge flightId={selectedFlightId} />}
+              />
+            ) : (
+              <DamageBadge flightId={selectedFlightId} />
+            ))}
           {/* (v3.6.3 fix J5) Tabs (Checklist / Weather / NOTAMs) SOLO
               con vuelo seleccionado. Antes siempre se renderizaban —
               el usuario no podía hacer nada útil con ellos sin un
@@ -2081,6 +2132,7 @@ function CompactFlightRow({
   return (
     <li
       onClick={onSelect}
+      data-flight-id={entry.id}
       title={
         selected ? t("fb.action.deselect") : t("fb.card.select_tooltip")
       }

@@ -1,0 +1,4200 @@
+{
+ "note": "SimFleet Tech Log — familia A320 (adaptado de Fenix TechLog, uso personal).",
+ "components": [
+  {
+   "key": "PACK_REG",
+   "name": "Pack {pos} flow control",
+   "ata": 21,
+   "system": "Air conditioning",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "blockHours",
+   "life": 16000,
+   "mel": "21-51-01",
+   "symptom": "PACK {pos} REGUL FAULT",
+   "stress": "takeoff",
+   "degradedMel": "21-51-02",
+   "degradedSymptom": "Pack {pos} trips at takeoff thrust and comes back"
+  },
+  {
+   "key": "PACK_HX",
+   "name": "Pack {pos} heat exchanger",
+   "ata": 21,
+   "system": "Air conditioning",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "blockHours",
+   "life": 22000,
+   "mel": "21-51-01",
+   "symptom": "PACK {pos} OVHT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "CPC",
+   "name": "Cabin pressure controller {pos}",
+   "ata": 21,
+   "system": "Pressurisation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "21-31-01",
+   "symptom": "CAB PR SYS {pos} FAULT",
+   "stress": "climb"
+  },
+  {
+   "key": "OUTFLOW",
+   "name": "Outflow valve actuator",
+   "ata": 21,
+   "system": "Pressurisation",
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "21-31-02",
+   "symptom": "Outflow valve does not move",
+   "stress": "climb"
+  },
+  {
+   "key": "VENT_BLOWER",
+   "name": "Avionics ventilation blower",
+   "ata": 21,
+   "system": "Ventilation",
+   "basis": "blockHours",
+   "life": 25000,
+   "mel": "21-26-01",
+   "symptom": "VENT BLOWER FAULT"
+  },
+  {
+   "key": "VENT_EXTRACT",
+   "name": "Avionics ventilation extract fan",
+   "ata": 21,
+   "system": "Ventilation",
+   "basis": "blockHours",
+   "life": 25000,
+   "mel": "21-26-02",
+   "symptom": "VENT EXTRACT FAULT"
+  },
+  {
+   "key": "RECIRC_FANS",
+   "name": "Cabin recirculation fans",
+   "ata": 21,
+   "system": "Air conditioning",
+   "basis": "blockHours",
+   "life": 20000,
+   "mel": "21-21-01",
+   "symptom": "Recirculation fans inop",
+   "stress": "climb"
+  },
+  {
+   "key": "LAV_GAL_FAN",
+   "name": "Lavatory/galley extract fan",
+   "ata": 21,
+   "system": "Ventilation",
+   "basis": "blockHours",
+   "life": 15000,
+   "mel": "21-23-01",
+   "symptom": "L+G VENT FAULT"
+  },
+  {
+   "key": "HOT_AIR_VALVE",
+   "name": "Trim air pressure regulating valve",
+   "ata": 21,
+   "system": "Air conditioning",
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "21-63-01",
+   "symptom": "HOT AIR FAULT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "TRIM_AIR",
+   "name": "Zone trim air valve",
+   "ata": 21,
+   "system": "Air conditioning",
+   "basis": "flightHours",
+   "life": 35000,
+   "mel": "21-63-02",
+   "symptom": "Zone temperature not controlled",
+   "stress": "takeoff"
+  },
+  {
+   "key": "CARGO_HOT_AIR",
+   "name": "Aft cargo hot air valve",
+   "ata": 21,
+   "system": "Cargo heating",
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "21-43-01",
+   "symptom": "AFT CRG HOT AIR FAULT",
+   "stress": "climb"
+  },
+  {
+   "key": "PACK_VALVE",
+   "name": "Pack {pos} flow control valve",
+   "ata": 21,
+   "system": "Air conditioning",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "blockHours",
+   "life": 25000,
+   "mel": "21-51-01",
+   "symptom": "PACK {pos} FAULT: flow control valve stuck",
+   "stress": "takeoff"
+  },
+  {
+   "key": "RAM_AIR_VALVE",
+   "name": "Ram air inlet valve",
+   "ata": 21,
+   "system": "Air conditioning",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "21-52-01",
+   "symptom": "Ram air valve does not move"
+  },
+  {
+   "key": "ZONE_CTL",
+   "name": "Zone controller ({pos} channel)",
+   "ata": 21,
+   "system": "Air conditioning",
+   "positions": [
+    "PRIM",
+    "SEC"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "21-61-01",
+   "symptom": "COND ZONE REGUL FAULT ({pos})"
+  },
+  {
+   "key": "AEVC",
+   "name": "Avionics equipment ventilation computer",
+   "ata": 21,
+   "system": "Ventilation",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "21-26-03",
+   "symptom": "VENT AVNCS SYS FAULT"
+  },
+  {
+   "key": "VENT_VALVE",
+   "name": "Avionics ventilation {pos} valve",
+   "ata": 21,
+   "system": "Ventilation",
+   "positions": [
+    "INLET",
+    "EXTRACT"
+   ],
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "21-26-04",
+   "symptom": "Avionics ventilation {pos} valve fault"
+  },
+  {
+   "key": "CVC",
+   "name": "Cargo ventilation controller",
+   "ata": 21,
+   "system": "Cargo ventilation",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "21-28-01",
+   "symptom": "CARGO VENT FAULT"
+  },
+  {
+   "key": "CARGO_ISOL",
+   "name": "{pos} cargo isolation valve",
+   "ata": 21,
+   "system": "Cargo ventilation",
+   "positions": [
+    "FWD INLET",
+    "FWD OUTLET",
+    "AFT INLET",
+    "AFT OUTLET"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "21-28-02",
+   "symptom": "CARGO ISOL VALVE fault ({pos})"
+  },
+  {
+   "key": "AP",
+   "name": "Autopilot {pos}",
+   "ata": 22,
+   "system": "Auto flight",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "22-11-01",
+   "symptom": "AP {pos} will not engage"
+  },
+  {
+   "key": "ATHR",
+   "name": "Autothrust channel {pos}",
+   "ata": 22,
+   "system": "Auto flight",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "22-31-01",
+   "symptom": "A/THR {pos} fault"
+  },
+  {
+   "key": "FCU",
+   "name": "FCU channel {pos}",
+   "ata": 22,
+   "system": "Auto flight",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "22-81-01",
+   "symptom": "FCU {pos} FAULT"
+  },
+  {
+   "key": "FMGC",
+   "name": "FMGC {pos}",
+   "ata": 22,
+   "system": "Auto flight",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "22-70-01",
+   "symptom": "FMGC {pos} FAULT"
+  },
+  {
+   "key": "MCDU",
+   "name": "MCDU {pos}",
+   "ata": 22,
+   "system": "Auto flight",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 25000,
+   "mel": "22-82-01",
+   "symptom": "MCDU {pos} blank",
+   "stress": "start",
+   "degradedMel": "22-82-02",
+   "degradedSymptom": "MCDU {pos} blanks, recovers after a reset",
+   "recurring": true
+  },
+  {
+   "key": "FAC",
+   "name": "FAC {pos}",
+   "ata": 22,
+   "system": "Flight augmentation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "22-60-01",
+   "symptom": "FAC {pos} FAULT",
+   "stress": "start",
+   "degradedMel": "22-60-05",
+   "degradedSymptom": "FAC {pos} FAULT, recovers after a reset",
+   "recurring": true
+  },
+  {
+   "key": "YAW_DAMPER",
+   "name": "Yaw damper channel {pos}",
+   "ata": 22,
+   "system": "Flight augmentation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "22-60-02",
+   "symptom": "YAW DAMPER {pos} FAULT"
+  },
+  {
+   "key": "RUDDER_TRIM",
+   "name": "Rudder trim channel {pos}",
+   "ata": 22,
+   "system": "Flight augmentation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "22-60-03",
+   "symptom": "RUD TRIM {pos} FAULT"
+  },
+  {
+   "key": "RTL",
+   "name": "Rudder travel limiter channel {pos}",
+   "ata": 22,
+   "system": "Flight augmentation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "22-60-04",
+   "symptom": "RUD TRV LIM {pos} FAULT"
+  },
+  {
+   "key": "PTT",
+   "name": "Push-to-talk switch ({pos})",
+   "ata": 23,
+   "system": "Communications",
+   "positions": [
+    "CAPT",
+    "FO"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "23-51-01",
+   "symptom": "Stuck microphone"
+  },
+  {
+   "key": "CVR",
+   "name": "Cockpit voice recorder",
+   "ata": 23,
+   "system": "Recorders",
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "23-71-01",
+   "symptom": "RCDR CVR FAULT"
+  },
+  {
+   "key": "IDG_OIL",
+   "name": "IDG {pos} oil pressure",
+   "ata": 24,
+   "system": "Electrical",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 12000,
+   "mel": "24-21-01",
+   "symptom": "IDG {pos} OIL LO PR",
+   "stress": "takeoff"
+  },
+  {
+   "key": "IDG_TEMP",
+   "name": "IDG {pos} oil cooler",
+   "ata": 24,
+   "system": "Electrical",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 18000,
+   "mel": "24-21-01",
+   "symptom": "IDG {pos} OIL OVHT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "GEN",
+   "name": "Engine generator {pos}",
+   "ata": 24,
+   "system": "Electrical",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 20000,
+   "mel": "24-21-01",
+   "symptom": "GEN {pos} FAULT",
+   "stress": "takeoff",
+   "degradedMel": "24-21-02",
+   "degradedSymptom": "Generator {pos} drops off under load and comes back"
+  },
+  {
+   "key": "APU_GEN",
+   "name": "APU generator",
+   "ata": 24,
+   "system": "Electrical",
+   "basis": "apuHours",
+   "life": 12000,
+   "mel": "24-22-01",
+   "symptom": "APU GEN FAULT",
+   "stress": "apu"
+  },
+  {
+   "key": "TR",
+   "name": "Transformer rectifier {pos}",
+   "ata": 24,
+   "system": "Electrical",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "24-31-01",
+   "symptom": "TR {pos} FAULT"
+  },
+  {
+   "key": "ESS_TR",
+   "name": "Essential TR",
+   "ata": 24,
+   "system": "Electrical",
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "24-31-02",
+   "symptom": "ESS TR FAULT"
+  },
+  {
+   "key": "STATIC_INV",
+   "name": "Static inverter",
+   "ata": 24,
+   "system": "Electrical",
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "24-24-01",
+   "symptom": "STAT INV FAULT"
+  },
+  {
+   "key": "AC_ESS_FEED",
+   "name": "AC essential feed contactor ({pos})",
+   "ata": 24,
+   "system": "Electrical",
+   "positions": [
+    "NORM",
+    "ALTN"
+   ],
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "24-50-01",
+   "symptom": "AC ESS FEED {pos} contactor fault"
+  },
+  {
+   "key": "BUS",
+   "name": "{pos} bus",
+   "ata": 24,
+   "system": "Electrical",
+   "positions": [
+    "AC 1",
+    "AC 2",
+    "AC ESS",
+    "AC ESS SHED",
+    "DC 1",
+    "DC 2",
+    "DC ESS",
+    "DC ESS SHED",
+    "DC BAT",
+    "HOT 1",
+    "HOT 2",
+    "AC 26V 1",
+    "AC 26V 2",
+    "AC 26V ESS",
+    "AC STAT INV"
+   ],
+   "basis": "flightHours",
+   "life": 160000,
+   "mel": "24-50-02",
+   "symptom": "{pos} BUS FAULT"
+  },
+  {
+   "key": "FDU",
+   "name": "Fire detection unit {pos}",
+   "ata": 26,
+   "system": "Fire protection",
+   "positions": [
+    "1",
+    "2",
+    "3"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "26-12-01",
+   "symptom": "FIRE DET {pos} FAULT"
+  },
+  {
+   "key": "ENG_FIRE_LOOP",
+   "name": "Engine fire loop {pos}",
+   "ata": 26,
+   "system": "Fire protection",
+   "positions": [
+    "1A",
+    "1B",
+    "2A",
+    "2B"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "26-12-02",
+   "symptom": "ENG LOOP FAULT"
+  },
+  {
+   "key": "APU_FIRE_LOOP",
+   "name": "APU fire loop {pos}",
+   "ata": 26,
+   "system": "Fire protection",
+   "positions": [
+    "A",
+    "B"
+   ],
+   "basis": "apuHours",
+   "life": 20000,
+   "mel": "26-15-01",
+   "symptom": "APU LOOP {pos} FAULT"
+  },
+  {
+   "key": "SMOKE_DET_LAV",
+   "name": "Lavatory smoke detector",
+   "ata": 26,
+   "system": "Smoke detection",
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "26-17-01",
+   "symptom": "LAV SMOKE warning; no smoke found (detector fault)"
+  },
+  {
+   "key": "SMOKE_DET_CARGO",
+   "name": "{pos} cargo smoke detector",
+   "ata": 26,
+   "system": "Smoke detection",
+   "positions": [
+    "FWD",
+    "AFT"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "26-16-01",
+   "symptom": "{pos} CARGO SMOKE warning; no fire found (detector fault)"
+  },
+  {
+   "key": "SMOKE_DET_AVNCS",
+   "name": "Avionics smoke detector",
+   "ata": 26,
+   "system": "Smoke detection",
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "26-15-02",
+   "symptom": "AVIONICS SMOKE warning; no smoke found (detector fault)"
+  },
+  {
+   "key": "SDCU",
+   "name": "Smoke detection control unit",
+   "ata": 26,
+   "system": "Smoke detection",
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "26-16-02",
+   "symptom": "SMOKE DET FAULT: cargo smoke detection lost"
+  },
+  {
+   "key": "ELAC",
+   "name": "ELAC {pos}",
+   "ata": 27,
+   "system": "Flight controls",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "27-93-01",
+   "symptom": "ELAC {pos} FAULT",
+   "stress": "start",
+   "degradedMel": "27-93-02",
+   "degradedSymptom": "ELAC {pos} FAULT, recovers after a reset",
+   "recurring": true
+  },
+  {
+   "key": "SEC",
+   "name": "SEC {pos}",
+   "ata": 27,
+   "system": "Flight controls",
+   "positions": [
+    "1",
+    "2",
+    "3"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "27-94-01",
+   "symptom": "SEC {pos} FAULT",
+   "stress": "start",
+   "degradedMel": "27-94-02",
+   "degradedSymptom": "SEC {pos} FAULT, recovers after a reset",
+   "recurring": true
+  },
+  {
+   "key": "SFCC",
+   "name": "SFCC {pos}",
+   "ata": 27,
+   "system": "Flaps and slats",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 35000,
+   "mel": "27-51-01",
+   "symptom": "SFCC {pos} FAULT",
+   "stress": "flaps"
+  },
+  {
+   "key": "SFCC_FLAP",
+   "name": "SFCC {pos} flap channel",
+   "ata": 27,
+   "system": "Flaps and slats",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "cycles",
+   "life": 40000,
+   "mel": "27-51-01",
+   "symptom": "FLAP SYS {pos} FAULT",
+   "stress": "flaps"
+  },
+  {
+   "key": "SFCC_SLAT",
+   "name": "SFCC {pos} slat channel",
+   "ata": 27,
+   "system": "Flaps and slats",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "cycles",
+   "life": 40000,
+   "mel": "27-51-01",
+   "symptom": "SLAT SYS {pos} FAULT",
+   "stress": "flaps"
+  },
+  {
+   "key": "IPPU",
+   "name": "Flap/slat position pick-off unit {pos}",
+   "ata": 27,
+   "system": "Flaps and slats",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "cycles",
+   "life": 45000,
+   "mel": "27-51-02",
+   "symptom": "Flap/slat position {pos} disagree",
+   "stress": "flaps"
+  },
+  {
+   "key": "FCDC",
+   "name": "FCDC {pos}",
+   "ata": 27,
+   "system": "Flight controls",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "27-95-01",
+   "symptom": "FCDC {pos} FAULT"
+  },
+  {
+   "key": "SIDESTICK",
+   "name": "Sidestick transducer ({pos})",
+   "ata": 27,
+   "system": "Flight controls",
+   "positions": [
+    "CAPT",
+    "FO"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "27-92-01",
+   "symptom": "SIDESTICK FAULT"
+  },
+  {
+   "key": "ELEV_SERVO",
+   "name": "{pos} elevator servo controls",
+   "ata": 27,
+   "system": "Flight controls",
+   "positions": [
+    "L",
+    "R"
+   ],
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "27-34-01",
+   "symptom": "{pos} ELEV FAULT"
+  },
+  {
+   "key": "THS_ACTUATOR",
+   "name": "THS actuator",
+   "ata": 27,
+   "system": "Flight controls",
+   "basis": "flightHours",
+   "life": 70000,
+   "mel": "27-41-01",
+   "symptom": "Pitch trim jammed (STABILIZER JAM)",
+   "stress": "climb"
+  },
+  {
+   "key": "FUEL_PUMP",
+   "name": "Fuel pump {pos}",
+   "ata": 28,
+   "system": "Fuel",
+   "positions": [
+    "L1",
+    "L2",
+    "C1",
+    "C2",
+    "R1",
+    "R2"
+   ],
+   "basis": "blockHours",
+   "life": 20000,
+   "mel": "28-21-01",
+   "symptom": "FUEL PUMP LO PR",
+   "stress": "takeoff"
+  },
+  {
+   "key": "XFER_VALVE",
+   "name": "Outer tank transfer valve {pos}",
+   "ata": 28,
+   "system": "Fuel",
+   "positions": [
+    "L1",
+    "L2",
+    "R1",
+    "R2"
+   ],
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "28-22-01",
+   "symptom": "Transfer valve does not open",
+   "stress": "climb"
+  },
+  {
+   "key": "XFEED_VALVE",
+   "name": "Crossfeed valve",
+   "ata": 28,
+   "system": "Fuel",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "28-23-01",
+   "symptom": "X FEED VALVE FAULT"
+  },
+  {
+   "key": "LP_VALVE",
+   "name": "Engine {pos} LP fuel valve",
+   "ata": 28,
+   "system": "Fuel",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "28-24-01",
+   "symptom": "ENG {pos} LP VALVE FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "HP_VALVE",
+   "name": "Engine {pos} HP fuel valve",
+   "ata": 73,
+   "system": "Engine fuel",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 50000,
+   "mel": "73-11-01",
+   "symptom": "ENG {pos} HP VALVE FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "FQI",
+   "name": "Fuel quantity indication channel {pos}",
+   "ata": 28,
+   "system": "Fuel",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "28-42-01",
+   "symptom": "FQI CH {pos} FAULT"
+  },
+  {
+   "key": "APU_FUEL_VALVE",
+   "name": "APU LP fuel valve",
+   "ata": 49,
+   "system": "APU",
+   "basis": "apuStarts",
+   "life": 25000,
+   "mel": "49-00-01",
+   "symptom": "APU LP VALVE FAULT",
+   "stress": "apu"
+  },
+  {
+   "key": "DEFUEL_VALVE",
+   "name": "Defuel/transfer valve",
+   "ata": 28,
+   "system": "Fuel",
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "28-26-01",
+   "symptom": "Defuel/transfer valve open: fuel transferring"
+  },
+  {
+   "key": "FUEL_TANK",
+   "name": "{pos} tank sealing",
+   "ata": 28,
+   "system": "Fuel",
+   "positions": [
+    "L OUTER",
+    "L INNER",
+    "CENTER",
+    "R INNER",
+    "R OUTER"
+   ],
+   "basis": "flightHours",
+   "life": 120000,
+   "mel": "28-11-01",
+   "symptom": "Fuel leaking from the {pos} tank",
+   "degradedMel": "28-11-03",
+   "degradedSymptom": "Fuel seeping from the {pos} tank"
+  },
+  {
+   "key": "EDP_GREEN",
+   "name": "Green engine-driven pump",
+   "ata": 29,
+   "system": "Hydraulics",
+   "positions": [
+    "1"
+   ],
+   "basis": "engHours",
+   "life": 20000,
+   "mel": "29-11-01",
+   "symptom": "HYD G ENG 1 PUMP LO PR",
+   "stress": "takeoff",
+   "degradedMel": "29-10-01",
+   "degradedSymptom": "HYD G RSVR OVHT: worn pump heating the fluid"
+  },
+  {
+   "key": "EDP_YELLOW",
+   "name": "Yellow engine-driven pump",
+   "ata": 29,
+   "system": "Hydraulics",
+   "positions": [
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 20000,
+   "mel": "29-11-02",
+   "symptom": "HYD Y ENG 2 PUMP LO PR",
+   "stress": "takeoff",
+   "degradedMel": "29-10-02",
+   "degradedSymptom": "HYD Y RSVR OVHT: worn pump heating the fluid"
+  },
+  {
+   "key": "EPUMP_BLUE",
+   "name": "Blue electric pump",
+   "ata": 29,
+   "system": "Hydraulics",
+   "basis": "blockHours",
+   "life": 18000,
+   "mel": "29-12-01",
+   "symptom": "HYD B ELEC PUMP LO PR",
+   "stress": "takeoff",
+   "degradedMel": "29-10-03",
+   "degradedSymptom": "HYD B RSVR OVHT: worn pump heating the fluid"
+  },
+  {
+   "key": "EPUMP_YELLOW",
+   "name": "Yellow electric pump",
+   "ata": 29,
+   "system": "Hydraulics",
+   "basis": "blockHours",
+   "life": 25000,
+   "mel": "29-12-02",
+   "symptom": "HYD Y ELEC PUMP LO PR",
+   "stress": "takeoff"
+  },
+  {
+   "key": "EPUMP_BLUE_TEMP",
+   "name": "Blue electric pump cooling",
+   "ata": 29,
+   "system": "Hydraulics",
+   "basis": "blockHours",
+   "life": 30000,
+   "mel": "29-12-01",
+   "symptom": "HYD B ELEC PUMP OVHT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "EPUMP_YELLOW_TEMP",
+   "name": "Yellow electric pump cooling",
+   "ata": 29,
+   "system": "Hydraulics",
+   "basis": "blockHours",
+   "life": 30000,
+   "mel": "29-12-02",
+   "symptom": "HYD Y ELEC PUMP OVHT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "PTU",
+   "name": "Power transfer unit",
+   "ata": 29,
+   "system": "Hydraulics",
+   "basis": "flightHours",
+   "life": 25000,
+   "mel": "29-23-01",
+   "symptom": "HYD PTU FAULT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "RSVR_AIR",
+   "name": "{pos} reservoir pressurisation",
+   "ata": 29,
+   "system": "Hydraulics",
+   "positions": [
+    "GREEN",
+    "BLUE",
+    "YELLOW"
+   ],
+   "basis": "days",
+   "life": 1400,
+   "mel": "29-14-01",
+   "symptom": "HYD {pos} RSVR LO AIR PR"
+  },
+  {
+   "key": "HYD_SEALS",
+   "name": "{pos} system seals",
+   "ata": 29,
+   "system": "Hydraulics",
+   "positions": [
+    "GREEN",
+    "BLUE",
+    "YELLOW"
+   ],
+   "basis": "flightHours",
+   "life": 90000,
+   "mel": "29-00-01",
+   "symptom": "HYD {pos} RSVR LO LVL",
+   "stress": "takeoff",
+   "degradedMel": "29-00-02",
+   "degradedSymptom": "Hydraulic fluid seeping from the {pos} system"
+  },
+  {
+   "key": "HYD_FIRE_VALVE",
+   "name": "Hydraulic fire valve {pos}",
+   "ata": 29,
+   "system": "Hydraulics",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 80000,
+   "mel": "29-11-03",
+   "symptom": "Fire valve position disagree"
+  },
+  {
+   "key": "PITOT_HEAT",
+   "name": "Pitot heater ({pos})",
+   "ata": 30,
+   "system": "Probe heat",
+   "positions": [
+    "CAPT",
+    "FO",
+    "STBY"
+   ],
+   "basis": "flightHours",
+   "life": 15000,
+   "mel": "30-31-01",
+   "symptom": "PITOT HEAT FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "TAT_HEAT",
+   "name": "TAT probe heater ({pos})",
+   "ata": 30,
+   "system": "Probe heat",
+   "positions": [
+    "CAPT",
+    "FO",
+    "STBY"
+   ],
+   "basis": "flightHours",
+   "life": 20000,
+   "mel": "30-31-02",
+   "symptom": "TAT HEAT FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "AOA_HEAT",
+   "name": "AOA vane heater ({pos})",
+   "ata": 30,
+   "system": "Probe heat",
+   "positions": [
+    "CAPT",
+    "FO",
+    "STBY"
+   ],
+   "basis": "flightHours",
+   "life": 20000,
+   "mel": "30-31-03",
+   "symptom": "AOA HEAT FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "STATIC_HEAT",
+   "name": "Static port heater ({pos})",
+   "ata": 30,
+   "system": "Probe heat",
+   "positions": [
+    "CAPT L",
+    "CAPT R",
+    "FO L",
+    "FO R",
+    "STBY L",
+    "STBY R"
+   ],
+   "basis": "flightHours",
+   "life": 25000,
+   "mel": "30-31-04",
+   "symptom": "STAT HEAT FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "PHC",
+   "name": "Probe heat computer {pos}",
+   "ata": 30,
+   "system": "Probe heat",
+   "positions": [
+    "1",
+    "2",
+    "3"
+   ],
+   "basis": "flightHours",
+   "life": 35000,
+   "mel": "30-31-05",
+   "symptom": "PROBES HEAT {pos} FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "WHC",
+   "name": "Window heat computer {pos}",
+   "ata": 30,
+   "system": "Window heat",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 25000,
+   "mel": "30-42-01",
+   "symptom": "WINDOW HEAT FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "EAI_VALVE",
+   "name": "Engine {pos} anti-ice valve",
+   "ata": 30,
+   "system": "Anti-ice",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 25000,
+   "mel": "30-21-01",
+   "symptom": "ENG {pos} ANTI ICE VALVE",
+   "stress": "climb"
+  },
+  {
+   "key": "WAI_VALVE",
+   "name": "Wing anti-ice valve {pos}",
+   "ata": 30,
+   "system": "Anti-ice",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 25000,
+   "mel": "30-11-01",
+   "symptom": "WING A.ICE VALVE",
+   "stress": "climb"
+  },
+  {
+   "key": "DMC",
+   "name": "Display management computer {pos}",
+   "ata": 31,
+   "system": "Displays",
+   "positions": [
+    "1",
+    "2",
+    "3"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "31-62-01",
+   "symptom": "DMC {pos} FAULT"
+  },
+  {
+   "key": "DU",
+   "name": "Display unit ({pos})",
+   "ata": 31,
+   "system": "Displays",
+   "positions": [
+    "CAPT PFD",
+    "CAPT ND",
+    "FO PFD",
+    "FO ND",
+    "ECAM UPPER",
+    "ECAM LOWER"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "31-63-01",
+   "symptom": "Display blank"
+  },
+  {
+   "key": "ECP",
+   "name": "ECAM control panel",
+   "ata": 31,
+   "system": "Displays",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "31-55-01",
+   "symptom": "ECP keys inop"
+  },
+  {
+   "key": "FWC",
+   "name": "Flight warning computer {pos}",
+   "ata": 31,
+   "system": "Warnings",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "31-52-01",
+   "symptom": "FWC {pos} FAULT"
+  },
+  {
+   "key": "SDAC",
+   "name": "SDAC {pos}",
+   "ata": 31,
+   "system": "Warnings",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "31-54-01",
+   "symptom": "SDAC {pos} FAULT"
+  },
+  {
+   "key": "CFDIU",
+   "name": "Centralised fault display interface unit",
+   "ata": 31,
+   "system": "Maintenance",
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "31-32-01",
+   "symptom": "CFDIU FAULT"
+  },
+  {
+   "key": "ATSU",
+   "name": "Air traffic services unit",
+   "ata": 46,
+   "system": "Datalink",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "46-21-01",
+   "symptom": "DATALINK ATSU FAULT"
+  },
+  {
+   "key": "DCDU",
+   "name": "DCDU ({pos})",
+   "ata": 46,
+   "system": "Datalink",
+   "positions": [
+    "CAPT",
+    "FO"
+   ],
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "46-21-02",
+   "symptom": "DCDU {pos} blank"
+  },
+  {
+   "key": "BRAKE",
+   "name": "Brake {pos}",
+   "ata": 32,
+   "system": "Brakes",
+   "positions": [
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "kind": "wear",
+   "mel": "32-42-01",
+   "symptom": "Brake {pos} wear pin flush",
+   "stress": "landing",
+   "wearModel": "brake"
+  },
+  {
+   "key": "TYRE_MAIN",
+   "name": "Main tyre {pos}",
+   "ata": 32,
+   "system": "Wheels and tyres",
+   "positions": [
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "kind": "wear",
+   "mel": "32-41-01",
+   "symptom": "Tyre {pos} worn to limits",
+   "stress": "landing",
+   "wearModel": "tyreMain"
+  },
+  {
+   "key": "TYRE_NOSE",
+   "name": "Nose tyre {pos}",
+   "ata": 32,
+   "system": "Wheels and tyres",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "kind": "wear",
+   "mel": "32-41-02",
+   "symptom": "Nose tyre {pos} worn to limits",
+   "stress": "landing",
+   "wearModel": "tyreNose"
+  },
+  {
+   "key": "LGCIU",
+   "name": "LGCIU {pos}",
+   "ata": 32,
+   "system": "Landing gear",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "cycles",
+   "life": 40000,
+   "mel": "32-69-01",
+   "symptom": "L/G SYS {pos} FAULT",
+   "stress": "gear"
+  },
+  {
+   "key": "BSCU",
+   "name": "BSCU channel {pos}",
+   "ata": 32,
+   "system": "Brakes",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 35000,
+   "mel": "32-42-02",
+   "symptom": "BRAKES BSCU CH {pos} FAULT",
+   "stress": "landing"
+  },
+  {
+   "key": "BSCU_BRAKE",
+   "name": "Normal brake channel {pos}",
+   "ata": 32,
+   "system": "Brakes",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "cycles",
+   "life": 30000,
+   "mel": "32-42-02",
+   "symptom": "BRAKES SYS {pos} FAULT",
+   "stress": "landing"
+  },
+  {
+   "key": "ABCU",
+   "name": "Alternate braking control unit",
+   "ata": 32,
+   "system": "Brakes",
+   "basis": "cycles",
+   "life": 45000,
+   "mel": "32-42-04",
+   "symptom": "BRAKES ALTN BRK FAULT"
+  },
+  {
+   "key": "AUTOBRAKE",
+   "name": "Autobrake",
+   "ata": 32,
+   "system": "Brakes",
+   "basis": "cycles",
+   "life": 30000,
+   "mel": "32-42-03",
+   "symptom": "AUTO BRK FAULT",
+   "stress": "landing"
+  },
+  {
+   "key": "NWS",
+   "name": "Nose wheel steering",
+   "ata": 32,
+   "system": "Steering",
+   "basis": "cycles",
+   "life": 40000,
+   "mel": "32-51-01",
+   "symptom": "WHEEL N/W STEER FAULT",
+   "stress": "landing"
+  },
+  {
+   "key": "GEAR_SAFETY_VALVE",
+   "name": "Landing gear safety valve",
+   "ata": 32,
+   "system": "Landing gear",
+   "basis": "cycles",
+   "life": 40000,
+   "mel": "32-31-01",
+   "symptom": "Gear safety valve fault",
+   "stress": "gear"
+  },
+  {
+   "key": "GEAR_UPLOCK",
+   "name": "Landing gear uplocks",
+   "ata": 32,
+   "system": "Landing gear",
+   "basis": "cycles",
+   "life": 50000,
+   "mel": "32-32-01",
+   "symptom": "Gear does not extend normally (uplock jammed): gravity extension",
+   "stress": "gear"
+  },
+  {
+   "key": "GEAR_DOWNLOCK",
+   "name": "{pos} gear downlock",
+   "ata": 32,
+   "system": "Landing gear",
+   "positions": [
+    "LEFT",
+    "RIGHT",
+    "NOSE"
+   ],
+   "basis": "cycles",
+   "life": 50000,
+   "mel": "32-33-01",
+   "symptom": "{pos} gear not downlocked",
+   "stress": "gear"
+  },
+  {
+   "key": "GEAR_RETRACT",
+   "name": "Gear retraction actuators",
+   "ata": 32,
+   "system": "Landing gear",
+   "basis": "cycles",
+   "life": 45000,
+   "mel": "32-30-02",
+   "symptom": "Gear does not retract",
+   "stress": "gear"
+  },
+  {
+   "key": "ADR",
+   "name": "ADR {pos}",
+   "ata": 34,
+   "system": "Air data",
+   "positions": [
+    "1",
+    "2",
+    "3"
+   ],
+   "basis": "flightHours",
+   "life": 35000,
+   "mel": "34-10-01",
+   "symptom": "NAV ADR {pos} FAULT"
+  },
+  {
+   "key": "IR",
+   "name": "IR {pos}",
+   "ata": 34,
+   "system": "Inertial reference",
+   "positions": [
+    "1",
+    "2",
+    "3"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "34-12-01",
+   "symptom": "NAV IR {pos} FAULT",
+   "degradedMel": "34-12-02",
+   "degradedSymptom": "IR {pos} drifting: attitude/heading disagree"
+  },
+  {
+   "key": "RA",
+   "name": "Radio altimeter {pos}",
+   "ata": 34,
+   "system": "Navigation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 30000,
+   "mel": "34-42-01",
+   "symptom": "RA {pos} FAULT"
+  },
+  {
+   "key": "VOR",
+   "name": "VOR receiver {pos}",
+   "ata": 34,
+   "system": "Navigation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "34-51-01",
+   "symptom": "VOR {pos} flag"
+  },
+  {
+   "key": "ADF",
+   "name": "ADF receiver {pos}",
+   "ata": 34,
+   "system": "Navigation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "34-53-01",
+   "symptom": "ADF {pos} flag"
+  },
+  {
+   "key": "XPDR",
+   "name": "ATC transponder {pos}",
+   "ata": 34,
+   "system": "Surveillance",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "34-52-01",
+   "symptom": "ATC {pos} FAULT"
+  },
+  {
+   "key": "TCAS",
+   "name": "TCAS computer",
+   "ata": 34,
+   "system": "Surveillance",
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "34-43-01",
+   "symptom": "NAV TCAS FAULT"
+  },
+  {
+   "key": "GPWS",
+   "name": "Enhanced GPWS computer",
+   "ata": 34,
+   "system": "Surveillance",
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "34-48-01",
+   "symptom": "NAV GPWS FAULT"
+  },
+  {
+   "key": "GPS",
+   "name": "GPS receiver {pos}",
+   "ata": 34,
+   "system": "Navigation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "34-36-01",
+   "symptom": "GPS {pos} FAULT",
+   "degradedMel": "34-36-02",
+   "degradedSymptom": "GPS {pos} losing satellites: NAV ACCUR DOWNGRAD"
+  },
+  {
+   "key": "ILS_LOC",
+   "name": "ILS {pos} localizer receiver",
+   "ata": 34,
+   "system": "Navigation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "34-32-01",
+   "symptom": "LOC {pos} flag"
+  },
+  {
+   "key": "ILS_GS",
+   "name": "ILS {pos} glideslope receiver",
+   "ata": 34,
+   "system": "Navigation",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 45000,
+   "mel": "34-32-01",
+   "symptom": "G/S {pos} flag"
+  },
+  {
+   "key": "BLEED_VALVE",
+   "name": "Engine {pos} bleed valve",
+   "ata": 36,
+   "system": "Bleed air",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 20000,
+   "mel": "36-11-01",
+   "symptom": "BLEED {pos} FAULT",
+   "stress": "takeoff",
+   "degradedMel": "36-11-04",
+   "degradedSymptom": "Engine {pos} bleed valve sticks at takeoff thrust and frees again"
+  },
+  {
+   "key": "HP_BLEED_VALVE",
+   "name": "Engine {pos} HP bleed valve",
+   "ata": 36,
+   "system": "Bleed air",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 22000,
+   "mel": "36-11-02",
+   "symptom": "HP VALVE {pos} FAULT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "PRECOOLER",
+   "name": "Engine {pos} precooler",
+   "ata": 36,
+   "system": "Bleed air",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 25000,
+   "mel": "36-11-01",
+   "symptom": "BLEED {pos} LO TEMP",
+   "stress": "takeoff"
+  },
+  {
+   "key": "BMC",
+   "name": "Bleed monitoring computer {pos}",
+   "ata": 36,
+   "system": "Bleed air",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "36-11-03",
+   "symptom": "BMC {pos} FAULT",
+   "stress": "takeoff"
+  },
+  {
+   "key": "XBLEED_VALVE",
+   "name": "Crossbleed valve",
+   "ata": 36,
+   "system": "Bleed air",
+   "basis": "flightHours",
+   "life": 40000,
+   "mel": "36-12-01",
+   "symptom": "X BLEED FAULT"
+  },
+  {
+   "key": "APU_BLEED_VALVE",
+   "name": "APU bleed valve",
+   "ata": 36,
+   "system": "Bleed air",
+   "basis": "apuHours",
+   "life": 12000,
+   "mel": "36-12-02",
+   "symptom": "APU BLEED FAULT",
+   "stress": "apu"
+  },
+  {
+   "key": "BLEED_DUCT_PYLON",
+   "name": "Engine {pos} pylon bleed duct",
+   "ata": 36,
+   "system": "Bleed air",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 90000,
+   "mel": "36-22-01",
+   "symptom": "ENG {pos} BLEED LEAK",
+   "stress": "takeoff"
+  },
+  {
+   "key": "BLEED_DUCT_WING",
+   "name": "Wing {pos} bleed duct",
+   "ata": 36,
+   "system": "Bleed air",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 90000,
+   "mel": "36-22-01",
+   "symptom": "AIR L(R) WING LEAK",
+   "stress": "takeoff"
+  },
+  {
+   "key": "APU_BLEED_DUCT",
+   "name": "APU bleed duct",
+   "ata": 36,
+   "system": "Bleed air",
+   "basis": "apuHours",
+   "life": 60000,
+   "mel": "36-22-02",
+   "symptom": "AIR APU LEAK",
+   "stress": "apu"
+  },
+  {
+   "key": "APU_ECB",
+   "name": "APU electronic control box",
+   "ata": 49,
+   "system": "APU",
+   "basis": "apuHours",
+   "life": 9000,
+   "mel": "49-00-01",
+   "symptom": "APU FAULT / APU AUTO SHUT DOWN",
+   "stress": "apu"
+  },
+  {
+   "key": "DOOR",
+   "name": "{pos} door proximity sensor",
+   "ata": 52,
+   "system": "Doors",
+   "positions": [
+    "FWD ENTRY L",
+    "FWD ENTRY R",
+    "AFT ENTRY L",
+    "AFT ENTRY R",
+    "FWD CARGO",
+    "AFT CARGO",
+    "BULK"
+   ],
+   "basis": "cycles",
+   "life": 25000,
+   "mel": "52-71-01",
+   "symptom": "DOOR {pos} indication"
+  },
+  {
+   "key": "CARGO_DOOR",
+   "name": "{pos} cargo door actuator",
+   "ata": 52,
+   "system": "Doors",
+   "positions": [
+    "FWD",
+    "AFT"
+   ],
+   "basis": "cycles",
+   "life": 30000,
+   "mel": "52-30-01",
+   "symptom": "{pos} cargo door will not open"
+  },
+  {
+   "key": "AVIONICS_DOOR",
+   "name": "{pos} avionics door sensor",
+   "ata": 52,
+   "system": "Doors",
+   "positions": [
+    "FWD",
+    "LEFT",
+    "RIGHT",
+    "AFT"
+   ],
+   "basis": "cycles",
+   "life": 40000,
+   "mel": "52-71-01",
+   "symptom": "DOOR AVIONICS indication"
+  },
+  {
+   "key": "OVERWING_EXIT",
+   "name": "Overwing exit {pos} sensor",
+   "ata": 52,
+   "system": "Doors",
+   "positions": [
+    "L1",
+    "L2",
+    "R1",
+    "R2"
+   ],
+   "basis": "flightHours",
+   "life": 60000,
+   "mel": "52-71-01",
+   "symptom": "DOOR EMER EXIT indication"
+  },
+  {
+   "key": "DOOR_SEAL",
+   "name": "{pos} door seal",
+   "ata": 52,
+   "system": "Doors",
+   "positions": [
+    "FWD ENTRY L",
+    "FWD ENTRY R",
+    "AFT ENTRY L",
+    "AFT ENTRY R",
+    "FWD CARGO",
+    "AFT CARGO"
+   ],
+   "basis": "cycles",
+   "life": 30000,
+   "mel": "52-00-01",
+   "symptom": "Cabin pressure leaking at the {pos} door seal",
+   "stress": "climb"
+  },
+  {
+   "key": "FADEC",
+   "name": "FADEC channel {pos}",
+   "ata": 73,
+   "system": "Engine control",
+   "positions": [
+    "1A",
+    "1B",
+    "2A",
+    "2B"
+   ],
+   "basis": "engHours",
+   "life": 30000,
+   "mel": "73-21-01",
+   "symptom": "ENG FADEC A(B) FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "EIU",
+   "name": "Engine interface unit {pos}",
+   "ata": 73,
+   "system": "Engine control",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "flightHours",
+   "life": 50000,
+   "mel": "73-25-01",
+   "symptom": "EIU {pos} FAULT",
+   "stress": "start"
+  },
+  {
+   "key": "ENG_CORE",
+   "name": "Engine {pos} core (bearings, HP spool)",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 140000,
+   "mel": "72-00-07",
+   "symptom": "ENG {pos} FAIL: in-flight shutdown",
+   "stress": "takeoff",
+   "degradedMel": "72-00-08",
+   "degradedSymptom": "ENG {pos} N2 vibration high"
+  },
+  {
+   "key": "ENG_FAN",
+   "name": "Engine {pos} fan blades",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 30000,
+   "mel": "72-31-01",
+   "symptom": "ENG {pos} N1 vibration high: fan blades worn or damaged",
+   "stress": "takeoff"
+  },
+  {
+   "key": "ENG_HPC",
+   "name": "Engine {pos} compressor (HPC)",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 20000,
+   "mel": "72-32-01",
+   "symptom": "ENG {pos} N2 vibration high: compressor blades worn",
+   "stress": "takeoff"
+  },
+  {
+   "key": "ENG_COMBUSTOR",
+   "name": "Engine {pos} combustor",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 12000,
+   "mel": "72-40-01",
+   "symptom": "ENG {pos} DAMAGE: combustor liner burnt through",
+   "stress": "takeoff"
+  },
+  {
+   "key": "ENG_HPT",
+   "name": "Engine {pos} HP turbine blades",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 15000,
+   "mel": "72-50-01",
+   "symptom": "ENG {pos} DAMAGE: HP turbine blades worn out",
+   "stress": "takeoff"
+  },
+  {
+   "key": "ENG_NGV",
+   "name": "Engine {pos} nozzle guide vanes",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 18000,
+   "mel": "72-50-02",
+   "symptom": "ENG {pos} DAMAGE: nozzle guide vanes burnt",
+   "stress": "takeoff"
+  },
+  {
+   "key": "ENG_LPT",
+   "name": "Engine {pos} LP turbine",
+   "ata": 72,
+   "system": "Engine",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 30000,
+   "mel": "72-52-01",
+   "symptom": "ENG {pos} N1 vibration high: LP turbine blades worn",
+   "stress": "takeoff"
+  },
+  {
+   "key": "OIL_COOLER",
+   "name": "Engine {pos} fuel/oil heat exchanger",
+   "ata": 79,
+   "system": "Engine oil",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engHours",
+   "life": 35000,
+   "mel": "79-00-01",
+   "symptom": "ENG {pos} oil quantity falling: the heat exchanger leaks oil into the fuel",
+   "stress": "takeoff",
+   "degradedMel": "79-00-06",
+   "degradedSymptom": "Engine {pos} is using more oil than it should"
+  },
+  {
+   "key": "START_VALVE",
+   "name": "Engine {pos} start valve",
+   "ata": 80,
+   "system": "Engine starting",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engStarts",
+   "life": 6000,
+   "mel": "80-11-01",
+   "symptom": "ENG {pos} START VALVE FAULT",
+   "stress": "start",
+   "degradedMel": "80-11-02",
+   "degradedSymptom": "Engine {pos} start valve sticks on the first start of a flight"
+  },
+  {
+   "key": "IGNITER",
+   "name": "Engine {pos} ignition exciters",
+   "ata": 74,
+   "system": "Ignition",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engStarts",
+   "life": 8000,
+   "mel": "74-00-01",
+   "symptom": "ENG {pos} IGN FAULT",
+   "stress": "start",
+   "degradedMel": "74-00-02",
+   "degradedSymptom": "Engine {pos} does not light on the first start of a flight"
+  },
+  {
+   "key": "STARTER",
+   "name": "Engine {pos} air starter",
+   "ata": 80,
+   "system": "Engine starting",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "engStarts",
+   "life": 9000,
+   "mel": "80-00-01",
+   "symptom": "ENG {pos} START FAULT (hung start)",
+   "stress": "start",
+   "degradedMel": "80-00-02",
+   "degradedSymptom": "Engine {pos} hangs on the first start of a flight"
+  },
+  {
+   "key": "REV_LOCK",
+   "name": "Engine {pos} reverser lock",
+   "ata": 78,
+   "system": "Thrust reversers",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "revDeploys",
+   "life": 15000,
+   "mel": "78-30-01",
+   "symptom": "ENG {pos} REVERSE UNLOCKED",
+   "stress": "reverse"
+  },
+  {
+   "key": "REV_HCU",
+   "name": "Engine {pos} reverser control unit",
+   "ata": 78,
+   "system": "Thrust reversers",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "revDeploys",
+   "life": 20000,
+   "mel": "78-30-01",
+   "symptom": "ENG {pos} REV PRESSURIZED",
+   "stress": "reverse"
+  },
+  {
+   "key": "REV_SOV",
+   "name": "Engine {pos} reverser hydraulic shut-off valve",
+   "ata": 78,
+   "system": "Thrust reversers",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "basis": "revDeploys",
+   "life": 25000,
+   "mel": "78-30-01",
+   "symptom": "ENG {pos} REV ISOL FAULT",
+   "stress": "reverse"
+  },
+  {
+   "key": "GALLEY_OVEN",
+   "name": "Galley oven {pos}",
+   "ata": 25,
+   "system": "Galleys",
+   "positions": [
+    "FWD 1",
+    "FWD 2",
+    "AFT 1",
+    "AFT 2",
+    "AFT 3"
+   ],
+   "basis": "cycles",
+   "life": 4000,
+   "kind": "cabin",
+   "mel": "25-30-01",
+   "symptom": "Oven {pos} does not heat"
+  },
+  {
+   "key": "COFFEE_MAKER",
+   "name": "Coffee maker {pos}",
+   "ata": 25,
+   "system": "Galleys",
+   "positions": [
+    "FWD",
+    "AFT"
+   ],
+   "basis": "cycles",
+   "life": 3000,
+   "kind": "cabin",
+   "mel": "25-30-02",
+   "symptom": "Coffee maker {pos} leaking"
+  },
+  {
+   "key": "WATER_BOILER",
+   "name": "Water boiler {pos}",
+   "ata": 25,
+   "system": "Galleys",
+   "positions": [
+    "FWD",
+    "AFT"
+   ],
+   "basis": "cycles",
+   "life": 3500,
+   "kind": "cabin",
+   "mel": "25-30-03",
+   "symptom": "Boiler {pos} no hot water"
+  },
+  {
+   "key": "CHILLER",
+   "name": "Galley chiller {pos}",
+   "ata": 25,
+   "system": "Galleys",
+   "positions": [
+    "FWD",
+    "AFT"
+   ],
+   "basis": "blockHours",
+   "life": 8000,
+   "kind": "cabin",
+   "mel": "25-30-04",
+   "symptom": "Chiller {pos} not cooling"
+  },
+  {
+   "key": "BAR_TROLLEY",
+   "name": "Bar trolley {pos}",
+   "ata": 25,
+   "system": "Galleys",
+   "positions": [
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "basis": "cycles",
+   "life": 2500,
+   "kind": "cabin",
+   "mel": "25-30-05",
+   "symptom": "Bar trolley {pos} brake broken"
+  },
+  {
+   "key": "ATTENDANT_SEAT",
+   "name": "Cabin crew seat {pos}",
+   "ata": 25,
+   "system": "Cabin",
+   "positions": [
+    "FWD",
+    "AFT L",
+    "AFT R"
+   ],
+   "basis": "cycles",
+   "life": 15000,
+   "kind": "cabin",
+   "mel": "25-11-01",
+   "symptom": "Crew seat {pos} does not stow"
+  },
+  {
+   "key": "LAV_FLUSH",
+   "name": "Lavatory {pos} flush motor",
+   "ata": 38,
+   "system": "Lavatories",
+   "positions": [
+    "FWD",
+    "AFT L",
+    "AFT R"
+   ],
+   "basis": "cycles",
+   "life": 5000,
+   "kind": "cabin",
+   "mel": "38-31-01",
+   "symptom": "Lav {pos} toilet does not flush"
+  },
+  {
+   "key": "LAV_TAP",
+   "name": "Lavatory {pos} tap",
+   "ata": 38,
+   "system": "Lavatories",
+   "positions": [
+    "FWD",
+    "AFT L",
+    "AFT R"
+   ],
+   "basis": "cycles",
+   "life": 6000,
+   "kind": "cabin",
+   "mel": "38-10-01",
+   "symptom": "Lav {pos} tap dripping"
+  },
+  {
+   "key": "LAV_LOCK",
+   "name": "Lavatory {pos} door lock",
+   "ata": 25,
+   "system": "Lavatories",
+   "positions": [
+    "FWD",
+    "AFT L",
+    "AFT R"
+   ],
+   "basis": "cycles",
+   "life": 8000,
+   "kind": "cabin",
+   "mel": "25-40-01",
+   "symptom": "Lav {pos} door does not lock"
+  },
+  {
+   "key": "PA_SPEAKER",
+   "name": "PA speakers {pos} cabin",
+   "ata": 23,
+   "system": "Cabin",
+   "positions": [
+    "FWD",
+    "MID",
+    "AFT"
+   ],
+   "basis": "blockHours",
+   "life": 20000,
+   "kind": "cabin",
+   "mel": "23-31-01",
+   "symptom": "PA inaudible in {pos} cabin"
+  },
+  {
+   "key": "CABIN_LIGHTS",
+   "name": "Cabin lighting {pos} zone",
+   "ata": 33,
+   "system": "Cabin",
+   "positions": [
+    "FWD",
+    "MID",
+    "AFT"
+   ],
+   "basis": "blockHours",
+   "life": 12000,
+   "kind": "cabin",
+   "mel": "33-20-01",
+   "symptom": "{pos} cabin lights flicker"
+  },
+  {
+   "key": "EMER_LIGHT_BATT",
+   "name": "Emergency light battery {pos}",
+   "ata": 33,
+   "system": "Emergency lighting",
+   "positions": [
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "basis": "days",
+   "life": 1300,
+   "kind": "cabin",
+   "mel": "33-51-01",
+   "symptom": "Emergency light battery {pos} fails test"
+  }
+ ],
+ "consumables": [
+  {
+   "key": "ENG_OIL",
+   "name": "Engine {pos} oil",
+   "ata": 79,
+   "system": "Engine oil",
+   "unit": "qt",
+   "positions": [
+    "1",
+    "2"
+   ],
+   "capacityByEngine": {
+    "CFM": 20,
+    "IAE": 23,
+    "LEAP-1A": 20
+   },
+   "minDispatchByEngine": {
+    "CFM": 12,
+    "IAE": 14,
+    "LEAP-1A": 12
+   },
+   "lowByEngine": {
+    "CFM": 7,
+    "IAE": 8,
+    "LEAP-1A": 7
+   },
+   "critical": 3,
+   "usageBasis": "engHours",
+   "usePerUnit": 0.15
+  },
+  {
+   "key": "APU_OIL",
+   "name": "APU oil",
+   "ata": 49,
+   "system": "APU",
+   "unit": "qt",
+   "capacity": 6,
+   "minDispatch": 3,
+   "low": 2,
+   "usageBasis": "apuHours",
+   "usePerUnit": 0.04
+  },
+  {
+   "key": "CREW_O2",
+   "name": "Crew oxygen",
+   "ata": 35,
+   "system": "Oxygen",
+   "unit": "psi",
+   "capacity": 1850,
+   "minDispatch": 1000,
+   "low": 800,
+   "critical": 400,
+   "usageBasis": "blockHours",
+   "usePerUnit": 2
+  },
+  {
+   "key": "TYRE_PRESSURE",
+   "name": "Tyre {pos} pressure",
+   "ata": 32,
+   "system": "Wheels and tyres",
+   "unit": "%",
+   "positions": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "N1",
+    "N2"
+   ],
+   "capacity": 100,
+   "minDispatch": 90,
+   "low": 82,
+   "usageBasis": "days",
+   "usePerUnit": 2.5
+  },
+  {
+   "key": "HYD_FLUID",
+   "name": "{pos} hydraulic reservoir",
+   "ata": 29,
+   "system": "Hydraulics",
+   "unit": "%",
+   "positions": [
+    "GREEN",
+    "BLUE",
+    "YELLOW"
+   ],
+   "capacity": 100,
+   "minDispatch": 70,
+   "low": 40,
+   "critical": 12,
+   "usageBasis": "flightHours",
+   "usePerUnit": 0.01
+  },
+  {
+   "key": "WATER",
+   "name": "Potable water",
+   "ata": 38,
+   "system": "Water",
+   "unit": "L",
+   "capacity": 200,
+   "minDispatch": 0,
+   "low": 25,
+   "usageBasis": "blockHours",
+   "usePerPaxHour": 0.12
+  },
+  {
+   "key": "WASTE",
+   "name": "Waste tank",
+   "ata": 38,
+   "system": "Waste",
+   "unit": "L",
+   "capacity": 170,
+   "minDispatch": 165,
+   "low": 150,
+   "fills": true,
+   "usageBasis": "blockHours",
+   "usePerPaxHour": 0.1
+  },
+  {
+   "key": "CATERING",
+   "name": "Catering",
+   "ata": 25,
+   "system": "Cabin",
+   "unit": "%",
+   "capacity": 100,
+   "minDispatch": 0,
+   "low": 15,
+   "usageBasis": "blockHours",
+   "usePerPaxHour": 0.0375,
+   "serviceLabel": "Load",
+   "serviced": "loaded"
+  },
+  {
+   "key": "CABIN_CLEAN",
+   "name": "Cabin cleanliness",
+   "ata": 25,
+   "system": "Cabin",
+   "unit": "%",
+   "capacity": 100,
+   "minDispatch": 0,
+   "low": 20,
+   "usageBasis": "blockHours",
+   "usePerPaxHour": 0.08,
+   "serviceLabel": "Clean",
+   "serviced": "cleaned"
+  }
+ ],
+ "limits": {
+  "variants": {
+   "A319": {
+    "vmo": 350,
+    "mmo": 0.82,
+    "vle": 280,
+    "vloExtend": 250,
+    "vloRetract": 220,
+    "vfe": [
+     0,
+     230,
+     215,
+     200,
+     185,
+     177
+    ],
+    "mtowKg": 75500,
+    "mlwKg": 62500,
+    "mzfwKg": 58500,
+    "tailstrikePitch": 13.9,
+    "seats": 144
+   },
+   "A320": {
+    "vmo": 350,
+    "mmo": 0.82,
+    "vle": 280,
+    "vloExtend": 250,
+    "vloRetract": 220,
+    "vfe": [
+     0,
+     230,
+     215,
+     200,
+     185,
+     177
+    ],
+    "mtowKg": 78000,
+    "mlwKg": 66000,
+    "mzfwKg": 62500,
+    "tailstrikePitch": 11.7,
+    "seats": 180
+   },
+   "A321": {
+    "vmo": 350,
+    "mmo": 0.82,
+    "vle": 280,
+    "vloExtend": 250,
+    "vloRetract": 220,
+    "vfe": [
+     0,
+     235,
+     225,
+     215,
+     195,
+     190
+    ],
+    "mtowKg": 93500,
+    "mlwKg": 77800,
+    "mzfwKg": 73800,
+    "tailstrikePitch": 9.7,
+    "seats": 220
+   }
+  },
+  "engines": {
+   "CFM": {
+    "egtTakeoffC": 950,
+    "egtStartC": 725,
+    "egtToleranceC": 10,
+    "egtOverLimitSec": 3,
+    "n1MaxPct": 104,
+    "egtMarginNewC": 80,
+    "egtMarginPer1000Cycles": 6,
+    "llpCycles": 20000
+   },
+   "IAE": {
+    "egtTakeoffC": 700,
+    "egtStartC": 635,
+    "egtToleranceC": 10,
+    "egtOverLimitSec": 3,
+    "n1MaxPct": 100,
+    "egtMarginNewC": 60,
+    "egtMarginPer1000Cycles": 5,
+    "llpCycles": 20000
+   },
+   "LEAP-1A": {
+    "egtTakeoffC": 1060,
+    "egtStartC": 750,
+    "egtToleranceC": 10,
+    "egtOverLimitSec": 3,
+    "n1MaxPct": 104,
+    "egtMarginNewC": 80,
+    "egtMarginPer1000Cycles": 6,
+    "llpCycles": 20000
+   }
+  },
+  "common": {
+   "repairToPct": [
+    70,
+    50,
+    35
+   ],
+   "wornBelowPct": 25,
+   "hardLandingFpm": 600,
+   "severeHardLandingFpm": 840,
+   "hardLandingG": 2.6,
+   "severeHardLandingG": 2.86,
+   "extremeLandingFpm": 1200,
+   "extremeLandingG": 3.5,
+   "tyreSpeedKt": 195,
+   "brakeTakeoffMaxC": 300,
+   "fusePlugC": 800,
+   "taxiMaxKt": 30,
+   "turnMaxKt": 15,
+   "reverseMinKt": 70,
+   "warmupSec": 120,
+   "cooldownSec": 180,
+   "cooldownMaxN1Pct": 55,
+   "gMaxClean": 2.5,
+   "gMinClean": -1,
+   "gMaxFlaps": 2,
+   "cabinAltMasksFt": 14000,
+   "bankNearGroundDeg": 7,
+   "startAttemptsPer15Min": 3,
+   "apuStartsPerHour": 3
+  },
+  "checks": [
+   {
+    "key": "DAILY",
+    "name": "Daily check",
+    "hours": 48,
+    "workHours": 0.75
+   },
+   {
+    "key": "WEEKLY",
+    "name": "Weekly check",
+    "days": 8,
+    "workHours": 2
+   },
+   {
+    "key": "A",
+    "name": "A-check",
+    "flightHours": 750,
+    "cycles": 750,
+    "days": 120,
+    "workHours": 10,
+    "heavy": true
+   },
+   {
+    "key": "C",
+    "name": "C-check",
+    "flightHours": 7500,
+    "cycles": 5000,
+    "days": 730,
+    "workHours": 72,
+    "heavy": true
+   }
+  ]
+ },
+ "mel": [
+  {
+   "id": "05-51-01",
+   "title": "Hard landing inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "05-51-02",
+   "title": "Severe hard landing inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 8
+  },
+  {
+   "id": "05-51-03",
+   "title": "Overspeed inspection (VMO/MMO)",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "05-51-04",
+   "title": "Flap/slat overspeed inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "05-51-05",
+   "title": "Landing gear overspeed inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "05-51-06",
+   "title": "Tail strike inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "05-51-07",
+   "title": "Overweight landing inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "05-51-08",
+   "title": "Load factor exceedance inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 6
+  },
+  {
+   "id": "05-51-09",
+   "title": "Engine pod / wingtip strike inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "05-51-11",
+   "title": "Post-crash structural inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 72
+  },
+  {
+   "id": "32-11-01",
+   "title": "Main gear shock absorber damage",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 8
+  },
+  {
+   "id": "32-10-01",
+   "title": "Landing gear structural damage",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "05-51-12",
+   "title": "Main gear side-load inspection",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "05-51-13",
+   "title": "Nose gear inspection (hard derotation)",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "27-50-02",
+   "title": "Flap/slat alignment fault (tracks damaged)",
+   "ata": 27,
+   "category": "noGo",
+   "fixHours": 12
+  },
+  {
+   "id": "27-34-02",
+   "title": "Elevator damaged by flutter",
+   "ata": 27,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "28-11-02",
+   "title": "Wing structure damaged: fuel leak",
+   "ata": 28,
+   "category": "noGo",
+   "fixHours": 96
+  },
+  {
+   "id": "26-00-01",
+   "title": "Engine {pos} fire damage",
+   "ata": 26,
+   "category": "noGo",
+   "fixHours": 96
+  },
+  {
+   "id": "26-00-02",
+   "title": "Avionics bay overheat",
+   "ata": 26,
+   "category": "noGo",
+   "fixHours": 6
+  },
+  {
+   "id": "27-50-01",
+   "title": "{pos} damaged by overspeed (locked)",
+   "ata": 27,
+   "category": "noGo",
+   "fixHours": 24
+  },
+  {
+   "id": "32-30-01",
+   "title": "Landing gear doors damaged by overspeed",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 12
+  },
+  {
+   "id": "32-41-04",
+   "title": "Tyre speed rating exceeded",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "51-00-01",
+   "title": "Overspeed structural damage",
+   "ata": 51,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "51-00-02",
+   "title": "Structural overload damage",
+   "ata": 51,
+   "category": "noGo",
+   "fixHours": 96
+  },
+  {
+   "id": "72-00-06",
+   "title": "Engine {pos} damaged (oil starvation)",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 72
+  },
+  {
+   "id": "72-00-07",
+   "title": "Engine {pos} failed in flight",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 72
+  },
+  {
+   "id": "05-51-10",
+   "title": "Brake overheat inspection",
+   "ata": 32,
+   "category": "b",
+   "fixHours": 1
+  },
+  {
+   "id": "05-20-01",
+   "title": "Daily check overdue",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 1
+  },
+  {
+   "id": "05-20-02",
+   "title": "Weekly check overdue",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "05-20-03",
+   "title": "A-check overdue",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 8
+  },
+  {
+   "id": "05-20-04",
+   "title": "C-check overdue",
+   "ata": 5,
+   "category": "noGo",
+   "fixHours": 24
+  },
+  {
+   "id": "12-00-01",
+   "title": "Servicing required: {pos}",
+   "ata": 12,
+   "category": "noGo",
+   "fixHours": 0.5
+  },
+  {
+   "id": "00-00-01",
+   "title": "Reported fault: {pos}",
+   "ata": 0,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-51-01",
+   "title": "Pack {pos} inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "21-31-01",
+   "title": "Cabin pressure controller {pos} inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-31-02",
+   "title": "Outflow valve automatic control inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "21-26-01",
+   "title": "Avionics blower fan inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-26-02",
+   "title": "Avionics extract fan inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-21-01",
+   "title": "Cabin recirculation fans inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "21-23-01",
+   "title": "Lavatory/galley extract fan inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-63-01",
+   "title": "Trim air system inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "21-63-02",
+   "title": "Zone trim air valve inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "21-43-01",
+   "title": "Aft cargo heating inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-11-01",
+   "title": "Autopilot {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "22-31-01",
+   "title": "Autothrust channel {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-81-01",
+   "title": "FCU channel {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-70-01",
+   "title": "FMGC {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "22-82-01",
+   "title": "MCDU {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-82-02",
+   "title": "MCDU {pos} intermittent fault",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 0.5
+  },
+  {
+   "id": "22-60-01",
+   "title": "FAC {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-60-02",
+   "title": "Yaw damper channel {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-60-03",
+   "title": "Rudder trim channel {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-60-04",
+   "title": "Rudder travel limiter channel {pos} inoperative",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "22-60-05",
+   "title": "FAC {pos} intermittent fault",
+   "ata": 22,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "23-51-01",
+   "title": "Push-to-talk ({pos}) inoperative",
+   "ata": 23,
+   "category": "c",
+   "fixHours": 0.5
+  },
+  {
+   "id": "23-31-01",
+   "title": "Cabin PA inoperative in one zone",
+   "ata": 23,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "23-73-01",
+   "title": "Passenger call button inoperative",
+   "ata": 23,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "24-21-01",
+   "title": "Engine generator {pos} inoperative",
+   "ata": 24,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "24-22-01",
+   "title": "APU generator inoperative",
+   "ata": 24,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "24-31-01",
+   "title": "TR {pos} inoperative",
+   "ata": 24,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "24-31-02",
+   "title": "Essential TR inoperative",
+   "ata": 24,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "24-24-01",
+   "title": "Static inverter inoperative",
+   "ata": 24,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "24-50-01",
+   "title": "AC essential feed contactor ({pos}) inoperative",
+   "ata": 24,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "24-50-02",
+   "title": "{pos} bus inoperative",
+   "ata": 24,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "25-11-01",
+   "title": "Cabin crew seat {pos} inoperative",
+   "ata": 25,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "25-21-01",
+   "title": "Tray table seat {pos} does not stow",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-21-02",
+   "title": "Seat {pos} recline inoperative",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-21-03",
+   "title": "Seat {pos} armrest damaged",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-21-04",
+   "title": "Seat {pos} seat belt defective",
+   "ata": 25,
+   "category": "c",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-24-01",
+   "title": "Overhead bin latch {pos} defective",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-30-01",
+   "title": "Galley oven {pos} inoperative",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.5
+  },
+  {
+   "id": "25-30-02",
+   "title": "Coffee maker {pos} inoperative",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.5
+  },
+  {
+   "id": "25-30-03",
+   "title": "Water boiler {pos} inoperative",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.5
+  },
+  {
+   "id": "25-30-04",
+   "title": "Galley chiller {pos} inoperative",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 1
+  },
+  {
+   "id": "25-30-05",
+   "title": "Bar trolley {pos} unserviceable",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.2
+  },
+  {
+   "id": "25-40-01",
+   "title": "Lavatory {pos} door lock inoperative",
+   "ata": 25,
+   "category": "c",
+   "fixHours": 0.5
+  },
+  {
+   "id": "25-60-01",
+   "title": "Life vest missing, seat {pos}",
+   "ata": 25,
+   "category": "c",
+   "fixHours": 0.2
+  },
+  {
+   "id": "25-62-01",
+   "title": "Escape slide {pos} deployed",
+   "ata": 25,
+   "category": "noGo",
+   "fixHours": 6
+  },
+  {
+   "id": "26-12-01",
+   "title": "Fire detection unit {pos} inoperative",
+   "ata": 26,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "26-12-02",
+   "title": "Engine fire detection loop {pos} inoperative",
+   "ata": 26,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "26-15-01",
+   "title": "APU fire detection loop {pos} inoperative",
+   "ata": 26,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "26-15-02",
+   "title": "Avionics smoke detector unserviceable",
+   "ata": 26,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "26-16-01",
+   "title": "{pos} cargo smoke detection inoperative",
+   "ata": 26,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "26-17-01",
+   "title": "Lavatory smoke detector unserviceable",
+   "ata": 26,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "27-93-01",
+   "title": "ELAC {pos} inoperative",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "27-93-02",
+   "title": "ELAC {pos} intermittent fault",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "27-94-02",
+   "title": "SEC {pos} intermittent fault",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "27-34-01",
+   "title": "{pos} elevator inoperative",
+   "ata": 27,
+   "category": "noGo",
+   "fixHours": 6
+  },
+  {
+   "id": "27-41-01",
+   "title": "THS actuator jammed",
+   "ata": 27,
+   "category": "noGo",
+   "fixHours": 12
+  },
+  {
+   "id": "27-94-01",
+   "title": "SEC {pos} inoperative",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "27-51-01",
+   "title": "Flap/slat control channel {pos} inoperative",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "27-95-01",
+   "title": "FCDC {pos} inoperative",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "27-92-01",
+   "title": "Sidestick ({pos}) inoperative",
+   "ata": 27,
+   "category": "b",
+   "fixHours": 3
+  },
+  {
+   "id": "28-21-01",
+   "title": "Fuel pump {pos} inoperative",
+   "ata": 28,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "28-22-01",
+   "title": "Outer tank transfer valve {pos} inoperative",
+   "ata": 28,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "28-23-01",
+   "title": "Crossfeed valve inoperative",
+   "ata": 28,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "28-24-01",
+   "title": "Engine {pos} LP fuel valve inoperative",
+   "ata": 28,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "28-42-01",
+   "title": "FQI channel {pos} inoperative",
+   "ata": 28,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "28-11-01",
+   "title": "{pos} tank fuel leak",
+   "ata": 28,
+   "category": "noGo",
+   "fixHours": 8
+  },
+  {
+   "id": "29-11-01",
+   "title": "Green engine pump inoperative",
+   "ata": 29,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "29-11-02",
+   "title": "Yellow engine pump inoperative",
+   "ata": 29,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "29-11-03",
+   "title": "Hydraulic fire valve {pos} inoperative",
+   "ata": 29,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "29-12-01",
+   "title": "Blue electric pump inoperative",
+   "ata": 29,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "29-12-02",
+   "title": "Yellow electric pump inoperative",
+   "ata": 29,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "29-23-01",
+   "title": "PTU inoperative",
+   "ata": 29,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "29-14-01",
+   "title": "{pos} reservoir pressurisation low",
+   "ata": 29,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "29-10-01",
+   "title": "Green reservoir overheating (engine pump wear)",
+   "ata": 29,
+   "category": "b",
+   "fixHours": 3
+  },
+  {
+   "id": "29-10-02",
+   "title": "Yellow reservoir overheating (engine pump wear)",
+   "ata": 29,
+   "category": "b",
+   "fixHours": 3
+  },
+  {
+   "id": "29-10-03",
+   "title": "Blue reservoir overheating (electric pump wear)",
+   "ata": 29,
+   "category": "b",
+   "fixHours": 2
+  },
+  {
+   "id": "29-00-01",
+   "title": "{pos} hydraulic system leak",
+   "ata": 29,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "30-31-01",
+   "title": "Pitot heater ({pos}) inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "30-31-02",
+   "title": "TAT probe heater ({pos}) inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "30-31-03",
+   "title": "AOA heater ({pos}) inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "30-31-04",
+   "title": "Static port heater ({pos}) inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "30-31-05",
+   "title": "Probe heat computer {pos} inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "30-42-01",
+   "title": "Window heat computer {pos} inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "30-21-01",
+   "title": "Engine {pos} anti-ice valve inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "30-11-01",
+   "title": "Wing anti-ice valve {pos} inoperative",
+   "ata": 30,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "31-62-01",
+   "title": "DMC {pos} inoperative",
+   "ata": 31,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "31-63-01",
+   "title": "Display unit ({pos}) inoperative",
+   "ata": 31,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "31-55-01",
+   "title": "ECAM control panel inoperative",
+   "ata": 31,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "31-52-01",
+   "title": "FWC {pos} inoperative",
+   "ata": 31,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "31-54-01",
+   "title": "SDAC {pos} inoperative",
+   "ata": 31,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "32-42-01",
+   "title": "Brake {pos} deactivated",
+   "ata": 32,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "32-41-01",
+   "title": "Main tyre {pos} at wear limit",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 1
+  },
+  {
+   "id": "32-41-02",
+   "title": "Nose tyre {pos} at wear limit",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 1
+  },
+  {
+   "id": "32-41-03",
+   "title": "Tyre {pos} damaged (flat spot / deflated)",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 1.5
+  },
+  {
+   "id": "32-69-01",
+   "title": "LGCIU {pos} inoperative",
+   "ata": 32,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "32-42-02",
+   "title": "Normal braking channel {pos} inoperative",
+   "ata": 32,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "32-42-03",
+   "title": "Autobrake inoperative",
+   "ata": 32,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "32-51-01",
+   "title": "Nose wheel steering inoperative",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "32-31-01",
+   "title": "Landing gear safety valve inoperative",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "32-32-01",
+   "title": "Landing gear uplock inoperative",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "32-33-01",
+   "title": "{pos} gear downlock inoperative",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "32-30-02",
+   "title": "Landing gear does not retract",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 6
+  },
+  {
+   "id": "32-41-05",
+   "title": "Nose tyre {pos} damaged (deflated)",
+   "ata": 32,
+   "category": "noGo",
+   "fixHours": 1
+  },
+  {
+   "id": "33-20-01",
+   "title": "Cabin lighting {pos} zone inoperative",
+   "ata": 33,
+   "category": "d",
+   "fixHours": 1
+  },
+  {
+   "id": "33-21-01",
+   "title": "Reading light seat {pos} inoperative",
+   "ata": 33,
+   "category": "d",
+   "fixHours": 0.2
+  },
+  {
+   "id": "33-51-01",
+   "title": "Emergency light battery {pos} inoperative",
+   "ata": 33,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-10-01",
+   "title": "ADR {pos} inoperative",
+   "ata": 34,
+   "category": "b",
+   "fixHours": 2
+  },
+  {
+   "id": "34-12-01",
+   "title": "IR {pos} inoperative",
+   "ata": 34,
+   "category": "b",
+   "fixHours": 2
+  },
+  {
+   "id": "34-12-02",
+   "title": "IR {pos} attitude/heading drift",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "34-42-01",
+   "title": "Radio altimeter {pos} inoperative",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-51-01",
+   "title": "VOR {pos} inoperative",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-53-01",
+   "title": "ADF {pos} inoperative",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-52-01",
+   "title": "ATC transponder {pos} inoperative",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-36-01",
+   "title": "GPS {pos} inoperative",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-36-02",
+   "title": "GPS {pos} intermittent (accuracy downgrade)",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-32-01",
+   "title": "ILS {pos} receiver inoperative",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "34-61-01",
+   "title": "Navigation database expired",
+   "ata": 34,
+   "category": "c",
+   "fixHours": 0.5
+  },
+  {
+   "id": "35-21-01",
+   "title": "Passenger oxygen masks deployed",
+   "ata": 35,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "36-11-01",
+   "title": "Engine {pos} bleed inoperative",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "36-11-02",
+   "title": "Engine {pos} HP bleed valve inoperative",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "36-11-03",
+   "title": "BMC {pos} inoperative",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "36-12-01",
+   "title": "Crossbleed valve inoperative",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "36-12-02",
+   "title": "APU bleed valve inoperative",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "36-22-01",
+   "title": "Bleed duct leak, engine/wing {pos}",
+   "ata": 36,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "36-22-02",
+   "title": "APU bleed duct leak",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "36-22-03",
+   "title": "Engine {pos} nacelle temperature high",
+   "ata": 36,
+   "category": "a",
+   "fixHours": 3
+  },
+  {
+   "id": "38-10-01",
+   "title": "Lavatory {pos} tap inoperative",
+   "ata": 38,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-90-02",
+   "title": "Catering low",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "25-90-03",
+   "title": "Cabin not cleaned",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.5
+  },
+  {
+   "id": "38-10-02",
+   "title": "Potable water low",
+   "ata": 38,
+   "category": "d",
+   "fixHours": 0.3
+  },
+  {
+   "id": "38-31-01",
+   "title": "Lavatory {pos} toilet inoperative",
+   "ata": 38,
+   "category": "c",
+   "fixHours": 0.5
+  },
+  {
+   "id": "38-31-02",
+   "title": "Waste tank full",
+   "ata": 38,
+   "category": "noGo",
+   "fixHours": 0.3
+  },
+  {
+   "id": "49-00-01",
+   "title": "APU inoperative",
+   "ata": 49,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "52-71-01",
+   "title": "{pos} door indication inoperative",
+   "ata": 52,
+   "category": "b",
+   "fixHours": 1
+  },
+  {
+   "id": "52-00-01",
+   "title": "{pos} door seal leaking",
+   "ata": 52,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "56-00-01",
+   "title": "Window shade seat {pos} inoperative",
+   "ata": 56,
+   "category": "d",
+   "fixHours": 0.2
+  },
+  {
+   "id": "72-00-01",
+   "title": "Engine {pos} borescope inspection (FOD risk)",
+   "ata": 72,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "72-00-02",
+   "title": "Engine {pos} exceedance inspection",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "72-00-03",
+   "title": "Engine {pos} hot start inspection",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "72-00-04",
+   "title": "Engine {pos} EGT margin low",
+   "ata": 72,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "72-00-05",
+   "title": "Engine {pos} shop visit due (life-limited parts)",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "73-11-01",
+   "title": "Engine {pos} HP fuel valve inoperative",
+   "ata": 73,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "73-21-01",
+   "title": "FADEC channel {pos} inoperative",
+   "ata": 73,
+   "category": "b",
+   "fixHours": 2
+  },
+  {
+   "id": "73-25-01",
+   "title": "EIU {pos} inoperative",
+   "ata": 73,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "74-00-01",
+   "title": "Engine {pos} ignition inoperative",
+   "ata": 74,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "78-30-01",
+   "title": "Engine {pos} thrust reverser inoperative",
+   "ata": 78,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "80-11-01",
+   "title": "Engine {pos} start valve inoperative",
+   "ata": 80,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "80-00-01",
+   "title": "Engine {pos} starter inoperative",
+   "ata": 80,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "79-00-01",
+   "title": "Engine {pos} fuel/oil heat exchanger leaking oil",
+   "ata": 79,
+   "category": "noGo",
+   "fixHours": 4
+  },
+  {
+   "id": "79-00-02",
+   "title": "Engine {pos} oil pressure low",
+   "ata": 79,
+   "category": "noGo",
+   "fixHours": 6
+  },
+  {
+   "id": "79-00-03",
+   "title": "Engine {pos} oil pressure high",
+   "ata": 79,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "79-00-04",
+   "title": "Engine {pos} oil temperature above advisory",
+   "ata": 79,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "79-00-05",
+   "title": "Engine {pos} oil pressure below advisory",
+   "ata": 79,
+   "category": "c",
+   "fixHours": 4
+  },
+  {
+   "id": "72-00-08",
+   "title": "Engine {pos} high N2 vibration",
+   "ata": 72,
+   "category": "c",
+   "fixHours": 6
+  },
+  {
+   "id": "72-00-09",
+   "title": "Engine {pos} hot section overheated (takeoff thrust held too long)",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 24
+  },
+  {
+   "id": "21-52-01",
+   "title": "Ram air valve inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-61-01",
+   "title": "Zone controller {pos} channel inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-26-03",
+   "title": "Avionics ventilation computer inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-26-04",
+   "title": "Avionics ventilation {pos} valve inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-28-01",
+   "title": "Cargo ventilation controller inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "21-28-02",
+   "title": "Cargo isolation valve ({pos}) inoperative",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "23-71-01",
+   "title": "Cockpit voice recorder inoperative",
+   "ata": 23,
+   "category": "a",
+   "fixHours": 1
+  },
+  {
+   "id": "26-16-02",
+   "title": "Smoke detection control unit inoperative",
+   "ata": 26,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "27-51-02",
+   "title": "Flap/slat position pick-off unit {pos} inoperative",
+   "ata": 27,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "28-26-01",
+   "title": "Defuel/transfer valve fault",
+   "ata": 28,
+   "category": "noGo",
+   "fixHours": 2
+  },
+  {
+   "id": "31-32-01",
+   "title": "CFDIU inoperative",
+   "ata": 31,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "32-42-04",
+   "title": "Alternate braking control unit inoperative",
+   "ata": 32,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "34-43-01",
+   "title": "TCAS inoperative",
+   "ata": 34,
+   "category": "a",
+   "fixHours": 1
+  },
+  {
+   "id": "34-48-01",
+   "title": "GPWS inoperative",
+   "ata": 34,
+   "category": "a",
+   "fixHours": 1
+  },
+  {
+   "id": "46-21-01",
+   "title": "ATSU inoperative",
+   "ata": 46,
+   "category": "c",
+   "fixHours": 1
+  },
+  {
+   "id": "46-21-02",
+   "title": "DCDU ({pos}) inoperative",
+   "ata": 46,
+   "category": "c",
+   "fixHours": 0.5
+  },
+  {
+   "id": "51-10-01",
+   "title": "Minor structural damage, within limits",
+   "ata": 51,
+   "category": "d",
+   "fixHours": 3
+  },
+  {
+   "id": "05-90-01",
+   "title": "Minor airframe item, monitored",
+   "ata": 5,
+   "category": "d",
+   "fixHours": 1
+  },
+  {
+   "id": "25-90-01",
+   "title": "Cabin appearance item",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.5
+  },
+  {
+   "id": "25-10-90",
+   "title": "Cockpit furnishing item",
+   "ata": 25,
+   "category": "d",
+   "fixHours": 0.5
+  },
+  {
+   "id": "29-00-02",
+   "title": "{pos} hydraulic system seeping (seals worn)",
+   "ata": 29,
+   "category": "c",
+   "fixHours": 4
+  },
+  {
+   "id": "28-11-03",
+   "title": "{pos} tank fuel seep, within limits",
+   "ata": 28,
+   "category": "c",
+   "fixHours": 8
+  },
+  {
+   "id": "79-00-06",
+   "title": "Engine {pos} oil consumption high",
+   "ata": 79,
+   "category": "c",
+   "fixHours": 4
+  },
+  {
+   "id": "32-42-05",
+   "title": "Brake {pos} fades when hot (worn)",
+   "ata": 32,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "72-00-10",
+   "title": "Engine {pos} surge at takeoff thrust: inspection",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "72-00-11",
+   "title": "Engine {pos} fan ice ingestion: inspection",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 3
+  },
+  {
+   "id": "72-00-12",
+   "title": "Engine {pos} fan ice exposure: inspection",
+   "ata": 72,
+   "category": "b",
+   "fixHours": 2
+  },
+  {
+   "id": "72-31-01",
+   "title": "Engine {pos} fan blades worn or damaged",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 36
+  },
+  {
+   "id": "72-32-01",
+   "title": "Engine {pos} compressor blades worn",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "72-40-01",
+   "title": "Engine {pos} combustor liner burnt through",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "72-50-01",
+   "title": "Engine {pos} HP turbine blades worn out",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 60
+  },
+  {
+   "id": "72-50-02",
+   "title": "Engine {pos} nozzle guide vanes burnt",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "72-52-01",
+   "title": "Engine {pos} LP turbine blades worn",
+   "ata": 72,
+   "category": "noGo",
+   "fixHours": 48
+  },
+  {
+   "id": "80-11-02",
+   "title": "Engine {pos} start valve sticking",
+   "ata": 80,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "74-00-02",
+   "title": "Engine {pos} ignition weak",
+   "ata": 74,
+   "category": "c",
+   "fixHours": 2
+  },
+  {
+   "id": "80-00-02",
+   "title": "Engine {pos} starter weak",
+   "ata": 80,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "21-51-02",
+   "title": "Pack {pos} trips under load",
+   "ata": 21,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "36-11-04",
+   "title": "Engine {pos} bleed valve sticking",
+   "ata": 36,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "24-21-02",
+   "title": "Engine generator {pos} drops off under load",
+   "ata": 24,
+   "category": "c",
+   "fixHours": 4
+  },
+  {
+   "id": "28-11-04",
+   "title": "{pos} tank fuel leak, running",
+   "ata": 28,
+   "category": "noGo",
+   "fixHours": 8
+  },
+  {
+   "id": "52-30-01",
+   "title": "{pos} cargo door will not open",
+   "ata": 52,
+   "category": "c",
+   "fixHours": 3
+  },
+  {
+   "id": "11-00-01",
+   "title": "Placard or marking missing",
+   "ata": 11,
+   "category": "d",
+   "fixHours": 0.2
+  }
+ ],
+ "spares": {
+  "commonAta": [
+   11,
+   12,
+   25,
+   33,
+   38,
+   44
+  ],
+  "rareAta": [
+   22,
+   31,
+   34,
+   45,
+   46,
+   49,
+   70,
+   71,
+   72,
+   73,
+   74,
+   75,
+   76,
+   77,
+   78,
+   79,
+   80
+  ]
+ },
+ "cabin": {
+  "rows": {
+   "A319": 24,
+   "A320": 30,
+   "A321": 37
+  },
+  "seatLetters": "ABCDEF"
+ }
+}

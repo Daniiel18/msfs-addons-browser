@@ -11,6 +11,7 @@ import {
   Rocket,
   Search,
   Sparkles,
+  Wrench,
   X,
 } from "lucide-react";
 import { api } from "../lib/tauri";
@@ -75,6 +76,10 @@ export function PreflightModal({ onClose }: Props) {
       void triggerSearch(action.icao);
     } else if (action.kind === "airac") {
       void airacOpenUpdater();
+    } else if (action.kind === "hangar") {
+      // (19/10) NO-GO: abre el mantenimiento de ese avión en el Hangar.
+      onClose();
+      useAppStore.getState().requestHangarFocus(action.registration);
     } else if (action.kind === "gsx" || action.kind === "gsx-update") {
       // (v6.2.58) Si es un update real, márcalo como manejado (avanza el
       // baseline para que el badge no reaparezca).
@@ -250,6 +255,8 @@ export function PreflightModal({ onClose }: Props) {
                         <Loader2 className="h-3 w-3 animate-spin" />
                       ) : c.action.kind === "search" ? (
                         <Search className="h-3 w-3" />
+                      ) : c.action.kind === "hangar" ? (
+                        <Wrench className="h-3 w-3" />
                       ) : (
                         <RefreshCw className="h-3 w-3" />
                       )}

@@ -30,7 +30,8 @@ export type PreflightAction =
   | { kind: "enable"; folderName: string }
   | { kind: "gsx"; icao: string }
   | { kind: "gsx-update"; icao: string; link: string }
-  | { kind: "airac" };
+  | { kind: "airac" }
+  | { kind: "hangar"; registration: string };
 
 export interface PreflightCheck {
   id: string;
@@ -75,6 +76,16 @@ export interface PreflightInput {
   /** ICAOs marcados como "usaré el escenario por defecto" — sus checks
    *  de escenario se dan por resueltos (bypass). */
   bypass?: Set<string>;
+  /** (19/10) Despacho del avión del plan (TechLog o Tech Log de SimFleet). */
+  maintenance?: PreflightMaintenance | null;
+}
+
+export interface PreflightMaintenance {
+  registration: string;
+  appName: string;
+  /** "GO" | "GO_MEL" | "NO_GO" */
+  status: string;
+  reasons: string[];
 }
 
 /** (v6.2.37 B3) ¿Es `iso` del "día" del vuelo? Robusto ante zonas
@@ -172,6 +183,40 @@ export function computePreflight(input: PreflightInput): PreflightResult {
       titleKey: "preflight.check.plan_none",
       detailKey: "preflight.check.plan_none_hint",
     });
+  }
+
+  // 1b. (19/10) Mantenimiento del avión: con NO-GO no se despacha.
+  const mx = input.maintenance;
+  if (mx) {
+    const detailArgs = { reason: mx.reasons[0] ?? "", app: mx.appName };
+    if (mx.status === "NO_GO") {
+      checks.push({
+        id: "mx",
+        status: "warn",
+        titleKey: "preflight.check.mx_nogo",
+        titleArgs: { reg: mx.registration, n: String(mx.reasons.length) },
+        detailKey: "preflight.check.mx_detail",
+        detailArgs,
+        action: { kind: "hangar", registration: mx.registration },
+        actionKey: "preflight.action.hangar",
+      });
+    } else if (mx.status === "GO_MEL") {
+      checks.push({
+        id: "mx",
+        status: "info",
+        titleKey: "preflight.check.mx_mel",
+        titleArgs: { reg: mx.registration },
+        detailKey: "preflight.check.mx_detail",
+        detailArgs,
+      });
+    } else {
+      checks.push({
+        id: "mx",
+        status: "ok",
+        titleKey: "preflight.check.mx_go",
+        titleArgs: { reg: mx.registration },
+      });
+    }
   }
 
   const findScenery = (icao: string): CommunityPackage | undefined => {

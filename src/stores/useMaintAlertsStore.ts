@@ -83,6 +83,9 @@ export const useMaintAlertsStore = create<MaintAlertsState>((set, get) => ({
     if (!isTauri) return;
     void import("@tauri-apps/api/event").then(({ listen }) => {
       void listen("flightlog://changed", () => void get().refresh());
+      // (19/10) Los avisos salen del Tech Log (SimFleet y Fenix/PMDG).
+      void listen("mx://changed", () => void get().refresh());
+      void listen("techlog://changed", () => void get().refresh());
     });
   },
 }));

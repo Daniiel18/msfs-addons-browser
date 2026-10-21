@@ -702,6 +702,33 @@ mod windows_simconnect {
         g_force: f64,
     }
 
+    /// (19/10) Flujo del Tech Log. Mismo orden que su AddToDataDefinition.
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy, Default)]
+    struct MxExtraData {
+        mach: f64,
+        flaps_index: f64,
+        gear_pct: f64,
+        rev_pct_1: f64,
+        rev_pct_2: f64,
+        wheel_rpm_l: f64,
+        wheel_rpm_r: f64,
+        apu_pct: f64,
+        total_weight_lb: f64,
+        body_vx_fps: f64,
+        body_vz_fps: f64,
+        on_runway: f64,
+        oat_c: f64,
+        spoilers_pct: f64,
+    }
+
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy, Default)]
+    struct MxPairData {
+        a: f64,
+        b: f64,
+    }
+
     /// Lee una cstring de un buffer de 256 bytes — corta en el
     /// primer NUL, trim, retorna None si queda vacío. SimConnect
     /// rellena el buffer con NULs después del string real.
@@ -739,6 +766,18 @@ mod windows_simconnect {
     /// un return temprano.
     const DEFINE_ID_TOUCHDOWN: u32 = 3;
     const REQUEST_ID_TOUCHDOWN: u32 = 3;
+    /// (19/10) Etapa 3A — Tech Log propio: simvars extra en definiciones
+    /// APARTE de la principal. Si alguna no existe en el simulador, SimConnect
+    /// invalida sólo su definición y el registro de vuelos sigue intacto
+    /// (meter una simvar desconocida en la principal ya dejó el watcher
+    /// zombi una vez). Las temperaturas de freno y los avisos de velocidad
+    /// de flaps/tren van en definiciones propias por si faltan en MSFS 2020.
+    const DEFINE_ID_MX: u32 = 4;
+    const REQUEST_ID_MX: u32 = 4;
+    const DEFINE_ID_MX_BRAKES: u32 = 5;
+    const REQUEST_ID_MX_BRAKES: u32 = 5;
+    const DEFINE_ID_MX_WARN: u32 = 6;
+    const REQUEST_ID_MX_WARN: u32 = 6;
     /// ID local arbitrario para el evento "Pause" — sólo nosotros
     /// usamos esta ID dentro del proceso, no choca con nada.
     const EVENT_ID_PAUSE: u32 = 100;
@@ -1468,6 +1507,96 @@ mod windows_simconnect {
                     "Touchdown stream subscribed (SIM_FRAME interval=1) — frame-exact FPM capture"
                 );
             }
+        }
+
+        // (19/10) Etapa 3A — definiciones del Tech Log (aparte de la
+        // principal: un fallo aquí no toca el registro de vuelos).
+        {
+            let u = |s: &str| sc::cstr(s);
+            let groups: [(u32, u32, &str, Vec<(&str, std::ffi::CString)>); 3] = [
+                (
+                    DEFINE_ID_MX,
+                    REQUEST_ID_MX,
+                    "MX",
+                    vec![
+                        ("AIRSPEED MACH", u("mach")),
+                        ("FLAPS HANDLE INDEX", u("number")),
+                        ("GEAR TOTAL PCT EXTENDED", u("percent over 100")),
+                        ("TURB ENG REVERSE NOZZLE PERCENT:1", u("percent")),
+                        ("TURB ENG REVERSE NOZZLE PERCENT:2", u("percent")),
+                        ("LEFT WHEEL RPM", u("rpm")),
+                        ("RIGHT WHEEL RPM", u("rpm")),
+                        ("APU PCT RPM", u("percent")),
+                        ("TOTAL WEIGHT", u("pounds")),
+                        ("VELOCITY BODY X", u("feet per second")),
+                        ("VELOCITY BODY Z", u("feet per second")),
+                        ("ON ANY RUNWAY", u("bool")),
+                        ("AMBIENT TEMPERATURE", u("celsius")),
+                        ("SPOILERS HANDLE POSITION", u("percent")),
+                    ],
+                ),
+                (
+                    DEFINE_ID_MX_BRAKES,
+                    REQUEST_ID_MX_BRAKES,
+                    "MX_BRAKES",
+                    vec![
+                        ("BRAKE LEFT TEMPERATURE", u("celsius")),
+                        ("BRAKE RIGHT TEMPERATURE", u("celsius")),
+                    ],
+                ),
+                (
+                    DEFINE_ID_MX_WARN,
+                    REQUEST_ID_MX_WARN,
+                    "MX_WARN",
+                    vec![
+                        ("FLAP SPEED EXCEEDED", u("bool")),
+                        ("GEAR SPEED EXCEEDED", u("bool")),
+                    ],
+                ),
+            ];
+            for (define_id, request_id, label, vars) in groups.iter() {
+                let mut ok = true;
+                for (name, unit) in vars.iter() {
+                    let cname = sc::cstr(name);
+                    let hr = unsafe {
+                        (lib.AddToDataDefinition)(
+                            handle,
+                            *define_id,
+                            cname.as_ptr(),
+                            unit.as_ptr(),
+                            SIMCONNECT_DATATYPE_FLOAT64,
+                            0.0,
+                            u32::MAX,
+                        )
+                    };
+                    note_sent(lib, handle, &format!("AddToDataDefinition[{label}] '{name}'"));
+                    if !sc::succeeded(hr) {
+                        tracing::warn!(target: "simconnect", "AddToDataDefinition {label} '{name}' falló (0x{hr:08x}); flujo {label} deshabilitado");
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    let hr = unsafe {
+                        (lib.RequestDataOnSimObject)(
+                            handle,
+                            *request_id,
+                            *define_id,
+                            SIMCONNECT_OBJECT_ID_USER,
+                            SIMCONNECT_PERIOD_SIM_FRAME,
+                            SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
+                            0,
+                            15,
+                            0,
+                        )
+                    };
+                    note_sent(lib, handle, &format!("RequestDataOnSimObject[{label}]"));
+                    if !sc::succeeded(hr) {
+                        tracing::warn!(target: "simconnect", "RequestDataOnSimObject {label} falló (0x{hr:08x})");
+                    }
+                }
+            }
+            tracing::info!(target: "simconnect", "Tech Log: flujos MX / MX_BRAKES / MX_WARN registrados");
         }
 
         // (v0.1.25) Subscribe al evento "Pause" para no contar el
@@ -2297,6 +2426,47 @@ mod windows_simconnect {
                         continue;
                     }
 
+                    // (19/10) Etapa 3A — flujos del Tech Log propio.
+                    if request_id == REQUEST_ID_MX
+                        || request_id == REQUEST_ID_MX_BRAKES
+                        || request_id == REQUEST_ID_MX_WARN
+                    {
+                        let base = unsafe {
+                            let header_size =
+                                std::mem::size_of::<sc::SIMCONNECT_RECV_SIMOBJECT_DATA>();
+                            (p_data as *const u8).add(header_size - 4)
+                        };
+                        if in_replay_mode || base.is_null() {
+                            continue;
+                        }
+                        if request_id == REQUEST_ID_MX {
+                            let d = unsafe { *(base as *const MxExtraData) };
+                            crate::mx::recorder::set_extra(crate::mx::recorder::Extra {
+                                valid: true,
+                                mach: d.mach,
+                                flaps_index: d.flaps_index,
+                                gear_pct: d.gear_pct,
+                                rev_pct: [d.rev_pct_1, d.rev_pct_2],
+                                wheel_rpm: [d.wheel_rpm_l, d.wheel_rpm_r],
+                                apu_pct: d.apu_pct,
+                                weight_lb: d.total_weight_lb,
+                                body_vx_fps: d.body_vx_fps,
+                                body_vz_fps: d.body_vz_fps,
+                                on_runway: d.on_runway >= 0.5,
+                                oat_c: d.oat_c,
+                                spoilers_pct: d.spoilers_pct,
+                            });
+                        } else {
+                            let d = unsafe { *(base as *const MxPairData) };
+                            if request_id == REQUEST_ID_MX_BRAKES {
+                                crate::mx::recorder::set_brakes([d.a, d.b]);
+                            } else {
+                                crate::mx::recorder::set_speed_warnings(d.a >= 0.5, d.b >= 0.5);
+                            }
+                        }
+                        continue;
+                    }
+
                     // (v3.5.0) Meta strings de la aeronave — caché +
                     // persist a DB si hay vuelo abierto.
                     if request_id == REQUEST_ID_AIRCRAFT_META {
@@ -2320,6 +2490,8 @@ mod windows_simconnect {
                         // (diccionario de ~90 aerolíneas + regex de matrícula).
                         let raw_airline = read_cstr(&meta.atc_airline);
                         let raw_reg = read_cstr(&meta.atc_id);
+                        // (19/10) Tech Log: perfil (familia/variante/motor).
+                        crate::mx::recorder::set_aircraft(title.clone(), atc_type.clone());
                         let airline = crate::livery_meta::smart_airline(
                             raw_airline.as_deref(),
                             title.as_deref(),
@@ -2492,6 +2664,8 @@ mod windows_simconnect {
                                             &pool_c, rid,
                                         ),
                                     );
+                                    // (19/10) Tech Log: aplica lo registrado.
+                                    rt.block_on(crate::mx::flight_closed(&pool_c, &app_c, rid, None));
                                     let _ = app_c.emit("flightlog://changed", ());
                                     let _ = app_c.emit("flightlog://incomplete", ());
                                 }
@@ -3409,6 +3583,30 @@ mod windows_simconnect {
             return;
         }
 
+        // (19/10) Etapa 3A — Tech Log propio: cada muestra real (no replay)
+        // alimenta el registrador de mantenimiento del vuelo abierto.
+        // Ojo: en SimConnect el pitch con morro ARRIBA es negativo.
+        crate::mx::recorder::feed(crate::mx::recorder::WatcherSample {
+            sim_time_s: data.absolute_time_s,
+            on_ground: data.on_ground >= 0.5,
+            ias: data.indicated_airspeed_kt,
+            gs: data.ground_velocity_kt,
+            alt_ft: data.altitude_ft,
+            agl_ft: data.alt_above_ground_ft,
+            vs_fpm: data.vertical_speed_fpm,
+            pitch_up_deg: -data.pitch_radians.to_degrees(),
+            bank_deg: data.bank_radians.to_degrees(),
+            g: data.g_force,
+            flaps_pct: data.flaps_handle_pct,
+            gear_handle_down: data.gear_handle >= 0.5,
+            eng_running: [data.eng_combustion_1 >= 0.5, data.eng_combustion_2 >= 0.5],
+            n1: [data.eng_n1_1, data.eng_n1_2],
+            egt: [data.eng_egt_1, data.eng_egt_2],
+            overspeed_warning: data.overspeed_warning >= 0.5,
+            stall_warning: data.stall_warning >= 0.5,
+            precip_state: data.ambient_precip_state,
+        });
+
         let lat = data.latitude_deg;
         let lon = data.longitude_deg;
         let alt = data.altitude_ft;
@@ -3773,6 +3971,7 @@ mod windows_simconnect {
                             "OUT — flight_log id={} pushback en ({:.4}, {:.4})",
                             id, lat_c, lon_c
                         );
+                        crate::mx::recorder::flight_opened(id);
                         if let Ok(mut g) = id_slot.lock() {
                             *g = Some(id);
                         }
@@ -3844,6 +4043,7 @@ mod windows_simconnect {
                                     "OFF (fallback sin OUT) — flight_log id={} en ({:.4}, {:.4})",
                                     id, lat_c, lon_c
                                 );
+                                crate::mx::recorder::flight_opened(id);
                                 if let Ok(mut g) = id_slot.lock() {
                                     *g = Some(id);
                                 }
@@ -4119,6 +4319,9 @@ mod windows_simconnect {
                                     // el usuario decide en el modal.
                                     populate_simbrief_async(&pool_c, &app_c, id, lat_c, lon_c, None, true).await;
                                     let _ = app_c.emit("flightlog://changed", ());
+                                    // (19/10) Tech Log propio: aplica el
+                                    // registro de mantenimiento del vuelo.
+                                    crate::mx::flight_closed(&pool_c, &app_c, id, metrics_c.landing_fpm).await;
 
                                     // (v3.6.0 Phase H — H13) Cierra el
                                     // último flight_log_phase pendiente

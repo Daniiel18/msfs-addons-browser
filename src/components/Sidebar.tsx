@@ -8,7 +8,6 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
-  Plane,
   Radio,
   Settings,
   Wallet,
@@ -19,6 +18,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { cn } from "../lib/cn";
 import { t } from "../lib/i18n";
+import { BrandMark } from "./BrandMark";
 
 /**
  * (Rediseño F1) Menú lateral principal — reemplaza a las pestañas
@@ -211,6 +211,8 @@ export function Sidebar({ safeMode }: SidebarProps) {
     >
       <div
         ref={panelRef}
+        // (19/10) Superpuesto sobre el contenido → oculta flightsim.to embebido.
+        data-sf-overlay={overlay ? "" : undefined}
         className={cn(
           "flex h-full flex-col overflow-hidden border-r border-sf-border/70 bg-sf-surface transition-[width] duration-200 ease-out",
           expanded ? "w-sidebar-expanded" : "w-sidebar-collapsed",
@@ -227,9 +229,10 @@ export function Sidebar({ safeMode }: SidebarProps) {
         >
           <div
             data-tauri-drag-region
-            className="pointer-events-none relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-500/15 ring-1 ring-brand-500/35"
+            className="pointer-events-none relative flex h-7 w-7 shrink-0 items-center justify-center"
           >
-            <Plane className="h-4 w-4 text-brand-300" />
+            {/* (19/10) Logo nuevo (monograma S), el mismo del icono de la app. */}
+            <BrandMark className="h-7 w-7 rounded-lg ring-1 ring-brand-500/30" />
             {!expanded && safeMode && (
               <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-rose-400 ring-2 ring-sf-surface" />
             )}

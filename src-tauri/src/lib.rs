@@ -56,6 +56,8 @@ pub mod vas_acars;
 pub mod vas_summary;
 // (19/10) Bloqueo de inicio con la cuenta de Windows (Hello / contraseña).
 pub mod win_lock;
+pub mod techlog;
+pub mod mx;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,7 +192,13 @@ pub fn run() {
             // oculta o cierra; el icono de bandeja sigue funcionando
             // como interruptor para mostrar/ocultar.
             init_tray(&handle_for_tray)?;
+            // (19/10) Sincronía con Fenix/PMDG TechLog: escucha en vivo +
+            // cobros de su mantenimiento en Finanzas.
+            let techlog_pool = state.db.clone();
             app.manage(state);
+            techlog::spawn_watchers(app.handle().clone(), techlog_pool.clone());
+            // (19/10) Etapa 3B: mantenimiento nocturno de la aerolínea.
+            mx::spawn_nightly(app.handle().clone(), techlog_pool);
             // (v7.4.2) Título de la instancia de pruebas (taskbar / Alt-Tab).
             // Antes lo ponía el frontend con `setTitle`, pero la capability
             // no incluye `core:window:allow-set-title` → fallaba en silencio
@@ -259,10 +267,28 @@ pub fn run() {
             commands::install::forget_install,
             commands::gsx::gsx_lookup,
             commands::gsx::gsx_list_installed_icaos,
+            commands::gsx::gsx_airport_parkings,
             commands::gsx::gsx_check_profile_updates,
             commands::gsx::gsx_ack_update,
             commands::livery::start_livery_download_watch,
             commands::livery::open_livery_browser,
+            commands::flightsim_embed::fsto_embed_show,
+            commands::flightsim_embed::fsto_embed_bounds,
+            commands::flightsim_embed::fsto_embed_hide,
+            commands::flightsim_embed::fsto_embed_nav,
+            commands::techlog::techlog_status,
+            commands::techlog::techlog_aircraft,
+            commands::techlog::techlog_managed_registrations,
+            commands::techlog::techlog_action,
+            commands::techlog::techlog_pending,
+            commands::techlog::techlog_cancel_pending,
+            commands::techlog::techlog_launch,
+            commands::techlog::techlog_flight,
+            commands::mx::mx_aircraft,
+            commands::mx::mx_action,
+            commands::mx::mx_flight,
+            commands::mx::mx_get_wear_rates,
+            commands::mx::mx_set_wear_rates,
             commands::livery::save_installer_to,
             commands::livery::flightsim_check_updates,
             commands::livery::flightsim_ack_update,

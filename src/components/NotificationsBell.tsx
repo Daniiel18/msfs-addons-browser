@@ -271,6 +271,7 @@ export function NotificationsBell() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.98 }}
             transition={{ duration: 0.12 }}
+            data-sf-overlay
             className="absolute right-0 top-full z-30 mt-2 w-[420px] origin-top-right overflow-hidden rounded-xl border border-sf-border bg-sf-bg/95 shadow-xl ring-1 ring-sf-border backdrop-blur"
           >
             <header className="flex items-center justify-between gap-2 border-b border-sf-border px-4 py-3">
@@ -630,6 +631,12 @@ export function NotificationsBell() {
                     />
                     <button
                       onClick={() => {
+                        // (19/10) Avisos del Tech Log → su mantenimiento en el Hangar.
+                        if (a.component === "techlog") {
+                          useAppStore.getState().requestHangarFocus(a.registration);
+                          setOpen(false);
+                          return;
+                        }
                         openEconomy(a.airlineKey, a.registration);
                         setOpen(false);
                       }}
@@ -641,7 +648,7 @@ export function NotificationsBell() {
                         }`}
                       >
                         {due
-                          ? t("notifications.maint_due")
+                          ? t(a.component === "techlog" ? "notifications.mx_nogo" : "notifications.maint_due")
                           : t("notifications.maint_soon")}
                       </div>
                       <div className="mt-0.5 font-mono text-[11px] text-sf-text/90">
@@ -649,10 +656,9 @@ export function NotificationsBell() {
                         {a.model ? ` · ${a.model}` : ""}
                       </div>
                       <div className="mt-0.5 text-[11px] text-sf-muted">
-                        {t(`economy.comp.${a.component}`)} ·{" "}
-                        {Math.round(a.wearPct)}%
+                        {a.label ?? `${t(`economy.comp.${a.component}`)} · ${Math.round(a.wearPct)}%`}
                         {a.dueCount > 1
-                          ? ` · +${a.dueCount - 1} ${t("notifications.maint_more")}`
+                          ? ` · +${a.dueCount - 1} ${t(a.component === "techlog" ? "notifications.mx_more" : "notifications.maint_more")}`
                           : ""}
                       </div>
                     </button>

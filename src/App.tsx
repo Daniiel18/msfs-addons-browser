@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FlaskConical, Globe2, Search } from "lucide-react";
+import { FlaskConical, Search } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { api, isTauri } from "./lib/tauri";
 import { setActiveLocale, t } from "./lib/i18n";
@@ -14,6 +14,8 @@ import { useAiracUpdateStore } from "./stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "./stores/useGsxLocalStore";
 import { useFlightsimUpdateStore } from "./stores/useFlightsimUpdateStore";
 import { SourceToggle } from "./components/SourceToggle";
+import { FlightsimEmbed } from "./components/FlightsimEmbed";
+import { initTechLogSync } from "./stores/useTechLogStore";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
 import { DownloadsButton } from "./components/DownloadsButton";
@@ -158,6 +160,25 @@ export default function App() {
   // vuelve a MSFS2024 igual que SceneryAddons (el backend etiqueta/filtra
   // cada post según el sim elegido). Skybound sólo aplicaría a 2024, pero hoy
   // el backend ni lo lista (caído desde el 10/10).
+  // (19/10) flightsim.to es la 3ª opción del switch de Explore: no es un
+  // catálogo con búsqueda propia, sino su web DENTRO de la app. Persistido.
+  const [fstoMode, setFstoModeState] = useState(() => {
+    try {
+      return localStorage.getItem("simfleet.explore.fsto") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setFstoMode = (on: boolean) => {
+    setFstoModeState(on);
+    try {
+      if (on) localStorage.setItem("simfleet.explore.fsto", "1");
+      else localStorage.removeItem("simfleet.explore.fsto");
+    } catch {
+      // localStorage no disponible — el estado en memoria sigue ok.
+    }
+  };
+
   const visibleSources = sources.filter((s) => {
     if (s.id === "skybound") return simVersion === "msfs2024";
     return true;
@@ -251,6 +272,11 @@ export default function App() {
   }, [theme]);
 
   const [ready, setReady] = useState(false);
+  // (19/10) Etapa 2: sincronía con Fenix/PMDG TechLog (matrículas gestionadas
+  // + escucha de cambios en vivo) una vez cargada la app.
+  useEffect(() => {
+    if (ready) initTechLogSync();
+  }, [ready]);
   // Tareas que el splash AWAITEA antes de dar paso a la app.
   //
   // Cambio v0.1.9: añadimos "Buscar actualización de la app" como
@@ -1013,8 +1039,16 @@ export default function App() {
           )}
 
           {view === "search" && (
-            <div className="h-full overflow-y-auto">
-              <div className="space-y-4 pb-2">
+            <div
+              className={
+                fstoMode ? "flex h-full min-h-0 flex-col" : "h-full overflow-y-auto"
+              }
+            >
+              <div
+                className={
+                  fstoMode ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4 pb-2"
+                }
+              >
                 {/* (Rediseño F3) Cabecera de Explorar: el selector de
                     catálogo y flightsim.to viven aquí, junto al buscador
                     (antes estaban en la barra superior sólo en esta vista). */}
@@ -1028,26 +1062,29 @@ export default function App() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {/* (19/10) flightsim.to entra al switch como 3ª opción
+                        (antes era un botón aparte que abría otra ventana). */}
                     <SourceToggle
-                      sources={visibleSources}
-                      activeId={activeSourceId}
-                      onChange={setActiveSource}
+                      sources={[
+                        ...visibleSources,
+                        { id: "flightsim", name: "flightsim.to", homeUrl: "https://flightsim.to" },
+                      ]}
+                      activeId={fstoMode ? "flightsim" : activeSourceId}
+                      onChange={(id) => {
+                        if (id === "flightsim") {
+                          setFstoMode(true);
+                        } else {
+                          setFstoMode(false);
+                          setActiveSource(id);
+                        }
+                      }}
                     />
-                    {/* (v6.2.57) Botón dedicado a flightsim.to (abre el navegador
-                        embebido: liveries, perfiles GSX, apps). Independiente de la
-                        versión de MSFS. */}
-                    <button
-                      onClick={() =>
-                        void api.openLiveryBrowser("https://flightsim.to")
-                      }
-                      title={t("flightsimto.tooltip")}
-                      className="group inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-sf-border bg-sf-surface px-3 text-sf-muted transition-colors hover:border-brand-500/40 hover:text-sf-text"
-                    >
-                      <Globe2 className="h-4 w-4 text-sky-400 transition-colors group-hover:text-sky-300" />
-                      <span className="text-xs font-medium">flightsim.to</span>
-                    </button>
                   </div>
                 </header>
+                {fstoMode ? (
+                  <FlightsimEmbed />
+                ) : (
+                <>
                 <SearchBar
                   value={query}
                   onChange={setQuery}
@@ -1091,6 +1128,8 @@ export default function App() {
                       {t("common.next")}
                     </button>
                   </div>
+                )}
+                </>
                 )}
               </div>
             </div>

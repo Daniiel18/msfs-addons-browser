@@ -73,6 +73,28 @@ pub struct GsxParking {
     pub lon: f64,
     /// Qué field del INI nos dio la coord, para diagnóstico.
     pub source_field: &'static str,
+    /// (19/10) Tipo de posición según el header del INI ("gate",
+    /// "parking", "ramp", "cargo", "military", "pad", "other"). "pad"
+    /// cubre helipuertos y pads de deshielo (GSX los nombra igual). El
+    /// Scenery map lo usa para colorear los pines.
+    pub kind: &'static str,
+}
+
+/// (19/10) Clasifica un header de section del INI (`gate a 10`,
+/// `ne parking 7`, `cargo 1`…) en un tipo de posición.
+pub fn parking_kind(section: &str) -> &'static str {
+    let s = section.trim().to_lowercase();
+    let first = s.split_whitespace().next().unwrap_or("");
+    match first {
+        "gate" | "dock" => "gate",
+        "parking" | "stand" => "parking",
+        "ramp" => "ramp",
+        "cargo" => "cargo",
+        "mil" => "military",
+        "pad" => "pad",
+        _ if s.split_whitespace().nth(1) == Some("parking") => "parking",
+        _ => "other",
+    }
 }
 
 /// Localiza la carpeta de customizations de GSX. Sólo Windows —
@@ -193,6 +215,7 @@ pub fn parse_ini(path: &Path) -> Vec<GsxParking> {
                         lat,
                         lon,
                         source_field: field,
+                        kind: parking_kind(&s),
                     });
                 }
             } else {
@@ -427,6 +450,21 @@ pub fn find_nearest_parking(icao: &str, lat: f64, lon: f64) -> Option<GsxParking
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_parking_kinds() {
+        assert_eq!(parking_kind("gate a 10"), "gate");
+        assert_eq!(parking_kind("gate 5_mars_"), "gate");
+        assert_eq!(parking_kind("dock 2"), "gate");
+        assert_eq!(parking_kind("parking 12"), "parking");
+        assert_eq!(parking_kind("ne parking 7"), "parking");
+        assert_eq!(parking_kind("stand 3"), "parking");
+        assert_eq!(parking_kind("ramp 5"), "ramp");
+        assert_eq!(parking_kind("cargo 1"), "cargo");
+        assert_eq!(parking_kind("mil 4"), "military");
+        assert_eq!(parking_kind("pad 1"), "pad");
+        assert_eq!(parking_kind("something else"), "other");
+    }
 
     #[test]
     fn header_format_basics() {

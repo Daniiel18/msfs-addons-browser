@@ -35,6 +35,67 @@ pub async fn gsx_lookup(
 ///   2. **`afcad_path` dentro del .ini**: si el nombre no empieza
 ///      por 4 letras + guión, abrimos el .ini y buscamos un
 ///      `MHTG.bgl` (cualquier ICAO seguido de `.bgl`).
+/// (19/10) Una posición (gate/parking) del perfil GSX de un aeropuerto.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GsxParkingDto {
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub kind: &'static str,
+}
+
+/// (19/10) Gates y parkings del perfil GSX instalado de un aeropuerto.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GsxAirportParkings {
+    pub icao: String,
+    /// Nombre del INI de GSX del que salen (el más reciente de ese ICAO).
+    pub file_name: String,
+    pub parkings: Vec<GsxParkingDto>,
+}
+
+/// (19/10) Scenery map: gates y parkings que tiene el perfil GSX
+/// instalado para `icao` (`%APPDATA%\Virtuali\GSX\MSFS`), con su
+/// coordenada exacta. `None` si GSX no está o no hay perfil para él.
+/// Las sub-posiciones MARS repiten nombre: nos quedamos con la primera.
+#[tauri::command]
+pub async fn gsx_airport_parkings(icao: String) -> Result<Option<GsxAirportParkings>, String> {
+    tokio::task::spawn_blocking(move || {
+        let icao = icao.trim().to_uppercase();
+        let dir = crate::gsx_parking::find_gsx_dir()?;
+        let path = crate::gsx_parking::find_ini_for_airport(&dir, &icao)?;
+        let mut seen = std::collections::HashSet::new();
+        let parkings: Vec<GsxParkingDto> = crate::gsx_parking::parse_ini(&path)
+            .into_iter()
+            .filter(|p| seen.insert(p.name.to_uppercase()))
+            .map(|p| GsxParkingDto {
+                name: p.name,
+                lat: p.lat,
+                lon: p.lon,
+                kind: p.kind,
+            })
+            .collect();
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        tracing::info!(
+            target: "gsx_parking",
+            "{icao}: {} posiciones del perfil GSX {file_name}",
+            parkings.len()
+        );
+        Some(GsxAirportParkings {
+            icao,
+            file_name,
+            parkings,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn gsx_list_installed_icaos() -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(|| {

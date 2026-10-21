@@ -413,6 +413,7 @@ export function DashboardView() {
         <RecentFlights
           entries={completedFlights.slice(0, 5)}
           onOpenFlightBook={() => setView("flightbook")}
+          onOpenFlight={(id) => useAppStore.getState().requestFlightFocus(id)}
         />
         <NoticesPanel notices={notices} />
       </div>
@@ -698,7 +699,12 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
   return (
     <div className="w-full shrink-0 lg:w-[22rem]">
     <button
-      onClick={() => setView("flightbook")}
+      // (19/10) "Último vuelo" abre el FlightBook con ese vuelo enfocado.
+      onClick={() =>
+        kind === "last" && lastFlight
+          ? useAppStore.getState().requestFlightFocus(lastFlight.id)
+          : setView("flightbook")
+      }
       className="w-full rounded-xl border border-sf-border bg-sf-bg/70 p-4 text-left outline-none transition-colors hover:border-brand-500/40 focus-visible:ring-2 focus-visible:ring-brand-500/60"
     >
       <div className="flex items-center justify-between gap-2">
@@ -863,9 +869,12 @@ function QuickAction({
 function RecentFlights({
   entries,
   onOpenFlightBook,
+  onOpenFlight,
 }: {
   entries: FlightLogEntry[];
   onOpenFlightBook: () => void;
+  /** (19/10) Abre el FlightBook con ESE vuelo enfocado. */
+  onOpenFlight: (flightId: number) => void;
 }) {
   const u = useUnits();
   return (
@@ -901,7 +910,7 @@ function RecentFlights({
             {entries.map((e) => (
               <li key={e.id}>
                 <button
-                  onClick={onOpenFlightBook}
+                  onClick={() => onOpenFlight(e.id)}
                   className="grid w-full grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1.1fr)_4.5rem_6.5rem] items-center gap-3 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-sf-raised/60"
                 >
                   <span className="text-sf-muted">{formatShortDate(e.startedAt)}</span>

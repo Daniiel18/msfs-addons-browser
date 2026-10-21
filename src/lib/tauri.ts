@@ -53,6 +53,14 @@ import type {
   FolderSyncSaveReport,
   GsxInstallReport,
   GsxProfile,
+  TechLogAircraft,
+  TechLogAppStatus,
+  TechLogActionRequest,
+  TechLogActionResult,
+  TechLogFlight,
+  TechLogPendingOrder,
+  TechLogSource,
+  GsxAirportParkings,
   GsxProfileUpdate,
   FlightsimUpdate,
   FlightsimMeta,
@@ -135,6 +143,8 @@ export interface MaintAlert {
   wearPct: number;
   severity: "due" | "soon";
   dueCount: number;
+  /** (19/10) Texto listo de los avisos del Tech Log (`component` = "techlog"). */
+  label?: string | null;
 }
 
 /** (v6.2.16) Actividad de los subsistemas internos (backend). */
@@ -203,6 +213,30 @@ interface Api {
    *  instalado en `%APPDATA%\Virtuali\GSX\MSFS`. La frontend usa esto
    *  para mostrar un check en cada card de escenario. */
   gsxListInstalledIcaos: () => Promise<string[]>;
+  /** (19/10) Etapa 2 — sincronía con Fenix/PMDG TechLog. */
+  techlogStatus: () => Promise<TechLogAppStatus[]>;
+  techlogAircraft: (registration: string) => Promise<TechLogAircraft | null>;
+  techlogManagedRegistrations: () => Promise<string[]>;
+  /** (19/10) Etapa 3 — Tech Log propio de SimFleet (aviones sin TechLog). */
+  mxAircraft: (registration: string, title?: string | null) => Promise<TechLogAircraft | null>;
+  mxAction: (request: TechLogActionRequest) => Promise<TechLogActionResult>;
+  mxFlight: (flightId: number) => Promise<TechLogFlight | null>;
+  mxGetWearRates: () => Promise<[number, number]>;
+  mxSetWearRates: (life: number, cabin: number) => Promise<void>;
+  /** (20/10) Abre TechLog si está cerrado; si no deja elegir el avión, la deja en cola. */
+  techlogAction: (request: TechLogActionRequest) => Promise<TechLogActionResult>;
+  techlogPending: (registration: string) => Promise<TechLogPendingOrder[]>;
+  techlogCancelPending: (id: number) => Promise<void>;
+  /** Abre la app TechLog minimizada; `false` si ya estaba abierta. */
+  techlogLaunch: (source: TechLogSource) => Promise<boolean>;
+  techlogFlight: (
+    registration: string,
+    startedAt: string,
+    endedAt: string | null,
+  ) => Promise<TechLogFlight | null>;
+  /** (19/10) Gates y parkings del perfil GSX instalado de un aeropuerto
+   *  (Scenery map). `null` si no hay perfil para ese ICAO. */
+  gsxAirportParkings: (icao: string) => Promise<GsxAirportParkings | null>;
   /** (v6.2.44) Revisa updates de los perfiles GSX instalados. (v6.2.58)
    *  Detección por línea base: sólo marca cuando el catálogo avanza más allá
    *  de lo que se vio la primera vez (sin falsos positivos). */
@@ -231,6 +265,14 @@ interface Api {
    *  render con disable_drag_drop_handler). Inicias sesión ahí con tu cuenta,
    *  descargas y la descarga se intercepta e instala sola. */
   openLiveryBrowser: (url?: string) => Promise<void>;
+  /** (19/10) flightsim.to DENTRO de Explore (webview hijo de la ventana). */
+  fstoEmbedShow: (
+    bounds: { x: number; y: number; width: number; height: number },
+    url?: string,
+  ) => Promise<void>;
+  fstoEmbedBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>;
+  fstoEmbedHide: () => Promise<void>;
+  fstoEmbedNav: (action: string) => Promise<void>;
   /** (v6.2.56) Copia una app/instalador descargado a la carpeta elegida
    *  (nunca a Community). Devuelve la ruta final. */
   saveInstallerTo: (src: string, destFolder: string) => Promise<string>;
@@ -747,6 +789,24 @@ const realApi: Api = {
 
   gsxLookup: (icao) => invoke<GsxProfile[]>("gsx_lookup", { icao }),
   gsxListInstalledIcaos: () => invoke<string[]>("gsx_list_installed_icaos"),
+  techlogStatus: () => invoke<TechLogAppStatus[]>("techlog_status"),
+  techlogAircraft: (registration) =>
+    invoke<TechLogAircraft | null>("techlog_aircraft", { registration }),
+  techlogManagedRegistrations: () => invoke<string[]>("techlog_managed_registrations"),
+  mxAircraft: (registration, title) =>
+    invoke<TechLogAircraft | null>("mx_aircraft", { registration, title: title ?? null }),
+  mxAction: (request) => invoke<TechLogActionResult>("mx_action", { request }),
+  mxFlight: (flightId) => invoke<TechLogFlight | null>("mx_flight", { flightId }),
+  mxGetWearRates: () => invoke<[number, number]>("mx_get_wear_rates"),
+  mxSetWearRates: (life, cabin) => invoke<void>("mx_set_wear_rates", { life, cabin }),
+  techlogAction: (request) => invoke<TechLogActionResult>("techlog_action", { request }),
+  techlogPending: (registration) => invoke<TechLogPendingOrder[]>("techlog_pending", { registration }),
+  techlogCancelPending: (id) => invoke<void>("techlog_cancel_pending", { id }),
+  techlogLaunch: (source) => invoke<boolean>("techlog_launch", { source }),
+  techlogFlight: (registration, startedAt, endedAt) =>
+    invoke<TechLogFlight | null>("techlog_flight", { registration, startedAt, endedAt }),
+  gsxAirportParkings: (icao) =>
+    invoke<GsxAirportParkings | null>("gsx_airport_parkings", { icao }),
   gsxCheckProfileUpdates: () =>
     invoke<GsxProfileUpdate[]>("gsx_check_profile_updates"),
   gsxAckUpdate: (icao) => invoke<void>("gsx_ack_update", { icao }),
@@ -760,6 +820,11 @@ const realApi: Api = {
   communityTargets: () => invoke<CommunityTargets>("community_targets"),
   startLiveryDownloadWatch: () => invoke<void>("start_livery_download_watch"),
   openLiveryBrowser: (url) => invoke<void>("open_livery_browser", { url: url ?? null }),
+  fstoEmbedShow: (bounds, url) =>
+    invoke<void>("fsto_embed_show", { bounds, url: url ?? null }),
+  fstoEmbedBounds: (bounds) => invoke<void>("fsto_embed_bounds", { bounds }),
+  fstoEmbedHide: () => invoke<void>("fsto_embed_hide"),
+  fstoEmbedNav: (action) => invoke<void>("fsto_embed_nav", { action }),
   saveInstallerTo: (src, destFolder) =>
     invoke<string>("save_installer_to", { src, destFolder }),
   gsxInstallProfile: (sourcePath) =>
@@ -1385,6 +1450,75 @@ const demoApi: Api = {
   async gsxListInstalledIcaos() {
     return [];
   },
+  // (19/10) Demo: un avión de ejemplo con TechLog (N321US) para ver el panel.
+  async techlogStatus() {
+    return [
+      { source: "fenix", appName: "Fenix TechLog", installed: true, running: true, tabletUrl: "http://localhost:7733/", airframes: 1 },
+      { source: "pmdg", appName: "PMDG TechLog", installed: false, running: false, tabletUrl: "http://localhost:7755/", airframes: 0 },
+    ] as TechLogAppStatus[];
+  },
+  async techlogAircraft(registration) {
+    if (registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase() !== "N321US") return null;
+    return demoTechLogAircraft();
+  },
+  async techlogManagedRegistrations() {
+    return ["N321US"];
+  },
+  // (19/10) Demo: el resto de aviones usa el Tech Log de SimFleet.
+  async mxAircraft(registration) {
+    const a = demoTechLogAircraft();
+    return {
+      ...a,
+      source: "simfleet",
+      appName: "SimFleet Tech Log",
+      tabletUrl: "",
+      registration: registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+      variant: "777-300ER",
+      engine: "GE90",
+      dispatch: { status: "GO_MEL", reasons: ["1 item(s) deferred under the MEL"] },
+      defects: a.defects.filter((d) => d.status === "Deferred"),
+    };
+  },
+  async mxAction() {
+    return { ok: true, message: "Demo: en la app real esto lo registra SimFleet." };
+  },
+  async mxFlight() {
+    return null;
+  },
+  async mxGetWearRates() {
+    return [3, 2] as [number, number];
+  },
+  async mxSetWearRates() {},
+  // (20/10) Demo: sin TechLog de verdad, las órdenes quedan en cola.
+  async techlogAction(request) {
+    const reg = request.registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    demoTlQueue.push({
+      id: demoTlQueue.length + 1,
+      source: "fenix",
+      registration: reg,
+      action: request.action,
+      label: request.label ?? null,
+      createdAt: new Date().toISOString(),
+    });
+    return { ok: true, queued: true, message: "Demo: the order waits until TechLog has this aircraft active." };
+  },
+  async techlogPending(registration) {
+    const reg = registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    return demoTlQueue.filter((o) => o.registration === reg);
+  },
+  async techlogCancelPending(id) {
+    const i = demoTlQueue.findIndex((o) => o.id === id);
+    if (i >= 0) demoTlQueue.splice(i, 1);
+  },
+  async techlogLaunch() {
+    return false;
+  },
+  async techlogFlight() {
+    return null;
+  },
+  async gsxAirportParkings() {
+    return null;
+  },
   async gsxCheckProfileUpdates() {
     return [];
   },
@@ -1411,6 +1545,10 @@ const demoApi: Api = {
   async startLiveryDownloadWatch() {
     return;
   },
+  async fstoEmbedShow() {},
+  async fstoEmbedBounds() {},
+  async fstoEmbedHide() {},
+  async fstoEmbedNav() {},
   async openLiveryBrowser(_url) {
     return;
   },
@@ -2613,3 +2751,40 @@ const demoCommunity: CommunityPackage[] = [
 ];
 
 export const api: Api = isTauri ? realApi : demoApi;
+
+// (19/10) Avión de ejemplo del modo demo para el panel TechLog del Hangar.
+/** (20/10) Demo: cola de órdenes de TechLog (en memoria). */
+const demoTlQueue: TechLogPendingOrder[] = [];
+
+function demoTechLogAircraft(): TechLogAircraft {
+  return {
+    source: "fenix", appName: "Fenix TechLog", tabletUrl: "http://localhost:7733/",
+    running: true, active: true, airframeId: 1, registration: "N321US", variant: "A321", engine: "CFM",
+    maintenance: "standard", flightHours: 1243.6, cycles: 702, egtMarginC: [41, 37],
+    dispatch: { status: "NO_GO", reasons: ["NO-GO: Hard landing inspection", "Open, fix or defer: Seat 14C recline inoperative"] },
+    defects: [
+      { id: 11, ata: 5, title: "Hard landing inspection", detail: "Hard landing: -652 fpm, 1.92 g. Phase 1 inspection.", category: "NoGo", status: "Open", melId: "05-51-01", position: null, raisedUtc: "2026-10-18T21:40:00Z", deferredUntil: null, latestDeferral: null, canDefer: false, failure: null, placard: null, restrictions: null },
+      { id: 12, ata: 25, title: "Seat 14C recline inoperative", detail: "Reported by the cabin crew.", category: "C", status: "Open", melId: "25-21-01", position: "14C", raisedUtc: "2026-10-18T21:52:00Z", deferredUntil: null, latestDeferral: "2026-10-29", canDefer: true, failure: null, placard: "INOP", restrictions: null },
+      { id: 9, ata: 30, title: "Wing anti-ice valve 2 sluggish", detail: null, category: "B", status: "Deferred", melId: "30-11-01", position: "2", raisedUtc: "2026-10-16T10:12:00Z", deferredUntil: "2026-10-21", latestDeferral: null, canDefer: false, failure: "F_ICE_WING_VALVE_2", placard: "WING A.ICE 2", restrictions: "No flight into known icing" },
+    ],
+    parts: [
+      { id: 101, key: "BRAKE", name: "Brake 3", position: "3", ata: 32, system: "Brakes", kind: "wear", remainingPct: 8.4, status: "Ok", repairs: 0 },
+      { id: 102, key: "ELAC", name: "ELAC 2", position: "2", ata: 27, system: "Flight controls", kind: "life", remainingPct: 12.1, status: "Degraded", repairs: 1 },
+      { id: 103, key: "PACK_REG", name: "Pack 1 flow control", position: "1", ata: 21, system: "Air conditioning", kind: "life", remainingPct: 21.7, status: "Ok", repairs: 0 },
+    ],
+    condition: { good: 302, low: 7, failed: 0, avgRemainingPct: 71.4 },
+    consumables: [
+      { key: "ENG_OIL", position: "1", name: "Engine 1 oil", unit: "qt", level: 13.2, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "ok", serviceKind: "ENG_OIL:1", serviceLabel: "Fill" },
+      { key: "ENG_OIL", position: "2", name: "Engine 2 oil", unit: "qt", level: 11.6, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "below_min", serviceKind: "ENG_OIL:2", serviceLabel: "Fill" },
+      { key: "CREW_O2", position: null, name: "Crew oxygen", unit: "psi", level: 1610, capacity: 1850, minDispatch: 1000, low: 1200, fills: false, status: "ok", serviceKind: "CREW_O2", serviceLabel: "Fill" },
+      { key: "WASTE", position: null, name: "Waste tank", unit: "L", level: 140, capacity: 170, minDispatch: 0, low: 0, fills: true, status: "low", serviceKind: "WASTE", serviceLabel: "Empty" },
+    ],
+    checks: [
+      { key: "DAILY", name: "Daily check", lastDoneUtc: "2026-10-17T06:00:00Z", dueUtc: "2026-10-19T06:00:00Z", overdue: true, hoursLeft: -2.5 },
+      { key: "WEEKLY", name: "Weekly check", lastDoneUtc: "2026-10-14T06:00:00Z", dueUtc: "2026-10-22T06:00:00Z", overdue: false, hoursLeft: 69.5 },
+      { key: "A", name: "A-check", lastDoneUtc: "2026-08-01T06:00:00Z", dueUtc: "2026-11-29T06:00:00Z", overdue: false, hoursLeft: 412 },
+      { key: "C", name: "C-check", lastDoneUtc: "2025-03-01T06:00:00Z", dueUtc: "2027-03-01T06:00:00Z", overdue: false, hoursLeft: 6256 },
+    ],
+    lastSeenUtc: "2026-10-18T22:10:00Z",
+  };
+}
