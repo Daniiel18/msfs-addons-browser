@@ -5,6 +5,27 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.1.0]
+
+### Added
+- **Fenix TechLog and PMDG TechLog in SimFleet.** If you use them, the Hangar shows their maintenance (GO / MEL / NO-GO, open and deferred defects, worn parts, consumables and checks), FlightBook shows each flight's TechLog score and events, and what TechLog does is charged in Finance at the airline's maintenance level. TechLog stays in charge: SimFleet reads it and sends it your orders.
+- **Orders from SimFleet, even with TechLog closed.** Fix, defer, replace, service or do a check from the Hangar: if TechLog is closed, SimFleet opens it (minimised) and picks the aircraft. If the sim has another aircraft loaded, the order waits in a queue and is applied by itself when you load that one.
+- **SimFleet Tech Log for every other aircraft** (iFly 737, PMDG 777, iniBuilds, FlyByWire and the rest): parts that wear with use, defects and the MEL, checks, and landings and exceedances recorded in flight. Record-only: nothing is ever set in the aircraft.
+- **"Ready to fly?" checks maintenance.** A NO-GO aircraft gets a warning with a shortcut to its maintenance; departing anyway marks the flight with a dispatch violation.
+- **Airline night maintenance.** With the Premium maintenance level, the airline does the pending work of SimFleet Tech Log aircraft every night.
+- **Wear rate setting** (×1 realistic to ×5 demanding) in Settings › Flight & sim › Maintenance.
+- **GSX gates and parking on the Scenery map.** Zoom in on an airport with a GSX profile to see its stands as pins, and pick one in the airport card.
+- **flightsim.to inside Explore**, next to SceneryAddons and Simplaza.
+- **New SimFleet logo** for the window, taskbar, tray and installer.
+
+### Changed
+- The Hangar's overall condition, Performance, History, Documents, the aircraft report and Finance maintenance now come from each aircraft's Tech Log. The old component wear system and its estimated reports are gone.
+- Maintenance alerts in the notification bell come from the Tech Log and open the aircraft's maintenance.
+- MSFS 2020 with Fenix TechLog 1.3.0: brake temperatures are worked out from the braking when the sim gives none, and a button opens TechLog's page (MSFS 2020 has no EFB).
+
+### Fixed
+- Clicking a recent flight on Home now focuses that flight in FlightBook.
+
 ## [8.0.0]
 
 ### Added
