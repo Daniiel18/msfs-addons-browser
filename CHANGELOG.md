@@ -5,6 +5,24 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.2.0]
+
+### Added
+- **New FlightBook evaluation rules:** stabilized approach from 1,000 ft, stable speed below 500 ft, no bounce on touchdown, touchdown under 1.6 G, no exceedances recorded by the Tech Log and dispatched without NO-GO items.
+- **The evaluation explains itself:** each missed item shows what was measured (e.g. "max IAS 273 kt") and each skipped one says why (e.g. "this aircraft doesn't pass its transponder code to the sim").
+- **Tech Log note in the evaluation:** the flight's Fenix/PMDG TechLog or SimFleet Tech Log score and events appear at the top of the evaluation.
+
+### Changed
+- Your past flights are re-evaluated once with the new rules after updating.
+
+### Fixed
+- "Parking brake applied" failing on every FlyByWire and FSLabs flight (they don't pass the parking brake to the sim). New FlyByWire flights read the aircraft's own parking brake lever.
+- "Parking brake applied" failing when the brake was released at the gate for the GSX pushback.
+- "≤ 250 kt below 10,000 ft" and "Landing lights used" now use altitude above sea level, so approaches into high airports (Bogotá, Lhasa…) are no longer penalised above 10,000 ft.
+- "Landing gear deployed" is checked from 1,000 ft above the runway instead of 1,800 ft.
+- "Landing lights turned off" gives a minute to vacate the runway; taxi speed allows 2 kt of margin; the transponder rule no longer fails on the iFly 737, which doesn't publish its code.
+- G-force spikes from the sim (e.g. 9 G when loading) no longer fail the G-force rules.
+
 ## [8.1.1]
 
 ### Fixed
