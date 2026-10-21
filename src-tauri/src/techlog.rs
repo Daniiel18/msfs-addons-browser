@@ -214,6 +214,49 @@ pub fn normalize_reg(reg: &str) -> String {
     crate::airline_economy::normalize_reg(&base)
 }
 
+/// Matrícula para mostrar: la de TechLog sin el sufijo de tipo
+/// (`G-FENX-A320-CFM` → `G-FENX`).
+pub fn display_reg(reg: &str) -> String {
+    let parts: Vec<&str> = reg.trim().split('-').collect();
+    if parts.len() >= 3 && matches!(parts[parts.len() - 1].to_ascii_uppercase().as_str(), "CFM" | "IAE") {
+        parts[..parts.len() - 2].join("-")
+    } else {
+        reg.trim().to_string()
+    }
+    .to_uppercase()
+}
+
+/// (21/10) Un avión de Fenix/PMDG TechLog (para el Hangar).
+#[derive(Debug, Clone)]
+pub struct TlAirframeInfo {
+    pub registration: String,
+    pub variant: String,
+    pub engine: String,
+    pub last_seen_utc: Option<String>,
+}
+
+/// (21/10) Todos los aviones de las apps TechLog, desde su base en solo
+/// lectura: el Hangar muestra también los que aún no tienen vuelos en SimFleet.
+pub async fn airframe_list() -> Vec<TlAirframeInfo> {
+    let mut out = Vec::new();
+    for source in TlSource::ALL {
+        let Some(dir) = install_dir(source) else { continue };
+        let Some(db) = db_path(source, &dir) else { continue };
+        if let Ok(mut conn) = open_snapshot(source, &db).await {
+            if let Ok(afs) = db_airframes(&mut conn).await {
+                out.extend(afs.into_iter().map(|a| TlAirframeInfo {
+                    registration: a.registration,
+                    variant: a.variant,
+                    engine: a.engine,
+                    last_seen_utc: a.last_seen_utc,
+                }));
+            }
+            conn.close().await.ok();
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Catálogo (sólo lo que hace falta para leer la base sin TechLog)
 // ---------------------------------------------------------------------------

@@ -1554,6 +1554,7 @@
   "hangar.health_general": "Estado general",
   "hangar.health_hint": "Vida media restante de todas las piezas. El color es el despacho: verde GO, ámbar con ítems MEL, rojo NO-GO.",
   "hangar.techlog_loading": "Leyendo el Tech Log del avión…",
+  "hangar.techlog_only": "Solo en TechLog",
   "hangar.techlog_unavailable": "No se pudo leer el Tech Log de este avión.",
   "hangar.history.empty": "Todavía no hay trabajos de mantenimiento cobrados para este avión.",
   "hangar.report.maintenance": "Mantenimiento ({app})",

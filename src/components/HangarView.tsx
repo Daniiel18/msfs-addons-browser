@@ -184,6 +184,9 @@ export function HangarView() {
     const ac = data.aircraft.find((a) => a.registration && normalizeTechLogReg(a.registration) === want);
     useAppStore.getState().clearHangarFocusRequest();
     if (!ac) return;
+    // (21/10) Que se vea resaltado en la lista: su página, sin búsqueda.
+    setSearch("");
+    setPage(Math.floor(data.aircraft.indexOf(ac) / PER_PAGE));
     setSelectedKey(ac.key);
     setTabRequest({ tab: "maintenance", n: Date.now() });
   }, [hangarFocusRequest, data]);
@@ -654,14 +657,21 @@ function FleetRow({
           </div>
         )}
       </div>
-      <div className="shrink-0 text-right">
-        <div className="text-xs font-semibold text-sf-text">
-          {Math.round(ac.totalNm).toLocaleString()} nm
+      {ac.flights === 0 ? (
+        // (21/10) Avión que sólo existe en Fenix/PMDG TechLog (sin vuelos aquí).
+        <span className="shrink-0 rounded-full bg-sf-raised px-2 py-0.5 text-[10px] font-medium text-sf-muted ring-1 ring-sf-border">
+          {t("hangar.techlog_only")}
+        </span>
+      ) : (
+        <div className="shrink-0 text-right">
+          <div className="text-xs font-semibold text-sf-text">
+            {Math.round(ac.totalNm).toLocaleString()} nm
+          </div>
+          <div className="text-[10px] text-sf-muted">
+            {ac.flights} {t("hangar.flights_short")}
+          </div>
         </div>
-        <div className="text-[10px] text-sf-muted">
-          {ac.flights} {t("hangar.flights_short")}
-        </div>
-      </div>
+      )}
       <MoreVertical className="h-3.5 w-3.5 shrink-0 text-sf-muted/70" />
     </button>
   );

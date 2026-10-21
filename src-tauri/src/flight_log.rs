@@ -1921,6 +1921,43 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
     // (v6.1 #33) NO truncamos: devolvemos la flota completa ordenada. El
     // frontend pinta el top 10 por defecto y el buscador filtra el resto.
 
+    // (21/10) Aviones que sólo existen en Fenix/PMDG TechLog (aún sin vuelos
+    // en SimFleet): al final de la flota, para poder ver y hacer su
+    // mantenimiento. Las alertas de TechLog los abren aquí.
+    let mut known: std::collections::HashSet<String> = aircraft
+        .iter()
+        .filter_map(|a| a.registration.as_deref())
+        .map(crate::techlog::normalize_reg)
+        .collect();
+    for tl in crate::techlog::airframe_list().await {
+        let reg = crate::techlog::display_reg(&tl.registration);
+        let norm = crate::techlog::normalize_reg(&reg);
+        if norm.is_empty() || !known.insert(norm) {
+            continue;
+        }
+        let v = tl.variant.trim().to_uppercase();
+        let maker = if v.starts_with('A') { "Airbus " } else if v.starts_with('7') { "Boeing " } else { "" };
+        aircraft.push(HangarAircraft {
+            key: format!("reg:{reg}"),
+            registration: Some(reg),
+            model: Some(format!("{maker}{v} {}", tl.engine.trim()).trim().to_string()),
+            airline_icao: None,
+            airline_name: None,
+            flights: 0,
+            total_nm: 0.0,
+            total_time_s: 0,
+            avg_landing_fpm: None,
+            worst_landing_fpm: None,
+            hard_landings: 0,
+            health_pct: 100,
+            health: "good".into(),
+            last_flight_at: tl.last_seen_utc,
+            last_icao: None,
+            last_airport_name: None,
+            recent_landings: Vec::new(),
+        });
+    }
+
     let mut airports: Vec<HangarAirport> = airports
         .into_iter()
         .map(|(icao, (name, visits))| HangarAirport { icao, name, visits })

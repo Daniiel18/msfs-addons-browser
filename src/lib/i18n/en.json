@@ -1554,6 +1554,7 @@
   "hangar.health_general": "Overall condition",
   "hangar.health_hint": "Average remaining life of all parts. The colour is dispatch: green GO, amber with MEL items, red NO-GO.",
   "hangar.techlog_loading": "Reading the aircraft's Tech Log…",
+  "hangar.techlog_only": "TechLog only",
   "hangar.techlog_unavailable": "The aircraft's Tech Log couldn't be read.",
   "hangar.history.empty": "No maintenance work has been charged for this aircraft yet.",
   "hangar.report.maintenance": "Maintenance ({app})",
