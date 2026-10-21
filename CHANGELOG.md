@@ -5,6 +5,11 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.1.1]
+
+### Fixed
+- Clicking a maintenance alert (or "View maintenance" in "Ready to fly?") for an aircraft that is in Fenix or PMDG TechLog but was never flown with SimFleet now opens that aircraft's maintenance. These aircraft now appear in the Hangar fleet, marked "TechLog only", instead of the Hangar staying on the fleet overview.
+
 ## [8.1.0]
 
 ### Added
