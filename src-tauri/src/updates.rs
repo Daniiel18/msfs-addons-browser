@@ -295,6 +295,11 @@ pub async fn refresh_for_installed(
     //   · ICAOs → sólo `sceneryaddons` (catálogo de aeropuertos).
     //   · Keywords aircraft → todas las sources (los aviones se
     //     publican en ambos catálogos).
+    // (v8.3) aerohub sólo se usa en Explorar y en la búsqueda (decisión del
+    // usuario): no se le preguntan updates de lo instalado.
+    let sources: Vec<Arc<dyn Source>> =
+        sources.iter().filter(|s| s.id() != "aerohub").cloned().collect();
+    let sources = &sources[..];
     let mut tasks: Vec<(String, Arc<dyn Source>)> = Vec::new();
     for icao in &icaos {
         for source in sources {

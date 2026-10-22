@@ -253,7 +253,13 @@ pub fn run() {
             // la ventana en lugar de cerrar la app. El usuario la
             // recupera desde el tray. Sin el flag activado, el cierre
             // funciona normal (sale del proceso).
+            // (v8.3) SÓLO la ventana principal: antes cualquier cierre (las
+            // ventanas de descarga de hosters/liveries al terminar o al pulsar
+            // ✕) se convertía en "ocultar" y quedaban vivas, con su descarga.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     if state.minimize_to_tray.load(Ordering::Relaxed) {
                         let _ = window.hide();
@@ -273,6 +279,7 @@ pub fn run() {
             commands::downloads::pause_download,
             commands::downloads::resume_download,
             commands::downloads::clear_download,
+            commands::downloads::download_job_status,
             commands::install::community_folder,
             commands::install::install_archive,
             commands::install::forget_install,
@@ -432,6 +439,7 @@ pub fn run() {
             commands::cloud::folder_sync_clear,
             commands::drop::drop_inspect,
             commands::drop::drop_commit,
+            commands::drop::drop_save_external,
             commands::drop::drop_cancel,
             commands::drop::delete_dropped_archive,
             // (v3.6.0 Phase H) Scoring + Airlines
@@ -705,6 +713,9 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     let mut sources: Vec<Arc<dyn Source>> = vec![
         Arc::new(sources::sceneryaddons::SceneryAddonsSource::new(http.clone())),
         Arc::new(sources::simplaza::SimplazaSource::new(http.clone())),
+        // (v8.3) aerohub.st — en Explorar y en la búsqueda (no en el escáner
+        // de updates, ver `updates::refresh_for_installed`).
+        Arc::new(sources::aerohub::AerohubSource::new(http.clone())),
     ];
     // (v7.4.2) Skybound OCULTO: devuelve HTTP 530 (caído/retirado) desde el
     // 10/10. Fuera de la lista no sale en la UI ni lo consulta el escáner de

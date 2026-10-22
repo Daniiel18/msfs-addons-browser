@@ -45,7 +45,10 @@ pub async fn lock_info() -> Result<LockInfo, String> {
 
 #[tauri::command]
 pub async fn lock_verify_hello(
-    window: tauri::WebviewWindow,
+    // (v8.3) `Window` y no `WebviewWindow`: con flightsim.to abierto la ventana
+    // principal tiene DOS webviews y Tauri rechaza el comando ("current webview
+    // is not a WebviewWindow") → no había forma de desbloquear.
+    window: tauri::Window,
     message: String,
 ) -> Result<HelloOutcome, String> {
     // El diálogo se ancla a nuestra ventana (si no, en apps de escritorio
@@ -70,12 +73,12 @@ pub async fn lock_verify_password(password: String) -> Result<bool, String> {
 }
 
 #[cfg(windows)]
-fn window_handle(window: &tauri::WebviewWindow) -> isize {
+fn window_handle(window: &tauri::Window) -> isize {
     window.hwnd().map(|h| h.0 as isize).unwrap_or(0)
 }
 
 #[cfg(not(windows))]
-fn window_handle(_window: &tauri::WebviewWindow) -> isize {
+fn window_handle(_window: &tauri::Window) -> isize {
     0
 }
 

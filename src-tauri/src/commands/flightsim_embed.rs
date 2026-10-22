@@ -73,6 +73,9 @@ pub async fn fsto_embed_show(
     let _ = std::fs::create_dir_all(&dl_dir);
     let last_file_page: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let lfp_nav = last_file_page.clone();
+    // (v8.3) Descargas → jobs del panel de Descargas (la web no se bloquea).
+    let url_jobs: livery::ExternalJobs = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let url_jobs_dl = url_jobs.clone();
     let app_emit = app.clone();
     let app_nav = app.clone();
     let init = livery::flightsim_init_script(&livery::pref_language(&app).await);
@@ -105,7 +108,7 @@ pub async fn fsto_embed_show(
             let _ = wv.emit("fsto-embed://url", payload.url().to_string());
         })
         .on_download(move |webview, event| {
-            livery::handle_flightsim_download(&app_emit, &dl_dir, &last_file_page, &webview, event)
+            livery::handle_flightsim_download(&app_emit, &dl_dir, &last_file_page, &url_jobs_dl, &webview, event)
         });
     if let Some(dir) = livery::extensions_dir() {
         builder = builder.browser_extensions_enabled(true).extensions_path(dir);
@@ -127,6 +130,7 @@ pub async fn fsto_embed_show(
     {
         livery::install_web_guards(&wv, false);
         livery::install_download_progress(&wv);
+        livery::install_external_job_progress(&wv, app.clone(), url_jobs.clone());
     }
     tracing::info!(target: "livery", "flightsim.to embebido en Explore → {}", start);
     Ok(())

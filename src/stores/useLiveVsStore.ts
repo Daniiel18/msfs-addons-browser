@@ -5,8 +5,15 @@ import {
   type RealtimeChannel,
 } from "@supabase/supabase-js";
 import { useToastStore } from "./useToastStore";
+import { useSettingsStore } from "./useSettingsStore";
 import { t } from "../lib/i18n";
 import { supabaseTable, vsChannelPrefix } from "../lib/testEnv";
+import {
+  DEFAULT_VS_SUPABASE_URL,
+  DEFAULT_VS_SUPABASE_KEY,
+  normalizeSupabaseUrl,
+} from "../lib/liveVsConfig";
+import type { FlightLogEntry } from "../lib/types";
 
 /**
  * (v6 #3) Live VS — estado del modo competitivo Daniel vs Héctor sobre
@@ -50,6 +57,15 @@ export interface VsPos {
 export interface VsLanding {
   fpm: number;
   grade: string; // "butter" | "acceptable" | "hard"
+}
+
+/** (v8.3) Métricas del vuelo de un piloto para el duelo terminado. Cada
+ *  SimFleet sube las SUYAS (de su FlightBook) a `vs_results` cuando el vuelo
+ *  cierra, así el rival las ve aunque no coincidan online. */
+export interface VsMetrics {
+  maxAltFt: number | null;
+  maxGsKt: number | null;
+  distanceNm: number | null;
 }
 
 /** (v6.2.2) Avión REAL que cada piloto está volando en el sim (no el del OFP de
@@ -128,6 +144,9 @@ interface VsPersisted {
   // online ahora.
   self?: VsPilot | null;
   rival?: VsPilot | null;
+  // (v8.3) Métricas del rival leídas de `vs_results` (las propias salen del
+  // vuelo del FlightBook). Caché para ver el duelo sin conexión.
+  rivalMetrics?: VsMetrics | null;
 }
 
 const VS_STORE_PREFIX = "simfleet.vs.";
@@ -167,6 +186,28 @@ export function findVsSnapshot(
   origin: string,
   dest: string,
 ): VsPersisted | null {
+  return findVsSnapshotEntry(dateYmd, origin, dest)?.snapshot ?? null;
+}
+
+/** (v8.3) Igual que `findVsSnapshot` pero devuelve también el canal en el que
+ *  se encontró (para leer/guardar las métricas del rival de ese duelo). */
+export function findVsSnapshotEntry(
+  dateYmd: string,
+  origin: string,
+  dest: string,
+): { channel: string; snapshot: VsPersisted } | null {
+  for (const d of dateCandidates(dateYmd)) {
+    const channel = vsChannelKey(d, origin, dest);
+    const snap = loadPersisted(channel);
+    if (snap && (snap.self != null || snap.rival != null)) {
+      return { channel, snapshot: snap };
+    }
+  }
+  return null;
+}
+
+/** El día exacto y luego ±1 día (ver `findVsSnapshot`). */
+function dateCandidates(dateYmd: string): string[] {
   const base = dateYmd.slice(0, 10);
   const candidates = [base];
   const ms = Date.parse(base + "T00:00:00Z");
@@ -174,11 +215,157 @@ export function findVsSnapshot(
     candidates.push(new Date(ms - 86400000).toISOString().slice(0, 10));
     candidates.push(new Date(ms + 86400000).toISOString().slice(0, 10));
   }
-  for (const d of candidates) {
-    const snap = loadPersisted(vsChannelKey(d, origin, dest));
-    if (snap && (snap.self != null || snap.rival != null)) return snap;
+  return candidates;
+}
+
+/** (v8.3) Guarda en el snapshot del duelo las métricas del rival. */
+export function saveVsRivalMetrics(channel: string, metrics: VsMetrics) {
+  const snap = loadPersisted(channel);
+  if (!snap) return;
+  savePersisted(channel, { ...snap, rivalMetrics: metrics });
+}
+
+// (v8.3) Cliente Supabase SÓLO REST (sin realtime) para el histórico del Crew
+// VS: leer las métricas del rival de un duelo pasado y completar las propias.
+// Mismas credenciales que Live VS (Ajustes o las embebidas).
+let restClient: SupabaseClient | null = null;
+let restClientId = "";
+function getRestClient(): SupabaseClient | null {
+  try {
+    const s = useSettingsStore.getState().settings;
+    const url = normalizeSupabaseUrl(
+      (s.vsSupabaseUrl ?? "").trim() || DEFAULT_VS_SUPABASE_URL,
+    );
+    const key = (s.vsSupabaseKey ?? "").trim() || DEFAULT_VS_SUPABASE_KEY;
+    if (!url || !key) return null;
+    if (!restClient || restClientId !== `${url}|${key}`) {
+      restClient = createClient(url, key, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      restClientId = `${url}|${key}`;
+    }
+    return restClient;
+  } catch {
+    return null;
+  }
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function metricsFromRow(row: Record<string, unknown>): VsMetrics | null {
+  const m: VsMetrics = {
+    maxAltFt: numOrNull(row.max_alt_ft),
+    maxGsKt: numOrNull(row.max_gs_kt),
+    distanceNm: numOrNull(row.distance_nm),
+  };
+  return m.maxAltFt == null && m.maxGsKt == null && m.distanceNm == null ? null : m;
+}
+
+/** (v8.3) Métricas del rival en un duelo (`null` si aún no las subió o no hay
+ *  conexión). El rival es la fila de `rivalIdentity`, o la que no es mía. */
+export async function fetchVsRivalMetrics(
+  channel: string,
+  selfIdentity: string | null,
+  rivalIdentity: string | null,
+): Promise<VsMetrics | null> {
+  const c = getRestClient();
+  if (!c) return null;
+  try {
+    const { data, error } = await c
+      .from(supabaseTable("vs_results"))
+      .select("identity,max_alt_ft,max_gs_kt,distance_nm")
+      .eq("channel", channel);
+    if (error || !data) return null;
+    const rows = data as Array<Record<string, unknown>>;
+    const row = rows.find((r) =>
+      rivalIdentity ? r.identity === rivalIdentity : r.identity !== selfIdentity,
+    );
+    return row ? metricsFromRow(row) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Vuelo del FlightBook que corresponde a un duelo (misma ruta; el día exacto
+ *  primero y luego ±1). Sólo vuelos terminados con métricas. */
+function matchDuelEntry(
+  entries: FlightLogEntry[],
+  date: string,
+  origin: string,
+  dest: string,
+): FlightLogEntry | null {
+  const o = origin.toUpperCase();
+  const d = dest.toUpperCase();
+  for (const day of dateCandidates(date)) {
+    const hits = entries.filter(
+      (e) =>
+        e.endedAt != null &&
+        e.maxAltitudeFt != null &&
+        (e.originIcao ?? "").toUpperCase() === o &&
+        (e.destinationIcao ?? "").toUpperCase() === d &&
+        (e.startedAt ?? "").slice(0, 10) === day,
+    );
+    if (hits.length > 0) {
+      return hits.reduce((a, b) => ((a.endedAt ?? "") >= (b.endedAt ?? "") ? a : b));
+    }
   }
   return null;
+}
+
+let metricsSyncRunning = false;
+
+/** (v8.3) Completa en `vs_results` las métricas de MIS duelos que aún no las
+ *  tienen (altitud y velocidad máximas, distancia) con los datos del vuelo del
+ *  FlightBook. Sirve para los duelos viejos (una sola vez: una fila completada
+ *  ya no se vuelve a tocar) y para el duelo de hoy cuando el vuelo cierra.
+ *  Sólo actualiza filas que ya existen. Devuelve cuántas completó. */
+export async function syncVsMetrics(
+  identity: string,
+  entries: FlightLogEntry[],
+): Promise<number> {
+  if (metricsSyncRunning || !identity || entries.length === 0) return 0;
+  const c = getRestClient();
+  if (!c) return 0;
+  metricsSyncRunning = true;
+  let filled = 0;
+  try {
+    const table = supabaseTable("vs_results");
+    const { data, error } = await c
+      .from(table)
+      .select("channel")
+      .eq("identity", identity)
+      .is("max_alt_ft", null);
+    if (error || !data) return 0;
+    const prefix = vsChannelPrefix();
+    for (const row of data as Array<{ channel?: unknown }>) {
+      const channel = String(row.channel ?? "");
+      if (!channel.startsWith(prefix)) continue;
+      const m = /^(\d{4}-\d{2}-\d{2})-([a-z0-9]+)-([a-z0-9]+)$/.exec(
+        channel.slice(prefix.length),
+      );
+      if (!m) continue;
+      const entry = matchDuelEntry(entries, m[1], m[2], m[3]);
+      if (!entry) continue;
+      const { error: upErr } = await c
+        .from(table)
+        .update({
+          max_alt_ft: Math.round(entry.maxAltitudeFt ?? 0),
+          max_gs_kt:
+            entry.maxGroundSpeedKt != null ? Math.round(entry.maxGroundSpeedKt) : null,
+          distance_nm: entry.distanceNm != null ? Math.round(entry.distanceNm) : null,
+        })
+        .eq("channel", channel)
+        .eq("identity", identity);
+      if (!upErr) filled++;
+    }
+  } catch {
+    /* sin conexión / columnas ausentes → se reintenta en la próxima pasada */
+  } finally {
+    metricsSyncRunning = false;
+  }
+  return filled;
 }
 
 /** (v6.2.13) Regla de propiedad de callsign para la cuenta SimBrief COMPARTIDA:
@@ -247,6 +434,8 @@ export const useLiveVsStore = create<LiveVsState>((set, get) => {
       rivalAircraft: st.rivalAircraft,
       self: st.self,
       rival: st.rival,
+      // (v8.3) No pisar la caché de métricas del rival que guardó el histórico.
+      rivalMetrics: loadPersisted(currentChannelName)?.rivalMetrics ?? null,
     });
   };
 

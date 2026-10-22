@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
   Calendar,
@@ -7,10 +8,12 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Info,
   Plane,
   Sparkles,
   Tag,
   User,
+  X,
 } from "lucide-react";
 import type { Addon, CommunityPackage, DownloadMethod } from "../lib/types";
 import { api } from "../lib/tauri";
@@ -296,6 +299,12 @@ export function ResultCard({ addon }: Props) {
   // botón quedaría siempre vacío.
   const [showChangelog, setShowChangelog] = useState(false);
   const isSimplaza = addon.source === "simplaza";
+  // (v8.3) Notas de instalación de la ficha (aerohub).
+  const [showNotes, setShowNotes] = useState(false);
+  // (v8.3) aerohub trae variantes con nombre (2024/2020, liveries, partes…)
+  // → se listan todas; el resto de fuentes sigue mostrando las 3 primeras.
+  const menuMethods =
+    addon.source === "aerohub" ? addon.downloadMethods : addon.downloadMethods.slice(0, 3);
 
   // Cruza el catálogo con lo que el usuario tiene en Community.
   // Memoizamos: el array `packages` es referencialmente estable
@@ -335,6 +344,8 @@ export function ResultCard({ addon }: Props) {
       addonSimulator: addon.simulator,
       // (v7.1) Todos los métodos → si el torrent falla, reofrecemos mirrors.
       allMethods: addon.downloadMethods,
+      // (v8.3) Se muestran otra vez al guardar un instalador.
+      notes: addon.notes ?? null,
     });
   };
 
@@ -410,18 +421,33 @@ export function ResultCard({ addon }: Props) {
               {t("result.changelog")}
             </button>
           )}
+          {addon.notes && (
+            <button
+              onClick={() => setShowNotes(true)}
+              title={t("result.install_notes")}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-sf-muted transition-colors hover:bg-sf-raised hover:text-sf-text"
+            >
+              <Info className="h-3.5 w-3.5" />
+              {t("result.notes")}
+            </button>
+          )}
           {addon.downloadMethods.length === 0 ? (
             <span className="ml-auto text-xs text-sf-muted">
               {t("result.no_download_methods")}
             </span>
           ) : (
-            <DownloadMenu
-              methods={addon.downloadMethods.slice(0, 3)}
-              onPick={handleDownload}
-            />
+            <DownloadMenu methods={menuMethods} onPick={handleDownload} />
           )}
         </footer>
       </div>
+
+      {showNotes && addon.notes && (
+        <InstallNotesModal
+          title={addon.name}
+          notes={addon.notes}
+          onClose={() => setShowNotes(false)}
+        />
+      )}
 
       {showChangelog && (
         <ChangelogModal
@@ -433,6 +459,60 @@ export function ResultCard({ addon }: Props) {
         />
       )}
     </motion.article>
+  );
+}
+
+/** (v8.3) Notas de instalación de la ficha del addon (aerohub). */
+function InstallNotesModal({
+  title,
+  notes,
+  onClose,
+}: {
+  title: string;
+  notes: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Portal a <body>: la tarjeta es un motion.article (transform) y un
+  // `fixed` dentro quedaría atado a ella.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 px-4 py-10 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-full w-full max-w-lg flex-col rounded-2xl border border-sf-border bg-sf-bg shadow-2xl"
+      >
+        <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-sf-text">
+              <Info className="h-4 w-4 text-brand-300" />
+              {t("result.install_notes")}
+            </h2>
+            <p className="mt-0.5 truncate text-xs text-sf-muted">{title}</p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label={t("common.close")}
+            className="rounded-lg p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+        <p className="select-text overflow-y-auto whitespace-pre-line break-words px-5 py-4 text-[13px] leading-relaxed text-sf-text">
+          {notes}
+        </p>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -499,7 +579,7 @@ function DownloadMenu({
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full right-0 z-20 mb-1.5 w-60 overflow-hidden rounded-lg border border-sf-border bg-sf-surface py-1 shadow-xl shadow-black/40"
+          className="absolute bottom-full right-0 z-20 mb-1.5 w-72 overflow-hidden rounded-lg border border-sf-border bg-sf-surface py-1 shadow-xl shadow-black/40"
         >
           {methods.map((m, i) => (
             <button

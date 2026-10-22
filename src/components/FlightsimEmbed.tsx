@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import {
-  ArrowLeft,
-  ArrowRight,
-  ExternalLink,
-  Globe2,
-  Home,
-  Loader2,
-  RotateCw,
-} from "lucide-react";
+import { create } from "zustand";
+import { Globe2, Loader2, RotateCw } from "lucide-react";
 import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
 
@@ -25,23 +18,27 @@ import { t } from "../lib/i18n";
 const OVERLAY_SELECTOR = ".fixed.inset-0, [data-sf-overlay]";
 const HOME = "https://flightsim.to/";
 
+/** (v8.3) ¿El webview de flightsim.to está a la vista? Mientras lo está, tapa
+ *  cualquier HTML que caiga encima (p.ej. los tooltips del menú lateral, que
+ *  entonces usan el tooltip nativo de Windows). */
+export const useFstoEmbedStore = create<{ visible: boolean; setVisible: (v: boolean) => void }>(
+  (set) => ({ visible: false, setVisible: (visible) => set({ visible }) }),
+);
+
 export function FlightsimEmbed() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [ready, setReady] = useState(false);
-  const [url, setUrl] = useState(HOME);
   // Se incrementa cuando el webview se cierra (botón "Cancelar" del overlay
   // de descarga) para volver a crearlo.
   const [epoch, setEpoch] = useState(0);
 
   useEffect(() => {
     if (!isTauri) return;
-    const offUrl = listen<string>("fsto-embed://url", (e) => setUrl(e.payload));
     const offClosed = listen("fsto-embed://closed", () => {
       setReady(false);
       setEpoch((n) => n + 1);
     });
     return () => {
-      void offUrl.then((f) => f());
       void offClosed.then((f) => f());
     };
   }, []);
@@ -62,6 +59,7 @@ export function FlightsimEmbed() {
         if (covered || r.width < 40 || r.height < 40) {
           if (visible) {
             visible = false;
+            useFstoEmbedStore.getState().setVisible(false);
             void api.fstoEmbedHide();
           }
           return;
@@ -75,12 +73,14 @@ export function FlightsimEmbed() {
         const key = `${b.x},${b.y},${b.width},${b.height}`;
         if (!visible) {
           visible = true;
+          useFstoEmbedStore.getState().setVisible(true);
           last = key;
           api
             .fstoEmbedShow(b)
             .then(() => alive && setReady(true))
             .catch(() => {
               visible = false;
+              useFstoEmbedStore.getState().setVisible(false);
             });
         } else if (key !== last) {
           last = key;
@@ -105,38 +105,13 @@ export function FlightsimEmbed() {
       ro.disconnect();
       mo.disconnect();
       window.removeEventListener("resize", sync);
+      useFstoEmbedStore.getState().setVisible(false);
       void api.fstoEmbedHide();
     };
   }, [epoch]);
 
-  const nav = (action: string) => void api.fstoEmbedNav(action);
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-sf-border px-2">
-        <ToolbarButton label={t("fsto.back")} onClick={() => nav("back")}>
-          <ArrowLeft className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton label={t("fsto.forward")} onClick={() => nav("forward")}>
-          <ArrowRight className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton label={t("fsto.reload")} onClick={() => nav("reload")}>
-          <RotateCw className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton label={t("fsto.home")} onClick={() => nav("home")}>
-          <Home className="h-4 w-4" />
-        </ToolbarButton>
-        <div className="ml-1 flex min-w-0 flex-1 items-center gap-1.5 rounded-md bg-sf-bg/60 px-2.5 py-1 text-xs text-sf-muted">
-          <Globe2 className="h-3.5 w-3.5 shrink-0 text-sky-400" />
-          <span className="truncate font-mono">{url}</span>
-        </div>
-        <ToolbarButton
-          label={t("fsto.open_window")}
-          onClick={() => void api.openLiveryBrowser(url)}
-        >
-          <ExternalLink className="h-4 w-4" />
-        </ToolbarButton>
-      </div>
       <div ref={hostRef} className="relative min-h-0 flex-1">
         {isTauri ? (
           !ready && (
@@ -164,23 +139,18 @@ export function FlightsimEmbed() {
   );
 }
 
-function ToolbarButton({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
+/** (v8.3) Único control de flightsim.to: recargar. Va en la esquina de la
+ *  cabecera de Explorar porque un botón HTML encima del hueco quedaría tapado
+ *  por el webview nativo. */
+export function FlightsimReloadButton() {
   return (
     <button
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sf-muted transition-colors hover:bg-sf-raised hover:text-sf-text"
+      onClick={() => void api.fstoEmbedNav("reload")}
+      title={t("fsto.reload")}
+      aria-label={t("fsto.reload")}
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-sf-border bg-sf-surface text-sf-muted transition-colors hover:border-brand-500/40 hover:text-sf-text"
     >
-      {children}
+      <RotateCw className="h-4 w-4" />
     </button>
   );
 }

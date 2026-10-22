@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crate::community;
-use crate::drop_install::{self, DropCommitReport, DropInspection};
+use crate::drop_install::{self, DropCommitReport, DropInspection, SavedExternal};
 use crate::logger::CmdTimer;
 use crate::{cmd_log, AppState};
 
@@ -22,6 +22,33 @@ pub async fn drop_inspect(
     let sessions: &drop_install::DropSessions = &state.drop_sessions;
     // `inspect` es sync (extrae a tempdir); lo corremos inline.
     drop_install::inspect(&path, password.as_deref(), sessions).map_err(|e| e.to_string())
+}
+
+/// (v8.3) Guarda un item `external_content` / `external_rest` (apps,
+/// instaladores, navdata, lo que no va a MSFS) en la carpeta que eligió el
+/// usuario. Extraer/copiar puede tardar con archivos grandes → hilo aparte.
+/// La sesión sigue viva (el front la cancela o commitea lo demás después).
+#[tauri::command]
+pub async fn drop_save_external(
+    session_id: String,
+    source_path: String,
+    dest_folder: String,
+    name: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<SavedExternal, String> {
+    let _t = CmdTimer::start("drop_save_external");
+    cmd_log!("drop_save_external", "session={} dest={}", session_id, dest_folder);
+    let job = drop_install::external_job(&session_id, &source_path, &state.drop_sessions)
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        drop_install::save_external(&job, &PathBuf::from(dest_folder), name.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| {
+        tracing::error!(target: "drop", "drop_save_external falló: {e:#}");
+        e.to_string()
+    })
 }
 
 #[tauri::command]
@@ -159,6 +186,7 @@ pub async fn delete_dropped_archive(archive_path: String) -> Result<(), String> 
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 tracing::info!(target: "drop", "archivo original borrado: {}", archive_path);
+                remove_hoster_job_dir(&path);
                 return Ok(());
             }
             Err(e) => {
@@ -177,4 +205,48 @@ pub async fn delete_dropped_archive(archive_path: String) -> Result<(), String> 
     );
     tracing::warn!(target: "drop", "{}", msg);
     Err(msg)
+}
+
+/// (v8.3) Si el archivo era de una descarga de hoster (`…\simfleet-mirror-dl\
+/// hoster-dl-<job>\archivo`), se borra también su carpeta: puede tener las
+/// demás partes de un RAR multivolumen. Sólo esa forma exacta de ruta — nunca
+/// una carpeta del usuario.
+fn remove_hoster_job_dir(file: &std::path::Path) {
+    let Some(dir) = file.parent() else { return };
+    let is_job_dir = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("hoster-dl-"));
+    let in_mirror = dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "simfleet-mirror-dl");
+    if is_job_dir && in_mirror {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => tracing::info!(target: "drop", "carpeta de la descarga borrada: {}", dir.display()),
+            Err(e) => tracing::warn!(target: "drop", "no se pudo borrar {}: {e}", dir.display()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_hoster_job_dir;
+
+    #[test]
+    fn only_the_hoster_job_folder_is_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = tmp.path().join("simfleet-mirror-dl").join("hoster-dl-abc");
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(job.join("simfleet-addon.part2.rar"), b"x").unwrap();
+        remove_hoster_job_dir(&job.join("simfleet-addon.part1.rar"));
+        assert!(!job.exists(), "carpeta del job (con las otras partes) borrada");
+
+        // Una carpeta del usuario con el mismo nombre de archivo: intacta.
+        let user = tmp.path().join("Downloads").join("hoster-dl-abc");
+        std::fs::create_dir_all(&user).unwrap();
+        remove_hoster_job_dir(&user.join("addon.zip"));
+        assert!(user.exists());
+    }
 }

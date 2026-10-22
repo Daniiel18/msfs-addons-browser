@@ -1,3 +1,4 @@
+pub mod aerohub;
 pub mod sceneryaddons;
 pub mod simplaza;
 pub mod skybound;
@@ -27,6 +28,10 @@ pub struct Addon {
     /// la fuente. ISO-8601 cuando se pudo parsear; `None` cuando el
     /// elemento no estaba o la atribut`datetime` faltaba.
     pub released_at: Option<String>,
+    /// (v8.3) Notas de instalación de la ficha (aerohub: "Run Setup.exe",
+    /// "pega el .zip en …"). `None` en las fuentes que no las tienen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

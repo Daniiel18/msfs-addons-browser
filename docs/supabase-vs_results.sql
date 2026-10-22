@@ -38,3 +38,10 @@ create policy "vs_results anon insert" on public.vs_results
   for insert with check (true);
 create policy "vs_results anon update" on public.vs_results
   for update using (true) with check (true);
+
+-- (v8.3) Métricas del vuelo para el Crew VS terminado (altitud y velocidad
+-- máximas, distancia). Opcionales: las versiones viejas de la app no las mandan.
+alter table public.vs_results
+  add column if not exists max_alt_ft  integer,
+  add column if not exists max_gs_kt   integer,
+  add column if not exists distance_nm integer;

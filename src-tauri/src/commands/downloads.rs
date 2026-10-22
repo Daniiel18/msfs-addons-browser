@@ -81,3 +81,29 @@ pub async fn clear_download(id: String, state: tauri::State<'_, AppState>) -> Re
     state.downloads.clear(&id).await;
     Ok(())
 }
+
+/// (v8.3) El frontend cuenta qué pasa con una descarga ya bajada mientras la
+/// procesa (extraer → listo para el usuario → instalado / guardado / error),
+/// para verlo en el panel de Descargas. `key` es la ventana de hoster
+/// (`hoster-dl-<job>`) o el id del job (descargas de flightsim.to).
+#[tauri::command]
+pub async fn download_job_status(
+    key: String,
+    status: String,
+    message: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::download::manager::HosterStatus;
+    let id = key.strip_prefix("hoster-dl-").unwrap_or(&key).to_string();
+    let st = match status.as_str() {
+        "processing" => HosterStatus::Processing,
+        "ready" => HosterStatus::Ready,
+        "installed" => HosterStatus::Installed,
+        "saved" => HosterStatus::Saved,
+        "failed" => HosterStatus::Failed(message.unwrap_or_default()),
+        "cancelled" => HosterStatus::Cancelled,
+        other => return Err(format!("estado desconocido: {other}")),
+    };
+    state.downloads.hoster_status(&id, st).await;
+    Ok(())
+}

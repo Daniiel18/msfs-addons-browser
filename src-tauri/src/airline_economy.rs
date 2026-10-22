@@ -662,8 +662,22 @@ fn receipts_dir() -> Option<PathBuf> {
 
 static FILE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^(\d{8}T\d{6}Z)_([A-Za-z0-9]+)_(.+)$").unwrap());
-static TOTAL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)total\s*\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)").unwrap());
+/// (v8.3) Equivalencia en USD que GSX añade al total en moneda local
+/// ("C$22.05 ~$ 15.54").
+static USD_APPROX_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"~\s*\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)").unwrap());
+/// Total ya en USD ("$1,234.56" / "US$ 1,234.56"), sólo al principio: "C$22"
+/// es de otra moneda.
+static USD_PLAIN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(?:US)?\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)").unwrap());
+/// Línea "Total …" del recibo HTML (no "Subtotal": `\b`).
+static HTML_TOTAL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\btotal\b\s*([^\n<]{0,80})").unwrap());
+static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<style.*?</style>|<[^>]+>").unwrap());
+
+/// Aeropuerto que GSX pone cuando no lo conoce: el recibo se casa por
+/// matrícula + hora.
+const UNKNOWN_AIRPORT: &str = "UNKWN";
 
 /// Normaliza una matrícula para comparar ("B-222V" / "b222v" → "B222V").
 pub fn normalize_reg(reg: &str) -> String {
@@ -673,14 +687,37 @@ pub fn normalize_reg(reg: &str) -> String {
         .to_ascii_uppercase()
 }
 
-fn parse_total(html: &str) -> Option<f64> {
-    let caps = TOTAL_RE.captures(html)?;
-    let raw = caps.get(1)?.as_str().replace(',', "");
-    raw.parse::<f64>().ok()
+/// (v8.3) Importe en USD del total de un recibo de GSX. GSX factura en la
+/// moneda del aeropuerto y añade la equivalencia en dólares ("C$22.05 ~$
+/// 15.54", "CN¥1,234 ~$ 170.10"); en EE. UU. el total ya es "$1,234.56".
+fn usd_from_total(total: &str) -> Option<f64> {
+    let caps = USD_APPROX_RE
+        .captures(total)
+        .or_else(|| USD_PLAIN_RE.captures(total))?;
+    caps.get(1)?.as_str().replace(',', "").parse::<f64>().ok()
 }
 
-/// Lee y parsea todos los recibos de GSX (Fuel/Catering/Handling). Tolerante:
-/// si la carpeta no existe o un archivo no parsea, simplemente se omite.
+/// Total del recibo `.json` (formato actual de GSX, campo `total`).
+fn parse_total_json(json: &str) -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    usd_from_total(v.get("total")?.as_str()?)
+}
+
+/// Total del recibo `.html` (recibos viejos sin `.json`). Antes se buscaba
+/// "total $" sin más: tomaba el SUBTOTAL (sin tasas) y no entendía los
+/// totales en moneda local.
+fn parse_total_html(html: &str) -> Option<f64> {
+    let text = TAG_RE.replace_all(html, "\n").replace("&nbsp;", " ");
+    HTML_TOTAL_RE
+        .captures_iter(&text)
+        .filter_map(|c| usd_from_total(c.get(1)?.as_str()))
+        .last()
+}
+
+/// Lee y parsea todos los recibos de GSX (Fuel/Catering/Handling y, v8.3,
+/// PassengerBus → handling). Cada recibo viene como `.json` + `.html` con el
+/// mismo nombre: manda el `.json`; el `.html` sólo si no hay `.json`.
+/// Tolerante: si la carpeta no existe o un archivo no parsea, se omite.
 fn scan_receipts() -> Vec<GsxReceipt> {
     let Some(base) = receipts_dir() else {
         return Vec::new();
@@ -690,25 +727,28 @@ fn scan_receipts() -> Vec<GsxReceipt> {
         ("Fuel", GsxKind::Fuel),
         ("Catering", GsxKind::Catering),
         ("Handling", GsxKind::Handling),
+        // El bus de pasajeros es un servicio de tierra: va con el handling.
+        ("PassengerBus", GsxKind::Handling),
     ] {
         let dir = base.join(sub);
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entry in rd.flatten() {
-            let path = entry.path();
-            let is_html = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("html"))
-                .unwrap_or(false);
-            if !is_html {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Some(caps) = FILE_RE.captures(stem) else {
+        let mut stems: Vec<String> = rd
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+                if ext != "json" && ext != "html" {
+                    return None;
+                }
+                p.file_stem()?.to_str().map(String::from)
+            })
+            .collect();
+        stems.sort();
+        stems.dedup();
+        for stem in stems {
+            let Some(caps) = FILE_RE.captures(&stem) else {
                 continue;
             };
             let ts_raw = caps.get(1).unwrap().as_str();
@@ -718,10 +758,16 @@ fn scan_receipts() -> Vec<GsxReceipt> {
                 continue;
             };
             let ts = naive.and_utc();
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(total) = parse_total(&content) else {
+            let total = std::fs::read_to_string(dir.join(format!("{stem}.json")))
+                .ok()
+                .and_then(|j| parse_total_json(&j))
+                .or_else(|| {
+                    std::fs::read_to_string(dir.join(format!("{stem}.html")))
+                        .ok()
+                        .and_then(|h| parse_total_html(&h))
+                });
+            let Some(total) = total else {
+                tracing::debug!(target: "economy", "recibo GSX sin total legible: {sub}/{stem}");
                 continue;
             };
             out.push(GsxReceipt { kind, ts, airport, reg, total });
@@ -779,9 +825,15 @@ fn gsx_for_flight(receipts: &[GsxReceipt], e: &FlightLogEntry) -> GsxCosts {
         // (que es la salida del tramo SIGUIENTE de la misma aeronave) se cargaba
         // por duplicado a este vuelo y al siguiente. Catering/handling siguen
         // casando por origen o destino.
-        let airport_ok = match r.kind {
-            GsxKind::Fuel => origin_up.as_deref() == Some(r.airport.as_str()),
-            _ => airports.is_empty() || airports.contains(&r.airport),
+        // (v8.3) Aeropuerto desconocido para GSX ("UNKWN"): se casa por
+        // matrícula + ventana de tiempo, que entonces es obligatoria.
+        let airport_ok = if r.airport == UNKNOWN_AIRPORT {
+            window.is_some()
+        } else {
+            match r.kind {
+                GsxKind::Fuel => origin_up.as_deref() == Some(r.airport.as_str()),
+                _ => airports.is_empty() || airports.contains(&r.airport),
+            }
         };
         if !airport_ok {
             continue;
@@ -1752,4 +1804,36 @@ pub async fn set_policy(pool: &SqlitePool, key: &str, p: &AirlinePolicy) -> Resu
     .await?;
     recompute(pool).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod gsx_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn usd_comes_from_the_gsx_dollar_equivalent() {
+        assert_eq!(usd_from_total("C$22.05 ~$ 15.54"), Some(15.54));
+        assert_eq!(usd_from_total("CN¥43,210.00 ~$ 5,987.20"), Some(5987.20));
+        assert_eq!(usd_from_total("$6,000.00"), Some(6000.0));
+        assert_eq!(usd_from_total("US$ 99.9"), Some(99.9));
+        // Otra moneda sin equivalencia: no se inventa (C$ no son dólares).
+        assert_eq!(usd_from_total("C$22.05"), None);
+    }
+
+    #[test]
+    fn json_receipt_total() {
+        let j = r#"{"title":"FUEL DELIVERY RECEIPT","subtotal":"C$21.00 ~$ 14.80","total":"C$22.05 ~$ 15.54"}"#;
+        assert_eq!(parse_total_json(j), Some(15.54));
+        assert_eq!(parse_total_json("{}"), None);
+    }
+
+    #[test]
+    fn html_receipt_takes_the_total_not_the_subtotal() {
+        let html = "<tr><td>Subtotal</td><td>$1,000.00</td></tr>\
+                    <tr><td>Tax 8%</td><td>$80.00</td></tr>\
+                    <tr><td><b>Total</b></td><td>$1,080.00</td></tr>";
+        assert_eq!(parse_total_html(html), Some(1080.0));
+        let local = "<td>Subtotal</td><td>C$21.00 ~$ 14.80</td><td>Total</td><td>C$22.05 ~$ 15.54</td>";
+        assert_eq!(parse_total_html(local), Some(15.54));
+    }
 }

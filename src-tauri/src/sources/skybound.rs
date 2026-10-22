@@ -613,6 +613,7 @@ impl SkyboundSource {
             },
             image_url,
             released_at,
+            notes: None,
         })
     }
 

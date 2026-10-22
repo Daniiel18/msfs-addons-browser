@@ -46,3 +46,9 @@ alter table public.pilot_avatars_test enable row level security;
 drop policy if exists "pilot_avatars_test anon all" on public.pilot_avatars_test;
 create policy "pilot_avatars_test anon all" on public.pilot_avatars_test
   for all using (true) with check (true);
+
+-- (v8.3) Métricas del vuelo para el Crew VS terminado (igual que vs_results).
+alter table public.vs_results_test
+  add column if not exists max_alt_ft  integer,
+  add column if not exists max_gs_kt   integer,
+  add column if not exists distance_nm integer;

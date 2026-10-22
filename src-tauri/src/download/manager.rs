@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sqlx::SqlitePool;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +26,27 @@ const PERSIST_PROGRESS_THROTTLE_SECS: u64 = 3;
 
 /// Tauri event name the manager emits on every job state change.
 pub const EVENT_JOB_UPDATE: &str = "download://update";
+
+/// (v8.3) Estado de una descarga de la ventana de hoster para el panel de
+/// Descargas: la ventana se OCULTA en cuanto empieza a bajar, así que el
+/// progreso y el resultado se ven aquí.
+pub enum HosterStatus {
+    /// Esperando el clic del usuario en la ventana ("Parte 2 de 2" si aplica).
+    Waiting(Option<String>),
+    /// Bytes bajando (`total` 0 si el servidor no da tamaño).
+    Progress { done: u64, total: u64, bps: u64, part: Option<String> },
+    /// Bajado: el instalador de la ventana principal lo procesa.
+    Downloaded,
+    Failed(String),
+    Cancelled,
+    /// (v8.3) Lo cuenta el frontend al procesar lo bajado: extrayendo…
+    Processing,
+    /// … listo, esperando al usuario (modal de instalación / elegir carpeta) …
+    Ready,
+    /// … y el final: instalado en Community o guardado en una carpeta.
+    Installed,
+    Saved,
+}
 
 #[derive(Clone)]
 pub struct DownloadManager {
@@ -207,6 +228,18 @@ impl DownloadManager {
             }
         })
         .await;
+        // (v8.3) Descarga del navegador embebido: cerrar su ventana (oculta
+        // mientras baja) la corta, también la de reqwest, que vigila la ventana.
+        // DESPUÉS de marcar "cancelado": el corte llega como fallo y un job
+        // cancelado ya no cambia (no sale "falló la descarga").
+        let label = format!("hoster-dl-{id}");
+        if let Some(w) = self.inner.app.get_webview_window(&label) {
+            let _ = w.close();
+            let _ = std::fs::remove_dir_all(crate::commands::livery::hoster_dl_dir(&label));
+        }
+        // (v8.3) Descarga de la web de flightsim.to: la corta su manejador de
+        // progreso en cuanto ve la petición.
+        crate::commands::livery::request_external_cancel(id);
         Ok(())
     }
 
@@ -372,6 +405,108 @@ impl DownloadManager {
         let _ = self.inner.app.emit(EVENT_JOB_UPDATE, &job);
     }
 
+    /// (v8.3) Refleja en el job el estado de su ventana de hoster (ver
+    /// `HosterStatus`). Un job cancelado ya no cambia.
+    pub async fn hoster_status(&self, id: &str, status: HosterStatus) {
+        self.update(id, |j| {
+            if j.phase == DownloadPhase::Cancelled {
+                return;
+            }
+            match status {
+                HosterStatus::Waiting(part) => {
+                    j.phase = DownloadPhase::Resolving;
+                    j.bytes_done = 0;
+                    j.bytes_total = 0;
+                    j.speed_bps = 0;
+                    j.eta_seconds = None;
+                    j.error = None;
+                    j.message = Some(match part {
+                        Some(p) => crate::tr!("manager.partWaiting", part = p),
+                        None => crate::tr!("manager.waitingInWindow"),
+                    });
+                }
+                HosterStatus::Progress { done, total, bps, part } => {
+                    j.phase = DownloadPhase::Downloading;
+                    j.bytes_done = done;
+                    j.bytes_total = total;
+                    j.speed_bps = bps;
+                    j.eta_seconds = (total > done && bps > 0).then(|| (total - done) / bps);
+                    j.message = part;
+                }
+                HosterStatus::Downloaded => {
+                    j.phase = DownloadPhase::Completed;
+                    if j.bytes_total > 0 {
+                        j.bytes_done = j.bytes_total;
+                    }
+                    j.speed_bps = 0;
+                    j.eta_seconds = None;
+                    j.message = Some(crate::tr!("manager.downloadedProcessing"));
+                }
+                HosterStatus::Failed(msg) => {
+                    j.phase = DownloadPhase::Error;
+                    j.error = Some(msg);
+                    j.message = None;
+                }
+                HosterStatus::Cancelled => {
+                    j.phase = DownloadPhase::Cancelled;
+                    j.error = None;
+                    j.message = Some(crate::tr!("manager.cancelledByUser"));
+                }
+                HosterStatus::Processing => {
+                    j.phase = DownloadPhase::Installing;
+                    j.speed_bps = 0;
+                    j.eta_seconds = None;
+                    j.message = Some(crate::tr!("manager.processing"));
+                }
+                HosterStatus::Ready => {
+                    j.phase = DownloadPhase::Installing;
+                    j.message = Some(crate::tr!("manager.readyForYou"));
+                }
+                HosterStatus::Installed => {
+                    j.phase = DownloadPhase::Completed;
+                    j.message = Some(crate::tr!("manager.installedDone"));
+                }
+                HosterStatus::Saved => {
+                    j.phase = DownloadPhase::Completed;
+                    j.message = Some(crate::tr!("manager.savedDone"));
+                }
+            }
+        })
+        .await;
+    }
+
+    /// (v8.3) Job para una descarga que NO arrancó este gestor (la web de
+    /// flightsim.to embebida / la ventana de liveries): así también se ve en
+    /// el panel de Descargas, con su progreso, y se puede cancelar.
+    pub async fn register_external(
+        &self,
+        id: String,
+        title: String,
+        source: String,
+        method_name: String,
+        url: String,
+    ) {
+        let job = DownloadJob {
+            id,
+            addon_id: String::new(),
+            addon_title: title,
+            source,
+            method_kind: "direct".to_string(),
+            method_name,
+            url,
+            phase: DownloadPhase::Downloading,
+            bytes_total: 0,
+            bytes_done: 0,
+            speed_bps: 0,
+            eta_seconds: None,
+            message: None,
+            error: None,
+            install_path: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        self.set_job(job).await;
+    }
+
     async fn update<F>(&self, id: &str, mutate: F)
     where
         F: FnOnce(&mut DownloadJob),
@@ -473,13 +608,9 @@ impl DownloadManager {
         );
 
         match result {
-            Ok(()) => {
-                self.update(id, |j| {
-                    j.phase = DownloadPhase::Completed;
-                    j.message = Some(crate::tr!("manager.downloadOpened"));
-                })
-                .await;
-            }
+            // (v8.3) La ventana está abierta esperando al usuario; el progreso
+            // y el final los va contando la ventana (`hoster_status`).
+            Ok(()) => self.hoster_status(id, HosterStatus::Waiting(None)).await,
             Err(e) => {
                 self.update(id, |j| {
                     j.phase = DownloadPhase::Error;

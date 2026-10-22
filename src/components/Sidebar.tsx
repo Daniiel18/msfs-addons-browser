@@ -19,6 +19,7 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { cn } from "../lib/cn";
 import { t } from "../lib/i18n";
 import { BrandMark } from "./BrandMark";
+import { useFstoEmbedStore } from "./FlightsimEmbed";
 
 /**
  * (Rediseño F1) Menú lateral principal — reemplaza a las pestañas
@@ -190,6 +191,15 @@ export function Sidebar({ safeMode }: SidebarProps) {
 
   const showTip = (el: HTMLElement, label: string) => {
     if (expanded) return;
+    // (v8.3) Con flightsim.to a la vista, su webview nativo queda SIEMPRE por
+    // encima del HTML y taparía este tooltip → se usa el tooltip nativo de
+    // Windows (`title`), que sí se dibuja encima. En el resto, el de siempre.
+    if (useFstoEmbedStore.getState().visible) {
+      el.title = label;
+      setTip(null);
+      return;
+    }
+    el.removeAttribute("title");
     const r = el.getBoundingClientRect();
     setTip({ label, top: r.top + r.height / 2, left: r.right + 10 });
   };

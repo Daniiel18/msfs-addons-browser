@@ -380,6 +380,7 @@ impl Source for SimplazaSource {
                     page_url,
                     image_url,
                     released_at,
+                    notes: None,
                 }
             },
         ))
@@ -447,6 +448,7 @@ impl Source for SimplazaSource {
                     page_url,
                     image_url,
                     released_at,
+                    notes: None,
                 }
             },
         ))

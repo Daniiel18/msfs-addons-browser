@@ -14,7 +14,7 @@ import { useAiracUpdateStore } from "./stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "./stores/useGsxLocalStore";
 import { useFlightsimUpdateStore } from "./stores/useFlightsimUpdateStore";
 import { SourceToggle } from "./components/SourceToggle";
-import { FlightsimEmbed } from "./components/FlightsimEmbed";
+import { FlightsimEmbed, FlightsimReloadButton } from "./components/FlightsimEmbed";
 import { initTechLogSync } from "./stores/useTechLogStore";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
@@ -330,6 +330,9 @@ export default function App() {
   const helloAutoTriedRef = useRef(false);
   useEffect(() => {
     if (!isTauri) return;
+    // (v8.3) Si la página se recargó con flightsim.to abierto, su webview
+    // nativo sigue vivo y quedaría flotando sobre el bloqueo: fuera.
+    void api.fstoEmbedHide().catch(() => {});
     api
       .lockInfo()
       .then(setLockInfo)
@@ -1062,6 +1065,8 @@ export default function App() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {/* (v8.3) flightsim.to sin barra propia: sólo recargar. */}
+                    {fstoMode && <FlightsimReloadButton />}
                     {/* (19/10) flightsim.to entra al switch como 3ª opción
                         (antes era un botón aparte que abría otra ventana). */}
                     <SourceToggle
@@ -1093,7 +1098,9 @@ export default function App() {
                   placeholder={
                     activeSourceId === "simplaza"
                       ? t("search.placeholder.simplaza")
-                      : t("search.placeholder.scenery")
+                      : activeSourceId === "aerohub"
+                        ? t("search.placeholder.aerohub")
+                        : t("search.placeholder.scenery")
                   }
                 />
                 {activeSourceId === "sceneryaddons" && (

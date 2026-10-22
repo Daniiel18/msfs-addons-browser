@@ -7,6 +7,7 @@ import { useFlightLogStore } from "../stores/useFlightLogStore";
 import {
   useLiveVsStore,
   vsCallsignOwner,
+  syncVsMetrics,
   type VsOfp,
 } from "../stores/useLiveVsStore";
 import {
@@ -34,6 +35,7 @@ export function LiveVsManager() {
   const [identity, setIdentity] = useState<{ identity: string; name: string } | null>(
     null,
   );
+  const entries = useFlightLogStore((s) => s.entries);
 
   // Identidad del piloto (daniel/hector) una vez.
   useEffect(() => {
@@ -126,6 +128,18 @@ export function LiveVsManager() {
     }, 1500);
     return () => clearInterval(interval);
   }, [broadcastPos, setSelfAircraft]);
+
+  // (v8.3) Completa en Supabase las métricas (altitud/velocidad máx, distancia)
+  // de mis duelos que aún no las tienen: los viejos al abrir la app y el de hoy
+  // cuando el vuelo cierra (el FlightBook recarga sus vuelos). Con espera para
+  // no consultar en cada recarga seguida.
+  useEffect(() => {
+    if (!identity) return;
+    const timer = setTimeout(() => {
+      void syncVsMetrics(identity.identity, useFlightLogStore.getState().entries);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [identity?.identity, entries]);
 
   // (v6.1 #34) Al tocar pista el watcher emite `landing://osd` con el FPM/grado.
   // Lo retransmitimos al rival para la comparativa final del duelo.

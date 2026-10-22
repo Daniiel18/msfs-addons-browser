@@ -1,27 +1,31 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  AlertCircle,
-  CheckCircle2,
-  FileDown,
-  Bell,
-  KeyRound,
-  Loader2,
-  Upload,
-} from "lucide-react";
+import { KeyRound, Upload } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { DropCommitReport, DropInspection } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
 import { playLandingSound } from "../lib/landingSound";
-import { useDownloadsStore } from "../stores/useDownloadsStore";
+import { useDownloadsStore, downloadMetaForWindow } from "../stores/useDownloadsStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
 import { DropSelectModal, DeleteConfirm, isEmbeddedDownload } from "./DropSelectModal";
+import { ExternalSavedDialog } from "./ExternalSavedDialog";
 import { t } from "../lib/i18n";
 import { useInstallQueueStore } from "../stores/useInstallQueueStore";
+import { formatDropError, isExternalKind, saveExternalItem } from "../lib/externalSave";
+import { nativeNotify } from "../lib/nativeNotify";
+import {
+  discardInternalDownload,
+  hasJobKey,
+  jobStatus,
+  rememberJobKey,
+} from "../lib/downloadJobs";
+
+/** (v8.3) Nombre del addon + notas de una descarga del catálogo. */
+type DownloadMeta = { displayName?: string; notes: string | null };
 
 /**
  * (v2.2.0) Overlay de Drag & Drop universal con modal multi-archivo.
@@ -52,24 +56,6 @@ async function notifyDownloadReady() {
   } catch {
     /* ignore */
   }
-}
-
-/** (v7) Traduce sentinelas de error del backend a mensajes legibles.
- *  `NO_SPACE:<needed_bytes>:<free_bytes>` → aviso claro con GB (el addon no
- *  cabía al descomprimirse). El resto de errores pasan tal cual. */
-function formatDropError(err: string): string {
-  const m = err.match(/NO_SPACE:(\d+):(\d+)/);
-  if (m) {
-    const gb = (b: string) => (Number(b) / 1073741824).toFixed(1);
-    const needed = Number(m[1]);
-    // `needed=0` → no se pudo estimar el tamaño (archivo bloqueado/cifrado que
-    // no lista); mensaje genérico sin cifra falsa. Si sí se estimó, la damos.
-    if (needed > 0) {
-      return t("drop.no_space", { needed: gb(m[1]), free: gb(m[2]) });
-    }
-    return t("drop.no_space_generic", { free: gb(m[2]) });
-  }
-  return err;
 }
 
 /** (v6.2.74) Ruteo 2020/2024 de una descarga del embebido según la
@@ -155,6 +141,65 @@ export function DragDropOverlay() {
   // a medias ni se solapa con el de contraseña en un drop masivo con
   // varios cifrados.
   const deleteAccumRef = useRef<string[]>([]);
+  // (v8.3) Nombre/notas de la descarga por ruta del archivo — sobreviven al
+  // reintento con contraseña (que vuelve a llamar processDropBatch).
+  const metaByPathRef = useRef(new Map<string, DownloadMeta>());
+
+  // (v8.3) Avisos UNIFICADOS: cada archivo se cuenta con los avisos normales
+  // (los de "Descarga iniciada"), no con un panel propio. "Extrayendo…" queda
+  // fijo mientras dura; al terminar se cambia por "Instalado" o el error. Los
+  // estados con su propia ventana (modal, contraseña, pendiente) no avisan.
+  const extractingToastRef = useRef(new Map<string, string>());
+  const lastStateRef = useRef(new Map<string, DropFlowResult["state"]>());
+  useEffect(() => {
+    const toast = useToastStore.getState();
+    const seen = new Set<string>();
+    const done: string[] = [];
+    for (const r of results) {
+      seen.add(r.path);
+      const prev = lastStateRef.current.get(r.path);
+      lastStateRef.current.set(r.path, r.state);
+      if (prev === r.state) continue;
+      const file = r.path.split(/[\\/]/).pop() ?? r.path;
+      const extracting = extractingToastRef.current.get(r.path);
+      if (extracting && r.state !== "inspecting") {
+        toast.dismiss(extracting);
+        extractingToastRef.current.delete(r.path);
+      }
+      if (r.state === "inspecting" && !extracting) {
+        const id = toast.push({ kind: "info", title: t("drop.extracting"), message: file, ttlMs: null });
+        extractingToastRef.current.set(r.path, id);
+      } else if (r.state === "installed") {
+        const errors = r.report.errors.length;
+        toast.push({
+          kind: errors > 0 ? "error" : "success",
+          title: t("drop.installed.prefix"),
+          message: `${file} · ${installedSummary(r.report)}${errors > 0 ? ` · ${errors} ${t("common.errors")}` : ""}`,
+          ttlMs: errors > 0 ? null : 6000,
+        });
+        done.push(r.path);
+      } else if (r.state === "error") {
+        toast.push({ kind: "error", title: t("drop.error_title"), message: `${file}: ${r.error}` });
+        done.push(r.path);
+      } else if (r.state === "cancelled") {
+        done.push(r.path);
+      }
+    }
+    // Filas que ya no están (guardadas en carpeta, etc.): sin aviso colgado.
+    for (const [p, id] of extractingToastRef.current) {
+      if (!seen.has(p)) {
+        toast.dismiss(id);
+        extractingToastRef.current.delete(p);
+      }
+    }
+    for (const p of lastStateRef.current.keys()) {
+      if (!seen.has(p)) lastStateRef.current.delete(p);
+    }
+    // Ya avisadas: fuera de la lista (no hay panel que las muestre).
+    if (done.length > 0) {
+      setResults((prev) => prev.filter((r) => !done.includes(r.path)));
+    }
+  }, [results]);
 
   const refreshInstalled = useDownloadsStore((s) => s.refreshInstalled);
   const rescanCommunity = useCommunityStore((s) => s.rescan);
@@ -178,9 +223,13 @@ export function DragDropOverlay() {
       // la tratamos EXACTAMENTE como un archivo soltado (inspect → modal →
       // install). Así el livery descargado con la cuenta del usuario se instala
       // con el mismo pipeline (nested-zip, detección de variante, etc.).
-      listen<string>("livery-download://finished", async (event) => {
-        const path = event.payload;
+      listen<{ path?: string; job?: string | null } | string>("livery-download://finished", async (event) => {
+        const payload = event.payload;
+        const path = typeof payload === "string" ? payload : payload?.path;
         if (!path) return;
+        // (v8.3) Job del panel de Descargas → ahí se ve el procesado.
+        const job = typeof payload === "string" ? null : payload?.job;
+        if (job) rememberJobKey(path, job);
         // (v6.2.57) El sonido + traer-al-frente ya NO van aquí (al empezar a
         // procesar), sino cuando el MODAL está LISTO — se dispara dentro de
         // processDropBatch justo antes de mostrarlo / instalar.
@@ -204,6 +253,10 @@ export function DragDropOverlay() {
           const password =
             typeof payload === "string" ? undefined : payload?.password ?? undefined;
           if (!path) return;
+          // (v8.3) La ventana es `hoster-dl-<job>` → nombre del addon y notas.
+          const meta = win ? downloadMetaForWindow(win) : undefined;
+          if (meta) metaByPathRef.current.set(path, meta);
+          if (win) rememberJobKey(path, win);
           await processDropBatch([path], password);
           if (win) {
             try {
@@ -218,12 +271,14 @@ export function DragDropOverlay() {
       // (v7) La descarga ARRANCÓ en el navegador embebido (liveries de
       // flightsim.to, mirrors, modsfire, rapidgator…) → toast de SimFleet para
       // que el usuario sepa que sí inició (antes no había feedback ninguno).
-      listen<string>("embedded-download://started", (event) => {
-        const name = (event.payload ?? "").split(/[\\/]/).pop() ?? "";
+      // (v8.3) La ventana de descarga se oculta al empezar: el progreso sigue en
+      // el panel de Descargas (clic en el aviso para abrirlo).
+      listen<string>("embedded-download://started", () => {
         useToastStore.getState().push({
           kind: "success",
           title: t("toast.download.started"),
-          message: name || undefined,
+          message: t("toast.download.in_panel"),
+          onClick: () => useDownloadsStore.getState().openPanelAt("active"),
         });
       }),
     );
@@ -234,7 +289,20 @@ export function DragDropOverlay() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // (v8.3) "Listo" + aviso de Windows si SimFleet no está al frente: antes, si
+  // te ibas a otra cosa, no te enterabas de que ya se había procesado.
+  const announceReady = (insps: DropInspection[]) => {
+    for (const insp of insps) jobStatus(insp.archivePath, "ready");
+    const names = insps.map(
+      (i) => i.displayName ?? i.archivePath.split(/[\\/]/).pop() ?? "",
+    );
+    if (names.length > 0 && insps.some((i) => hasJobKey(i.archivePath))) {
+      void nativeNotify({ title: t("downloads.ready_title"), body: names.join(", ") });
+    }
+  };
+
   const processDropBatch = async (paths: string[], password?: string) => {
+    for (const p of paths) jobStatus(p, "processing");
     // (v5.2.0) Upsert por path: en el reintento con contraseña, el path
     // ya existe en la lista — lo volvemos a "inspecting" en vez de
     // duplicarlo. Soporta archivos Y carpetas (el backend resuelve).
@@ -270,6 +338,15 @@ export function DragDropOverlay() {
         (i.error.includes("NEEDS_PASSWORD") ||
           i.error.includes("WRONG_PASSWORD")),
     );
+    for (const i of inspections) {
+      if (i.error && !pwPendingList.includes(i)) {
+        void discardInternalDownload(i.path, "failed", formatDropError(i.error));
+      } else if (i.inspection && i.inspection.items.length === 0) {
+        void discardInternalDownload(i.path, "failed", t("drop.no_installable"));
+      } else if (pwPendingList.includes(i)) {
+        jobStatus(i.path, "ready");
+      }
+    }
 
     setResults((prev) =>
       prev.map((r) => {
@@ -300,15 +377,65 @@ export function DragDropOverlay() {
       }),
     );
 
-    const validInspections = inspections
+    let validInspections = inspections
       .map((i) => i.inspection)
       .filter((i): i is DropInspection => !!i && i.items.length > 0);
+    // (v8.3) Nombre del addon y notas de las descargas del catálogo.
+    for (const insp of validInspections) {
+      const meta = metaByPathRef.current.get(insp.archivePath);
+      if (meta) {
+        insp.displayName = meta.displayName;
+        insp.notes = meta.notes;
+      }
+    }
 
     // (v6.2.57) ¿El lote viene del navegador embebido? Sólo entonces sonamos +
     // traemos la app al frente — y JUSTO cuando el modal/instalación está listo.
     const fromEmbedded = validInspections.some((i) =>
       isEmbeddedDownload(i.archivePath),
     );
+    let readyNotified = false;
+    const notifyReadyOnce = () => {
+      if (!fromEmbedded || readyNotified) return;
+      readyNotified = true;
+      void notifyDownloadReady();
+    };
+
+    // (v8.3) Nada va a MSFS (instalador, app, navdata…) → directo al diálogo
+    // de carpeta, sin modal: se guarda ahí, se abre el Explorador y se avisa
+    // (con las notas si las hay). Si cierra el diálogo o falla, pasa al modal
+    // de siempre (y de ahí a Notificaciones) para no perder la descarga.
+    const directExternal = validInspections.filter(
+      (i) => i.items.length === 1 && i.items[0].kind === "external_content",
+    );
+    if (directExternal.length > 0) {
+      notifyReadyOnce();
+      announceReady(directExternal);
+      const handled = new Set<string>();
+      for (const insp of directExternal) {
+        try {
+          const saved = await saveExternalItem(insp, insp.items[0]);
+          if (!saved) continue;
+          handled.add(insp.sessionId);
+          jobStatus(insp.archivePath, "saved");
+          await api.dropCancel(insp.sessionId).catch(() => {});
+          if (isEmbeddedDownload(insp.archivePath)) {
+            await api.deleteDroppedArchive(insp.archivePath).catch(() => {});
+          }
+          metaByPathRef.current.delete(insp.archivePath);
+          // (v8.3) Sin fila en "Resultados": parecía "instalado" y no se
+          // instaló nada. El aviso de "Guardado" ya lo cuenta.
+          setResults((prev) => prev.filter((r) => r.path !== insp.archivePath));
+        } catch (e) {
+          useToastStore.getState().push({
+            kind: "error",
+            title: t("external.err"),
+            message: formatDropError(String(e)),
+          });
+        }
+      }
+      validInspections = validInspections.filter((i) => !handled.has(i.sessionId));
+    }
 
     // (v6.2.74) Ruteo 2020/2024: por cada descarga del embebido decidimos en qué
     // Community va según su compatibilidad. Si hay desajuste de versión (o falta
@@ -322,7 +449,7 @@ export function DragDropOverlay() {
     const allSingle =
       validInspections.length > 0 &&
       validInspections.every(
-        (i) => i.items.length === 1 && i.items[0].kind !== "installer_exe",
+        (i) => i.items.length === 1 && !isExternalKind(i.items[0].kind),
       );
 
     if (validInspections.length > 0 && allSingle && !anyForceModal && !fromEmbedded) {
@@ -365,13 +492,14 @@ export function DragDropOverlay() {
         }
       }
       // (v6.2.57) Instalación lista (fast-path) → sonido + app al frente.
-      if (fromEmbedded) void notifyDownloadReady();
+      notifyReadyOnce();
       await onDoneBatch(validInspections, reports);
       deleteAccumRef.current.push(...committed);
     } else if (validInspections.length > 0) {
       // Multi-item → modal de selección paginado. Sonamos + traemos al frente
       // AHORA que el modal está listo (no al empezar a procesar).
-      if (fromEmbedded) void notifyDownloadReady();
+      notifyReadyOnce();
+      announceReady(validInspections.filter((i) => !directExternal.includes(i)));
       useInstallQueueStore.getState().enqueue({
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         inspections: validInspections,
@@ -413,6 +541,14 @@ export function DragDropOverlay() {
     inspections: DropInspection[],
     reports: DropCommitReport[],
   ) => {
+    for (const insp of inspections) {
+      const idx = inspections.indexOf(insp);
+      const r = reports[idx];
+      if (r && (r.installedGsx.length > 0 || r.installedPackages.length > 0 ||
+        (r.installedConfigs?.length ?? 0) > 0 || (r.installedLiveries?.length ?? 0) > 0)) {
+        jobStatus(insp.archivePath, "installed");
+      }
+    }
     // Actualiza el result toaster por archivo.
     setResults((prev) =>
       prev.map((r) => {
@@ -432,6 +568,12 @@ export function DragDropOverlay() {
 
   const onModalClose = () => {
     if (!activeInspections) return;
+    // (v8.3) Cancelar la instalación de una descarga INTERNA borra su archivo
+    // temporal ya (antes quedaba hasta la purga del siguiente arranque) y deja
+    // su job "cancelado". Lo arrastrado por el usuario no se toca.
+    for (const insp of activeInspections) {
+      void discardInternalDownload(insp.archivePath, "cancelled");
+    }
     setResults((prev) =>
       prev.map((r) =>
         (r.state === "awaiting_modal" || r.state === "pending") &&
@@ -498,12 +640,20 @@ export function DragDropOverlay() {
           routing={activeBatch.routing}
           onClose={onModalClose}
           onDefer={onModalDefer}
+          onSaved={(archivePath) => {
+            jobStatus(archivePath, "saved");
+            setResults((prev) => prev.filter((r) => r.path !== archivePath));
+          }}
+          onInstalled={(reports) => void onDoneBatch(activeInspections, reports)}
           onDone={(reports) => {
             void onDoneBatch(activeInspections, reports);
             useInstallQueueStore.getState().finishActive();
           }}
         />
       )}
+
+      {/* (v8.3) "Guardado" con las notas de instalación del contenido externo. */}
+      <ExternalSavedDialog />
 
       {/* (v4.23.0) Confirmación de borrado del archivo origen para el
           fast-path (liveries y cualquier drop de 1 item). */}
@@ -552,6 +702,11 @@ export function DragDropOverlay() {
             // como cancelados TODOS los que esperaban contraseña (no solo
             // este) para que la app no quede "procesando" indefinidamente,
             // y ofrece borrar los que sí se instalaron.
+            for (const r of results) {
+              if (r.state === "awaiting_password") {
+                void discardInternalDownload(r.path, "cancelled");
+              }
+            }
             setResults((prev) =>
               prev.map((r) =>
                 r.state === "awaiting_password"
@@ -564,22 +719,6 @@ export function DragDropOverlay() {
         />
       )}
 
-      {/* (v7) El progreso EN CURSO de las descargas del navegador embebido se
-          muestra DENTRO del WebView (que tapa a SimFleet), así que ocultamos sólo
-          esas filas en-progreso ('inspecting'/'awaiting_modal'). Los estados
-          TERMINALES (error, pide-clave) SÍ se muestran: para cuando aparecen, el
-          WebView ya se cerró, así que el usuario debe ver el fallo (si no, una
-          descarga que falla la extracción desaparecería en silencio). */}
-      {(() => {
-        const visible = results.filter(
-          (r) =>
-            !isEmbeddedDownload(r.path) ||
-            (r.state !== "inspecting" && r.state !== "awaiting_modal"),
-        );
-        return visible.length > 0 ? (
-          <DropResultsToast results={visible} onClear={() => setResults([])} />
-        ) : null;
-      })()}
     </>
   );
 }
@@ -665,138 +804,21 @@ type DropFlowResult =
   | { path: string; state: "pending" }
   | { path: string; state: "error"; error: string };
 
-function DropResultsToast({
-  results,
-  onClear,
-}: {
-  results: DropFlowResult[];
-  onClear: () => void;
-}) {
-  const allDone = results.every(
-    (r) =>
-      r.state !== "inspecting" &&
-      r.state !== "awaiting_modal" &&
-      r.state !== "awaiting_password",
-  );
-  return (
-    <div className="fixed bottom-4 right-4 z-40 w-[min(440px,calc(100vw-2rem))] rounded-xl border border-sf-border bg-sf-bg/95 shadow-2xl ring-1 ring-sf-border backdrop-blur">
-      <header className="flex items-center justify-between border-b border-sf-border px-4 py-2.5">
-        <div className="flex items-center gap-2 text-sm font-medium text-sf-text">
-          <FileDown className="h-4 w-4 text-brand-300" />
-          {allDone ? t("drop.results") : t("drop.processing")}
-        </div>
-        {allDone && (
-          <button
-            onClick={onClear}
-            className="text-xs text-sf-muted hover:text-sf-text"
-          >
-            {t("common.close")}
-          </button>
-        )}
-      </header>
-      <ul className="max-h-72 overflow-y-auto divide-y divide-sf-border">
-        {results.map((r, i) => (
-          <DropResultItem key={i} result={r} />
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function DropResultItem({ result }: { result: DropFlowResult }) {
-  const fileName = result.path.split(/[\\/]/).pop() ?? result.path;
-  return (
-    <li className="px-4 py-2.5 text-xs">
-      <div className="flex items-start gap-2">
-        <div className="mt-0.5 shrink-0">
-          {(result.state === "inspecting" ||
-            result.state === "awaiting_modal") && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-sf-muted" />
-          )}
-          {result.state === "installed" && (
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-          )}
-          {result.state === "error" && (
-            <AlertCircle className="h-3.5 w-3.5 text-rose-400" />
-          )}
-          {result.state === "cancelled" && (
-            <AlertCircle className="h-3.5 w-3.5 text-sf-muted" />
-          )}
-          {result.state === "pending" && (
-            <Bell className="h-3.5 w-3.5 text-amber-300" />
-          )}
-          {result.state === "awaiting_password" && (
-            <KeyRound className="h-3.5 w-3.5 text-amber-300" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-sf-text">{fileName}</div>
-          {result.state === "inspecting" && (
-            <p className="text-[11px] text-sf-muted">
-              {t("drop.extracting")}
-            </p>
-          )}
-          {result.state === "awaiting_password" && (
-            <p className="text-[11px] text-amber-300">{t("drop.pw.pending")}</p>
-          )}
-          {result.state === "awaiting_modal" && (
-            <p className="text-[11px] text-amber-300">
-              {t("drop.items_detected", { count: String(result.items) })}
-            </p>
-          )}
-          {result.state === "installed" && <Installed report={result.report} />}
-          {result.state === "error" && (
-            <p className="text-[11px] text-rose-300">{result.error}</p>
-          )}
-          {result.state === "pending" && (
-            <p className="text-[11px] text-amber-300">{t("installq.pending_row")}</p>
-          )}
-          {result.state === "cancelled" && (
-            <p className="text-[11px] text-sf-muted">{t("drop.cancelled")}</p>
-          )}
-        </div>
-      </div>
-    </li>
-  );
-}
-
-function Installed({ report }: { report: DropCommitReport }) {
+/** (v8.3) Texto del aviso "Instalado": qué se instaló de un archivo. */
+function installedSummary(report: DropCommitReport): string {
   const parts: string[] = [];
   if (report.installedGsx.length > 0) {
-    parts.push(
-      t("drop.installed.gsx", { count: String(report.installedGsx.length) }),
-    );
+    parts.push(t("drop.installed.gsx", { count: String(report.installedGsx.length) }));
   }
   if (report.installedPackages.length > 0) {
-    parts.push(
-      t("drop.installed.packages", {
-        count: String(report.installedPackages.length),
-      }),
-    );
+    parts.push(t("drop.installed.packages", { count: String(report.installedPackages.length) }));
   }
   if ((report.installedLiveries?.length ?? 0) > 0) {
-    parts.push(
-      t("drop.installed.liveries", {
-        count: String(report.installedLiveries?.length ?? 0),
-      }),
-    );
+    parts.push(t("drop.installed.liveries", { count: String(report.installedLiveries?.length ?? 0) }));
   }
   if ((report.installedConfigs?.length ?? 0) > 0) {
-    parts.push(
-      t("drop.installed.configs", {
-        count: String(report.installedConfigs?.length ?? 0),
-      }),
-    );
+    parts.push(t("drop.installed.configs", { count: String(report.installedConfigs?.length ?? 0) }));
   }
   if (parts.length === 0) parts.push(t("drop.installed.nothing"));
-  return (
-    <p className="text-[11px] text-emerald-300">
-      {t("drop.installed.prefix")} · {parts.join(" + ")}
-      {report.errors.length > 0 && (
-        <span className="ml-1 text-rose-300">
-          · {report.errors.length} {t("common.errors")}
-        </span>
-      )}
-    </p>
-  );
+  return parts.join(" + ");
 }

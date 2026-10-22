@@ -1,13 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Swords, X, Plane, Gauge, ArrowUp, Flag, Trophy } from "lucide-react";
+import { Swords, X, Plane, Gauge, ArrowUp, Flag, Trophy, Route } from "lucide-react";
 import { t } from "../lib/i18n";
 import {
-  findVsSnapshot,
+  findVsSnapshotEntry,
+  fetchVsRivalMetrics,
+  saveVsRivalMetrics,
   type VsPilot,
-  type VsPos,
   type VsLanding,
   type VsAircraft,
+  type VsMetrics,
 } from "../stores/useLiveVsStore";
 import type { FlightLogEntry } from "../lib/types";
 import { AirlineLogo } from "./AirlineLogo";
@@ -25,9 +27,9 @@ function airlineIcao(callsign: string | null | undefined): string | null {
  * (v6 #3) Modal de combate Live VS — comparativa Daniel vs Héctor del MISMO
  * vuelo (misma ruta+día). Muestra para cada piloto: foto del avión
  * (planespotters por matrícula), aerolínea (logo + nombre), modelo, matrícula,
- * capitán; y telemetría en vivo (altitud, GS, distancia restante) con una
- * barra de carrera de progreso sobre la ruta. El rival ya se dibuja en el
- * routemap existente — esto es la ficha del duelo.
+ * capitán; y (v8.3) las métricas del vuelo terminado (altitud y velocidad
+ * máximas, distancia). El rival ya se dibuja en el routemap existente — esto
+ * es la ficha del duelo.
  */
 export function VsCombatModal({
   entry,
@@ -43,16 +45,49 @@ export function VsCombatModal({
   // seleccionado (fecha de inicio + ruta). El snapshot sólo existe si Héctor
   // también voló ese vuelo (guarda a ambos pilotos), así que el modal sólo se
   // abre para duelos reales y completos.
-  const snapshot = useMemo(() => {
+  const found = useMemo(() => {
     if (!entry?.originIcao || !entry?.destinationIcao || !entry?.startedAt) {
       return null;
     }
-    return findVsSnapshot(
+    return findVsSnapshotEntry(
       entry.startedAt.slice(0, 10),
       entry.originIcao,
       entry.destinationIcao,
     );
   }, [entry?.originIcao, entry?.destinationIcao, entry?.startedAt]);
+  const snapshot = found?.snapshot ?? null;
+
+  // (v8.3) Métricas del vuelo terminado: las mías salen del vuelo del
+  // FlightBook; las del rival, de su fila en `vs_results` (las sube su SimFleet
+  // al cerrar el vuelo). Se muestra la caché al instante y se refresca.
+  const [rivalMetrics, setRivalMetrics] = useState<VsMetrics | null>(
+    snapshot?.rivalMetrics ?? null,
+  );
+  useEffect(() => {
+    setRivalMetrics(found?.snapshot.rivalMetrics ?? null);
+    if (!found) return;
+    let alive = true;
+    void fetchVsRivalMetrics(
+      found.channel,
+      found.snapshot.self?.identity ?? null,
+      found.snapshot.rival?.identity ?? null,
+    ).then((m) => {
+      if (!alive || !m) return;
+      setRivalMetrics(m);
+      saveVsRivalMetrics(found.channel, m);
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [found?.channel]);
+  const selfMetrics: VsMetrics | null = entry
+    ? {
+        maxAltFt: entry.maxAltitudeFt ?? null,
+        maxGsKt: entry.maxGroundSpeedKt ?? null,
+        distanceNm: entry.distanceNm ?? null,
+      }
+    : null;
 
   const self = snapshot?.self ?? null;
   const rival = snapshot?.rival ?? null;
@@ -60,12 +95,7 @@ export function VsCombatModal({
   const rivalLanding = snapshot?.rivalLanding ?? null;
   const selfAircraft = snapshot?.selfAircraft ?? null;
   const rivalAircraft = snapshot?.rivalAircraft ?? null;
-  // Histórico: no hay telemetría en vivo (el vuelo ya terminó). La barra de
-  // progreso se oculta al haber aterrizado, así que estas quedan nulas.
-  const selfPos: VsPos | null = null;
-  const rivalPos: VsPos | null = null;
-  const selfRem: number | null = null;
-  const rivalRem: number | null = null;
+  // Histórico: sin carrera en vivo (el vuelo ya terminó) → nadie va "líder".
   const leader: "self" | "rival" | null = null;
 
   // (v6.2.13) Basta con que haya datos de UN lado para mostrar el duelo: si el
@@ -107,8 +137,7 @@ export function VsCombatModal({
         <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-0">
           <PilotCard
             pilot={self}
-            pos={selfPos}
-            remaining={selfRem}
+            metrics={selfMetrics}
             isLeader={leader === "self"}
             live={selfAircraft}
             isYou
@@ -121,8 +150,7 @@ export function VsCombatModal({
           </div>
           <PilotCard
             pilot={rival}
-            pos={rivalPos}
-            remaining={rivalRem}
+            metrics={rivalMetrics}
             isLeader={leader === "rival"}
             live={rivalAircraft}
             accent="rose"
@@ -230,16 +258,15 @@ function LandingCell({
 
 function PilotCard({
   pilot,
-  pos,
-  remaining,
+  metrics,
   isLeader,
   live,
   isYou = false,
   accent,
 }: {
   pilot: VsPilot | null;
-  pos: VsPos | null;
-  remaining: number | null;
+  /** (v8.3) Métricas del vuelo terminado (null → "—"). */
+  metrics: VsMetrics | null;
   isLeader: boolean;
   /** (v6.2.2) Avión REAL en vuelo (del sim). Manda sobre el del OFP. */
   live?: VsAircraft | null;
@@ -321,39 +348,48 @@ function PilotCard({
         <span className="font-mono uppercase">{reg ?? "—"}</span>
       </div>
 
-      {/* Telemetría en vivo */}
+      {/* (v8.3) Métricas del vuelo terminado */}
       <div className="mt-1 grid grid-cols-3 gap-1 rounded-lg bg-sf-surface p-2 text-center">
         <Stat
           icon={<ArrowUp className="h-3 w-3" />}
-          value={pos ? `${Math.round(pos.alt).toLocaleString()}` : "—"}
-          unit="ft"
+          value={fmtMetric(metrics?.maxAltFt)}
+          unit={t("vs.stat.max_alt")}
+          title={t("vs.stat.max_alt_title")}
         />
         <Stat
           icon={<Gauge className="h-3 w-3" />}
-          value={pos ? `${Math.round(pos.gs)}` : "—"}
-          unit="kt"
+          value={fmtMetric(metrics?.maxGsKt)}
+          unit={t("vs.stat.max_gs")}
+          title={t("vs.stat.max_gs_title")}
         />
         <Stat
-          icon={<Flag className="h-3 w-3" />}
-          value={remaining != null ? `${Math.round(remaining)}` : "—"}
-          unit="nm"
+          icon={<Route className="h-3 w-3" />}
+          value={fmtMetric(metrics?.distanceNm)}
+          unit={t("vs.stat.distance")}
+          title={t("vs.stat.distance_title")}
         />
       </div>
     </div>
   );
 }
 
+function fmtMetric(v: number | null | undefined): string {
+  return v != null ? Math.round(v).toLocaleString() : "—";
+}
+
 function Stat({
   icon,
   value,
   unit,
+  title,
 }: {
   icon: React.ReactNode;
   value: string;
   unit: string;
+  title?: string;
 }) {
   return (
-    <div className="flex flex-col items-center gap-0.5">
+    <div className="flex flex-col items-center gap-0.5" title={title}>
       <span className="text-sf-muted">{icon}</span>
       <span className="font-mono text-sm font-semibold text-sf-text">
         {value}

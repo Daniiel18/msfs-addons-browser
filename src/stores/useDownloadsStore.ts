@@ -34,6 +34,22 @@ const recoveryMeta = new Map<
   { source: string; addonSimulator?: string; methods: DownloadMethod[] }
 >();
 
+/** (v8.3) Notas de instalación del addon por id de job (aerohub), para
+ *  mostrarlas al guardar un instalador en la carpeta del usuario. */
+const jobNotes = new Map<string, string>();
+
+/** (v8.3) Nombre del addon y notas de la descarga que abrió la ventana de
+ *  hoster `label` (`hoster-dl-<jobId>`). `undefined` si no es de un job. */
+export function downloadMetaForWindow(
+  label: string,
+): { displayName?: string; notes: string | null } | undefined {
+  const prefix = "hoster-dl-";
+  if (!label.startsWith(prefix)) return undefined;
+  const id = label.slice(prefix.length);
+  const job = useDownloadsStore.getState().jobs[id];
+  return { displayName: job?.addonTitle, notes: jobNotes.get(id) ?? null };
+}
+
 interface DownloadsState {
   /** Jobs indexed by id → keeps reconciliation O(1) and gives stable iteration order. */
   jobs: Record<string, DownloadJob>;
@@ -69,6 +85,8 @@ interface DownloadsState {
     /** (v7.1) Lista COMPLETA de métodos del addon — se guarda para reofrecer
      *  mirrors si el torrent falla. */
     allMethods?: DownloadMethod[];
+    /** (v8.3) Notas de instalación de la ficha (aerohub). */
+    notes?: string | null;
   }) => Promise<void>;
   /** (v7.1) Estado del modal de recuperación tras fallo de torrent. */
   recovery: DownloadRecovery | null;
@@ -225,7 +243,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     }
   },
 
-  async start({ addonId, addonTitle, source, method, addonSimulator, allMethods }) {
+  async start({ addonId, addonTitle, source, method, addonSimulator, allMethods, notes }) {
     // Intentionally do NOT auto-open the panel here. The button in the
     // header has a live badge count, and surprising the user with a
     // full-screen scrim on every click is worse UX than letting them
@@ -238,6 +256,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     set({ recovery: null });
     try {
       const job = await api.startDownload({ addonId, addonTitle, source, method, addonSimulator });
+      if (notes) jobNotes.set(job.id, notes);
       // Ensure the store has the initial state even if the event for
       // "queued" beat us (race between invoke-return and event-emit).
       get().reconcile(job);

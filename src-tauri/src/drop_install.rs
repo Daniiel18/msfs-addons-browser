@@ -36,6 +36,9 @@ pub struct DropSession {
     pub archive_path: String,
     pub items: Vec<DropItem>,
     pub created_at: std::time::Instant,
+    /// (v8.3) Contraseña con la que se pudo extraer (la recibida o una de las
+    /// conocidas). `save_external` re-extrae el original con ella.
+    pub password: Option<String>,
 }
 
 /// Holder en AppState. Mutex sync porque sólo se toca desde comandos
@@ -46,7 +49,10 @@ pub struct DropSessions(pub Mutex<HashMap<String, DropSession>>);
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DropItem {
-    /// "gsx_profile" | "community_package" | "installer_exe" | "unknown"
+    /// "gsx_profile" | "community_package" | "pmdg_livery" | "ifly_livery" |
+    /// "pmdg_config" | "ifly_config" | (v8.3) "external_content" (nada va a
+    /// MSFS: todo se guarda en la carpeta que elija el usuario) |
+    /// "external_rest" (lo que sobra junto a contenido de MSFS: exe, readme…).
     pub kind: String,
     /// Texto humano enriquecido: "EDDF · Aerosoft (VDGS · python handler)".
     pub label: String,
@@ -68,6 +74,18 @@ pub struct DropItem {
     /// secciones) — útil para distinguir variantes que sólo difieren
     /// en el contenido pero comparten nombre.
     pub description: Option<String>,
+    /// (v8.3) Marcado por defecto en el modal. Todo sí, salvo un
+    /// `external_rest` sin ejecutables (p.ej. sólo un readme).
+    pub preselect: bool,
+}
+
+/// (v8.3) Resultado de guardar contenido externo en la carpeta del usuario.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedExternal {
+    /// Carpeta creada (o archivo copiado, si `is_file`).
+    pub path: String,
+    pub is_file: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,16 +145,18 @@ pub fn inspect(
     // extraer) y enrutamos sus paquetes a Community y/o perfiles a GSX.
     // Igual para MSFS 2020 y 2024.
     if archive_path.is_dir() {
-        let items = scan_extracted(archive_path)?;
+        let mut items = scan_extracted(archive_path)?;
         if items.is_empty() {
             anyhow::bail!("{}", crate::tr!("dropInstall.folderNoContent"));
         }
+        label_external(&mut items, archive_path);
         let is_single = items.len() == 1;
         let session = DropSession {
             _tempdir: None,
             archive_path: archive_str.clone(),
             items: items.clone(),
             created_at: std::time::Instant::now(),
+            password: None,
         };
         sessions
             .0
@@ -175,6 +195,7 @@ pub fn inspect(
             archive_path: archive_str.clone(),
             items: vec![item.clone()],
             created_at: std::time::Instant::now(),
+            password: None,
         };
         sessions
             .0
@@ -197,14 +218,14 @@ pub fn inspect(
 
     // (v6.2.56) App / instalador SUELTO (.exe/.msi/...) → NO va a Community; el
     // front pedirá carpeta. Un solo item, sin extracción.
-    if matches!(ext.as_str(), "exe" | "msi" | "msix" | "msixbundle" | "appx") {
-        let root = archive_path.parent().unwrap_or(Path::new(""));
-        let item = installer_to_item(archive_path, root);
+    if is_executable(archive_path) {
+        let item = external_file_item(archive_path);
         let session = DropSession {
             _tempdir: None,
             archive_path: archive_str.clone(),
             items: vec![item.clone()],
             created_at: std::time::Instant::now(),
+            password: None,
         };
         sessions
             .0
@@ -266,6 +287,9 @@ pub fn inspect(
         _ => unreachable!(),
     };
     let mut extract_result = do_extract(password);
+    // (v8.3) La clave que funcionó (la recibida o una conocida) queda en la
+    // sesión: `save_external` re-extrae el original con ella.
+    let mut used_password = password.map(str::to_string);
     // (v6.2.42 / v7) Si falló por contraseña, probamos AUTOMÁTICAMENTE las
     // contraseñas conocidas (p.ej. la de Skybound, "https://skybound.cx") antes
     // de pedirla. Ahora corre TAMBIÉN cuando ya vino una `password` (la que
@@ -292,6 +316,7 @@ pub fn inspect(
             if r.is_ok() {
                 tracing::info!(target: "drop", "extracción OK con contraseña conocida");
                 extract_result = r;
+                used_password = Some(pw.to_string());
                 break;
             }
         }
@@ -350,7 +375,8 @@ pub fn inspect(
     // Solo sobre el TEMP (nunca sobre carpetas del usuario).
     flatten_nested_archives(&temp_path);
 
-    let items = scan_extracted(&temp_path)?;
+    let mut items = scan_extracted(&temp_path)?;
+    label_external(&mut items, archive_path);
     tracing::info!(
         target: "drop",
         "scan: {} items detectados ({} GSX + {} Community + {} otros)",
@@ -368,6 +394,7 @@ pub fn inspect(
         archive_path: archive_str.clone(),
         items: items.clone(),
         created_at: std::time::Instant::now(),
+        password: used_password,
     };
     sessions
         .0
@@ -917,21 +944,16 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
         items.push(livery_to_item(liv, root));
     }
 
-    // Paso 4 (v6.2.56) — apps / instaladores (`.exe/.msi/...`). Si NO hay nada
-    // de MSFS (ni Community, ni GSX, ni livery, ni config), es una app de
-    // terceros que NO va a Community: la marcamos `installer_exe` para que el
-    // front pida una carpeta destino (nunca la instala en Community).
-    let has_msfs_content = items.iter().any(|i| {
-        matches!(
-            i.kind.as_str(),
-            "community_package" | "gsx_profile" | "pmdg_livery" | "ifly_livery"
-                | "pmdg_config" | "ifly_config"
-        )
-    });
-    if !has_msfs_content {
-        for exe in find_installer_files(root) {
-            items.push(installer_to_item(&exe, root));
-        }
+    // Paso 4 (v8.3) — lo que NO va a MSFS (apps, instaladores, navdata,
+    // readmes…). Sin nada de MSFS → UN item `external_content`: todo el archivo
+    // se guarda en la carpeta que elija el usuario. Con contenido de MSFS → un
+    // item `external_rest` con lo que sobra, marcado por defecto sólo si trae
+    // ejecutables (un readme suelto no merece pedir carpeta).
+    let has_msfs_content = !items.is_empty();
+    let claimed: Vec<PathBuf> = items.iter().map(|i| PathBuf::from(&i.source_path)).collect();
+    let leftovers = leftover_files(root, &claimed);
+    if !leftovers.is_empty() {
+        items.push(external_item(root, &leftovers, has_msfs_content));
     }
 
     // (v2.1.1) Ordenar items por relative_path para que las variantes
@@ -941,50 +963,347 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
     Ok(items)
 }
 
-/// (v6.2.56) Ejecutables/instaladores dentro de `root` (no recursivo profundo:
-/// basta con encontrarlos en el árbol). Extensiones típicas de apps de terceros.
-fn find_installer_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let ext = entry
-            .path()
-            .extension()
+// =============================================================================
+// (v8.3) Contenido que no va a MSFS → carpeta del usuario
+// =============================================================================
+
+/// Ejecutable / instalador de Windows (por extensión).
+fn is_executable(p: &Path) -> bool {
+    matches!(
+        p.extension()
             .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if matches!(ext.as_str(), "exe" | "msi" | "msix" | "msixbundle" | "appx") {
-            out.push(entry.path().to_path_buf());
-        }
-    }
-    out
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("exe" | "msi" | "msix" | "msixbundle" | "appx" | "bat" | "cmd")
+    )
 }
 
-/// (v6.2.56) `DropItem` de app/instalador — el front lo instala pidiendo carpeta.
-fn installer_to_item(exe: &Path, root: &Path) -> DropItem {
-    let file_name = exe
+/// Archivos que no aportan nada (metadatos de Windows/macOS, accesos directos
+/// a webs): ni cuentan como "resto" ni se copian.
+fn is_junk(p: &Path) -> bool {
+    if p.components().any(|c| c.as_os_str().eq_ignore_ascii_case("__MACOSX")) {
+        return true;
+    }
+    let name = p
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("app.exe")
-        .to_string();
-    let relative_path = exe
-        .strip_prefix(root)
-        .unwrap_or(exe)
-        .to_string_lossy()
-        .into_owned();
-    let size_bytes = std::fs::metadata(exe).map(|m| m.len()).unwrap_or(0);
-    DropItem {
-        kind: "installer_exe".to_string(),
-        label: crate::tr!("dropInstall.appInstallerLabel", name = file_name),
-        icao: None,
-        variants: vec![crate::tr!("dropInstall.notForCommunity")],
-        source_path: exe.to_string_lossy().into_owned(),
-        relative_path,
-        size_bytes,
-        description: None,
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "thumbs.db" | "desktop.ini" | ".ds_store")
+        || name.ends_with(".url")
+        || name.ends_with(".lnk")
+}
+
+/// Archivos de `root` que no pertenecen a ningún item de MSFS (`claimed` son
+/// sus `source_path`: carpetas de paquete/livery o archivos .ini/.py).
+fn leftover_files(root: &Path, claimed: &[PathBuf]) -> Vec<PathBuf> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .filter(|p| !is_junk(p.strip_prefix(root).unwrap_or(p)))
+        .filter(|p| !claimed.iter().any(|c| p.starts_with(c)))
+        .collect()
+}
+
+/// Item `external_content` / `external_rest` para los archivos sobrantes.
+/// `source_path` es la raíz (clave única en la sesión); el label definitivo
+/// de `external_content` lo pone `label_external` con el nombre del archivo.
+fn external_item(root: &Path, files: &[PathBuf], is_rest: bool) -> DropItem {
+    let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    let mut exes: Vec<&PathBuf> = files.iter().filter(|p| is_executable(p)).collect();
+    // Primero los de menos profundidad y los que parecen instaladores.
+    exes.sort_by_key(|p| {
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+        let installer = name.contains("setup") || name.contains("install");
+        (p.components().count(), !installer, name)
+    });
+    let mut variants: Vec<String> = exes
+        .iter()
+        .take(3)
+        .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(String::from))
+        .collect();
+    if exes.len() > 3 {
+        variants.push(format!("+{}", exes.len() - 3));
     }
+    variants.push(crate::tr!("dropInstall.notForCommunity"));
+
+    let mut listing: Vec<String> = files.iter().map(|p| rel(p)).collect();
+    listing.sort();
+    const PREVIEW: usize = 15;
+    let mut description = listing.iter().take(PREVIEW).cloned().collect::<Vec<_>>().join("\n");
+    if listing.len() > PREVIEW {
+        description.push_str(&format!("\n… (+{})", listing.len() - PREVIEW));
+    }
+    let size_bytes = files
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    DropItem {
+        kind: if is_rest { "external_rest" } else { "external_content" }.to_string(),
+        label: if is_rest {
+            crate::tr!("dropInstall.restLabel")
+        } else {
+            root.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string()
+        },
+        icao: None,
+        variants,
+        source_path: root.to_string_lossy().into_owned(),
+        relative_path: crate::tr!("dropInstall.filesCount", n = files.len()),
+        size_bytes,
+        description: Some(description),
+        preselect: !is_rest || !exes.is_empty(),
+    }
+}
+
+/// `external_content` de un ejecutable suelto (.exe/.msi/…): se copia tal cual.
+fn external_file_item(file: &Path) -> DropItem {
+    let file_name = file.file_name().and_then(|s| s.to_str()).unwrap_or("app.exe").to_string();
+    DropItem {
+        kind: "external_content".to_string(),
+        label: file_name.clone(),
+        icao: None,
+        variants: vec![file_name, crate::tr!("dropInstall.notForCommunity")],
+        source_path: file.to_string_lossy().into_owned(),
+        relative_path: crate::tr!("dropInstall.filesCount", n = 1),
+        size_bytes: std::fs::metadata(file).map(|m| m.len()).unwrap_or(0),
+        description: None,
+        preselect: true,
+    }
+}
+
+/// El `external_content` de un archivo/carpeta se llama como él (sin extensión).
+fn label_external(items: &mut [DropItem], original: &Path) {
+    let stem = if original.is_dir() {
+        original.file_name()
+    } else {
+        original.file_stem()
+    }
+    .and_then(|s| s.to_str())
+    .unwrap_or("")
+    .to_string();
+    for it in items.iter_mut().filter(|i| i.kind == "external_content") {
+        if !stem.is_empty() {
+            it.label = stem.clone();
+        }
+    }
+}
+
+/// Lo que `save_external` necesita de la sesión, copiado para soltar el lock
+/// y trabajar en un hilo aparte (extraer/copiar puede tardar con GB).
+pub struct ExternalJob {
+    archive_path: PathBuf,
+    password: Option<String>,
+    root: PathBuf,
+    item: DropItem,
+    /// `source_path` de los demás items (los de MSFS) — fuera del "resto".
+    claimed: Vec<PathBuf>,
+}
+
+pub fn external_job(
+    session_id: &str,
+    source_path: &str,
+    sessions: &DropSessions,
+) -> anyhow::Result<ExternalJob> {
+    let map = sessions
+        .0
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{}", crate::tr!("dropInstall.mutexPoisoned", e = e)))?;
+    let s = map
+        .get(session_id)
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.sessionMissing", id = session_id)))?;
+    let item = s
+        .items
+        .iter()
+        .find(|i| i.source_path == source_path)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.itemNotInSession", path = source_path)))?;
+    if !matches!(item.kind.as_str(), "external_content" | "external_rest") {
+        anyhow::bail!("{}", crate::tr!("dropInstall.notInstallableType", kind = item.kind));
+    }
+    let archive_path = PathBuf::from(&s.archive_path);
+    let root = match &s._tempdir {
+        Some(t) => t.path().to_path_buf(),
+        None if archive_path.is_dir() => archive_path.clone(),
+        None => archive_path.parent().map(Path::to_path_buf).unwrap_or_default(),
+    };
+    let claimed = s
+        .items
+        .iter()
+        .filter(|i| i.source_path != source_path)
+        .map(|i| PathBuf::from(&i.source_path))
+        .collect();
+    Ok(ExternalJob { archive_path, password: s.password.clone(), root, item, claimed })
+}
+
+/// Guarda el contenido externo en `dest_folder` SIN tocar Community:
+///   · ejecutable suelto → se copia tal cual (`is_file`);
+///   · archivo comprimido → se RE-EXTRAE el original (sin abrir los .zip de
+///     dentro: el navdata de Fenix, p.ej., debe quedar como .zip);
+///   · carpeta arrastrada → se copia;
+///   · `external_rest` → se copian los sobrantes de la extracción.
+/// Se trabaja en una carpeta temporal dentro del destino y al final se le da
+/// nombre: si el archivo trae UNA carpeta, se usa la suya (evita
+/// "Addon/Addon/…"); si no (y siempre en el "resto"), `name` (o el label).
+/// Nunca sobrescribe: si el nombre existe se usa "Nombre (2)".
+pub fn save_external(
+    job: &ExternalJob,
+    dest_folder: &Path,
+    name: Option<&str>,
+) -> anyhow::Result<SavedExternal> {
+    std::fs::create_dir_all(dest_folder)?;
+    let src = &job.archive_path;
+    let is_content = job.item.kind == "external_content";
+
+    if is_content && src.is_file() && !is_archive_ext(src) {
+        check_free_space(dest_folder, job.item.size_bytes)?;
+        let file_name = src
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.fileNoName")))?;
+        let target = unique_path(&dest_folder.join(file_name));
+        std::fs::copy(src, &target)?;
+        tracing::info!(target: "drop", "externo copiado: {} → {}", src.display(), target.display());
+        return Ok(SavedExternal { path: target.to_string_lossy().into_owned(), is_file: true });
+    }
+
+    check_free_space(dest_folder, job.item.size_bytes)?;
+    let staging = dest_folder.join(format!(".simfleet-guardando-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&staging)?;
+    let filled = if !is_content {
+        copy_filtered(&job.root, &staging, &job.claimed)
+    } else if src.is_dir() {
+        copy_filtered(src, &staging, &[])
+    } else {
+        extract_original(src, &staging, job.password.as_deref())
+    };
+    if let Err(e) = filled {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+
+    let entries: Vec<PathBuf> = std::fs::read_dir(&staging)?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    if entries.is_empty() {
+        let _ = std::fs::remove_dir_all(&staging);
+        anyhow::bail!("{}", crate::tr!("dropInstall.externalEmpty"));
+    }
+    // El "resto" siempre lleva el nombre del addon: su única carpeta suele ser
+    // genérica ("Crack", "Tools").
+    let (from, base) = if is_content && entries.len() == 1 && entries[0].is_dir() {
+        let n = entries[0].file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        (entries[0].clone(), sanitize_folder_name(&n))
+    } else {
+        (staging.clone(), sanitize_folder_name(name.unwrap_or(&job.item.label)))
+    };
+    let target = unique_path(&dest_folder.join(base));
+    std::fs::rename(&from, &target)?;
+    if from != staging {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    tracing::info!(
+        target: "drop",
+        "externo guardado ({}): {} → {}",
+        job.item.kind, src.display(), target.display()
+    );
+    Ok(SavedExternal { path: target.to_string_lossy().into_owned(), is_file: false })
+}
+
+/// Re-extrae el archivo original tal cual (con la clave de la sesión y, si
+/// falla, las conocidas). Sin aplanar archivos anidados.
+fn extract_original(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+    let ext = src
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let run = |pw: Option<&str>| match ext.as_str() {
+        "zip" => extract_zip(src, dest, pw),
+        "rar" => extract_rar(src, dest, pw),
+        "7z" => extract_7z(src, dest, pw),
+        other => anyhow::bail!("{}", crate::tr!("dropInstall.unsupportedExt", ext = other)),
+    };
+    let mut result = run(password);
+    if result.is_err() {
+        for pw in crate::install::known_archive_passwords() {
+            if password == Some(*pw) {
+                continue;
+            }
+            if let Ok(rd) = std::fs::read_dir(dest) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                }
+            }
+            result = run(Some(pw));
+            if result.is_ok() {
+                break;
+            }
+        }
+    }
+    result
+}
+
+/// Copia el árbol `src` → `dest` saltando basura y lo que cuelgue de `skip`.
+fn copy_filtered(src: &Path, dest: &Path, skip: &[PathBuf]) -> anyhow::Result<()> {
+    for path in leftover_files(src, skip) {
+        let rel = path.strip_prefix(src).unwrap_or(&path);
+        let target = dest.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&path, &target)?;
+    }
+    Ok(())
+}
+
+/// Falla con el sentinela `NO_SPACE:<necesario>:<libre>` (el frontend lo
+/// formatea) si el destino no tiene sitio para `needed` + 256 MB.
+fn check_free_space(dest: &Path, needed: u64) -> anyhow::Result<()> {
+    const MARGIN: u64 = 256 * 1024 * 1024;
+    if let Some(free) = free_disk_bytes(dest) {
+        if free < needed.saturating_add(MARGIN) {
+            anyhow::bail!("NO_SPACE:{needed}:{free}");
+        }
+    }
+    Ok(())
+}
+
+/// `p` si no existe; si no, "nombre (2)", "nombre (3)"… (conserva la extensión
+/// de los archivos).
+fn unique_path(p: &Path) -> PathBuf {
+    if !p.exists() {
+        return p.to_path_buf();
+    }
+    let parent = p.parent().unwrap_or(Path::new(""));
+    let is_file_like = p.is_file();
+    let stem = if is_file_like { p.file_stem() } else { p.file_name() }
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = if is_file_like {
+        p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    (2..)
+        .map(|n| parent.join(format!("{stem} ({n}){ext}")))
+        .find(|c| !c.exists())
+        .expect("rango infinito")
+}
+
+/// Nombre de carpeta válido en Windows.
+fn sanitize_folder_name(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { ' ' } else { c })
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed: String = collapsed.trim_end_matches(['.', ' ']).chars().take(100).collect();
+    let trimmed = trimmed.trim().to_string();
+    if trimmed.is_empty() { "SimFleet".to_string() } else { trimmed }
 }
 
 /// (v6.2.45) Convierte una livery detectada en un `DropItem` selectable.
@@ -1019,6 +1338,7 @@ fn livery_to_item(liv: &crate::pmdg_install::LiveryInfo, root: &Path) -> DropIte
         relative_path,
         size_bytes,
         description: None,
+        preselect: true,
     }
 }
 
@@ -1243,6 +1563,7 @@ fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<Dr
         relative_path: rel,
         size_bytes: size,
         description,
+        preselect: true,
     })
 }
 
@@ -1310,6 +1631,7 @@ fn classify_community_dir(dir: &Path, root: &Path) -> anyhow::Result<DropItem> {
         relative_path: rel,
         size_bytes: size,
         description: None,
+        preselect: true,
     })
 }
 
@@ -1635,4 +1957,134 @@ fn extract_icao(text: &str) -> Option<String> {
         }
     }
     candidates.into_iter().next().map(|(_, c)| c)
+}
+
+#[cfg(test)]
+mod external_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Zip con `(ruta, contenido)`; un contenido `None` crea un .zip anidado.
+    fn make_zip(path: &Path, entries: &[(&str, Option<&[u8]>)]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            zw.start_file(*name, opts).unwrap();
+            match data {
+                Some(d) => zw.write_all(d).unwrap(),
+                None => {
+                    // .zip anidado con un archivo dentro.
+                    let mut inner = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+                    inner.start_file("cycle.s3db", opts).unwrap();
+                    inner.write_all(b"navdata").unwrap();
+                    zw.write_all(&inner.finish().unwrap().into_inner()).unwrap();
+                }
+            }
+        }
+        zw.finish().unwrap();
+    }
+
+    #[test]
+    fn external_archive_is_reextracted_without_opening_nested_zips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("fenix-navdata.zip");
+        make_zip(
+            &archive,
+            &[("Navdata/Setup.exe", Some(b"MZ")), ("Navdata/2610-r001.zip", None)],
+        );
+        let sessions = DropSessions::default();
+        let insp = inspect(&archive, None, &sessions).unwrap();
+        assert_eq!(insp.items.len(), 1);
+        let item = &insp.items[0];
+        assert_eq!(item.kind, "external_content");
+        assert_eq!(item.label, "fenix-navdata");
+        assert!(item.preselect);
+        assert!(item.variants.iter().any(|v| v == "Setup.exe"));
+
+        let dest = tmp.path().join("Destino");
+        let job = external_job(&insp.session_id, &item.source_path, &sessions).unwrap();
+        let saved = save_external(&job, &dest, Some("Fenix Navdata")).unwrap();
+        // Una sola carpeta en la raíz → se usa la suya.
+        assert_eq!(PathBuf::from(&saved.path), dest.join("Navdata"));
+        assert!(!saved.is_file);
+        assert!(dest.join("Navdata").join("Setup.exe").is_file());
+        // El .zip interno queda como .zip (no se aplana).
+        assert!(dest.join("Navdata").join("2610-r001.zip").is_file());
+        assert!(!dest.join("Navdata").join("2610-r001").exists());
+
+        // Segundo guardado: no sobrescribe.
+        let again = save_external(&job, &dest, None).unwrap();
+        assert_eq!(PathBuf::from(&again.path), dest.join("Navdata (2)"));
+    }
+
+    #[test]
+    fn mixed_archive_offers_the_rest_and_never_copies_the_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("addon.zip");
+        make_zip(
+            &archive,
+            &[
+                ("Pkg/manifest.json", Some(br#"{"title":"Test","content_type":"AIRCRAFT"}"#)),
+                ("Pkg/layout.json", Some(br#"{"content":[]}"#)),
+                ("Crack/Patch.exe", Some(b"MZ")),
+                ("Visit site.url", Some(b"[InternetShortcut]")),
+            ],
+        );
+        let sessions = DropSessions::default();
+        let insp = inspect(&archive, None, &sessions).unwrap();
+        let kinds: Vec<&str> = insp.items.iter().map(|i| i.kind.as_str()).collect();
+        assert!(kinds.contains(&"community_package"));
+        let rest = insp.items.iter().find(|i| i.kind == "external_rest").unwrap();
+        assert!(rest.preselect, "trae un .exe → marcado");
+
+        let dest = tmp.path().join("Destino");
+        let job = external_job(&insp.session_id, &rest.source_path, &sessions).unwrap();
+        let saved = save_external(&job, &dest, Some("Mi addon: extras")).unwrap();
+        let out = PathBuf::from(&saved.path);
+        // Aunque sólo haya UNA carpeta ("Crack"), el resto lleva el nombre dado.
+        assert_eq!(out, dest.join("Mi addon extras"));
+        assert!(out.join("Crack").join("Patch.exe").is_file());
+        assert!(!out.join("Pkg").exists(), "el paquete va a Community, no aquí");
+        assert!(!out.join("Visit site.url").exists(), "basura fuera");
+    }
+
+    #[test]
+    fn rest_with_only_a_readme_is_offered_unselected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("scenery.zip");
+        make_zip(
+            &archive,
+            &[
+                ("Pkg/manifest.json", Some(br#"{"title":"KXYZ","content_type":"SCENERY"}"#)),
+                ("Pkg/layout.json", Some(br#"{"content":[]}"#)),
+                ("readme.txt", Some(b"hola")),
+            ],
+        );
+        let sessions = DropSessions::default();
+        let insp = inspect(&archive, None, &sessions).unwrap();
+        let rest = insp.items.iter().find(|i| i.kind == "external_rest").unwrap();
+        assert!(!rest.preselect);
+    }
+
+    #[test]
+    fn loose_executable_is_copied_as_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("Installer.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let sessions = DropSessions::default();
+        let insp = inspect(&exe, None, &sessions).unwrap();
+        assert_eq!(insp.items[0].kind, "external_content");
+        let dest = tmp.path().join("Destino");
+        let job = external_job(&insp.session_id, &insp.items[0].source_path, &sessions).unwrap();
+        let saved = save_external(&job, &dest, None).unwrap();
+        assert!(saved.is_file);
+        assert_eq!(PathBuf::from(&saved.path), dest.join("Installer.exe"));
+    }
+
+    #[test]
+    fn folder_names_are_windows_safe() {
+        assert_eq!(sanitize_folder_name("a:b*c?. "), "a b c");
+        assert_eq!(sanitize_folder_name("   "), "SimFleet");
+    }
 }

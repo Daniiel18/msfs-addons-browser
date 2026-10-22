@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   ChevronRight,
   FileDown,
+  FolderOpen,
+  Info,
   Loader2,
   Palette,
   Plane,
@@ -20,6 +22,8 @@ import type { DropRouting } from "./DragDropOverlay";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useToastStore } from "../stores/useToastStore";
+import { formatDropError, isExternalKind, saveExternalItem } from "../lib/externalSave";
+import { discardInternalDownload } from "../lib/downloadJobs";
 
 /**
  * (v2.1.0, refactor v2.2.0) Modal selector multi-archivo.
@@ -47,6 +51,11 @@ interface Props {
    *  en Notificaciones en vez de cancelarlo. Sin esta prop, cancela. */
   onDefer?: () => void;
   onDone: (reports: DropCommitReport[]) => void;
+  /** (v8.3) Se guardó contenido externo de `archivePath` (en `savedTo`). */
+  onSaved?: (archivePath: string, savedTo: string) => void;
+  /** (v8.3) Se instaló algo: el aviso "Instalado" sale ya, antes del paso de
+   *  borrar el archivo (antes era la pantalla "Instalado ✓" del modal). */
+  onInstalled?: (reports: DropCommitReport[]) => void;
 }
 
 /** (v6.2.56) ¿El archivo viene de un navegador embebido de SimFleet? Caen en
@@ -59,7 +68,15 @@ export function isEmbeddedDownload(path: string): boolean {
   return p.includes("simfleet-livery-dl") || p.includes("simfleet-mirror-dl");
 }
 
-export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone }: Props) {
+export function DropSelectModal({
+  inspections,
+  routing,
+  onClose,
+  onDefer,
+  onDone,
+  onSaved,
+  onInstalled,
+}: Props) {
   const pushToast = useToastStore((s) => s.push);
   const [pageIdx, setPageIdx] = useState(0);
   const inspection = inspections[pageIdx];
@@ -71,7 +88,11 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
   >(() => {
     const init: Record<string, Set<string>> = {};
     for (const insp of inspections) {
-      init[insp.sessionId] = new Set(insp.items.map((it) => it.sourcePath));
+      // (v8.3) Todo marcado salvo lo que el backend propone sin marcar (un
+      // "resto" que sólo trae un readme).
+      init[insp.sessionId] = new Set(
+        insp.items.filter((it) => it.preselect !== false).map((it) => it.sourcePath),
+      );
     }
     return init;
   });
@@ -79,7 +100,6 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
   // (v4.11.2) Estado efímero "Instalado ✓" que se muestra ~1s ANTES de
   // ofrecer borrar el archivo — así se percibe que SÍ se instaló y no
   // parece que se borra sin instalar.
-  const [installedOk, setInstalledOk] = useState(false);
   // (v4.7.0) Paso de borrado del archivo original tras instalar.
   const [deletePrompt, setDeletePrompt] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -94,8 +114,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
         e.key === "Escape" &&
         !installing &&
         !deleting &&
-        !deletePrompt &&
-        !installedOk
+        !deletePrompt
       ) {
         deferOrCancel();
       }
@@ -103,7 +122,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [installing, deleting, deletePrompt, installedOk]);
+  }, [installing, deleting, deletePrompt]);
 
   const cancelAll = async () => {
     for (const insp of inspections) {
@@ -165,36 +184,42 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
       for (const insp of inspections) {
         const sel = selectionsBySession[insp.sessionId];
         if (!sel || sel.size === 0) {
-          // Skip + cancel para liberar tempdir.
+          // Skip + cancel para liberar tempdir. (v8.3) Si era una descarga
+          // interna, su archivo se borra y el job queda cancelado.
           await api.dropCancel(insp.sessionId).catch(() => {});
+          await discardInternalDownload(insp.archivePath, "cancelled");
           continue;
         }
-        // (v6.2.56) Apps / instaladores: NO van a Community. Piden carpeta y
-        // se copian ahí. Los sacamos del commit (el backend no los instala).
-        const installerItems = insp.items.filter(
-          (it) => it.kind === "installer_exe" && sel.has(it.sourcePath),
+        // (v8.3) Lo que no va a MSFS (app, instalador, navdata, el "resto"):
+        // carpeta del usuario → se guarda ahí y se abre. ANTES del commit, que
+        // borra la extracción temporal. El backend no lo instala.
+        const externalItems = insp.items.filter(
+          (it) => isExternalKind(it.kind) && sel.has(it.sourcePath),
         );
-        for (const it of installerItems) {
+        let savedExternal = false;
+        for (const it of externalItems) {
           try {
-            const folder = await api.pickFolderPath();
-            if (folder) {
-              const dest = await api.saveInstallerTo(it.sourcePath, folder);
-              pushToast({
-                kind: "success",
-                title: t("installer.saved"),
-                message: dest,
-                ttlMs: 6000,
-              });
+            const saved = await saveExternalItem(insp, it);
+            if (saved) {
+              savedExternal = true;
+              onSaved?.(insp.archivePath, saved.path);
             }
           } catch (e) {
-            pushToast({ kind: "error", title: t("installer.err"), message: String(e) });
+            pushToast({
+              kind: "error",
+              title: t("external.err"),
+              message: formatDropError(String(e)),
+            });
           }
         }
         const commitPaths = Array.from(sel).filter(
-          (p) => !installerItems.some((it) => it.sourcePath === p),
+          (p) => !externalItems.some((it) => it.sourcePath === p),
         );
         if (commitPaths.length === 0) {
           await api.dropCancel(insp.sessionId).catch(() => {});
+          if (savedExternal && isEmbeddedDownload(insp.archivePath)) {
+            await api.deleteDroppedArchive(insp.archivePath).catch(() => {});
+          }
           continue;
         }
         try {
@@ -237,14 +262,13 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
     // (v4.7.0 / v4.11.2 / v5.0.1) Si algo se instaló bien, mostramos
     // "Instalado ✓" ~2s y LUEGO ofrecemos borrar el/los archivo(s). Si
     // no, cerramos.
+    // (v8.3) El "Instalado" va como aviso normal (onInstalled) y el modal pasa
+    // directo a ofrecer borrar el archivo, sin pantalla intermedia.
     const uniqueArchives = Array.from(new Set(committed));
     if (uniqueArchives.length > 0) {
       setPendingReports(reports);
-      setInstalledOk(true);
-      setTimeout(() => {
-        setInstalledOk(false);
-        setDeletePrompt(uniqueArchives);
-      }, 2000);
+      onInstalled?.(reports);
+      setDeletePrompt(uniqueArchives);
     } else {
       onDone(reports);
     }
@@ -271,7 +295,7 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
 
   // (Ajustes 19/10) Cierre no destructivo: queda pendiente en Notificaciones.
   function deferOrCancel() {
-    if (installing || deleting || deletePrompt || installedOk) return;
+    if (installing || deleting || deletePrompt) return;
     if (onDefer) onDefer();
     else void cancelAll();
   }
@@ -292,10 +316,11 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
   const liveryItems = inspection.items.filter((i) =>
     ["pmdg_livery", "ifly_livery"].includes(i.kind),
   );
-  // (v6.2.56) Apps / instaladores — sección propia, con destino a carpeta.
-  const installerItemsView = inspection.items.filter(
-    (i) => i.kind === "installer_exe",
+  // (v8.3) Lo que no va a MSFS — secciones propias, con destino a carpeta.
+  const externalContentItems = inspection.items.filter(
+    (i) => i.kind === "external_content",
   );
+  const externalRestItems = inspection.items.filter((i) => i.kind === "external_rest");
   const otherItems = inspection.items.filter(
     (i) =>
       ![
@@ -305,7 +330,8 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
         "pmdg_config",
         "pmdg_livery",
         "ifly_livery",
-        "installer_exe",
+        "external_content",
+        "external_rest",
       ].includes(i.kind),
   );
 
@@ -326,12 +352,10 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
           transition={{ duration: 0.18 }}
           onClick={(e) => e.stopPropagation()}
           className={`w-full rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ${
-            installedOk || deletePrompt ? "max-w-sm" : "max-w-2xl"
+            deletePrompt ? "max-w-sm" : "max-w-2xl"
           }`}
         >
-          {installedOk ? (
-            <InstalledSuccess reports={pendingReports} />
-          ) : deletePrompt ? (
+          {deletePrompt ? (
             <DeleteConfirm
               archives={deletePrompt}
               deleting={deleting}
@@ -526,15 +550,37 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
                     destinationHint={t("drop.config.dest")}
                   />
                 )}
-                {installerItemsView.length > 0 && (
+                {externalContentItems.length > 0 && (
                   <Section
-                    title={t("drop.tab.installer")}
-                    icon={<Box className="h-3 w-3 text-amber-300" />}
-                    items={installerItemsView}
+                    title={t("drop.tab.external")}
+                    icon={<FolderOpen className="h-3 w-3 text-amber-300" />}
+                    items={externalContentItems}
                     selected={selected}
                     toggle={toggle}
-                    destinationHint={t("drop.installer.dest")}
+                    destinationHint={t("drop.external.dest")}
                   />
+                )}
+                {externalRestItems.length > 0 && (
+                  <Section
+                    title={t("drop.tab.rest")}
+                    icon={<FolderOpen className="h-3 w-3 text-amber-300" />}
+                    items={externalRestItems}
+                    selected={selected}
+                    toggle={toggle}
+                    destinationHint={t("drop.external.dest")}
+                  />
+                )}
+                {/* (v8.3) Notas de instalación de la ficha (aerohub). */}
+                {inspection.notes && (
+                  <details className="mt-3 rounded-md border border-sf-border bg-sf-surface px-3 py-2 text-xs">
+                    <summary className="flex cursor-pointer items-center gap-1.5 font-medium text-sf-text">
+                      <Info className="h-3.5 w-3.5 text-brand-300" />
+                      {t("result.install_notes")}
+                    </summary>
+                    <p className="mt-2 select-text whitespace-pre-line break-words leading-relaxed text-sf-text/90">
+                      {inspection.notes}
+                    </p>
+                  </details>
                 )}
                 {otherItems.length > 0 && (
                   <Section
@@ -600,37 +646,6 @@ export function DropSelectModal({ inspections, routing, onClose, onDefer, onDone
   );
 }
 
-/** (v4.11.2) Estado efímero "Instalado ✓" antes de ofrecer borrar. Da
- *  feedback claro de que la instalación SÍ ocurrió. */
-function InstalledSuccess({ reports }: { reports: DropCommitReport[] }) {
-  const count = reports.reduce(
-    (n, r) =>
-      n +
-      r.installedPackages.length +
-      r.installedGsx.length +
-      (r.installedConfigs?.length ?? 0) +
-      (r.installedLiveries?.length ?? 0),
-    0,
-  );
-  return (
-    <div className="flex flex-col items-center gap-2 px-6 py-8 text-center">
-      <motion.div
-        initial={{ scale: 0.6, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: "spring", stiffness: 320, damping: 18 }}
-        className="rounded-full bg-emerald-500/15 p-3 ring-1 ring-emerald-500/30"
-      >
-        <CheckCircle2 className="h-7 w-7 text-emerald-300" />
-      </motion.div>
-      <h2 className="text-sm font-semibold text-sf-text">
-        {t("drop.modal.installed_ok")}
-      </h2>
-      <p className="text-xs text-sf-muted">
-        {t("drop.modal.installed_ok_sub", { count })}
-      </p>
-    </div>
-  );
-}
 
 /** (v4.7.0) Paso de confirmación: ¿borrar el/los archivo(s) original(es)?
  *  (v4.23.0) Exportado: el fast-path de DragDropOverlay (archivos de 1
@@ -756,7 +771,11 @@ function Section({
       </h3>
       <ul className="space-y-1">
         {items.map((it) => {
-          const displayName = it.sourcePath.split(/[\\/]/).pop() ?? it.relativePath;
+          // (v8.3) Lo externo se nombra por su label (archivo o "resto"): su
+          // sourcePath es la carpeta temporal de extracción.
+          const displayName = isExternalKind(it.kind)
+            ? it.label
+            : (it.sourcePath.split(/[\\/]/).pop() ?? it.relativePath);
           return (
             <li
               key={it.sourcePath}
@@ -811,7 +830,9 @@ function Section({
                 {it.description && (
                   <details className="mt-1 text-[11px] text-sf-muted">
                     <summary className="cursor-pointer text-sf-muted hover:text-sf-text/90">
-                      {t("drop.modal.see_first_lines")}
+                      {isExternalKind(it.kind)
+                        ? t("drop.modal.see_files")
+                        : t("drop.modal.see_first_lines")}
                     </summary>
                     <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-sf-border bg-sf-bg/50 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-sf-muted">
                       {it.description}

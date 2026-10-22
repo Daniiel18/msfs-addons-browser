@@ -159,6 +159,7 @@ impl Source for SceneryAddonsSource {
                     download_methods,
                     image_url,
                     released_at,
+                    notes: None,
                 }
             },
         ))
@@ -229,6 +230,7 @@ impl Source for SceneryAddonsSource {
                     download_methods,
                     image_url,
                     released_at,
+                    notes: None,
                 }
             },
         ))

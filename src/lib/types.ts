@@ -30,6 +30,8 @@ export interface Addon {
    *  el `<time datetime>` estaba presente; texto crudo si sólo
    *  había contenido visible; `null` cuando el parser no halló nada. */
   releasedAt: string | null;
+  /** (v8.3) Notas de instalación de la ficha (aerohub). */
+  notes?: string | null;
 }
 
 export interface SourceDescriptor {
@@ -1492,7 +1494,10 @@ export interface GsxInstallReport {
 /** (v2.1.0) Item detectado dentro de un archivo dropeado. Espejo de
  *  `drop_install::DropItem`. */
 export interface DropItem {
-  /** "gsx_profile" | "community_package" | "installer_exe" | "unknown" */
+  /** "gsx_profile" | "community_package" | "pmdg_livery" | "ifly_livery" |
+   *  "pmdg_config" | "ifly_config" | (v8.3) "external_content" (nada va a
+   *  MSFS: se guarda en una carpeta) | "external_rest" (lo que sobra junto a
+   *  contenido de MSFS) */
   kind: string;
   label: string;
   icao: string | null;
@@ -1504,6 +1509,8 @@ export interface DropItem {
   /** (v2.1.1) Primeras líneas del .ini, útil para distinguir items
    *  con el mismo filename pero diferente contenido. */
   description: string | null;
+  /** (v8.3) Marcado por defecto en el modal (false: un "resto" sin .exe). */
+  preselect?: boolean;
 }
 
 /** (v2.1.0) Resultado de la inspección de un archivo dropeado. */
@@ -1516,6 +1523,17 @@ export interface DropInspection {
   /** (v5.2.0) True si lo dropeado era una CARPETA — no se ofrece borrar
    *  el original. */
   isFolder?: boolean;
+  /** (v8.3) Sólo frontend: nombre del addon de la descarga (catálogo) para
+   *  la carpeta del contenido externo, y sus notas de instalación. */
+  displayName?: string;
+  notes?: string | null;
+}
+
+/** (v8.3) Contenido externo guardado en la carpeta del usuario. */
+export interface SavedExternal {
+  /** Carpeta creada, o el archivo copiado si `isFile`. */
+  path: string;
+  isFile: boolean;
 }
 
 /** (v2.1.0) Resultado de instalar los items seleccionados. */

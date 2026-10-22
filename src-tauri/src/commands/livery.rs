@@ -16,6 +16,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use crate::download::manager::HosterStatus;
+
 const LIVERY_WIN: &str = "livery-browser";
 
 /// (v7) Carpeta PADRE de extensiones para el WebView (contiene `ublock-lite/`).
@@ -113,6 +115,9 @@ pub async fn open_livery_browser(
     let last_file_page: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let lfp_nav = last_file_page.clone();
     let lfp_dl = last_file_page.clone();
+    // (v8.3) Descargas → jobs del panel de Descargas.
+    let url_jobs: ExternalJobs = Arc::new(Mutex::new(HashMap::new()));
+    let url_jobs_dl = url_jobs.clone();
     // Para el botón ✕ del overlay (cerrar la ventana de liveries).
     let app_cancel_lv = app.clone();
 
@@ -187,7 +192,7 @@ pub async fn open_livery_browser(
         })
         .on_download(move |webview, event| {
             // (19/10) Lógica compartida con el flightsim.to embebido en Explore.
-            handle_flightsim_download(&app_emit, &dl_dir_cb, &lfp_dl, &webview, event)
+            handle_flightsim_download(&app_emit, &dl_dir_cb, &lfp_dl, &url_jobs_dl, &webview, event)
         });
     // (v7) uBlock Origin Lite también en la ventana de flightsim.to (misma
     // extensión; si no cargó, se ignora).
@@ -209,6 +214,7 @@ pub async fn open_livery_browser(
     {
         install_web_guards(win.as_ref(), false);
         install_download_progress(win.as_ref());
+        install_external_job_progress(win.as_ref(), app.clone(), url_jobs.clone());
     }
 
     tracing::info!(target: "livery", "navegador embebido de liveries abierto → {}", start);
@@ -234,6 +240,10 @@ const OVERLAY_JS: &str = r#"
     procsub:"Almost there — SimFleet is extracting and will open the install window.",
     cap:'🔒  Solve the captcha to continue',
     click:'👉  Click DOWNLOAD to get the file — SimFleet installs it automatically',
+    clickvd:'👉  Click Download — SimFleet takes care of the rest',
+    prep:'The download is about to start…',
+    prepsub:"The server is preparing the file. In a few seconds this window gets out of the way and the progress continues in Downloads.",
+    nostart:"⚠️  The download didn't start — click Download again (or Cancel and retry from SimFleet)",
     cancel:'Cancel'
   } : {
     dl:'SimFleet está descargando…',
@@ -242,6 +252,10 @@ const OVERLAY_JS: &str = r#"
     procsub:'Casi listo — SimFleet está extrayendo y abrirá la ventana de instalación.',
     cap:'🔒  Resolvé el captcha para continuar',
     click:'👉  Hacé clic en DESCARGAR para bajar el archivo — se instala solo',
+    clickvd:'👉  Hacé clic en Download — SimFleet se encarga del resto',
+    prep:'La descarga está por empezar…',
+    prepsub:'El servidor está preparando el archivo. En unos segundos esta ventana se quita sola y el progreso sigue en Descargas.',
+    nostart:'⚠️  La descarga no arrancó — volvé a pulsar Download (o Cancelar y reintentá desde SimFleet)',
     cancel:'Cancelar'
   };
   var S={mode:'off',msg:''}; window.__sfOv=S;
@@ -307,11 +321,19 @@ const OVERLAY_JS: &str = r#"
   function render(){
     var o=build(),main=el('__sfov_main'),hint=el('__sfov_hint'),cancel=el('__sfov_cancel');
     o.style.display='flex';
-    if(S.mode==='block'){
+    if(S.mode==='block'||S.mode==='prep'){
       o.style.background='rgba(6,10,16,.94)'; o.style.pointerEvents='auto'; o.style.justifyContent='center';
       main.style.display='flex'; hint.style.display='none';
       cancel.style.position='static'; cancel.style.transform='';
-      if(window.__sfProc){
+      if(S.mode==='prep'){
+        // (v8.3) Clic hecho, el servidor aún no manda el archivo (VaultDrop
+        // tarda 5–15 s): barra indeterminada y aviso de que ya arranca.
+        el('__sfov_m').textContent=window.__sfL.prep;
+        el('__sfov_s').textContent=window.__sfL.prepsub;
+        var pf=el('__sfov_fill'); if(pf){ pf.style.transition='none'; pf.style.width='38%'; pf.style.animation='sfbar 1.1s ease-in-out infinite'; }
+        var pp=el('__sfov_pct'); if(pp) pp.textContent='';
+        var pe=el('__sfov_eta'); if(pe) pe.textContent='';
+      } else if(window.__sfProc){
         el('__sfov_m').textContent=window.__sfL.proc;
         el('__sfov_s').textContent=window.__sfL.procsub;
       } else {
@@ -416,6 +438,13 @@ const HOSTER_DRIVER_JS: &str = r#"
   }
   function isMixdrop(){ var h=host();
     return h.indexOf('mixdrop')!==-1||h.indexOf('xdrop')!==-1||h.indexOf('mdrop')!==-1; }
+  // (v8.3) VaultDrop (aerohub): tras pasar Turnstile el widget SIGUE visible
+  // ("Success!"), así que el estado real lo da su botón #btnDl: habilitado →
+  // falta el clic del usuario (la página exige un clic real, no se automatiza).
+  function isVaultdrop(){ return host().indexOf('vaultdrop.')!==-1; }
+  function vaultdropReady(){
+    try{ var b=document.getElementById('btnDl'); return !!b && !b.disabled; }catch(e){ return false; }
+  }
   function drive(){
     try{
       // (v7) Fallo terminal → el overlay ya muestra el mensaje; no lo pisamos.
@@ -426,6 +455,22 @@ const HOSTER_DRIVER_JS: &str = r#"
       // (regresión reportada — modsfire dejó de auto-arrancar). Durante el
       // auto-avance la página queda interactiva; el overlay aparece al bajar.
       if(window.__sfDownloading){ window.__sfSet('block'); return; }
+      // (v8.3) `__sfPrep` lo pone Rust cuando la página navega a OTRO dominio
+      // (el enlace de descarga): aviso "está por empezar" hasta que arranque.
+      // Si en 60 s no arrancó, se dice y se devuelve la página al usuario.
+      if(window.__sfPrep){
+        if(Date.now()-window.__sfPrep<60000){ window.__sfSet('prep'); return; }
+        window.__sfPrep=0; window.__sfNoStart=true;
+      }
+      if(window.__sfNoStart){ window.__sfSet('hint', window.__sfL.nostart); return; }
+      if(isVaultdrop()){
+        // `__sfPartHint` ("parte 2 de 2") lo pone Rust al cargar cada parte.
+        var part=window.__sfPartHint?('  ·  '+window.__sfPartHint):'';
+        if(vaultdropReady()){ window.__sfSet('hint', window.__sfL.clickvd+part); }
+        else if(visibleCaptcha()){ window.__sfSet('hint', window.__sfL.cap+part); }
+        else { window.__sfSet('off'); }
+        return;
+      }
       if(visibleCaptcha()){ window.__sfSet('hint', window.__sfL.cap); }
       else if(isMixdrop()){ window.__sfSet('hint', window.__sfL.click); }
       else { window.__sfSet('off'); }
@@ -526,31 +571,56 @@ pub(crate) fn handle_flightsim_download(
     app_emit: &tauri::AppHandle,
     dl_dir: &Path,
     last_file_page: &Arc<Mutex<Option<String>>>,
+    url_jobs: &ExternalJobs,
     webview: &tauri::Webview,
     event: tauri::webview::DownloadEvent<'_>,
 ) -> bool {
     use tauri::webview::DownloadEvent;
     match event {
         DownloadEvent::Requested { url, destination } => {
-            let fname = download_filename(&url);
+            let suggested = destination.file_name().and_then(|n| n.to_str()).map(str::to_string);
+            let fname = pick_download_name(suggested.as_deref(), &url);
             let target = dl_dir.join(&fname);
             tracing::info!(target: "livery", "descarga interceptada: {} → {}", url, target.display());
-            // (v7) La descarga ARRANCÓ (el usuario ya clicó el botón de
-            // Download que aparece tras el countdown) → recién AHORA
-            // ponemos el overlay bloqueante. Aviso también al front.
-            let _ = webview.eval(
-                "window.__sfDownloading=true;if(window.__sfSet)window.__sfSet('block');",
-            );
+            // (v8.3) SIN overlay bloqueante (antes tapaba la web hasta acabar):
+            // la página sigue usable y la descarga se ve en el panel de
+            // Descargas como un job más, con progreso y "cancelar".
+            let id = uuid::Uuid::new_v4().to_string();
+            url_jobs.lock().unwrap().insert(url.to_string(), id.clone());
+            if let Some(state) = app_emit.try_state::<crate::AppState>() {
+                let downloads = state.downloads.clone();
+                let (title, u) = (fname.clone(), url.to_string());
+                tauri::async_runtime::spawn(async move {
+                    downloads
+                        .register_external(id, title, "flightsim.to".into(), "flightsim.to".into(), u)
+                        .await;
+                });
+            }
             let _ = app_emit.emit("embedded-download://started", fname.clone());
             *destination = target;
         }
         DownloadEvent::Finished { url, path, success } => {
             tracing::info!(target: "livery", "descarga terminada ok={} url={} path={:?}", success, url, path);
-            // (v7) La página NO se cierra (el usuario sigue navegando para
-            // bajar más), así que quitamos el overlay al terminar.
-            let _ = webview.eval(
-                "window.__sfDownloading=false;if(window.__sfSet)window.__sfSet('off');",
-            );
+            let job = url_jobs.lock().unwrap().remove(url.as_str());
+            let cancelled = job
+                .as_deref()
+                .is_some_and(|id| external_cancels().lock().unwrap().remove(id));
+            if let Some(id) = job.as_deref() {
+                let status = if success {
+                    HosterStatus::Downloaded
+                } else if cancelled {
+                    HosterStatus::Cancelled
+                } else {
+                    HosterStatus::Failed(crate::tr!("livery.downloadFailed"))
+                };
+                external_job(app_emit, id, status);
+            }
+            if cancelled {
+                if let Some(p) = path {
+                    let _ = std::fs::remove_file(p);
+                }
+                return true;
+            }
             if success {
                 if let Some(p) = path {
                     // (v7) Corrección de extensión por firma (por si un CDN
@@ -579,13 +649,123 @@ pub(crate) fn handle_flightsim_download(
                             }
                         }
                     }
-                    let _ = app_emit.emit("livery-download://finished", ps);
+                    // (v8.3) Con el job → el frontend cuenta el procesado en
+                    // el panel de Descargas.
+                    let _ = app_emit.emit(
+                        "livery-download://finished",
+                        serde_json::json!({ "path": ps, "job": job }),
+                    );
                 }
             }
         }
         _ => {}
     }
     true
+}
+
+/// (v8.3) URL de cada descarga de flightsim.to en curso → id de su job en el
+/// panel de Descargas (lo llenan `handle_flightsim_download` y lo lee
+/// `install_external_job_progress`).
+pub(crate) type ExternalJobs = Arc<Mutex<HashMap<String, String>>>;
+
+/// Jobs de flightsim.to que el usuario canceló desde el panel de Descargas:
+/// su manejador de progreso corta la descarga en el siguiente aviso de bytes.
+fn external_cancels() -> &'static Mutex<HashSet<String>> {
+    static CANCELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    CANCELS.get_or_init(Default::default)
+}
+
+/// (v8.3) Pide cortar la descarga de flightsim.to del job `id` (no-op si no es
+/// una de ellas).
+pub(crate) fn request_external_cancel(id: &str) {
+    external_cancels().lock().unwrap().insert(id.to_string());
+}
+
+/// Cuenta al job `id` del panel de Descargas el estado de su descarga.
+fn external_job(app: &tauri::AppHandle, id: &str, status: HosterStatus) {
+    let Some(state) = app.try_state::<crate::AppState>() else { return };
+    let downloads = state.downloads.clone();
+    let id = id.to_string();
+    tauri::async_runtime::spawn(async move {
+        downloads.hoster_status(&id, status).await;
+    });
+}
+
+/// (v8.3) Progreso de las descargas de flightsim.to (web embebida / ventana de
+/// liveries) → su job del panel de Descargas, como mucho una vez por segundo.
+/// Si el usuario canceló el job, aquí se corta la descarga.
+#[cfg(target_os = "windows")]
+pub(crate) fn install_external_job_progress(
+    win: &tauri::Webview,
+    app: tauri::AppHandle,
+    url_jobs: ExternalJobs,
+) {
+    let _ = win.with_webview(move |webview| {
+        use std::time::Instant;
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
+        use webview2_com::{BytesReceivedChangedEventHandler, DownloadStartingEventHandler};
+        use windows_core::{Interface, PWSTR};
+        // SAFETY: API COM de WebView2 en el hilo de UI (mismo patrón que
+        // `install_download_progress`).
+        unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            let Ok(wv4) = core.cast::<ICoreWebView2_4>() else {
+                return;
+            };
+            let handler = DownloadStartingEventHandler::create(Box::new(move |_wv, args| {
+                let Some(args) = args else { return Ok(()) };
+                let op = args.DownloadOperation()?;
+                let mut pw = PWSTR::null();
+                op.Uri(&mut pw)?;
+                let uri = webview2_com::take_pwstr(pw);
+                // `handle_flightsim_download` (on_download, que corre antes)
+                // ya registró el job de esta URL.
+                let Some(id) = url_jobs.lock().unwrap().get(&uri).cloned() else {
+                    return Ok(());
+                };
+                let app = app.clone();
+                let mut last_bytes: i64 = 0;
+                let mut last_t = Instant::now();
+                let on_bytes = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _| {
+                    let Some(op) = sender else { return Ok(()) };
+                    if external_cancels().lock().unwrap().contains(&id) {
+                        let _ = op.Cancel();
+                        return Ok(());
+                    }
+                    let now = Instant::now();
+                    let dt = now.duration_since(last_t).as_secs_f64();
+                    if dt < 1.0 {
+                        return Ok(());
+                    }
+                    let mut received: i64 = 0;
+                    op.BytesReceived(&mut received)?;
+                    let mut size: i64 = 0;
+                    let _ = op.TotalBytesToReceive(&mut size);
+                    let bps = ((received - last_bytes).max(0) as f64 / dt) as u64;
+                    last_bytes = received;
+                    last_t = now;
+                    external_job(
+                        &app,
+                        &id,
+                        HosterStatus::Progress {
+                            done: received.max(0) as u64,
+                            total: size.max(0) as u64,
+                            bps,
+                            part: None,
+                        },
+                    );
+                    Ok(())
+                }));
+                let mut tok: i64 = 0;
+                let _ = op.add_BytesReceivedChanged(&on_bytes, &mut tok);
+                Ok(())
+            }));
+            let mut token: i64 = 0;
+            let _ = wv4.add_DownloadStarting(&handler, &mut token);
+        }
+    });
 }
 
 fn top_frame_only(js: &str) -> String {
@@ -636,7 +816,7 @@ pub(crate) fn open_hoster_download(
     // las partes de otras descargas concurrentes para poder unirlas sin mezclar.
     // Sigue conteniendo "simfleet-mirror-dl" → el frontend la reconoce y la
     // purga de arranque la borra recursivamente.
-    let dl_dir = std::env::temp_dir().join(MIRROR_DL_DIR).join(&win_label);
+    let dl_dir = hoster_dl_dir(&win_label);
     let _ = std::fs::create_dir_all(&dl_dir);
     let dl_dir_cb = dl_dir.clone();
 
@@ -652,7 +832,34 @@ pub(crate) fn open_hoster_download(
     // pero el `Mutex` mantiene el préstamo simple entre invocaciones del `Fn`).
     let mp_files: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let mp_idx: Arc<Mutex<usize>> = Arc::new(Mutex::new(0usize));
+    let mp_idx_pl = mp_idx.clone();
+    let job_label = win_label.clone();
+    let job_idx = mp_idx.clone();
+    // (v8.3) Dominio de la página cargada en la ventana (lo anota on_page_load):
+    // navegar a OTRO dominio desde ella suele ser el enlace de descarga.
+    let page_host: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let page_host_pl = page_host.clone();
+    // (v8.3) Reanudaciones automáticas de la descarga de WebView2 (la cuenta
+    // `install_download_job_progress`): un "falló" seguido de una reanudación
+    // no es un fallo.
+    let resumes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let resumes_dl = resumes.clone();
     let urls_cb = urls.clone();
+    // (v8.3) URLs directas que reqwest no pudo bajar sin la sesión del
+    // navegador (401/403 al primer intento): se reintentan en el WebView.
+    let webview_only: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    // (v8.3) Lo necesario para lanzar una descarga por reqwest, compartido por
+    // `on_download` (R2) y `on_navigation` (CDN de VaultDrop).
+    let direct = DirectCtx {
+        app: app.clone(),
+        label: win_label.clone(),
+        dir: dl_dir.clone(),
+        files: mp_files.clone(),
+        idx: mp_idx.clone(),
+        urls: urls.clone(),
+        password: password.clone(),
+        webview_only: webview_only.clone(),
+    };
 
     // Overlay de SimFleet + driver de hosters (bloqueo/auto-avance/captcha),
     // con el idioma de la app inyectado.
@@ -687,6 +894,7 @@ pub(crate) fn open_hoster_download(
             let us = url.as_str();
             if us.contains("cancel.simfleet.invalid") {
                 tracing::info!(target: "hoster", "cancelar descarga (✕) → cierro ventana");
+                hoster_job(&app_cancel, &label_cancel, HosterStatus::Cancelled);
                 let _ = std::fs::remove_dir_all(&dl_dir_cancel);
                 if let Some(w) = app_cancel.get_webview_window(&label_cancel) {
                     let _ = w.close();
@@ -694,13 +902,39 @@ pub(crate) fn open_hoster_download(
                 return false;
             }
             tracing::info!(target: "hoster", "webview navega → {}", us);
+            // (v8.3) Navegar a OTRO dominio desde la página del hoster suele ser
+            // el enlace de descarga, que el servidor tarda en mandar (VaultDrop
+            // 5–15 s) → aviso "la descarga está por empezar" en la página
+            // actual. Si era otra página, ésta la reemplaza y el aviso se va.
+            let current = page_host.lock().unwrap().clone();
+            let target = url.host_str().map(str::to_string);
+            if current.is_some() && target.is_some() && current != target {
+                if let Some(w) = app_cancel.get_webview_window(&label_cancel) {
+                    tauri::async_runtime::spawn(async move {
+                        let _ = w.eval(
+                            "window.__sfPrep=Date.now();window.__sfNoStart=false;\
+                             if(window.__sfSet)window.__sfSet('prep');",
+                        );
+                    });
+                }
+            }
             true
         })
-        .on_page_load(|_w, payload| {
+        .on_page_load(move |w, payload| {
             tracing::info!(
                 target: "hoster",
                 "webview page_load {:?} → {}", payload.event(), payload.url()
             );
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                *page_host_pl.lock().unwrap() = payload.url().host_str().map(str::to_string);
+            }
+            // (v8.3) Multi-parte: "parte X de N" para la pista del driver
+            // (VaultDrop pide un clic del usuario en cada parte).
+            if multipart && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let i = *mp_idx_pl.lock().unwrap();
+                let label = crate::tr!("livery.partOf", i = i + 1, total = total);
+                let _ = w.eval(&format!("window.__sfPartHint={label:?};"));
+            }
         })
         .on_download(move |webview, event| {
             use tauri::webview::DownloadEvent;
@@ -718,8 +952,32 @@ pub(crate) fn open_hoster_download(
                          if(window.__sfSet)window.__sfSet('block');"
                     );
                     let _ = webview.eval(&js);
+                    // (v8.3) Y la ventana se QUITA de en medio: sigue bajando
+                    // oculta y el progreso se ve en el panel de Descargas.
+                    if let Some(w) = app_emit.get_webview_window(&label_close) {
+                        let _ = w.hide();
+                    }
+                    hoster_job(
+                        &app_emit,
+                        &label_close,
+                        HosterStatus::Progress {
+                            done: 0,
+                            total: 0,
+                            bps: 0,
+                            part: (!part_label.is_empty()).then(|| part_label.clone()),
+                        },
+                    );
 
-                    if is_direct_download_url(url.as_str()) {
+                    // (v8.3) Nombre real que propone el servidor (WebView2 lo
+                    // saca del Content-Disposition), si no, el de la URL.
+                    let suggested = destination
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(str::to_string);
+                    let single_name = pick_download_name(suggested.as_deref(), &url);
+                    let in_webview = webview_only.lock().unwrap().contains(url.as_str());
+
+                    if is_direct_download_url(url.as_str()) && !in_webview {
                         // (v7) URL DIRECTA (R2 presignada) → la baja `reqwest`
                         // (reanuda + reintenta): el downloader de WebView2 se
                         // cuelga en archivos grandes (se cortaba a ~1.5 GB).
@@ -731,7 +989,7 @@ pub(crate) fn open_hoster_download(
                         let target = if multipart {
                             dl_dir_cb.join(format!("sf-part-{idx:03}.bin"))
                         } else {
-                            dl_dir_cb.join(download_filename(&url))
+                            dl_dir_cb.join(&single_name)
                         };
                         tracing::info!(
                             target: "hoster",
@@ -740,33 +998,7 @@ pub(crate) fn open_hoster_download(
                         );
                         let _ = app_emit
                             .emit("embedded-download://started", crate::tr!("livery.part", i = idx + 1));
-                        let url_s = url.to_string();
-                        let app2 = app_emit.clone();
-                        let label2 = label_close.clone();
-                        let files2 = mp_files.clone();
-                        let idx2 = mp_idx.clone();
-                        let urls2 = urls_cb.clone();
-                        let dir2 = dl_dir_cb.clone();
-                        let pl = part_label.clone();
-                        let tgt = target.clone();
-                        let pw2 = password.clone();
-                        tauri::async_runtime::spawn(async move {
-                            match fetch_direct_to_file(url_s, tgt.clone(), app2.clone(), label2.clone(), pl)
-                                .await
-                            {
-                                Ok(()) => advance_after_part(
-                                    tgt, &files2, &idx2, &urls2, &dir2, &app2, &label2,
-                                    pw2.as_deref(),
-                                ),
-                                Err(e) => {
-                                    tracing::error!(target: "hoster", "descarga directa falló: {e}");
-                                    show_hoster_failure(
-                                        &app2, &label2,
-                                        &crate::tr!("livery.downloadFailedConn"),
-                                    );
-                                }
-                            }
-                        });
+                        direct.spawn(url.to_string(), target, part_label, !multipart);
                         return false;
                     }
 
@@ -775,7 +1007,7 @@ pub(crate) fn open_hoster_download(
                     let fname = if multipart {
                         format!("sf-part-{idx:03}.bin")
                     } else {
-                        download_filename(&url)
+                        single_name
                     };
                     let target = dl_dir_cb.join(&fname);
                     tracing::info!(
@@ -792,19 +1024,33 @@ pub(crate) fn open_hoster_download(
                         "descarga terminada ok={} url={} path={:?}", success, url, path
                     );
                     // Las URLs directas (R2) las maneja la tarea reqwest —
-                    // ignoramos su Finished (WebView2 la canceló).
-                    if is_direct_download_url(url.as_str()) {
+                    // ignoramos su Finished (WebView2 la canceló). Salvo las
+                    // que se pasaron al WebView por pedir sesión (v8.3).
+                    if is_direct_download_url(url.as_str())
+                        && !webview_only.lock().unwrap().contains(url.as_str())
+                    {
                         return true;
                     }
                     if !success {
-                        // No dejamos la ventana colgada: mostramos el fallo. Los
-                        // archivos grandes ya van por reqwest, así que esto es
-                        // raro (sólo el flujo get.php de un archivo chico).
-                        tracing::warn!(target: "hoster", "descarga WebView2 falló (ok=false)");
-                        show_hoster_failure(
-                            &app_emit, &label_close,
-                            &crate::tr!("livery.downloadFailed"),
-                        );
+                        // No dejamos la ventana colgada: mostramos el fallo.
+                        // (v8.3) Pero wry avisa "falló" en cuanto WebView2
+                        // INTERRUMPE la descarga, y justo después
+                        // `install_download_job_progress` puede reanudarla (el
+                        // CDN de VaultDrop corta archivos grandes): se espera un
+                        // poco y sólo es fallo si no hubo reanudación.
+                        let seen = resumes_dl.load(Ordering::SeqCst);
+                        let resumes2 = resumes_dl.clone();
+                        let app2 = app_emit.clone();
+                        let label2 = label_close.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(2500)).await;
+                            if resumes2.load(Ordering::SeqCst) > seen {
+                                tracing::info!(target: "hoster", "descarga interrumpida y reanudada");
+                                return;
+                            }
+                            tracing::warn!(target: "hoster", "descarga WebView2 falló (ok=false)");
+                            show_hoster_failure(&app2, &label2, &crate::tr!("livery.downloadFailed"));
+                        });
                         return true;
                     }
                     let Some(p) = path else {
@@ -824,6 +1070,7 @@ pub(crate) fn open_hoster_download(
                         if let Some(w) = app_emit.get_webview_window(&label_close) {
                             let _ = w.eval("if(window.__sfProcessing)window.__sfProcessing();");
                         }
+                        hoster_job(&app_emit, &label_close, HosterStatus::Downloaded);
                         let _ = app_emit.emit(
                             "embedded-download://finished",
                             serde_json::json!({
@@ -858,6 +1105,7 @@ pub(crate) fn open_hoster_download(
     {
         install_web_guards(win.as_ref(), true);
         install_download_progress(win.as_ref());
+        install_download_job_progress(win.as_ref(), app.clone(), job_label, job_idx, total, resumes);
     }
     #[cfg(not(target_os = "windows"))]
     let _ = &win;
@@ -1068,6 +1316,130 @@ pub(crate) fn install_download_progress(win: &tauri::Webview) {
     });
 }
 
+/// (v8.3) Progreso de la descarga de WebView2 de una ventana de HOSTER → job
+/// del panel de Descargas (la ventana se oculta mientras baja). Mismo enganche
+/// que `install_download_progress` (otro handler de `DownloadStarting`), con un
+/// aviso por segundo como mucho. `idx`/`total` dan "parte X de N".
+///
+/// Además REANUDA sola la descarga si WebView2 la interrumpe por red/servidor
+/// y se puede (hasta 5 veces): el CDN de VaultDrop cortó un archivo de 1 GB al
+/// 74 %. Cada reanudación suma en `resumes` (ver `on_download` → Finished).
+#[cfg(target_os = "windows")]
+fn install_download_job_progress(
+    win: &tauri::Webview,
+    app: tauri::AppHandle,
+    label: String,
+    idx: Arc<Mutex<usize>>,
+    total: usize,
+    resumes: Arc<AtomicU64>,
+) {
+    let _ = win.with_webview(move |webview| {
+        use std::time::Instant;
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_4, COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN, COREWEBVIEW2_DOWNLOAD_STATE,
+            COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
+        };
+        use webview2_com::{
+            BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler,
+        };
+        use windows_core::{Interface, BOOL};
+        const MAX_RESUMES: u32 = 5;
+        // SAFETY: API COM de WebView2 en el hilo de UI (mismo patrón que
+        // `install_download_progress`).
+        unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            let Ok(wv4) = core.cast::<ICoreWebView2_4>() else {
+                return;
+            };
+            let handler = DownloadStartingEventHandler::create(Box::new(move |_wv, args| {
+                let Some(args) = args else { return Ok(()) };
+                let op = args.DownloadOperation()?;
+                let app = app.clone();
+                let label = label.clone();
+                let part = if total > 1 {
+                    let i = *idx.lock().unwrap();
+                    Some(crate::tr!("livery.partOf", i = i + 1, total = total))
+                } else {
+                    None
+                };
+                let mut last_bytes: i64 = 0;
+                let mut last_t = Instant::now();
+                let on_bytes = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _| {
+                    let Some(op) = sender else { return Ok(()) };
+                    let now = Instant::now();
+                    let dt = now.duration_since(last_t).as_secs_f64();
+                    if dt < 1.0 {
+                        return Ok(());
+                    }
+                    let mut received: i64 = 0;
+                    op.BytesReceived(&mut received)?;
+                    let mut size: i64 = 0;
+                    let _ = op.TotalBytesToReceive(&mut size); // -1/0 sin Content-Length
+                    let bps = ((received - last_bytes).max(0) as f64 / dt) as u64;
+                    last_bytes = received;
+                    last_t = now;
+                    hoster_job(
+                        &app,
+                        &label,
+                        HosterStatus::Progress {
+                            done: received.max(0) as u64,
+                            total: size.max(0) as u64,
+                            bps,
+                            part: part.clone(),
+                        },
+                    );
+                    Ok(())
+                }));
+                let mut tok: i64 = 0;
+                let _ = op.add_BytesReceivedChanged(&on_bytes, &mut tok);
+
+                let resumes = resumes.clone();
+                let mut attempts: u32 = 0;
+                let on_state = StateChangedEventHandler::create(Box::new(move |sender, _| {
+                    let Some(op) = sender else { return Ok(()) };
+                    let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
+                    op.State(&mut state)?;
+                    if state != COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+                        return Ok(());
+                    }
+                    let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON::default();
+                    let _ = op.InterruptReason(&mut reason);
+                    let mut can = BOOL::default();
+                    let _ = op.CanResume(&mut can);
+                    let by_user = reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED
+                        || reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED
+                        || reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN;
+                    tracing::warn!(
+                        target: "hoster",
+                        "descarga WebView2 interrumpida (motivo {}, reanudable={}, intento {}/{})",
+                        reason.0, can.as_bool(), attempts, MAX_RESUMES
+                    );
+                    if !by_user && can.as_bool() && attempts < MAX_RESUMES {
+                        attempts += 1;
+                        match op.Resume() {
+                            Ok(()) => {
+                                resumes.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Err(e) => tracing::warn!(target: "hoster", "no se pudo reanudar: {e}"),
+                        }
+                    }
+                    Ok(())
+                }));
+                let mut tok2: i64 = 0;
+                let _ = op.add_StateChanged(&on_state, &mut tok2);
+                Ok(())
+            }));
+            let mut token: i64 = 0;
+            let _ = wv4.add_DownloadStarting(&handler, &mut token);
+        }
+    });
+}
+
 /// Formatea una velocidad en B/s → "12.3 MB/s" / "540 KB/s" / "60 B/s".
 fn fmt_speed(bytes_per_sec: f64) -> String {
     let b = bytes_per_sec.max(0.0);
@@ -1261,6 +1633,35 @@ fn download_filename(url: &tauri::Url) -> String {
     }
 }
 
+/// (v8.3) Nombre del archivo descargado: el que propone el servidor (WebView2
+/// lo saca del `Content-Disposition`, p.ej. VaultDrop "addon-v1.2-aerohub.7z")
+/// si trae una extensión conocida; si no, el que se deduce de la URL.
+fn pick_download_name(suggested: Option<&str>, url: &tauri::Url) -> String {
+    if let Some(s) = suggested {
+        let clean: String = s
+            .chars()
+            .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+            .filter(|c| !c.is_control())
+            .collect();
+        let known = clean.contains('.')
+            && clean.rsplit('.').next().is_some_and(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "zip" | "rar" | "7z" | "exe" | "msi" | "msix" | "msixbundle" | "appx"
+                )
+            });
+        if known {
+            return clean;
+        }
+    }
+    download_filename(url)
+}
+
+/// (v8.3) Prefijo del error de `fetch_direct_to_file` cuando el servidor
+/// rechaza la descarga sin la sesión del navegador (401/403 al primer intento,
+/// sin bytes): el enlace se reintenta dentro del WebView, que sí la tiene.
+const AUTH_FALLBACK: &str = "AUTH:";
+
 /// (v7) Corrige la extensión de un archivo descargado según sus BYTES MÁGICOS
 /// (la firma del contenido), no según la URL. Los hosters sirven el archivo
 /// desde endpoints sin nombre real (modsfire: `d.php?p=<base64>`), así que
@@ -1277,20 +1678,31 @@ fn fix_archive_extension(path: &Path) -> PathBuf {
     if read < 4 {
         return path.to_path_buf();
     }
+    let cur = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // (v8.3) Un instalador que el servidor ya nombró como tal se deja: un
+    // .msix/.appx empieza por "PK" pero NO hay que extraerlo como .zip.
+    if matches!(cur.as_str(), "exe" | "msi" | "msix" | "msixbundle" | "appx") {
+        return path.to_path_buf();
+    }
     let ext = if buf.starts_with(b"PK") {
         "zip"
     } else if buf.starts_with(b"Rar!") {
         "rar"
     } else if buf.starts_with(&[0x37, 0x7A, 0xBC, 0xAF]) {
         "7z"
+    } else if buf.starts_with(b"MZ") {
+        // (v8.3) Ejecutable (instalador / app suelta) servido sin nombre real
+        // (`d.php.zip`): como .exe lo trata el instalador (va a una carpeta).
+        "exe"
+    } else if buf.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+        "msi"
     } else {
         return path.to_path_buf(); // firma desconocida → no tocar
     };
-    let cur = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
     if cur == ext {
         return path.to_path_buf();
     }
@@ -1406,6 +1818,126 @@ fn is_direct_download_url(url: &str) -> bool {
     u.contains("x-amz-signature=") || u.contains("r2.cloudflarestorage.com")
 }
 
+/// (v8.3) Lo necesario para lanzar una descarga por `reqwest` desde la ventana
+/// de hoster (URL presignada de R2). OJO: el CDN de VaultDrop NO sirve aquí —
+/// su enlace (`cdn.vaultdrop.workers.dev/dl/<token>`) sólo lo acepta el
+/// navegador que lo pidió (410 a reqwest, verificado en vivo) → WebView2.
+#[derive(Clone)]
+struct DirectCtx {
+    app: tauri::AppHandle,
+    label: String,
+    dir: PathBuf,
+    files: Arc<Mutex<Vec<PathBuf>>>,
+    idx: Arc<Mutex<usize>>,
+    urls: Vec<String>,
+    password: Option<String>,
+    webview_only: Arc<Mutex<HashSet<String>>>,
+}
+
+impl DirectCtx {
+    /// Baja `url` a `target` en segundo plano y al terminar avanza a la
+    /// siguiente parte o manda a instalar. `use_server_name`: renombra el
+    /// archivo al nombre del `Content-Disposition` (1 sola parte; las partes
+    /// conservan su nombre secuencial para unirlas).
+    fn spawn(
+        &self,
+        url: String,
+        target: PathBuf,
+        part_label: String,
+        use_server_name: bool,
+    ) {
+        let ctx = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = fetch_direct_to_file(
+                url.clone(),
+                target.clone(),
+                ctx.app.clone(),
+                ctx.label.clone(),
+                part_label,
+            )
+            .await;
+            match result {
+                Ok(server_name) => {
+                    let target = match server_name.filter(|_| use_server_name) {
+                        Some(name) => rename_to_server_name(&target, &name),
+                        None => target,
+                    };
+                    advance_after_part(
+                        target, &ctx.files, &ctx.idx, &ctx.urls, &ctx.dir, &ctx.app, &ctx.label,
+                        ctx.password.as_deref(),
+                    );
+                }
+                // El enlace pide la sesión del navegador (cookies) → que lo
+                // baje WebView2: se marca y se vuelve a pedir desde la ventana.
+                Err(e) if e.starts_with(AUTH_FALLBACK) => {
+                    tracing::warn!(
+                        target: "hoster",
+                        "descarga directa rechazada ({e}) → reintento en el WebView"
+                    );
+                    ctx.webview_only.lock().unwrap().insert(url.clone());
+                    let _ = std::fs::remove_file(&target);
+                    if let (Some(w), Ok(u)) =
+                        (ctx.app.get_webview_window(&ctx.label), url.parse::<tauri::Url>())
+                    {
+                        let _ = w.navigate(u);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(target: "hoster", "descarga directa falló: {e}");
+                    show_hoster_failure(&ctx.app, &ctx.label, &crate::tr!("livery.downloadFailedConn"));
+                }
+            }
+        });
+    }
+}
+
+/// (v8.3) Nombre de archivo de un `Content-Disposition`
+/// (`attachment; filename="x.7z"; filename*=UTF-8''x%20y.7z`). `filename*`
+/// (RFC 5987) tiene prioridad.
+fn content_disposition_filename(value: &str) -> Option<String> {
+    let parts: Vec<&str> = value.split(';').map(str::trim).collect();
+    let param = |name: &str| {
+        parts.iter().find_map(|p| {
+            let (k, v) = p.split_once('=')?;
+            k.trim().eq_ignore_ascii_case(name).then(|| v.trim().trim_matches('"').to_string())
+        })
+    };
+    if let Some(ext) = param("filename*") {
+        let raw = ext.splitn(3, '\'').nth(2).unwrap_or(&ext).to_string();
+        if let Ok(decoded) = urlencoding::decode(&raw) {
+            if !decoded.trim().is_empty() {
+                return Some(decoded.into_owned());
+            }
+        }
+    }
+    param("filename").filter(|n| !n.trim().is_empty())
+}
+
+/// Renombra la descarga al nombre que dio el servidor (saneado). Si no se
+/// puede, se queda como estaba (la extensión la corrige luego la firma).
+fn rename_to_server_name(target: &Path, server_name: &str) -> PathBuf {
+    let clean: String = server_name
+        .chars()
+        .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .filter(|c| !c.is_control())
+        .collect();
+    let clean = clean.trim().trim_end_matches('.');
+    if clean.is_empty() {
+        return target.to_path_buf();
+    }
+    let new_path = target.with_file_name(clean);
+    if new_path == target {
+        return new_path;
+    }
+    match std::fs::rename(target, &new_path) {
+        Ok(()) => new_path,
+        Err(e) => {
+            tracing::warn!(target: "hoster", "no se pudo renombrar a {clean}: {e}");
+            target.to_path_buf()
+        }
+    }
+}
+
 /// (v7) Avanza el flujo tras completar UNA parte (venga de reqwest o de
 /// WebView2): guarda el archivo, y o navega a la siguiente parte (el hoster
 /// re-resuelve su URL) o une todas y manda a instalar. Sirve igual para el caso
@@ -1428,6 +1960,10 @@ fn advance_after_part(
     };
     if done < urls.len() {
         tracing::info!(target: "hoster", "parte {}/{} lista — voy por la siguiente", done, urls.len());
+        // (v8.3) La ventana estaba oculta: vuelve para la siguiente parte (en
+        // VaultDrop hay que pulsar Download otra vez).
+        let part = crate::tr!("livery.partOf", i = done + 1, total = urls.len());
+        hoster_job(app, win_label, HosterStatus::Waiting(Some(part)));
         if let Some(w) = app.get_webview_window(win_label) {
             let _ = w.eval(
                 "window.__sfDownloading=false;window.__sfPart='';\
@@ -1436,6 +1972,8 @@ fn advance_after_part(
             if let Ok(u) = urls[done].parse::<tauri::Url>() {
                 let _ = w.navigate(u);
             }
+            let _ = w.show();
+            let _ = w.set_focus();
         }
     } else {
         let files_v = files.lock().unwrap().clone();
@@ -1446,6 +1984,7 @@ fn advance_after_part(
                 if let Some(w) = app.get_webview_window(win_label) {
                     let _ = w.eval("if(window.__sfProcessing)window.__sfProcessing();");
                 }
+                hoster_job(app, win_label, HosterStatus::Downloaded);
                 let _ = app.emit(
                     "embedded-download://finished",
                     serde_json::json!({
@@ -1472,27 +2011,50 @@ fn advance_after_part(
 /// (v7) Muestra un fallo terminal en el overlay del hoster: desbloquea, corta el
 /// auto-avance del driver y deja el mensaje + botón Cancelar.
 fn show_hoster_failure(app: &tauri::AppHandle, win_label: &str, msg: &str) {
+    hoster_job(app, win_label, HosterStatus::Failed(msg.to_string()));
     if let Some(w) = app.get_webview_window(win_label) {
         let js = format!(
             "window.__sfStop=true;window.__sfDownloading=false;\
              if(window.__sfSet)window.__sfSet('hint',{msg:?});"
         );
         let _ = w.eval(&js);
+        // (v8.3) Estaba oculta mientras bajaba: que se vea el fallo.
+        let _ = w.show();
+        let _ = w.set_focus();
     }
+}
+
+/// (v8.3) Carpeta temporal de una ventana de hoster (una por descarga). El
+/// gestor la borra al cancelar desde el panel de Descargas.
+pub(crate) fn hoster_dl_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(MIRROR_DL_DIR).join(label)
+}
+
+/// (v8.3) Cuenta al job de Descargas (`hoster-dl-<job>`) lo que pasa en su
+/// ventana de hoster, que se oculta mientras baja.
+fn hoster_job(app: &tauri::AppHandle, win_label: &str, status: HosterStatus) {
+    let Some(id) = win_label.strip_prefix("hoster-dl-") else { return };
+    let Some(state) = app.try_state::<crate::AppState>() else { return };
+    let downloads = state.downloads.clone();
+    let id = id.to_string();
+    tauri::async_runtime::spawn(async move {
+        downloads.hoster_status(&id, status).await;
+    });
 }
 
 /// (v7) Baja una URL DIRECTA (presignada) a un archivo con `reqwest`, con
 /// **reanudación** (HTTP Range) y **reintentos**, empujando el progreso real al
 /// overlay. Es el downloader fiable para archivos grandes de los hosters (el de
 /// WebView2 se cuelga). Aborta si la ventana se cerró (cancelar). `part_label`
-/// se muestra como "parte X de N".
+/// se muestra como "parte X de N". (v8.3) Devuelve el nombre de archivo del
+/// `Content-Disposition`, si lo hubo, y cuenta el progreso al panel de Descargas.
 async fn fetch_direct_to_file(
     url: String,
     target: PathBuf,
     app: tauri::AppHandle,
     win_label: String,
     part_label: String,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     use futures_util::StreamExt;
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
@@ -1509,6 +2071,7 @@ async fn fetch_direct_to_file(
         .map_err(|e| e.to_string())?;
 
     let mut last_err = String::new();
+    let mut server_name: Option<String> = None;
     for attempt in 1..=MAX_ATTEMPTS {
         // Cancelado (ventana cerrada) antes de (re)empezar.
         if app.get_webview_window(&win_label).is_none() {
@@ -1536,6 +2099,11 @@ async fn fetch_direct_to_file(
         };
         let status = resp.status();
         if !status.is_success() {
+            // (v8.3) Rechazo de entrada, sin nada bajado: puede que el enlace
+            // necesite las cookies del navegador → el llamador lo pasa al WebView.
+            if matches!(status.as_u16(), 401 | 403) && attempt == 1 && have == 0 {
+                return Err(format!("{AUTH_FALLBACK}{status}"));
+            }
             // 403/410 → el enlace presignado expiró (no sirve reintentarlo).
             if matches!(status.as_u16(), 403 | 410) {
                 return Err(format!("el enlace de descarga expiró (HTTP {status})"));
@@ -1543,6 +2111,13 @@ async fn fetch_direct_to_file(
             last_err = format!("HTTP {status}");
             tokio::time::sleep(Duration::from_millis(800)).await;
             continue;
+        }
+        if server_name.is_none() {
+            server_name = resp
+                .headers()
+                .get(reqwest::header::CONTENT_DISPOSITION)
+                .and_then(|h| h.to_str().ok())
+                .and_then(content_disposition_filename);
         }
         let resuming = status.as_u16() == 206;
         let base = if resuming { have } else { 0 };
@@ -1556,6 +2131,7 @@ async fn fetch_direct_to_file(
         let mut file = file.map_err(|e| format!("archivo: {e}"))?;
 
         let mut downloaded = base;
+        let mut last_job = std::time::Instant::now();
         let mut last_bytes = downloaded;
         let mut last_t = std::time::Instant::now();
         let mut stream = resp.bytes_stream();
@@ -1611,6 +2187,19 @@ async fn fetch_direct_to_file(
                     );
                     let _ = w.eval(&js);
                 }
+                if last_job.elapsed().as_secs_f64() >= 1.0 {
+                    last_job = std::time::Instant::now();
+                    hoster_job(
+                        &app,
+                        &win_label,
+                        HosterStatus::Progress {
+                            done: downloaded,
+                            total,
+                            bps: bps as u64,
+                            part: (!part_label.is_empty()).then(|| part_label.clone()),
+                        },
+                    );
+                }
             }
         }
         let _ = file.flush().await;
@@ -1622,7 +2211,7 @@ async fn fetch_direct_to_file(
                 target: "hoster",
                 "reqwest bajó {} bytes → {} (intento {})", downloaded, target.display(), attempt
             );
-            return Ok(());
+            return Ok(server_name);
         }
         // Cortó a mitad → reintenta (reanudará desde `downloaded`).
         tracing::warn!(
@@ -1829,4 +2418,58 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod download_name_tests {
+    use super::*;
+
+    #[test]
+    fn server_suggested_name_wins_when_it_has_a_known_extension() {
+        let url: tauri::Url = "https://vaultdrop.st/api/share/dl/abc123".parse().unwrap();
+        assert_eq!(
+            pick_download_name(Some("fenix-navdata-aerohub.7z"), &url),
+            "fenix-navdata-aerohub.7z"
+        );
+        // Sin extensión conocida (p.ej. sólo la carpeta Downloads) → la de la URL.
+        assert_eq!(pick_download_name(Some("Downloads"), &url), "abc123.zip");
+        assert_eq!(pick_download_name(None, &url), "abc123.zip");
+    }
+
+    #[test]
+    fn signatures_fix_the_extension_but_never_touch_named_installers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe_as_zip = tmp.path().join("d.php.zip");
+        std::fs::write(&exe_as_zip, b"MZ\x90\x00\x03\x00\x00\x00").unwrap();
+        assert_eq!(fix_archive_extension(&exe_as_zip), tmp.path().join("d.php.exe"));
+
+        let msix = tmp.path().join("App.msix");
+        std::fs::write(&msix, b"PK\x03\x04rest").unwrap();
+        assert_eq!(fix_archive_extension(&msix), msix);
+
+        let rar_as_zip = tmp.path().join("pack.zip");
+        std::fs::write(&rar_as_zip, b"Rar!\x1a\x07\x01\x00").unwrap();
+        assert_eq!(fix_archive_extension(&rar_as_zip), tmp.path().join("pack.rar"));
+    }
+
+    #[test]
+    fn vaultdrop_cdn_stays_in_the_webview() {
+        // Su enlace sólo lo acepta el navegador que lo pidió (410 a reqwest).
+        assert!(!is_direct_download_url("https://cdn.vaultdrop.workers.dev/dl/abc"));
+        assert!(is_direct_download_url("https://x.r2.cloudflarestorage.com/f?X-Amz-Signature=1"));
+    }
+
+    #[test]
+    fn content_disposition_names() {
+        assert_eq!(
+            content_disposition_filename(r#"attachment; filename="rex-new-heavy.7z""#).as_deref(),
+            Some("rex-new-heavy.7z")
+        );
+        assert_eq!(
+            content_disposition_filename("attachment; filename=plain.zip; filename*=UTF-8''con%20espacio.zip")
+                .as_deref(),
+            Some("con espacio.zip")
+        );
+        assert_eq!(content_disposition_filename("inline"), None);
+    }
 }

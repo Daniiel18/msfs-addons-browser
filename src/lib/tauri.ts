@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 // `open` (file picker) viene del plugin-dialog. Lo importamos
 // dinámicamente cuando lo necesitamos para no romper el modo demo
 // (donde el bundle del plugin no está disponible al ejecutarse en un
@@ -48,6 +48,7 @@ import type {
   DeleteBySourceReport,
   DropCommitReport,
   DropInspection,
+  SavedExternal,
   FolderSyncConfig,
   FolderSyncLoadReport,
   FolderSyncSaveReport,
@@ -384,6 +385,24 @@ interface Api {
   ) => Promise<DropCommitReport>;
   /** Libera la sesión sin instalar nada. */
   dropCancel: (sessionId: string) => Promise<void>;
+  /** (v8.3) Guarda un item `external_content` / `external_rest` en la carpeta
+   *  elegida (nunca en Community). `name` = nombre de la carpeta a crear. */
+  dropSaveExternal: (
+    sessionId: string,
+    sourcePath: string,
+    destFolder: string,
+    name: string | null,
+  ) => Promise<SavedExternal>;
+  /** (v8.3) Abre en el Explorador: la carpeta, o la carpeta con el archivo
+   *  seleccionado si `isFile`. */
+  revealPath: (path: string, isFile: boolean) => Promise<void>;
+  /** (v8.3) Estado del procesado de una descarga ya bajada en su job del panel
+   *  de Descargas. `key`: ventana de hoster (`hoster-dl-<job>`) o id del job. */
+  downloadJobStatus: (
+    key: string,
+    status: "processing" | "ready" | "installed" | "saved" | "failed" | "cancelled",
+    message?: string | null,
+  ) => Promise<void>;
   /** (v4.7.0) Borra el archivo comprimido original arrastrado, tras una
    *  instalación exitosa y con confirmación del usuario. */
   deleteDroppedArchive: (archivePath: string) => Promise<void>;
@@ -611,7 +630,8 @@ interface Api {
    *  tarjetas compartibles y el Wrapped para guardar el PNG rasterizado. */
   saveBinaryFile: (path: string, base64: string) => Promise<void>;
   /** Diálogo nativo «select folder». */
-  pickFolderPath: () => Promise<string | null>;
+  /** (v8.3) `title`/`defaultPath` opcionales (diálogo de guardar externo). */
+  pickFolderPath: (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>;
   /** (v1.1.4) Abre el file picker nativo. Devuelve la ruta o null si
    *  el usuario canceló. Acepta filtros opcionales `[{name, extensions}]`
    *  igual que `pickSavePath`. Multi=false. */
@@ -889,6 +909,11 @@ const realApi: Api = {
       communityPath,
     }),
   dropCancel: (sessionId) => invoke<void>("drop_cancel", { sessionId }),
+  dropSaveExternal: (sessionId, sourcePath, destFolder, name) =>
+    invoke<SavedExternal>("drop_save_external", { sessionId, sourcePath, destFolder, name }),
+  revealPath: (path, isFile) => (isFile ? revealItemInDir(path) : openPath(path)),
+  downloadJobStatus: (key, status, message) =>
+    invoke<void>("download_job_status", { key, status, message: message ?? null }),
   deleteDroppedArchive: (archivePath) =>
     invoke<void>("delete_dropped_archive", { archivePath }),
 
@@ -1131,9 +1156,14 @@ const realApi: Api = {
   },
   saveBinaryFile: (path, base64) =>
     invoke<void>("save_binary_file", { path, base64 }),
-  async pickFolderPath() {
+  async pickFolderPath(opts) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const result = await open({ multiple: false, directory: true });
+    const result = await open({
+      multiple: false,
+      directory: true,
+      title: opts?.title,
+      defaultPath: opts?.defaultPath,
+    });
     if (result === null) return null;
     return typeof result === "string" ? result : null;
   },
@@ -1243,6 +1273,24 @@ const demoAddons: Addon[] = [
     imageUrl: null,
     releasedAt: null,
   },
+  {
+    id: "demo-aerohub-utility",
+    source: "aerohub",
+    title: "Sample Utility",
+    developer: "Demo",
+    name: "Sample Utility",
+    version: "1.0.0",
+    icao: null,
+    simulator: "MSFS 2020/2024",
+    pageUrl: "https://aerohub.st/",
+    downloadMethods: [
+      { kind: "mirror", name: "Download for 2024 · VaultDrop", url: "#" },
+      { kind: "mirror", name: "Download for 2020 · VaultDrop", url: "#" },
+    ],
+    imageUrl: null,
+    releasedAt: null,
+    notes: "Installation:\n1. Extract to your location of choice.\n2. Run Setup.exe\n3. Enjoy!",
+  },
 ];
 
 type DemoListener = (job: DownloadJob) => void;
@@ -1262,6 +1310,7 @@ const demoApi: Api = {
     return [
       { id: "sceneryaddons", name: "SceneryAddons", homeUrl: "https://sceneryaddons.org" },
       { id: "simplaza",      name: "Simplaza",      homeUrl: "https://simplaza.org" },
+      { id: "aerohub",       name: "AeroHub",       homeUrl: "https://aerohub.st" },
     ];
   },
   async skyboundSetCredentials() {},
@@ -1706,6 +1755,15 @@ const demoApi: Api = {
     return { installedGsx: [], installedPackages: [], installedConfigs: [], errors: [] };
   },
   async dropCancel() {
+    /* no-op demo */
+  },
+  async dropSaveExternal(_sessionId, _sourcePath, destFolder, name) {
+    return { path: `${destFolder}/${name ?? "SimFleet"}`, isFile: false };
+  },
+  async revealPath(path) {
+    console.info("[demo] revealPath:", path);
+  },
+  async downloadJobStatus() {
     /* no-op demo */
   },
   async deleteDroppedArchive() {
