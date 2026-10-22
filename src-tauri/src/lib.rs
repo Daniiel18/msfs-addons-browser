@@ -60,6 +60,8 @@ pub mod techlog;
 pub mod mx;
 // (v8.3 · Etapa 6.1) Ubicación de aviones y traslados.
 pub mod ferry;
+// (v8.3 · Etapa 6.2a) Vuelos reales de OpenSky (cuenta del usuario).
+pub mod opensky;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -197,6 +199,8 @@ pub fn run() {
             // (19/10) Sincronía con Fenix/PMDG TechLog: escucha en vivo +
             // cobros de su mantenimiento en Finanzas.
             let techlog_pool = state.db.clone();
+            // (v8.3 · Etapa 6.2a) Vuelos reales de OpenSky cada 30 min.
+            opensky::spawn_loop(state.db.clone(), state.http.clone());
             app.manage(state);
             techlog::spawn_watchers(app.handle().clone(), techlog_pool.clone());
             // (21/10) Recalcula una vez los vuelos ya puntuados si cambió la
@@ -393,6 +397,8 @@ pub fn run() {
             commands::ferry::ferry_quote,
             commands::ferry::ferry_request,
             commands::ferry::ferry_cancel,
+            commands::opensky::opensky_status,
+            commands::opensky::opensky_sync_now,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
             commands::recording::osd_test,

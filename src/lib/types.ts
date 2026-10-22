@@ -657,6 +657,36 @@ export interface FerryQuote {
   costTotal: number;
 }
 
+/** (v8.3 · Etapa 6.2a) Estado de los vuelos reales de OpenSky. */
+export interface OpenSkyStatus {
+  /** La build trae claves de OpenSky (cifradas). */
+  configured: boolean;
+  running: boolean;
+  lastFetchAt: string | null;
+  lastError: string | null;
+  /** Ventanas de 2 h de los 2 últimos días UTC cerrados: bajadas / pendientes. */
+  windowsDone: number;
+  windowsPending: number;
+  /** Vuelos guardados del último día UTC cerrado (`lastDay`, AAAA-MM-DD). */
+  flightsLastDay: number;
+  lastDay: string | null;
+  flightsTotal: number;
+  creditsToday: number;
+  dailyBudget: number;
+  /** Créditos que le quedan hoy a la cuenta, según OpenSky. */
+  remaining: number | null;
+  airlines: { icao: string; flights: number }[];
+}
+
+/** (v8.3) Resultado de una descarga de OpenSky. */
+export interface OpenSkySyncReport {
+  windows: number;
+  kept: number;
+  credits: number;
+  /** Por qué paró antes de terminar ("daily_budget", "rate_limited", …). */
+  stopped: string | null;
+}
+
 /** (v8.3) Dónde está un avión: su último aterrizaje o traslado. */
 export interface AircraftLocation {
   registration: string;

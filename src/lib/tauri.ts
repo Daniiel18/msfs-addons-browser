@@ -103,6 +103,8 @@ import type {
   AircraftLocation,
   Ferry,
   FerryQuote,
+  OpenSkyStatus,
+  OpenSkySyncReport,
 } from "./types";
 
 /** True when we're running inside the Tauri webview (vs. a plain browser). */
@@ -715,6 +717,10 @@ interface Api {
   ferryRequest: (registration: string, toIcao: string, model?: string | null) => Promise<Ferry>;
   /** (v8.3) Cancela un traslado pedido que aún no llegó (no se cobra). */
   ferryCancel: (id: number) => Promise<void>;
+  /** (v8.3 · Etapa 6.2a) Estado de los vuelos reales de OpenSky. */
+  openskyStatus: () => Promise<OpenSkyStatus>;
+  /** (v8.3) Baja ya las ventanas de OpenSky pendientes. */
+  openskySyncNow: () => Promise<OpenSkySyncReport>;
   /** (v6.1) Política de gestión de una aerolínea (mantenimiento + servicios). */
   airlinePolicy: (key: string) => Promise<AirlinePolicy>;
   /** (v6.1) Guarda la política y recalcula el ledger. */
@@ -1122,6 +1128,8 @@ const realApi: Api = {
   ferryRequest: (registration, toIcao, model) =>
     invoke<Ferry>("ferry_request", { registration, toIcao, model: model ?? null }),
   ferryCancel: (id) => invoke<void>("ferry_cancel", { id }),
+  openskyStatus: () => invoke<OpenSkyStatus>("opensky_status"),
+  openskySyncNow: () => invoke<OpenSkySyncReport>("opensky_sync_now"),
   airlinePolicy: (key) => invoke<AirlinePolicy>("airline_policy", { key }),
   setAirlinePolicy: (key, policy) =>
     invoke<void>("set_airline_policy", { key, policy }),
@@ -2453,6 +2461,27 @@ const demoApi: Api = {
     };
   },
   async ferryCancel() {},
+  // (v8.3) Demo: sin claves de OpenSky.
+  async openskyStatus() {
+    return {
+      configured: false,
+      running: false,
+      lastFetchAt: null,
+      lastError: null,
+      windowsDone: 0,
+      windowsPending: 0,
+      flightsLastDay: 0,
+      lastDay: null,
+      flightsTotal: 0,
+      creditsToday: 0,
+      dailyBudget: 1200,
+      remaining: null,
+      airlines: [],
+    };
+  },
+  async openskySyncNow() {
+    return { windows: 0, kept: 0, credits: 0, stopped: "not_configured" };
+  },
   async airlineBalanceHistory(key) {
     const all = await this.airlineEconomy();
     const led = all.find((a) => a.key === key) ?? all[0];

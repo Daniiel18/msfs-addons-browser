@@ -9,6 +9,7 @@ pub mod drop;
 pub mod economy;
 pub mod ferry;
 pub mod flightsim_embed;
+pub mod opensky;
 pub mod flight_log;
 pub mod gsx;
 pub mod install;

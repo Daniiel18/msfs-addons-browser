@@ -227,6 +227,8 @@ static ENTRIES: &[(&str, &str, &str)] = &[
     ("ferry.err.noLocation", "No se sabe dónde está el avión (aún no tiene vuelos).", "The aircraft's location is unknown (no flights yet)."),
     ("ferry.err.notFound", "Traslado no encontrado.", "Ferry not found."),
     ("ferry.err.sameAirport", "El avión ya está en {icao}.", "The aircraft is already at {icao}."),
+    ("opensky.err.busy", "Ya hay una descarga de OpenSky en curso.", "An OpenSky download is already running."),
+    ("opensky.err.notConfigured", "Esta build no trae claves de OpenSky.", "This build has no OpenSky credentials."),
     ("gsx.copyError", "Error copiando {path}: {e}", "Error copying {path}: {e}"),
     ("gsx.fileNoName", "archivo sin nombre", "file without a name"),
     ("gsx.fileNotFound", "No existe el archivo {path}", "The file {path} does not exist"),

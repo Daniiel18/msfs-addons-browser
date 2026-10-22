@@ -33,6 +33,7 @@ import {
   MinusSquare,
   Plane,
   Power,
+  Radar,
   RotateCcw,
   Search,
   Settings as SettingsIcon,
@@ -53,6 +54,7 @@ import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
 import { MxWearRateSetting } from "./MxWearRateSetting";
+import { OpenSkySetting } from "./OpenSkySetting";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
 
 /**
@@ -71,6 +73,7 @@ const SECTION_META: Array<{ key: string; labelKey: string }> = [
   { key: "general", labelKey: "settings.section.general" },
   { key: "flights", labelKey: "settings.section.flights" },
   { key: "maintenance", labelKey: "settings.section.maintenance" },
+  { key: "real_flights", labelKey: "settings.section.real_flights" },
   { key: "map_display", labelKey: "settings.section.map_display" },
   { key: "discord", labelKey: "settings.section.discord" },
   { key: "folders", labelKey: "settings.section.folders" },
@@ -107,7 +110,7 @@ const SETTINGS_GROUPS: Array<{
     labelKey: "settings.group.flight",
     icon: <Plane className="h-4 w-4" />,
     // (v7.4.2) "skybound" oculto mientras la fuente esté caída.
-    sections: ["flights", "maintenance", "map_display", "discord", "gsx"],
+    sections: ["flights", "maintenance", "real_flights", "map_display", "discord", "gsx"],
   },
   {
     id: "data",
@@ -729,6 +732,11 @@ export function SettingsModal({
               {/* (19/10) Etapa 3B — Tech Log de SimFleet. */}
               <Section navKey="maintenance" title={t("settings.section.maintenance")} icon={<Wrench className="h-3.5 w-3.5" />}>
                 <MxWearRateSetting />
+              </Section>
+
+              {/* (v8.3 · Etapa 6.2a) Vuelos reales de OpenSky (tu cuenta). */}
+              <Section navKey="real_flights" title={t("settings.section.real_flights")} icon={<Radar className="h-3.5 w-3.5" />}>
+                <OpenSkySetting />
               </Section>
 
               <Section navKey="map_display" title={t("settings.section.map_display")} icon={<Bell className="h-3.5 w-3.5" />}>
