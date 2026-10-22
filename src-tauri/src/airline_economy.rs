@@ -486,7 +486,7 @@ fn resolve_airline(e: &FlightLogEntry, learned: &HashMap<String, String>) -> Opt
 // ─────────────────────────── Clasificación de avión ──────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum Size {
+pub(crate) enum Size {
     Regional,
     Narrow,
     Wide,
@@ -494,7 +494,8 @@ enum Size {
 
 /// Clasifica el avión por tamaño y asientos típicos (config. 2 clases).
 /// Usado para el reparto de clases, capacidad estimada y costes por porte.
-fn classify(model: Option<&str>) -> (Size, u32) {
+/// (v8.3) También lo usan los traslados (`ferry`).
+pub(crate) fn classify(model: Option<&str>) -> (Size, u32) {
     let m = model.unwrap_or("").to_ascii_uppercase();
     let has = |t: &str| m.contains(t);
     // ── Widebody ── (fix) reconocer TAMBIÉN los designadores ICAO de tipo
@@ -606,7 +607,7 @@ fn purchase_price(size: Size) -> f64 {
 
 /// Quema de combustible típica en crucero (kg por NM) por tamaño — sólo se usa
 /// cuando el vuelo no capturó `fuel_used_kg` real.
-fn burn_per_nm(size: Size) -> f64 {
+pub(crate) fn burn_per_nm(size: Size) -> f64 {
     match size {
         Size::Wide => 16.0,
         Size::Narrow => 7.5,
@@ -1064,8 +1065,11 @@ fn fuel_cost(e: &FlightLogEntry, gsx: &GsxCosts, size: Size, d: f64) -> f64 {
         .map(|k| k as f64)
         .filter(|k| *k > 0.0)
         .unwrap_or_else(|| d * burn_per_nm(size));
-    gsx.fuel.unwrap_or(fuel_kg * 0.80) // ~0.80 USD/kg Jet A-1
+    gsx.fuel.unwrap_or(fuel_kg * FUEL_USD_PER_KG)
 }
+
+/// Precio del Jet A-1 cuando no hay recibo GSX (~0.80 USD/kg).
+pub(crate) const FUEL_USD_PER_KG: f64 = 0.80;
 
 /// Horas de bloque (reales o estimadas por distancia).
 fn block_hours(e: &FlightLogEntry, d: f64) -> f64 {
@@ -1075,7 +1079,7 @@ fn block_hours(e: &FlightLogEntry, d: f64) -> f64 {
         .unwrap_or(d / 440.0)
 }
 
-fn maint_rate(size: Size) -> f64 {
+pub(crate) fn maint_rate(size: Size) -> f64 {
     match size {
         Size::Wide => 1500.0,
         Size::Narrow => 800.0,
@@ -1083,7 +1087,7 @@ fn maint_rate(size: Size) -> f64 {
     }
 }
 
-fn landing_fee(size: Size) -> f64 {
+pub(crate) fn landing_fee(size: Size) -> f64 {
     match size {
         Size::Wide => 1800.0,
         Size::Narrow => 650.0,
@@ -1237,6 +1241,9 @@ struct LedgerAcc {
     fleet_regs: HashSet<String>,
     /// Suma del precio de compra de cada avión distinto (inversión en flota).
     fleet_value: f64,
+    /// (v8.3) Traslados (vuelos de posicionamiento) y su costo.
+    cost_ferry: f64,
+    ferries: i64,
 }
 
 /// Satisfacción del pasajero (0-100) derivada de la media de FPM al tocar
@@ -1304,6 +1311,12 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
     if let Err(e) = crate::aircraft_maintenance::auto_service_worn(pool).await {
         tracing::warn!(target: "economy", "auto-mantenimiento falló: {e:#}");
     }
+    // (v8.3) Traslados automáticos (vuelos que salieron de otro aeropuerto)
+    // antes de leer los traslados que se cargan a cada aerolínea.
+    if let Err(e) = crate::ferry::sync_auto_ferries(pool).await {
+        tracing::warn!(target: "economy", "traslados automáticos fallaron: {e:#}");
+    }
+    let ferries = crate::ferry::active(pool).await.unwrap_or_default();
     let receipts = scan_receipts();
     let flights = flight_log::list_entries(pool).await?;
     let policies = load_policies(pool).await?;
@@ -1394,6 +1407,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
             bounced: 0,
             fleet_regs: HashSet::new(),
             fleet_value: 0.0,
+            cost_ferry: 0.0,
+            ferries: 0,
         });
         // Cada avión distinto (matrícula) = compra de ese avión → inversión.
         if let Some(reg) = f.aircraft_registration.as_deref() {
@@ -1447,6 +1462,22 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         }
     }
 
+    // (v8.3) Traslados: a la aerolínea del vuelo más reciente de la matrícula.
+    // Se guarda en `airline_key` para que la curva de saldo use la misma.
+    for f in &ferries {
+        let key = reg_to_airline.get(&f.registration);
+        sqlx::query("UPDATE aircraft_ferry SET airline_key = ? WHERE id = ?")
+            .bind(key)
+            .bind(f.id)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(acc) = key.and_then(|k| ledger.get_mut(k)) {
+            acc.cost_ferry += f.cost_total;
+            acc.costs += f.cost_total;
+            acc.ferries += 1;
+        }
+    }
+
     for (key, acc) in &ledger {
         // (v6.1) Misma política automática usada en el P&L (servicios por tipo +
         // nivel de mantenimiento manual) para que la satisfacción cuadre.
@@ -1466,8 +1497,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
                  passengers, revenue_tickets, revenue_ancillary,
                  cost_fuel, cost_catering, cost_handling, cost_maintenance,
                  cost_fees, avg_landing_fpm, satisfaction, gsx_flights,
-                 fleet_size, fleet_value, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+                 fleet_size, fleet_value, cost_ferry, ferries, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
         )
         .bind(key)
         .bind(&acc.icao)
@@ -1491,6 +1522,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         .bind(acc.gsx_flights)
         .bind(acc.fleet_regs.len() as i64)
         .bind(acc.fleet_value)
+        .bind(acc.cost_ferry)
+        .bind(acc.ferries)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -1538,6 +1571,9 @@ pub struct AirlineLedger {
     pub fleet_size: i64,
     /// Inversión total en flota (suma de precios de compra) — descontada del saldo.
     pub fleet_value: f64,
+    /// (v8.3) Costo de los traslados (ya incluido en `costs`) y cuántos hubo.
+    pub cost_ferry: f64,
+    pub ferries: i64,
 }
 
 /// Recalcula y devuelve el ledger por aerolínea ordenado por resultado neto.
@@ -1549,7 +1585,8 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
                   start_valuation, revenue, costs, flights, passengers,
                   revenue_tickets, revenue_ancillary, cost_fuel, cost_catering,
                   cost_handling, cost_maintenance, cost_fees, avg_landing_fpm,
-                  satisfaction, gsx_flights, fleet_size, fleet_value
+                  satisfaction, gsx_flights, fleet_size, fleet_value,
+                  cost_ferry, ferries
              FROM airline_economy
             ORDER BY (revenue - costs) DESC"#,
     )
@@ -1589,6 +1626,8 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
             gsx_flights: r.get("gsx_flights"),
             fleet_size: r.get("fleet_size"),
             fleet_value,
+            cost_ferry: r.get("cost_ferry"),
+            ferries: r.get("ferries"),
         });
     }
     Ok(out)
@@ -1708,6 +1747,21 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
             delta: -cost,
             label: crate::tr!("economy.maintenance", comp = comp),
             kind: "maint",
+        });
+    }
+
+    // (v8.3) Traslados cargados a esta aerolínea, en su fecha de salida.
+    for f in crate::ferry::for_airline(pool, key).await.unwrap_or_default() {
+        let label = if f.source == "auto" {
+            crate::tr!("economy.ferryAuto", from = f.from_icao, to = f.to_icao)
+        } else {
+            crate::tr!("economy.ferry", from = f.from_icao, to = f.to_icao)
+        };
+        events.push(Ev {
+            t: f.requested_at,
+            delta: -f.cost_total,
+            label,
+            kind: "ferry",
         });
     }
 

@@ -1,7 +1,9 @@
 import type {
   AiracUpdateInfo,
+  AircraftLocation,
   AvailableUpdate,
   CommunityPackage,
+  FerryQuote,
   FlightStatus,
   GsxProfileUpdate,
   SimBriefFlight,
@@ -31,7 +33,10 @@ export type PreflightAction =
   | { kind: "gsx"; icao: string }
   | { kind: "gsx-update"; icao: string; link: string }
   | { kind: "airac" }
-  | { kind: "hangar"; registration: string };
+  | { kind: "hangar"; registration: string }
+  // (v8.3 · Etapa 6.1) Traslado del avión al origen del plan.
+  | { kind: "ferry"; registration: string; toIcao: string; model: string | null; cost: string; duration: string }
+  | { kind: "ferry-cancel"; id: number; toIcao: string };
 
 export interface PreflightCheck {
   id: string;
@@ -78,6 +83,42 @@ export interface PreflightInput {
   bypass?: Set<string>;
   /** (19/10) Despacho del avión del plan (TechLog o Tech Log de SimFleet). */
   maintenance?: PreflightMaintenance | null;
+  /** (v8.3) Dónde está el avión del plan y cuánto costaría trasladarlo. */
+  fleet?: PreflightFleet | null;
+}
+
+export interface PreflightFleet {
+  registration: string;
+  model: string | null;
+  location: AircraftLocation;
+  /** Traslado desde donde está hasta `origin` (null si no hace falta o no
+   *  se pudo calcular). */
+  quote: FerryQuote | null;
+  origin: string | null;
+}
+
+/** "1 h 05 min" / "45 min". */
+export function fmtFerryDuration(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return h > 0 ? `${h} h ${String(rest).padStart(2, "0")} min` : `${rest} min`;
+}
+
+/** "$13,120" (USD sin decimales, como Finanzas). */
+export function fmtFerryCost(usd: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(usd);
+}
+
+function fmtClock(iso: string): string {
+  const d = new Date(iso);
+  return isNaN(d.getTime())
+    ? ""
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export interface PreflightMaintenance {
@@ -215,6 +256,62 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         status: "ok",
         titleKey: "preflight.check.mx_go",
         titleArgs: { reg: mx.registration },
+      });
+    }
+  }
+
+  // 1c. (v8.3) Ubicación del avión: si está en otro aeropuerto que el origen,
+  // se ofrece el traslado (si vuela igual, se cobra al cerrar el vuelo).
+  const fl = input.fleet;
+  if (fl && route && !fl.location.inFlight) {
+    const orig = route.originIcao.toUpperCase();
+    const loc = fl.location;
+    const reg = fl.registration;
+    const ferry =
+      loc.ferry && Date.parse(loc.ferry.arrivesAt) > Date.now() ? loc.ferry : null;
+    if (ferry) {
+      const toOrigin = ferry.toIcao === orig;
+      checks.push({
+        id: "ferry",
+        status: toOrigin ? "info" : "warn",
+        titleKey: toOrigin
+          ? "preflight.check.ferry_enroute"
+          : "preflight.check.ferry_enroute_other",
+        titleArgs: { reg, to: ferry.toIcao, orig, time: fmtClock(ferry.arrivesAt) },
+        detailKey: "preflight.check.ferry_enroute_detail",
+        detailArgs: { cost: fmtFerryCost(ferry.costTotal) },
+        action: { kind: "ferry-cancel", id: ferry.id, toIcao: ferry.toIcao },
+        actionKey: "preflight.action.ferry_cancel",
+      });
+    } else if (loc.icao === orig) {
+      checks.push({
+        id: "ferry",
+        status: "ok",
+        titleKey: "preflight.check.ferry_here",
+        titleArgs: { reg, icao: orig },
+      });
+    } else if (loc.icao) {
+      const q = fl.origin === orig ? fl.quote : null;
+      checks.push({
+        id: "ferry",
+        status: "warn",
+        titleKey: "preflight.check.ferry_needed",
+        titleArgs: { reg, at: loc.icao, orig },
+        detailKey: q ? "preflight.check.ferry_needed_detail" : "preflight.check.ferry_no_quote",
+        detailArgs: q
+          ? { duration: fmtFerryDuration(q.blockMinutes), cost: fmtFerryCost(q.costTotal) }
+          : undefined,
+        action: q
+          ? {
+              kind: "ferry",
+              registration: reg,
+              toIcao: orig,
+              model: fl.model,
+              cost: fmtFerryCost(q.costTotal),
+              duration: fmtFerryDuration(q.blockMinutes),
+            }
+          : undefined,
+        actionKey: q ? "preflight.action.ferry" : undefined,
       });
     }
   }

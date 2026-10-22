@@ -7,6 +7,7 @@ import { useAiracUpdateStore } from "../stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { normalizeTechLogReg, useTechLogStore } from "../stores/useTechLogStore";
+import { normalizeFerryReg, useFerryStore } from "../stores/useFerryStore";
 import type { SimBriefFlight } from "./types";
 
 /**
@@ -35,6 +36,18 @@ export function usePreflight(): {
   useEffect(() => {
     if (reg) void useTechLogStore.getState().loadDispatch(reg);
   }, [reg, epoch, managed]);
+  // (v8.3 · Etapa 6.1) Ubicación del avión del plan → aviso de traslado.
+  // Recarga al pedir/cancelar un traslado y cuando se cierra un vuelo.
+  const ferryInfo = useFerryStore((s) => s.info);
+  const ferryEpoch = useFerryStore((s) => s.epoch);
+  const flightsSig = useFlightLogStore(
+    (s) => `${s.entries.length}|${s.entries[0]?.endedAt ?? ""}`,
+  );
+  const planOrigin = todayPlan?.originIcao ?? status?.originIcao ?? null;
+  const planModel = todayPlan?.aircraftIcao ?? status?.aircraftIcao ?? null;
+  useEffect(() => {
+    if (reg) void useFerryStore.getState().load(reg, planOrigin, planModel);
+  }, [reg, planOrigin, planModel, ferryEpoch, flightsSig]);
 
   return useMemo(() => {
     const plan = todayPlan;
@@ -43,6 +56,7 @@ export function usePreflight(): {
     );
     // El Tech Log guarda la matrícula normalizada; se muestra como la trae el plan/sim.
     const mx = reg ? dispatch[normalizeTechLogReg(reg)] : undefined;
+    const fi = reg ? ferryInfo[normalizeFerryReg(reg)] : undefined;
     const result = computePreflight({
       plan,
       status,
@@ -53,7 +67,11 @@ export function usePreflight(): {
       gsxUpdates,
       bypass: bypassSet,
       maintenance: mx && reg ? { ...mx, registration: reg.trim().toUpperCase() } : null,
+      fleet:
+        fi && reg
+          ? { registration: reg.trim().toUpperCase(), model: planModel, ...fi }
+          : null,
     });
     return { result, plan };
-  }, [todayPlan, status, packages, updates, airac, gsxIcaos, gsxUpdates, bypass, reg, dispatch]);
+  }, [todayPlan, status, packages, updates, airac, gsxIcaos, gsxUpdates, bypass, reg, dispatch, ferryInfo, planModel]);
 }

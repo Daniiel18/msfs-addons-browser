@@ -25,6 +25,7 @@ import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useFerryStore } from "../stores/useFerryStore";
 
 interface Props {
   onClose: () => void;
@@ -55,6 +56,8 @@ export function PreflightModal({ onClose }: Props) {
   const dismissScenery = useNewSceneryStore((s) => s.dismiss);
 
   const [busyId, setBusyId] = useState<string | null>(null);
+  // (v8.3) El traslado cuesta dinero: se confirma en la misma fila.
+  const [confirmId, setConfirmId] = useState<string | null>(null);
 
   const {
     result: { route, checks, issues, ready },
@@ -68,9 +71,54 @@ export function PreflightModal({ onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const requestFerry = async (check: PreflightCheck) => {
+    const action = check.action;
+    if (action?.kind !== "ferry") return;
+    setConfirmId(null);
+    setBusyId(check.id);
+    try {
+      const f = await useFerryStore
+        .getState()
+        .request(action.registration, action.toIcao, action.model);
+      const time = new Date(f.arrivesAt).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      pushToast({
+        kind: "success",
+        title: t("preflight.ferry.requested", { to: f.toIcao, time }),
+        message: t("preflight.ferry.requested_hint", { cost: action.cost }),
+      });
+    } catch (e) {
+      pushToast({ kind: "error", title: t("preflight.ferry.error"), message: String(e) });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const runAction = async (check: PreflightCheck) => {
     const action = check.action;
     if (!action) return;
+    if (action.kind === "ferry") {
+      setConfirmId(check.id);
+      return;
+    }
+    if (action.kind === "ferry-cancel") {
+      setBusyId(check.id);
+      try {
+        await useFerryStore.getState().cancel(action.id);
+        pushToast({
+          kind: "success",
+          title: t("preflight.ferry.cancelled", { to: action.toIcao }),
+          ttlMs: 2600,
+        });
+      } catch (e) {
+        pushToast({ kind: "error", title: t("preflight.ferry.error"), message: String(e) });
+      } finally {
+        setBusyId(null);
+      }
+      return;
+    }
     if (action.kind === "search") {
       onClose();
       void triggerSearch(action.icao);
@@ -244,8 +292,34 @@ export function PreflightModal({ onClose }: Props) {
                         {t("preflight.use_default")}
                       </label>
                     )}
+                    {/* (v8.3) Confirmación del traslado (cuesta dinero). */}
+                    {confirmId === c.id && c.action?.kind === "ferry" && (
+                      <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-2">
+                        <p className="text-[11px] leading-snug text-sf-text">
+                          {t("preflight.ferry.confirm", {
+                            to: c.action.toIcao,
+                            duration: c.action.duration,
+                            cost: c.action.cost,
+                          })}
+                        </p>
+                        <div className="mt-1.5 flex gap-2">
+                          <button
+                            onClick={() => void requestFerry(c)}
+                            className="rounded-md bg-amber-500/80 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:bg-amber-400"
+                          >
+                            {t("preflight.ferry.confirm_yes")}
+                          </button>
+                          <button
+                            onClick={() => setConfirmId(null)}
+                            className="rounded-md px-2.5 py-1 text-[11px] font-medium text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+                          >
+                            {t("preflight.ferry.confirm_no")}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  {c.action && c.actionKey && (
+                  {c.action && c.actionKey && confirmId !== c.id && (
                     <button
                       onClick={() => void runAction(c)}
                       disabled={busyId === c.id}
@@ -257,6 +331,10 @@ export function PreflightModal({ onClose }: Props) {
                         <Search className="h-3 w-3" />
                       ) : c.action.kind === "hangar" ? (
                         <Wrench className="h-3 w-3" />
+                      ) : c.action.kind === "ferry" ? (
+                        <Plane className="h-3 w-3" />
+                      ) : c.action.kind === "ferry-cancel" ? (
+                        <X className="h-3 w-3" />
                       ) : (
                         <RefreshCw className="h-3 w-3" />
                       )}

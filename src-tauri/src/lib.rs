@@ -58,6 +58,8 @@ pub mod vas_summary;
 pub mod win_lock;
 pub mod techlog;
 pub mod mx;
+// (v8.3 · Etapa 6.1) Ubicación de aviones y traslados.
+pub mod ferry;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -387,6 +389,10 @@ pub fn run() {
             commands::economy::aircraft_maintenance,
             commands::economy::aircraft_maintenance_history,
             commands::economy::maintenance_alerts,
+            commands::ferry::aircraft_location,
+            commands::ferry::ferry_quote,
+            commands::ferry::ferry_request,
+            commands::ferry::ferry_cancel,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
             commands::recording::osd_test,

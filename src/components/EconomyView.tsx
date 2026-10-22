@@ -96,6 +96,8 @@ const COST_COLORS = {
   handling: "#a855f7",
   maintenance: "#14b8a6",
   fees: "#64748b",
+  // (v8.3) Traslados (vuelos de posicionamiento).
+  ferry: "#0ea5e9",
 };
 
 type SortKey = "net" | "balance" | "satisfaction";
@@ -318,7 +320,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
   const s = useMemo(() => {
     const z = {
       revenue: 0, costs: 0, net: 0, balance: 0,
-      fuel: 0, catering: 0, handling: 0, maintenance: 0, fees: 0,
+      fuel: 0, catering: 0, handling: 0, maintenance: 0, fees: 0, ferry: 0,
     };
     for (const l of list) {
       z.revenue += l.revenue;
@@ -330,6 +332,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
       z.handling += l.costHandling;
       z.maintenance += l.costMaintenance;
       z.fees += l.costFees;
+      z.ferry += l.costFerry ?? 0;
     }
     return z;
   }, [list]);
@@ -340,6 +343,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
     { key: "handling", name: t("economy.costs.handling"), value: s.handling, color: COST_COLORS.handling },
     { key: "maintenance", name: t("economy.costs.maintenance"), value: s.maintenance, color: COST_COLORS.maintenance },
     { key: "fees", name: t("economy.costs.fees"), value: s.fees, color: COST_COLORS.fees },
+    { key: "ferry", name: t("economy.costs.ferry"), value: s.ferry, color: COST_COLORS.ferry },
   ]
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);
@@ -701,6 +705,11 @@ function AirlineDetail({
     { name: t("economy.costs.handling"), value: led.costHandling, color: COST_COLORS.handling },
     { name: t("economy.costs.maintenance"), value: led.costMaintenance, color: COST_COLORS.maintenance },
     { name: t("economy.costs.fees"), value: led.costFees, color: COST_COLORS.fees },
+    {
+      name: t("economy.costs.ferry_n", { n: String(led.ferries ?? 0) }),
+      value: led.costFerry ?? 0,
+      color: COST_COLORS.ferry,
+    },
   ].filter((d) => d.value > 0);
 
   return (

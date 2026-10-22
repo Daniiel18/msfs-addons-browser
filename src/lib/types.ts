@@ -161,9 +161,13 @@ export interface HangarAircraft {
   /** "good" | "watch" | "alert" */
   health: string;
   lastFlightAt: string | null;
+  /** (v8.3) Incluye los traslados: si después hubo uno, su destino. */
   lastIcao: string | null;
   lastAirportName: string | null;
   recentLandings: HangarLanding[];
+  /** (v8.3) Traslado en curso: destino y hora de llegada (ISO). */
+  ferryToIcao: string | null;
+  ferryArrivesAt: string | null;
 }
 
 /** (v6 #2a) Hangar — aeropuerto frecuentado. */
@@ -619,6 +623,52 @@ export interface AirlineLedger {
   fleetSize: number;
   /** Inversión total en flota (USD) — ya descontada del saldo. */
   fleetValue: number;
+  /** (v8.3) Costo de los traslados (ya incluido en `costs`) y cuántos hubo. */
+  costFerry: number;
+  ferries: number;
+}
+
+/** (v8.3 · Etapa 6.1) Traslado (vuelo de posicionamiento sin pasajeros). */
+export interface Ferry {
+  id: number;
+  /** Matrícula normalizada (A-Z0-9). */
+  registration: string;
+  fromIcao: string;
+  toIcao: string;
+  distanceNm: number;
+  requestedAt: string;
+  arrivesAt: string;
+  costTotal: number;
+  /** "requested" | "auto" */
+  source: string;
+  flightId: number | null;
+}
+
+/** (v8.3) Costo y duración de un traslado. */
+export interface FerryQuote {
+  fromIcao: string;
+  toIcao: string;
+  distanceNm: number;
+  blockMinutes: number;
+  costFuel: number;
+  costCrew: number;
+  costMaintenance: number;
+  costFees: number;
+  costTotal: number;
+}
+
+/** (v8.3) Dónde está un avión: su último aterrizaje o traslado. */
+export interface AircraftLocation {
+  registration: string;
+  /** Aeropuerto donde está — o al que va, si hay traslado en curso. */
+  icao: string | null;
+  airportName: string | null;
+  since: string | null;
+  /** El usuario lo está volando (vuelo sin cerrar). */
+  inFlight: boolean;
+  /** Traslado en curso (aún no ha llegado). */
+  ferry: Ferry | null;
+  model: string | null;
 }
 
 /** (v6.1) Punto de la curva de saldo en el tiempo (gráfica del detalle). */
@@ -631,7 +681,7 @@ export interface BalancePoint {
   delta: number;
   /** Etiqueta legible (ruta o servicio de mantenimiento). */
   label: string;
-  /** "start" | "flight" | "maint". */
+  /** "start" | "flight" | "maint" | "ferry". */
   kind: string;
 }
 

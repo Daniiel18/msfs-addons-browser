@@ -100,6 +100,9 @@ import type {
   AircraftMaint,
   MaintRecord,
   ScoreReport,
+  AircraftLocation,
+  Ferry,
+  FerryQuote,
 } from "./types";
 
 /** True when we're running inside the Tauri webview (vs. a plain browser). */
@@ -704,6 +707,14 @@ interface Api {
   airlineEconomy: () => Promise<AirlineLedger[]>;
   /** (v6.1) Serie temporal del saldo de una aerolínea (gráfica del detalle). */
   airlineBalanceHistory: (key: string) => Promise<BalancePoint[]>;
+  /** (v8.3 · Etapa 6.1) Dónde está un avión (último aterrizaje o traslado). */
+  aircraftLocation: (registration: string) => Promise<AircraftLocation>;
+  /** (v8.3) Costo y duración de un traslado entre dos aeropuertos. */
+  ferryQuote: (fromIcao: string, toIcao: string, model?: string | null) => Promise<FerryQuote>;
+  /** (v8.3) Pide un traslado del avión a `toIcao` (se cobra a su aerolínea). */
+  ferryRequest: (registration: string, toIcao: string, model?: string | null) => Promise<Ferry>;
+  /** (v8.3) Cancela un traslado pedido que aún no llegó (no se cobra). */
+  ferryCancel: (id: number) => Promise<void>;
   /** (v6.1) Política de gestión de una aerolínea (mantenimiento + servicios). */
   airlinePolicy: (key: string) => Promise<AirlinePolicy>;
   /** (v6.1) Guarda la política y recalcula el ledger. */
@@ -1104,6 +1115,13 @@ const realApi: Api = {
   airlineEconomy: () => invoke<AirlineLedger[]>("airline_economy"),
   airlineBalanceHistory: (key) =>
     invoke<BalancePoint[]>("airline_balance_history", { key }),
+  aircraftLocation: (registration) =>
+    invoke<AircraftLocation>("aircraft_location", { registration }),
+  ferryQuote: (fromIcao, toIcao, model) =>
+    invoke<FerryQuote>("ferry_quote", { fromIcao, toIcao, model: model ?? null }),
+  ferryRequest: (registration, toIcao, model) =>
+    invoke<Ferry>("ferry_request", { registration, toIcao, model: model ?? null }),
+  ferryCancel: (id) => invoke<void>("ferry_cancel", { id }),
   airlinePolicy: (key) => invoke<AirlinePolicy>("airline_policy", { key }),
   setAirlinePolicy: (key, policy) =>
     invoke<void>("set_airline_policy", { key, policy }),
@@ -2281,6 +2299,8 @@ const demoApi: Api = {
             mkLanding(-110, "KMIA", "Miami Intl", "A320-200"),
             mkLanding(-75, "KATL", "Atlanta Hartsfield", "A320-200"),
           ],
+          ferryToIcao: null,
+          ferryArrivesAt: null,
         },
         {
           key: "reg:N718AN",
@@ -2303,6 +2323,8 @@ const demoApi: Api = {
             mkLanding(-130, "KJFK", "John F. Kennedy Intl", "B777-300ER"),
             mkLanding(-210, "EGLL", "London Heathrow", "B777-300ER"),
           ],
+          ferryToIcao: null,
+          ferryArrivesAt: null,
         },
       ],
       airports: [
@@ -2379,6 +2401,8 @@ const demoApi: Api = {
         gsxFlights: Math.round(flights * 0.6),
         fleetSize,
         fleetValue,
+        costFerry: 0,
+        ferries: 0,
       };
     };
     return [
@@ -2388,6 +2412,47 @@ const demoApi: Api = {
       mk("FDX", "FDX", "FedEx Express", false, 60e9, 1_840_000, 1_520_000, 6, 0, -210, true),
     ];
   },
+  // (v8.3) Demo: el avión está donde terminó su último vuelo de ejemplo.
+  async aircraftLocation(registration) {
+    return {
+      registration: registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+      icao: "KSEA",
+      airportName: "Seattle Tacoma Intl",
+      since: new Date().toISOString(),
+      inFlight: false,
+      ferry: null,
+      model: "A320-200",
+    };
+  },
+  async ferryQuote(fromIcao, toIcao) {
+    return {
+      fromIcao,
+      toIcao,
+      distanceNm: 850,
+      blockMinutes: 146,
+      costFuel: 5100,
+      costCrew: 4400,
+      costMaintenance: 1950,
+      costFees: 1670,
+      costTotal: 13120,
+    };
+  },
+  async ferryRequest(registration, toIcao) {
+    const now = Date.now();
+    return {
+      id: 1,
+      registration: registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+      fromIcao: "KSEA",
+      toIcao,
+      distanceNm: 850,
+      requestedAt: new Date(now).toISOString(),
+      arrivesAt: new Date(now + 146 * 60_000).toISOString(),
+      costTotal: 13120,
+      source: "requested",
+      flightId: null,
+    };
+  },
+  async ferryCancel() {},
   async airlineBalanceHistory(key) {
     const all = await this.airlineEconomy();
     const led = all.find((a) => a.key === key) ?? all[0];

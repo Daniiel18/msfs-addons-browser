@@ -740,8 +740,18 @@ function AircraftDetail({
         ? "bg-amber-400"
         : "bg-emerald-400";
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
-  const location =
-    ac.lastAirportName && ac.lastIcao
+  // (v8.3) Ubicación con traslados: en curso → "En traslado a X · llega HH:MM".
+  const ferryEnroute =
+    ac.ferryToIcao && ac.ferryArrivesAt && Date.parse(ac.ferryArrivesAt) > Date.now();
+  const location = ferryEnroute
+    ? t("hangar.ferry_enroute", {
+        to: ac.ferryToIcao as string,
+        time: new Date(ac.ferryArrivesAt as string).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      })
+    : ac.lastAirportName && ac.lastIcao
       ? `${ac.lastAirportName} (${ac.lastIcao})`
       : ac.lastIcao ?? null;
 

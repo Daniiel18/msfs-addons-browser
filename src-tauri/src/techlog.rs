@@ -390,17 +390,20 @@ impl Catalog {
 }
 
 /// JSON con comentarios (`//`, `/* */`) y comas finales → JSON.
+/// Recorre BYTES y copia bytes: los delimitadores son ASCII y en UTF-8 un byte
+/// ASCII nunca forma parte de un carácter multibyte, así que "°", "—" o "ñ"
+/// pasan intactos (antes se copiaba cada byte como `char` y salía "Â°").
 fn strip_jsonc(src: &str) -> String {
     let b = src.as_bytes();
-    let mut out = String::with_capacity(src.len());
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
     let mut in_str = false;
     while i < b.len() {
         let c = b[i] as char;
         if in_str {
-            out.push(c);
+            out.push(b[i]);
             if c == '\\' && i + 1 < b.len() {
-                out.push(b[i + 1] as char);
+                out.push(b[i + 1]);
                 i += 2;
                 continue;
             }
@@ -412,7 +415,7 @@ fn strip_jsonc(src: &str) -> String {
         }
         if c == '"' {
             in_str = true;
-            out.push(c);
+            out.push(b[i]);
             i += 1;
             continue;
         }
@@ -430,9 +433,12 @@ fn strip_jsonc(src: &str) -> String {
             i += 2;
             continue;
         }
-        out.push(c);
+        out.push(b[i]);
         i += 1;
     }
+    // Sólo se quitaron tramos delimitados por ASCII → sigue siendo UTF-8
+    // válido (el `lossy` es sólo defensa).
+    let out = String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     // Comas finales antes de } o ].
     let re = regex::Regex::new(r",(\s*[}\]])").expect("regex");
     re.replace_all(&out, "$1").into_owned()
@@ -2199,6 +2205,16 @@ mod tests {
         let v: Value = serde_json::from_str(&strip_jsonc(src)).unwrap();
         assert_eq!(v["a"], "http://x");
         assert_eq!(v["c"], serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn strip_jsonc_keeps_non_ascii() {
+        let src = "{\n // 650 °C — nota\n \"name\": \"Válvula 2 °C — ñ \\\"ü\\\"\", /* año */ \"x\": [\"日本\",],\n}";
+        let v: Value = serde_json::from_str(&strip_jsonc(src)).unwrap();
+        assert_eq!(v["name"], "Válvula 2 °C — ñ \"ü\"");
+        assert_eq!(v["x"], serde_json::json!(["日本"]));
+        // Comentario sin cerrar al final: se descarta sin romper el UTF-8.
+        assert_eq!(strip_jsonc("{\"a\": \"°\"} /* ñ"), "{\"a\": \"°\"} ");
     }
 
     #[test]

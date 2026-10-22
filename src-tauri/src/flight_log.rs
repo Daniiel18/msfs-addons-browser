@@ -1477,10 +1477,14 @@ pub struct HangarAircraft {
     pub health: String,
     pub last_flight_at: Option<String>,
     /// Aeropuerto del vuelo más reciente (para "ubicación" del avión).
+    /// (v8.3) Si después hubo un traslado, el destino del traslado.
     pub last_icao: Option<String>,
     pub last_airport_name: Option<String>,
     /// Últimos ≤10 aterrizajes (orden antiguo→reciente) para la gráfica FPM.
     pub recent_landings: Vec<HangarLanding>,
+    /// (v8.3) Traslado en curso: destino y hora de llegada.
+    pub ferry_to_icao: Option<String>,
+    pub ferry_arrives_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1676,6 +1680,51 @@ pub fn normalize_model(raw: &str) -> String {
         raw.trim().to_string()
     } else {
         s.trim().to_string()
+    }
+}
+
+/// (v8.3) La ubicación del Hangar respeta los traslados: si el último evento
+/// del avión es un traslado, está en su destino (o va hacia él).
+async fn apply_ferry_locations(pool: &SqlitePool, aircraft: &mut [HangarAircraft]) {
+    let locs = match crate::ferry::locations(pool).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(target: "ferry", "ubicaciones del Hangar: {e:#}");
+            return;
+        }
+    };
+    let mut renamed: Vec<String> = Vec::new();
+    for a in aircraft.iter_mut() {
+        let Some(loc) = a
+            .registration
+            .as_deref()
+            .map(crate::airline_economy::normalize_reg)
+            .and_then(|r| locs.get(&r))
+        else {
+            continue;
+        };
+        if let Some(f) = &loc.ferry {
+            a.ferry_to_icao = Some(f.to_icao.clone());
+            a.ferry_arrives_at = Some(f.arrives_at.clone());
+        } else if loc.icao.is_some() && loc.icao != a.last_icao {
+            a.last_icao = loc.icao.clone();
+            a.last_airport_name = None;
+            renamed.extend(loc.icao.clone());
+        }
+    }
+    if renamed.is_empty() {
+        return;
+    }
+    let names: std::collections::HashMap<String, String> = crate::airports::lookup_airports(pool, &renamed)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| (b.icao, b.name))
+        .collect();
+    for a in aircraft.iter_mut().filter(|a| a.last_airport_name.is_none()) {
+        if let Some(icao) = &a.last_icao {
+            a.last_airport_name = names.get(icao).cloned();
+        }
     }
 }
 
@@ -1908,9 +1957,12 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
                 last_icao: a.last_icao,
                 last_airport_name: a.last_airport_name,
                 recent_landings: a.recent,
+                ferry_to_icao: None,
+                ferry_arrives_at: None,
             }
         })
         .collect();
+    apply_ferry_locations(pool, &mut aircraft).await;
     aircraft.sort_by(|a, b| {
         b.flights.cmp(&a.flights).then(
             b.total_nm
@@ -1955,6 +2007,8 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
             last_icao: None,
             last_airport_name: None,
             recent_landings: Vec::new(),
+            ferry_to_icao: None,
+            ferry_arrives_at: None,
         });
     }
 

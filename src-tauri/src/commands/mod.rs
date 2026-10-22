@@ -7,6 +7,7 @@ pub mod community;
 pub mod downloads;
 pub mod drop;
 pub mod economy;
+pub mod ferry;
 pub mod flightsim_embed;
 pub mod flight_log;
 pub mod gsx;
