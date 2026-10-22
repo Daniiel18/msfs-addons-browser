@@ -1576,6 +1576,33 @@ pub struct AirlineLedger {
     pub ferries: i64,
 }
 
+/// (v8.3 · Etapa 6.2b) Matrículas que el usuario voló con una aerolínea
+/// (clave canónica, = ICAO cuando se conoce): normalizada → (matrícula como
+/// la trae su vuelo más reciente, modelo). Son "sus aviones" en la flota.
+pub async fn user_registrations(
+    pool: &SqlitePool,
+    key: &str,
+) -> Result<HashMap<String, (String, Option<String>)>> {
+    let flights = flight_log::list_entries(pool).await?;
+    let learned = learn_airline_icaos(&flights);
+    let mut out = HashMap::new();
+    for f in &flights {
+        let Some(reg) = f.aircraft_registration.as_deref().map(str::trim).filter(|r| !r.is_empty()) else {
+            continue;
+        };
+        if resolve_airline(f, &learned).map(|r| r.key).as_deref() != Some(key) {
+            continue;
+        }
+        let n = normalize_reg(reg);
+        if !n.is_empty() {
+            out.entry(n).or_insert_with(|| {
+                (reg.to_ascii_uppercase(), f.aircraft_model.clone().or_else(|| f.aircraft_atc_type.clone()))
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Recalcula y devuelve el ledger por aerolínea ordenado por resultado neto.
 pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
     recompute(pool).await?;

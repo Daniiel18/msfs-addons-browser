@@ -39,6 +39,7 @@ import { t } from "../lib/i18n";
 import { useAppStore } from "../stores/useAppStore";
 import { AirlineLogo } from "./AirlineLogo";
 import { MaintenanceModal } from "./AircraftMaintenance";
+import { FleetPanel } from "./FleetPanel";
 
 // ───────────────────────────── helpers de formato ────────────────────────────
 
@@ -675,6 +676,8 @@ function AirlineDetail({
 }) {
   const [modal, setModal] = useState<"maintenance" | "services" | null>(null);
   const [maintReg, setMaintReg] = useState<string | null>(null);
+  // (v8.3 · Etapa 6.2b) Pestañas del detalle: resumen económico / flota real.
+  const [tab, setTab] = useState<"summary" | "fleet">("summary");
 
   // Si venimos del Hangar con una matrícula, abre directo el mantenimiento.
   useEffect(() => {
@@ -752,6 +755,27 @@ function AirlineDetail({
         </span>
       </div>
 
+      {/* (v8.3) Pestañas: Resumen | Flota */}
+      <div className="flex gap-1 rounded-xl border border-sf-border bg-sf-surface p-1">
+        {(["summary", "fleet"] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              tab === k
+                ? "bg-brand-500/20 text-brand-200"
+                : "text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+            }`}
+          >
+            {t(k === "summary" ? "economy.tab.summary" : "economy.tab.fleet")}
+          </button>
+        ))}
+      </div>
+
+      {tab === "fleet" ? (
+        <FleetPanel icao={led.icao} />
+      ) : (
+      <>
       {/* (v6.1) Gestión de la aerolínea — el ecosistema */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <button
@@ -904,6 +928,8 @@ function AirlineDetail({
           data={costData}
         />
       </div>
+      </>
+      )}
 
       {modal === "maintenance" && (
         <MaintenanceModal

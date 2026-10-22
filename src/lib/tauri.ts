@@ -105,6 +105,7 @@ import type {
   FerryQuote,
   OpenSkyStatus,
   OpenSkySyncReport,
+  AirlineFleet,
 } from "./types";
 
 /** True when we're running inside the Tauri webview (vs. a plain browser). */
@@ -721,6 +722,8 @@ interface Api {
   openskyStatus: () => Promise<OpenSkyStatus>;
   /** (v8.3) Baja ya las ventanas de OpenSky pendientes. */
   openskySyncNow: () => Promise<OpenSkySyncReport>;
+  /** (v8.3 · Etapa 6.2b) Flota real de una aerolínea (por ICAO). */
+  airlineFleet: (airlineIcao: string) => Promise<AirlineFleet>;
   /** (v6.1) Política de gestión de una aerolínea (mantenimiento + servicios). */
   airlinePolicy: (key: string) => Promise<AirlinePolicy>;
   /** (v6.1) Guarda la política y recalcula el ledger. */
@@ -1130,6 +1133,7 @@ const realApi: Api = {
   ferryCancel: (id) => invoke<void>("ferry_cancel", { id }),
   openskyStatus: () => invoke<OpenSkyStatus>("opensky_status"),
   openskySyncNow: () => invoke<OpenSkySyncReport>("opensky_sync_now"),
+  airlineFleet: (airlineIcao) => invoke<AirlineFleet>("airline_fleet", { airlineIcao }),
   airlinePolicy: (key) => invoke<AirlinePolicy>("airline_policy", { key }),
   setAirlinePolicy: (key, policy) =>
     invoke<void>("set_airline_policy", { key, policy }),
@@ -2477,10 +2481,24 @@ const demoApi: Api = {
       dailyBudget: 1200,
       remaining: null,
       airlines: [],
+      aircraftDbRows: 0,
+      aircraftDbVersion: null,
+      adsbdbToday: 0,
     };
   },
   async openskySyncNow() {
     return { windows: 0, kept: 0, credits: 0, stopped: "not_configured" };
+  },
+  async airlineFleet(airlineIcao) {
+    return {
+      airlineIcao,
+      aircraft: [],
+      seen: 0,
+      mine: 0,
+      registeredNotSeen: 0,
+      unknown: 0,
+      dbReady: false,
+    };
   },
   async airlineBalanceHistory(key) {
     const all = await this.airlineEconomy();

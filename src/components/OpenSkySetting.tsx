@@ -106,6 +106,18 @@ export function OpenSkySetting() {
               remaining: st.remaining != null ? st.remaining.toLocaleString() : "—",
             })}
           </dd>
+          <dt className="text-sf-muted">{t("settings.opensky.aircraft_db")}</dt>
+          <dd className="text-sf-text">
+            {st.aircraftDbRows > 0
+              ? t("settings.opensky.aircraft_db_value", {
+                  rows: st.aircraftDbRows.toLocaleString(),
+                  version: st.aircraftDbVersion
+                    ? new Date(st.aircraftDbVersion).toLocaleDateString([], { month: "short", year: "numeric" })
+                    : "—",
+                  adsbdb: String(st.adsbdbToday),
+                })
+              : t("settings.opensky.aircraft_db_pending")}
+          </dd>
           {st.airlines.length > 0 && (
             <>
               <dt className="text-sf-muted">

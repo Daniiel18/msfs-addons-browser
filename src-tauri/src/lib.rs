@@ -62,6 +62,8 @@ pub mod mx;
 pub mod ferry;
 // (v8.3 · Etapa 6.2a) Vuelos reales de OpenSky (cuenta del usuario).
 pub mod opensky;
+// (v8.3 · Etapa 6.2b) Base de aviones (OpenSky + adsbdb) y flotas reales.
+pub mod aircraft_db;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -399,6 +401,7 @@ pub fn run() {
             commands::ferry::ferry_cancel,
             commands::opensky::opensky_status,
             commands::opensky::opensky_sync_now,
+            commands::opensky::airline_fleet,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
             commands::recording::osd_test,

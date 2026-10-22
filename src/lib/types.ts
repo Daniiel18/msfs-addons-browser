@@ -676,6 +676,38 @@ export interface OpenSkyStatus {
   /** Créditos que le quedan hoy a la cuenta, según OpenSky. */
   remaining: number | null;
   airlines: { icao: string; flights: number }[];
+  /** (6.2b) Aviones en la base local, versión de la base de OpenSky
+   *  (Last-Modified) y consultas a adsbdb hoy. */
+  aircraftDbRows: number;
+  aircraftDbVersion: string | null;
+  adsbdbToday: number;
+}
+
+/** (v8.3 · Etapa 6.2b) Avión de la flota real de una aerolínea. */
+export interface FleetAircraft {
+  icao24: string | null;
+  registration: string | null;
+  typecode: string | null;
+  model: string | null;
+  flights30d: number;
+  /** Último aterrizaje visto (Unix, s) y su aeropuerto. */
+  lastSeen: number | null;
+  lastAirport: string | null;
+  /** Avión del usuario (lo voló con esta aerolínea). */
+  mine: boolean;
+}
+
+/** (v8.3) Flota real: vistos volando en 30 días + aviones del usuario. */
+export interface AirlineFleet {
+  airlineIcao: string;
+  aircraft: FleetAircraft[];
+  seen: number;
+  mine: number;
+  /** Registrados a su nombre (base 2024) sin vuelos vistos. */
+  registeredNotSeen: number;
+  /** Vistos sin matrícula ni tipo conocidos (aún). */
+  unknown: number;
+  dbReady: boolean;
 }
 
 /** (v8.3) Resultado de una descarga de OpenSky. */

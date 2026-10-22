@@ -442,6 +442,13 @@ pub fn spawn_loop(pool: SqlitePool, http: reqwest::Client) {
                 Ok(_) => {}
                 Err(e) => tracing::debug!(target: "opensky", "sincronía: {e:#}"),
             }
+            // (6.2b) Base de aviones (una vez por PC) y aviones nuevos vía adsbdb.
+            if let Err(e) = crate::aircraft_db::ensure_db(&pool, &http).await {
+                tracing::warn!(target: "aircraft_db", "base de aviones: {e:#}");
+            }
+            if let Err(e) = crate::aircraft_db::enrich_unknown(&pool, &http).await {
+                tracing::debug!(target: "aircraft_db", "adsbdb: {e:#}");
+            }
             tokio::time::sleep(LOOP_EVERY).await;
         }
     });
@@ -478,6 +485,11 @@ pub struct OpenSkyStatus {
     pub remaining: Option<i64>,
     /// Aerolíneas con más vuelos ese día.
     pub airlines: Vec<AirlineCount>,
+    /// (6.2b) Aviones en la base local, versión de la base de OpenSky y
+    /// consultas a adsbdb hoy.
+    pub aircraft_db_rows: i64,
+    pub aircraft_db_version: Option<String>,
+    pub adsbdb_today: i64,
 }
 
 pub async fn status(pool: &SqlitePool) -> Result<OpenSkyStatus> {
@@ -524,7 +536,11 @@ pub async fn status(pool: &SqlitePool) -> Result<OpenSkyStatus> {
         ),
         None => (None, None),
     };
+    let (aircraft_db_rows, aircraft_db_version, adsbdb_today) = crate::aircraft_db::db_status(pool).await;
     Ok(OpenSkyStatus {
+        aircraft_db_rows,
+        aircraft_db_version,
+        adsbdb_today,
         configured: is_configured(),
         running: RUNNING.load(Ordering::SeqCst),
         last_fetch_at,
