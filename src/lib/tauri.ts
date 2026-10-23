@@ -727,6 +727,8 @@ interface Api {
   openskyStatus: () => Promise<OpenSkyStatus>;
   /** (v8.3) Baja ya las ventanas de OpenSky pendientes. */
   openskySyncNow: () => Promise<OpenSkySyncReport>;
+  /** (v8.3) Prueba y guarda el código de activación de las claves de OpenSky. */
+  openskySetActivation: (code: string) => Promise<OpenSkyStatus>;
   /** (v8.3 · Etapa 6.2b) Flota real de una aerolínea (por ICAO). */
   airlineFleet: (airlineIcao: string) => Promise<AirlineFleet>;
   /** (v6.1) Política de gestión de una aerolínea (mantenimiento + servicios). */
@@ -1140,6 +1142,7 @@ const realApi: Api = {
   aircraftReservationCancel: (id) => invoke<void>("aircraft_reservation_cancel", { id }),
   openskyStatus: () => invoke<OpenSkyStatus>("opensky_status"),
   openskySyncNow: () => invoke<OpenSkySyncReport>("opensky_sync_now"),
+  openskySetActivation: (code) => invoke<OpenSkyStatus>("opensky_set_activation", { code }),
   airlineFleet: (airlineIcao) => invoke<AirlineFleet>("airline_fleet", { airlineIcao }),
   airlinePolicy: (key) => invoke<AirlinePolicy>("airline_policy", { key }),
   setAirlinePolicy: (key, policy) =>
@@ -2498,6 +2501,7 @@ const demoApi: Api = {
   async openskyStatus() {
     return {
       configured: false,
+      needsCode: false,
       running: false,
       lastFetchAt: null,
       lastError: null,
@@ -2517,6 +2521,9 @@ const demoApi: Api = {
   },
   async openskySyncNow() {
     return { windows: 0, kept: 0, credits: 0, stopped: "not_configured" };
+  },
+  async openskySetActivation() {
+    throw new Error("demo");
   },
   async airlineFleet(airlineIcao) {
     return {

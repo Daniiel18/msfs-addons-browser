@@ -234,6 +234,7 @@ static ENTRIES: &[(&str, &str, &str)] = &[
     ("ferry.err.reservationNotFound", "Esa reserva ya no está activa.", "That reservation is no longer active."),
     ("opensky.err.busy", "Ya hay una descarga de OpenSky en curso.", "An OpenSky download is already running."),
     ("opensky.err.notConfigured", "Esta build no trae claves de OpenSky.", "This build has no OpenSky credentials."),
+    ("opensky.err.badCode", "Código de activación incorrecto.", "Wrong activation code."),
     ("gsx.copyError", "Error copiando {path}: {e}", "Error copying {path}: {e}"),
     ("gsx.fileNoName", "archivo sin nombre", "file without a name"),
     ("gsx.fileNotFound", "No existe el archivo {path}", "The file {path} does not exist"),

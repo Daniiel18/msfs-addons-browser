@@ -668,8 +668,10 @@ export interface FerryQuote {
 
 /** (v8.3 · Etapa 6.2a) Estado de los vuelos reales de OpenSky. */
 export interface OpenSkyStatus {
-  /** La build trae claves de OpenSky (cifradas). */
+  /** La build trae claves de OpenSky (cifradas) y se pueden usar. */
   configured: boolean;
+  /** (v8.3) Hay claves pero falta (o no sirve) el código de activación. */
+  needsCode: boolean;
   running: boolean;
   lastFetchAt: string | null;
   lastError: string | null;

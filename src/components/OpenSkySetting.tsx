@@ -11,6 +11,8 @@ import { useToastStore } from "../stores/useToastStore";
 export function OpenSkySetting() {
   const [st, setSt] = useState<OpenSkyStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  // (v8.3) Código de activación de las claves (lo comparte el dueño de la cuenta).
+  const [code, setCode] = useState("");
   const pushToast = useToastStore((s) => s.push);
 
   const load = useCallback(() => {
@@ -47,6 +49,20 @@ export function OpenSkySetting() {
     }
   };
 
+  const activate = async () => {
+    if (!code.trim()) return;
+    setBusy(true);
+    try {
+      setSt(await api.openskySetActivation(code));
+      setCode("");
+      pushToast({ kind: "success", title: t("settings.opensky.activated"), ttlMs: 3000 });
+    } catch (e) {
+      pushToast({ kind: "error", title: t("settings.opensky.activate_error"), message: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const fmtTime = (iso: string | null) =>
     iso
       ? new Date(iso).toLocaleString([], {
@@ -63,7 +79,11 @@ export function OpenSkySetting() {
         <span
           className={`h-2 w-2 rounded-full ${st?.configured ? (st.lastError ? "bg-amber-400" : "bg-emerald-400") : "bg-slate-500"}`}
         />
-        {st?.configured ? t("settings.opensky.connected") : t("settings.opensky.not_configured")}
+        {st?.configured
+          ? t("settings.opensky.connected")
+          : st?.needsCode
+            ? t("settings.opensky.needs_code")
+            : t("settings.opensky.not_configured")}
         {(busy || st?.running) && <Loader2 className="h-3 w-3 animate-spin text-sf-muted" />}
         {st?.configured && (
           <button
@@ -77,8 +97,34 @@ export function OpenSkySetting() {
         )}
       </div>
       <p className="mt-0.5 text-[11px] text-sf-muted">
-        {st?.configured ? t("settings.opensky.hint") : t("settings.opensky.not_configured_hint")}
+        {st?.configured
+          ? t("settings.opensky.hint")
+          : st?.needsCode
+            ? t("settings.opensky.needs_code_hint")
+            : t("settings.opensky.not_configured_hint")}
       </p>
+      {st?.needsCode && (
+        <div className="mt-2 flex gap-2">
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void activate();
+            }}
+            placeholder={t("settings.opensky.code_placeholder")}
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full rounded-md border border-sf-border bg-sf-raised px-2.5 py-1.5 font-mono text-xs text-sf-text placeholder:text-sf-muted/70 focus:border-brand-500/60 focus:outline-none"
+          />
+          <button
+            onClick={() => void activate()}
+            disabled={busy || !code.trim()}
+            className="shrink-0 rounded-md bg-brand-500/80 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-brand-500 disabled:opacity-50"
+          >
+            {t("settings.opensky.activate")}
+          </button>
+        </div>
+      )}
       {st?.configured && (
         <dl className="mt-2 grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-[11px]">
           <dt className="text-sf-muted">{t("settings.opensky.last")}</dt>

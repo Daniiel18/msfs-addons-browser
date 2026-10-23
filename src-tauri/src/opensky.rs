@@ -46,10 +46,22 @@ const LOOP_EVERY: Duration = Duration::from_secs(30 * 60);
 
 // ───────────────────────────── Claves ─────────────────────────────
 
-/// Descifra un valor de `build.rs::seal` (`semilla:cifrado` en hex).
-fn unseal(sealed: &str) -> Option<String> {
+/// Descifra un valor de `build.rs::seal`: `semilla:cifrado` (sin código) o
+/// `v2:sal:check:cifrado` (con código de activación; `None` si el código no
+/// es el correcto).
+fn unseal(sealed: &str, code: Option<&str>) -> Option<String> {
+    if let Some(rest) = sealed.strip_prefix("v2:") {
+        let mut it = rest.splitn(3, ':');
+        let salt = u64::from_str_radix(it.next()?, 16).ok()?;
+        let check = u64::from_str_radix(it.next()?, 16).ok()?;
+        let plain = xor_hex(it.next()?, stretch(code?, salt))?;
+        return (fnv64(plain.as_bytes()) == check).then_some(plain);
+    }
     let (seed, hex) = sealed.split_once(':')?;
-    let mut state = u64::from_str_radix(seed, 16).ok()?;
+    xor_hex(hex, u64::from_str_radix(seed, 16).ok()?)
+}
+
+fn xor_hex(hex: &str, mut state: u64) -> Option<String> {
     if hex.len() % 2 != 0 {
         return None;
     }
@@ -64,6 +76,33 @@ fn unseal(sealed: &str) -> Option<String> {
     String::from_utf8(bytes?).ok().filter(|s| !s.is_empty())
 }
 
+/// Código de activación normalizado: sólo letras y dígitos, en mayúsculas
+/// (se puede escribir con o sin guiones). Igual que en `build.rs`.
+fn normalize_code(code: &str) -> String {
+    code.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_uppercase()
+}
+
+/// Clave a partir del código + sal (estirada). Igual que en `build.rs`.
+fn stretch(code: &str, salt: u64) -> u64 {
+    let code = normalize_code(code);
+    let mut s = salt;
+    for _ in 0..20_000 {
+        for b in code.bytes() {
+            s = (s ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        splitmix64(&mut s);
+    }
+    s
+}
+
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h = (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 fn splitmix64(s: &mut u64) -> u64 {
     *s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *s;
@@ -72,15 +111,83 @@ fn splitmix64(s: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// (client_id, client_secret) incrustados en esta build, si los hay.
+// (v8.3) Código de activación: lo escribe el usuario en Ajustes y se guarda
+// en `settings` (clave local, no se sincroniza con Drive). Sin él, una build
+// con claves `v2` no puede usar la cuenta de OpenSky.
+const KEY_ACTIVATION: &str = "opensky_activation";
+type CredsCache = Mutex<Option<(Option<String>, Option<(String, String)>)>>;
+static ACTIVATION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static CREDS: OnceLock<CredsCache> = OnceLock::new();
+
+fn current_activation() -> Option<String> {
+    ACTIVATION.get_or_init(|| Mutex::new(None)).lock().ok().and_then(|g| g.clone())
+}
+
+fn store_activation(code: Option<String>) {
+    if let Ok(mut g) = ACTIVATION.get_or_init(|| Mutex::new(None)).lock() {
+        *g = code;
+    }
+}
+
+/// Carga el código guardado (al arrancar).
+pub async fn load_activation(pool: &SqlitePool) {
+    let code: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(KEY_ACTIVATION)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    store_activation(code);
+}
+
+/// La build trae claves que piden código de activación.
+pub fn needs_activation() -> bool {
+    option_env!("SIMFLEET_OPENSKY_CLIENT_ID_X").is_some_and(|s| s.starts_with("v2:"))
+}
+
+/// (client_id, client_secret) incrustados en esta build, si los hay y (con
+/// claves `v2`) si el código de activación es el correcto. Cacheado por código.
 fn embedded_credentials() -> Option<(String, String)> {
-    let id = unseal(option_env!("SIMFLEET_OPENSKY_CLIENT_ID_X")?)?;
-    let secret = unseal(option_env!("SIMFLEET_OPENSKY_CLIENT_SECRET_X")?)?;
-    Some((id, secret))
+    let code = current_activation();
+    let cache = CREDS.get_or_init(|| Mutex::new(None));
+    if let Ok(g) = cache.lock() {
+        if let Some((c, creds)) = g.as_ref() {
+            if *c == code {
+                return creds.clone();
+            }
+        }
+    }
+    let creds = (|| {
+        let id = unseal(option_env!("SIMFLEET_OPENSKY_CLIENT_ID_X")?, code.as_deref())?;
+        let secret = unseal(option_env!("SIMFLEET_OPENSKY_CLIENT_SECRET_X")?, code.as_deref())?;
+        Some((id, secret))
+    })();
+    if let Ok(mut g) = cache.lock() {
+        *g = Some((code, creds.clone()));
+    }
+    creds
 }
 
 pub fn is_configured() -> bool {
     embedded_credentials().is_some()
+}
+
+/// (v8.3) Prueba y guarda el código de activación. Error si no abre las claves.
+pub async fn set_activation(pool: &SqlitePool, code: &str) -> Result<()> {
+    let blob = option_env!("SIMFLEET_OPENSKY_CLIENT_ID_X").ok_or_else(|| anyhow!(crate::tr!("opensky.err.notConfigured")))?;
+    let norm = normalize_code(code);
+    if norm.is_empty() || unseal(blob, Some(&norm)).is_none() {
+        return Err(anyhow!(crate::tr!("opensky.err.badCode")));
+    }
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(KEY_ACTIVATION)
+        .bind(&norm)
+        .execute(pool)
+        .await?;
+    store_activation(Some(norm));
+    forget_token();
+    tracing::info!(target: "opensky", "código de activación aceptado");
+    Ok(())
 }
 
 // ───────────────────────────── API ─────────────────────────────
@@ -514,9 +621,28 @@ async fn sync_inner(pool: &SqlitePool, http: &reqwest::Client) -> Result<SyncRep
     Ok(report)
 }
 
-/// Sincronía en segundo plano cada 30 min (si la build trae claves).
+/// Una vuelta completa: vuelos reales, base de aviones (una vez por PC) y
+/// aviones nuevos vía adsbdb.
+pub async fn run_cycle(pool: &SqlitePool, http: &reqwest::Client) {
+    match sync(pool, http).await {
+        Ok(r) if r.windows > 0 || r.stopped.is_some() => {
+            tracing::info!(target: "opensky", "sincronía: {} ventanas, {} vuelos, {} créditos, paró: {:?}", r.windows, r.kept, r.credits, r.stopped)
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!(target: "opensky", "sincronía: {e:#}"),
+    }
+    if let Err(e) = crate::aircraft_db::ensure_db(pool, http).await {
+        tracing::warn!(target: "aircraft_db", "base de aviones: {e:#}");
+    }
+    if let Err(e) = crate::aircraft_db::enrich_unknown(pool, http).await {
+        tracing::debug!(target: "aircraft_db", "adsbdb: {e:#}");
+    }
+}
+
+/// Sincronía en segundo plano cada 30 min. Si la build trae claves con
+/// código de activación, espera a que el usuario lo escriba en Ajustes.
 pub fn spawn_loop(pool: SqlitePool, http: reqwest::Client) {
-    if !is_configured() {
+    if option_env!("SIMFLEET_OPENSKY_CLIENT_ID_X").is_none() {
         tracing::info!(target: "opensky", "sin claves de OpenSky en esta build: vuelos reales desactivados");
         return;
     }
@@ -526,6 +652,9 @@ pub fn spawn_loop(pool: SqlitePool, http: reqwest::Client) {
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(600)).await;
+                if !is_configured() {
+                    continue;
+                }
                 if let Err(e) = crate::ferry::poll_reservation_landings(&pool, &http).await {
                     tracing::debug!(target: "ferry", "aterrizajes de reservas: {e:#}");
                 }
@@ -533,21 +662,14 @@ pub fn spawn_loop(pool: SqlitePool, http: reqwest::Client) {
         });
     }
     tauri::async_runtime::spawn(async move {
+        load_activation(&pool).await;
+        if !is_configured() && needs_activation() {
+            tracing::info!(target: "opensky", "vuelos reales en espera del código de activación (Ajustes)");
+        }
         tokio::time::sleep(Duration::from_secs(60)).await;
         loop {
-            match sync(&pool, &http).await {
-                Ok(r) if r.windows > 0 || r.stopped.is_some() => {
-                    tracing::info!(target: "opensky", "sincronía: {} ventanas, {} vuelos, {} créditos, paró: {:?}", r.windows, r.kept, r.credits, r.stopped)
-                }
-                Ok(_) => {}
-                Err(e) => tracing::debug!(target: "opensky", "sincronía: {e:#}"),
-            }
-            // (6.2b) Base de aviones (una vez por PC) y aviones nuevos vía adsbdb.
-            if let Err(e) = crate::aircraft_db::ensure_db(&pool, &http).await {
-                tracing::warn!(target: "aircraft_db", "base de aviones: {e:#}");
-            }
-            if let Err(e) = crate::aircraft_db::enrich_unknown(&pool, &http).await {
-                tracing::debug!(target: "aircraft_db", "adsbdb: {e:#}");
+            if is_configured() {
+                run_cycle(&pool, &http).await;
             }
             tokio::time::sleep(LOOP_EVERY).await;
         }
@@ -568,6 +690,9 @@ pub struct AirlineCount {
 pub struct OpenSkyStatus {
     /// La build trae claves de OpenSky.
     pub configured: bool,
+    /// (v8.3) La build trae claves pero falta (o no sirve) el código de
+    /// activación: Ajustes lo pide.
+    pub needs_code: bool,
     pub running: bool,
     pub last_fetch_at: Option<String>,
     pub last_error: Option<String>,
@@ -642,6 +767,7 @@ pub async fn status(pool: &SqlitePool) -> Result<OpenSkyStatus> {
         aircraft_db_version,
         adsbdb_today,
         configured: is_configured(),
+        needs_code: needs_activation() && !is_configured(),
         running: RUNNING.load(Ordering::SeqCst),
         last_fetch_at,
         last_error,
@@ -676,9 +802,30 @@ mod tests {
         let secret = "s3cr3t-ÄPI_client";
         let sealed = seal_with(0xDEAD_BEEF_1234_5678, secret);
         assert!(!sealed.contains("s3cr3t"));
-        assert_eq!(unseal(&sealed).as_deref(), Some(secret));
-        assert_eq!(unseal("zz:00"), None);
-        assert_eq!(unseal("0011223344556677:abc"), None);
+        assert_eq!(unseal(&sealed, None).as_deref(), Some(secret));
+        assert_eq!(unseal("zz:00", None), None);
+        assert_eq!(unseal("0011223344556677:abc", None), None);
+    }
+
+    /// Copia de `build.rs::seal` con código de activación y sal fija.
+    fn seal_v2(salt: u64, code: &str, value: &str) -> String {
+        let mut state = stretch(code, salt);
+        let cipher: String = value
+            .bytes()
+            .map(|b| format!("{:02x}", b ^ (splitmix64(&mut state) >> 24) as u8))
+            .collect();
+        format!("v2:{salt:016x}:{:016x}:{cipher}", fnv64(value.as_bytes()))
+    }
+
+    #[test]
+    fn activation_code_is_required_for_v2_secrets() {
+        let sealed = seal_v2(0x1234_5678_9ABC_DEF0, "SFK7-QM2P-X9TD", "noxful-api-client");
+        assert!(!sealed.contains("noxful"));
+        assert_eq!(unseal(&sealed, Some("SFK7-QM2P-X9TD")).as_deref(), Some("noxful-api-client"));
+        // Con o sin guiones, en minúsculas: mismo código.
+        assert_eq!(unseal(&sealed, Some("sfk7qm2px9td")).as_deref(), Some("noxful-api-client"));
+        assert_eq!(unseal(&sealed, Some("SFK7-QM2P-X9TE")), None, "código incorrecto");
+        assert_eq!(unseal(&sealed, None), None, "sin código");
     }
 
     #[test]

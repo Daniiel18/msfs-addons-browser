@@ -22,6 +22,21 @@ pub async fn opensky_status(state: tauri::State<'_, AppState>) -> Result<OpenSky
     opensky::status(&state.db).await.map_err(|e| e.to_string())
 }
 
+/// (v8.3) Prueba y guarda el código de activación de las claves de OpenSky.
+/// Si sirve, arranca ya una vuelta de descarga en segundo plano.
+#[tauri::command]
+pub async fn opensky_set_activation(
+    state: tauri::State<'_, AppState>,
+    code: String,
+) -> Result<OpenSkyStatus, String> {
+    opensky::set_activation(&state.db, &code)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (pool, http) = (state.db.clone(), state.http.clone());
+    tauri::async_runtime::spawn(async move { opensky::run_cycle(&pool, &http).await });
+    opensky::status(&state.db).await.map_err(|e| e.to_string())
+}
+
 /// Baja ya las ventanas pendientes (sin esperar a la sincronía de 30 min).
 #[tauri::command]
 pub async fn opensky_sync_now(state: tauri::State<'_, AppState>) -> Result<SyncReport, String> {

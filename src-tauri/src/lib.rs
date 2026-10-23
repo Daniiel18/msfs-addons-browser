@@ -405,6 +405,7 @@ pub fn run() {
             commands::ferry::aircraft_reservation_cancel,
             commands::opensky::opensky_status,
             commands::opensky::opensky_sync_now,
+            commands::opensky::opensky_set_activation,
             commands::opensky::airline_fleet,
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
