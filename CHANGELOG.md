@@ -5,6 +5,17 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.3.1]
+
+### Changed
+- **Balance history moves with every flight:** each of your flights is a point and real operations show hour by hour (each hour's flights minus its share of the fixed costs). Aircraft purchases appear as red dots and no longer flatten the curve; the axis shows the change from the starting value.
+- **Airline cards show the totals:** total flights (yours + real), passengers carried (from your SimBrief OFP on your flights, estimated by aircraft size on real ones) and, for cargo airlines, tonnes of cargo instead of passengers. Mixed airlines show both.
+- **Cargo is decided per flight:** freighters (777F, 747-8F, MD-11F, converted 737s…), cargo airlines, or flights carrying cargo with three people or fewer on board. A freighter carries at most 3 people (jumpseats).
+
+### Fixed
+- Airlines with a single cargo flight (e.g. Korean Air with a 777F) were treated as cargo airlines, which priced all their real flights as freighters.
+- After closing SimFleet to the tray, clicking the tray icon didn't bring it back once flightsim.to had been opened.
+
 ## [8.3.0]
 
 ### Added
