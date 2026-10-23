@@ -103,6 +103,28 @@ export function PreflightModal({ onClose }: Props) {
       setConfirmId(check.id);
       return;
     }
+    // (6.2d) Reservar el avión real que vuela ahora / cancelar la reserva.
+    if (action.kind === "reserve" || action.kind === "reserve-cancel") {
+      setBusyId(check.id);
+      try {
+        if (action.kind === "reserve") {
+          const r = await useFerryStore.getState().reserve(action.registration);
+          pushToast({
+            kind: "success",
+            title: t(r.airborne ? "preflight.reserve.done_airborne" : "preflight.reserve.done"),
+            ttlMs: 3200,
+          });
+        } else {
+          await useFerryStore.getState().cancelReservation(action.id);
+          pushToast({ kind: "success", title: t("preflight.reserve.cancelled"), ttlMs: 2600 });
+        }
+      } catch (e) {
+        pushToast({ kind: "error", title: t("preflight.reserve.error"), message: String(e) });
+      } finally {
+        setBusyId(null);
+      }
+      return;
+    }
     if (action.kind === "ferry-cancel") {
       setBusyId(check.id);
       try {
@@ -333,8 +355,10 @@ export function PreflightModal({ onClose }: Props) {
                         <Wrench className="h-3 w-3" />
                       ) : c.action.kind === "ferry" ? (
                         <Plane className="h-3 w-3" />
-                      ) : c.action.kind === "ferry-cancel" ? (
+                      ) : c.action.kind === "ferry-cancel" || c.action.kind === "reserve-cancel" ? (
                         <X className="h-3 w-3" />
+                      ) : c.action.kind === "reserve" ? (
+                        <CheckCircle2 className="h-3 w-3" />
                       ) : (
                         <RefreshCw className="h-3 w-3" />
                       )}

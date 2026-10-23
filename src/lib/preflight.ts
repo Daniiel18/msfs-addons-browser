@@ -36,7 +36,10 @@ export type PreflightAction =
   | { kind: "hangar"; registration: string }
   // (v8.3 · Etapa 6.1) Traslado del avión al origen del plan.
   | { kind: "ferry"; registration: string; toIcao: string; model: string | null; cost: string; duration: string }
-  | { kind: "ferry-cancel"; id: number; toIcao: string };
+  | { kind: "ferry-cancel"; id: number; toIcao: string }
+  // (6.2d) Reservar el avión real que vuela ahora / cancelar la reserva.
+  | { kind: "reserve"; registration: string }
+  | { kind: "reserve-cancel"; id: number };
 
 export interface PreflightCheck {
   id: string;
@@ -112,6 +115,14 @@ export function fmtFerryCost(usd: number): string {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(usd);
+}
+
+/** "23 oct, 14:30" (fecha corta + hora local). */
+function fmtDayClock(iso: string): string {
+  const d = new Date(iso);
+  return isNaN(d.getTime())
+    ? ""
+    : d.toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 function fmtClock(iso: string): string {
@@ -269,7 +280,31 @@ export function computePreflight(input: PreflightInput): PreflightResult {
     const reg = fl.registration;
     const ferry =
       loc.ferry && Date.parse(loc.ferry.arrivesAt) > Date.now() ? loc.ferry : null;
-    if (ferry) {
+    const res = loc.reservation;
+    // (6.2d) El avión real vuela ahora: no se puede trasladar; se reserva.
+    const airborne = !!loc.live?.airborne && !(res && res.landedIcao);
+    if (airborne && !res) {
+      checks.push({
+        id: "ferry",
+        status: "warn",
+        titleKey: "preflight.check.ferry_airborne",
+        titleArgs: { reg, cs: loc.live?.callsign ?? "?" },
+        detailKey: "preflight.check.ferry_airborne_detail",
+        action: { kind: "reserve", registration: reg },
+        actionKey: "preflight.action.reserve",
+      });
+    } else if (res && res.airborne && !res.landedIcao) {
+      checks.push({
+        id: "ferry",
+        status: "info",
+        titleKey: "preflight.check.reserved_airborne",
+        titleArgs: { reg },
+        detailKey: "preflight.check.reserved_detail",
+        detailArgs: { until: fmtDayClock(res.expiresAt) },
+        action: { kind: "reserve-cancel", id: res.id },
+        actionKey: "preflight.action.reserve_cancel",
+      });
+    } else if (ferry) {
       const toOrigin = ferry.toIcao === orig;
       checks.push({
         id: "ferry",
@@ -295,7 +330,8 @@ export function computePreflight(input: PreflightInput): PreflightResult {
       checks.push({
         id: "ferry",
         status: "warn",
-        titleKey: "preflight.check.ferry_needed",
+        // (6.2d) Si lo movió un vuelo real, se dice.
+        titleKey: loc.real ? "preflight.check.ferry_needed_real" : "preflight.check.ferry_needed",
         titleArgs: { reg, at: loc.icao, orig },
         detailKey: q ? "preflight.check.ferry_needed_detail" : "preflight.check.ferry_no_quote",
         detailArgs: q
@@ -312,6 +348,19 @@ export function computePreflight(input: PreflightInput): PreflightResult {
             }
           : undefined,
         actionKey: q ? "preflight.action.ferry" : undefined,
+      });
+    }
+    // (6.2d) Reserva activa (ya en tierra): el avión no se moverá con vuelos reales.
+    if (res && !(res.airborne && !res.landedIcao)) {
+      checks.push({
+        id: "reservation",
+        status: "info",
+        titleKey: "preflight.check.reserved",
+        titleArgs: { reg },
+        detailKey: "preflight.check.reserved_detail",
+        detailArgs: { until: fmtDayClock(res.expiresAt) },
+        action: { kind: "reserve-cancel", id: res.id },
+        actionKey: "preflight.action.reserve_cancel",
       });
     }
   }

@@ -1,15 +1,17 @@
 //! (v8.3 · Etapa 6.1) Comandos Tauri de ubicación de aviones y traslados.
+//! (6.2d) + estado en vivo del avión real y reservas.
 
-use crate::ferry::{self, AircraftLocation, Ferry, FerryQuote};
+use crate::ferry::{self, AircraftLocation, Ferry, FerryQuote, Reservation};
 use crate::AppState;
 
-/// Dónde está un avión (último aterrizaje o traslado) y si va en traslado.
+/// Dónde está un avión (último aterrizaje, vuelo real o traslado), si va en
+/// traslado y, si la build trae OpenSky, si el avión real vuela ahora.
 #[tauri::command]
 pub async fn aircraft_location(
     state: tauri::State<'_, AppState>,
     registration: String,
 ) -> Result<AircraftLocation, String> {
-    ferry::location(&state.db, &registration)
+    ferry::location_live(&state.db, &state.http, &registration)
         .await
         .map_err(|e| e.to_string())
 }
@@ -35,7 +37,7 @@ pub async fn ferry_request(
     to_icao: String,
     model: Option<String>,
 ) -> Result<Ferry, String> {
-    ferry::request(&state.db, &registration, &to_icao, model.as_deref())
+    ferry::request(&state.db, Some(&state.http), &registration, &to_icao, model.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -44,4 +46,23 @@ pub async fn ferry_request(
 #[tauri::command]
 pub async fn ferry_cancel(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
     ferry::cancel(&state.db, id).await.map_err(|e| e.to_string())
+}
+
+/// (6.2d) Reserva un avión: al aterrizar queda para el usuario.
+#[tauri::command]
+pub async fn aircraft_reserve(
+    state: tauri::State<'_, AppState>,
+    registration: String,
+) -> Result<Reservation, String> {
+    ferry::reserve(&state.db, &state.http, &registration)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (6.2d) Cancela una reserva activa.
+#[tauri::command]
+pub async fn aircraft_reservation_cancel(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    ferry::cancel_reservation(&state.db, id)
+        .await
+        .map_err(|e| e.to_string())
 }

@@ -365,14 +365,26 @@ pub async fn fleet(pool: &SqlitePool, airline_icao: &str) -> Result<AirlineFleet
             *e = (ls, r.get("arr_icao"));
         }
     }
-    let mine_regs = crate::airline_economy::user_registrations(pool, &icao).await.unwrap_or_default();
+    // (6.2d) Tuyos: los que volaste con ella + los de TechLog/pinturas cuyo
+    // operador (base de aviones) es esta aerolínea. Y cualquier avión tuyo que
+    // se vea volando con ella.
+    let mut mine_regs = crate::airline_economy::user_registrations(pool, &icao).await.unwrap_or_default();
+    if let Some(by_op) = crate::my_fleet::mine_by_operator(pool).await.unwrap_or_default().remove(&icao) {
+        for (reg, a) in by_op {
+            mine_regs.entry(reg).or_insert((a.registration, a.model));
+        }
+    }
+    let all_mine = crate::my_fleet::my_aircraft(pool).await.unwrap_or_default();
     let mut seen_mine: HashSet<String> = HashSet::new();
     let mut aircraft: Vec<FleetAircraft> = rows
         .into_iter()
         .map(|r| {
             let icao24: String = r.get("icao24");
             let reg: Option<String> = r.get("reg");
-            let mine = reg.as_deref().map(normalize_reg).is_some_and(|n| mine_regs.contains_key(&n));
+            let mine = reg
+                .as_deref()
+                .map(normalize_reg)
+                .is_some_and(|n| mine_regs.contains_key(&n) || all_mine.contains_key(&n));
             if mine {
                 seen_mine.extend(reg.as_deref().map(normalize_reg));
             }

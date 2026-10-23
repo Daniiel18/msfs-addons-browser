@@ -69,7 +69,41 @@ pub struct AircraftLocation {
     pub ferry: Option<Ferry>,
     /// Modelo de su último vuelo (para estimar el costo del traslado).
     pub model: Option<String>,
+    /// (6.2d) La ubicación la dio un vuelo REAL del avión (OpenSky) o su
+    /// aterrizaje en vivo tras reservarlo.
+    pub real: bool,
+    /// (6.2d) Código Mode-S del avión real (si está en la base de aviones).
+    pub icao24: Option<String>,
+    /// (6.2d) Reserva activa.
+    pub reservation: Option<Reservation>,
+    /// (6.2d) Estado en vivo del avión real (sólo lo rellena `location_live`).
+    pub live: Option<LiveInfo>,
 }
+
+/// (6.2d) Reserva activa de un avión del usuario.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reservation {
+    pub id: i64,
+    pub reserved_at: String,
+    pub expires_at: String,
+    /// Estaba volando de verdad al reservarlo.
+    pub airborne: bool,
+    /// Aterrizaje detectado en vivo (antes de que llegue el lote del día).
+    pub landed_icao: Option<String>,
+    pub landed_at: Option<String>,
+}
+
+/// (6.2d) El avión real, ahora mismo (OpenSky en vivo).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveInfo {
+    pub airborne: bool,
+    pub callsign: Option<String>,
+}
+
+/// (6.2d) Una reserva vence si no se usa en estos días.
+const RESERVATION_DAYS: i64 = 7;
 
 // ───────────────────────────── Lógica pura ─────────────────────────────
 
@@ -81,6 +115,10 @@ struct FlightEv {
     origin: Option<String>,
     dest: Option<String>,
     model: Option<String>,
+    /// (6.2d) Vuelo REAL (OpenSky) del avión del usuario. Sin aeropuerto de
+    /// llegada no lo mueve. `known_at` = cuándo lo supo SimFleet (descarga).
+    real: bool,
+    known_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,9 +128,27 @@ struct FerryEv {
     arrives: DateTime<Utc>,
 }
 
+/// (6.2d) Reserva: los vuelos reales que SALEN dentro de su ventana no
+/// mueven el avión; su aterrizaje en vivo (si se detectó) lo deja ahí.
+#[derive(Debug, Clone)]
+struct ResEv {
+    reserved: DateTime<Utc>,
+    /// Fin (liberada, cancelada o vencida). `None` = activa.
+    until: Option<DateTime<Utc>>,
+    landed: Option<(DateTime<Utc>, String)>,
+}
+
+impl ResEv {
+    fn blocks(&self, t: DateTime<Utc>) -> bool {
+        t >= self.reserved && self.until.map_or(true, |u| t < u)
+    }
+}
+
 enum Ev<'a> {
     Flight(&'a FlightEv),
     Ferry(&'a FerryEv),
+    /// Aterrizaje detectado en vivo de un avión reservado.
+    Landed(DateTime<Utc>, &'a str),
 }
 
 impl Ev<'_> {
@@ -100,52 +156,110 @@ impl Ev<'_> {
         match self {
             Ev::Flight(f) => f.started,
             Ev::Ferry(f) => f.requested,
+            Ev::Landed(t, _) => *t,
         }
     }
 }
 
-/// Vuelos y traslados de UNA matrícula en orden cronológico (por salida).
-fn timeline<'a>(flights: &'a [FlightEv], ferries: &'a [FerryEv]) -> Vec<Ev<'a>> {
+/// Vuelos (del usuario y reales), traslados y aterrizajes de reservas de UNA
+/// matrícula, en orden cronológico. Los vuelos reales que salen durante una
+/// reserva se descartan: el avión es del usuario.
+fn timeline<'a>(flights: &'a [FlightEv], ferries: &'a [FerryEv], res: &'a [ResEv]) -> Vec<Ev<'a>> {
     let mut evs: Vec<Ev> = flights
         .iter()
+        .filter(|f| !(f.real && res.iter().any(|r| r.blocks(f.started))))
         .map(Ev::Flight)
         .chain(ferries.iter().map(Ev::Ferry))
+        .chain(res.iter().filter_map(|r| r.landed.as_ref().map(|(t, icao)| Ev::Landed(*t, icao.as_str()))))
         .collect();
     evs.sort_by_key(|e| e.start());
     evs
 }
 
-/// Dónde está el avión ahora: lo decide el evento más reciente (por salida).
-fn locate(reg: &str, flights: &[FlightEv], ferries: &[FerryEv], now: DateTime<Utc>) -> AircraftLocation {
+/// Estado del avión tras aplicar eventos en orden.
+#[derive(Debug, Default)]
+struct Fold {
+    at: Option<String>,
+    since: Option<String>,
+    in_flight: bool,
+    ferry: Option<Ferry>,
+    /// La ubicación la dio un vuelo real (o un aterrizaje en vivo).
+    real: bool,
+}
+
+impl Fold {
+    fn apply(&mut self, ev: &Ev, now: DateTime<Utc>) {
+        match ev {
+            Ev::Flight(f) if f.real => {
+                // Un vuelo real sin aeropuerto de llegada no mueve el avión.
+                if let Some(dest) = &f.dest {
+                    self.at = Some(dest.clone());
+                    self.since = f.ended.map(|e| e.to_rfc3339());
+                    self.in_flight = false;
+                    self.ferry = None;
+                    self.real = true;
+                }
+            }
+            Ev::Flight(f) => {
+                self.ferry = None;
+                self.real = false;
+                match f.ended {
+                    None => {
+                        self.in_flight = true;
+                        self.at = None;
+                        self.since = None;
+                    }
+                    Some(ended) => {
+                        self.in_flight = false;
+                        self.at = f.dest.clone();
+                        self.since = self.at.as_ref().map(|_| ended.to_rfc3339());
+                    }
+                }
+            }
+            Ev::Ferry(f) => {
+                self.at = Some(f.ferry.to_icao.clone());
+                self.in_flight = false;
+                self.real = false;
+                if f.arrives > now {
+                    self.ferry = Some(f.ferry.clone());
+                    self.since = None;
+                } else {
+                    self.ferry = None;
+                    self.since = Some(f.ferry.arrives_at.clone());
+                }
+            }
+            Ev::Landed(t, icao) => {
+                self.at = Some(icao.to_string());
+                self.since = Some(t.to_rfc3339());
+                self.in_flight = false;
+                self.ferry = None;
+                self.real = true;
+            }
+        }
+    }
+}
+
+/// Dónde está el avión ahora.
+fn locate(reg: &str, flights: &[FlightEv], ferries: &[FerryEv], res: &[ResEv], now: DateTime<Utc>) -> AircraftLocation {
     let model = flights
         .iter()
         .filter(|f| f.model.is_some())
-        .max_by_key(|f| f.started)
+        .max_by_key(|f| (!f.real, f.started))
         .and_then(|f| f.model.clone());
-    let mut loc = AircraftLocation {
-        registration: reg.to_string(),
-        model,
-        ..Default::default()
-    };
-    match timeline(flights, ferries).last() {
-        Some(Ev::Flight(f)) => match f.ended {
-            None => loc.in_flight = true,
-            Some(ended) => {
-                loc.icao = f.dest.clone();
-                loc.since = loc.icao.as_ref().map(|_| ended.to_rfc3339());
-            }
-        },
-        Some(Ev::Ferry(f)) => {
-            loc.icao = Some(f.ferry.to_icao.clone());
-            if f.arrives > now {
-                loc.ferry = Some(f.ferry.clone());
-            } else {
-                loc.since = Some(f.ferry.arrives_at.clone());
-            }
-        }
-        None => {}
+    let mut st = Fold::default();
+    for ev in timeline(flights, ferries, res) {
+        st.apply(&ev, now);
     }
-    loc
+    AircraftLocation {
+        registration: reg.to_string(),
+        icao: st.at,
+        since: st.since,
+        in_flight: st.in_flight,
+        ferry: st.ferry,
+        model,
+        real: st.real,
+        ..Default::default()
+    }
 }
 
 /// Traslado automático necesario: (vuelo, desde, hacia, modelo, salida del vuelo).
@@ -158,30 +272,34 @@ struct AutoNeed {
     started: DateTime<Utc>,
 }
 
-/// Recorre la historia de una matrícula y devuelve los vuelos (cerrados, desde
-/// `since`) que salieron de un aeropuerto distinto de donde estaba el avión.
-/// `ferries` son sólo los traslados PEDIDOS y activos: un pedido cubre el
-/// vuelo aunque el usuario saliera antes de que "llegara".
-fn plan_auto(flights: &[FlightEv], ferries: &[FerryEv], since: DateTime<Utc>) -> Vec<AutoNeed> {
+/// Vuelos del usuario (cerrados, desde `since`) que salieron de un aeropuerto
+/// distinto de donde estaba el avión. Para cada uno, la ubicación se calcula
+/// sólo con lo que SimFleet sabía al salir: los vuelos reales que llegaron
+/// después en una descarga no generan cobros retroactivos. `ferries` son sólo
+/// los traslados PEDIDOS: un pedido cubre el vuelo aunque saliera antes de que
+/// "llegara".
+fn plan_auto(flights: &[FlightEv], ferries: &[FerryEv], res: &[ResEv], since: DateTime<Utc>) -> Vec<AutoNeed> {
+    let evs = timeline(flights, ferries, res);
     let mut out = Vec::new();
-    let mut at: Option<String> = None;
-    for ev in timeline(flights, ferries) {
-        match ev {
-            Ev::Ferry(f) => at = Some(f.ferry.to_icao.clone()),
-            Ev::Flight(f) => {
-                if let (Some(_), Some(origin), Some(here)) = (f.ended, &f.origin, &at) {
-                    if f.started >= since && origin != here {
-                        out.push(AutoNeed {
-                            flight_id: f.id,
-                            from: here.clone(),
-                            to: origin.clone(),
-                            model: f.model.clone(),
-                            started: f.started,
-                        });
-                    }
+    for f in flights.iter().filter(|f| !f.real && f.ended.is_some() && f.started >= since) {
+        let Some(origin) = &f.origin else { continue };
+        let mut st = Fold::default();
+        for ev in evs.iter().filter(|e| e.start() < f.started) {
+            if let Ev::Flight(r) = ev {
+                if r.real && r.known_at.map_or(true, |k| k > f.started) {
+                    continue;
                 }
-                at = f.dest.clone();
             }
+            st.apply(ev, f.started);
+        }
+        if let Some(here) = st.at.filter(|h| h != origin) {
+            out.push(AutoNeed {
+                flight_id: f.id,
+                from: here,
+                to: origin.clone(),
+                model: f.model.clone(),
+                started: f.started,
+            });
         }
     }
     out
@@ -275,9 +393,134 @@ async fn load_flights(pool: &SqlitePool) -> Result<HashMap<String, Vec<FlightEv>
             origin: clean_icao(r.get("origin_icao")),
             dest: clean_icao(r.get("destination_icao")),
             model,
+            real: false,
+            known_at: None,
         });
     }
     Ok(out)
+}
+
+/// (6.2d) Vuelos REALES de los aviones del usuario (OpenSky), por matrícula.
+/// `known_at` = cuándo se bajó su ventana (para no cobrar retroactivo).
+async fn load_real_flights(pool: &SqlitePool) -> Result<HashMap<String, Vec<FlightEv>>> {
+    let mine = crate::my_fleet::my_aircraft(pool).await.unwrap_or_default();
+    let mut out: HashMap<String, Vec<FlightEv>> = HashMap::new();
+    if mine.is_empty() {
+        return Ok(out);
+    }
+    for r in sqlx::query(
+        "SELECT rf.first_seen AS fs, rf.last_seen AS ls, rf.dep_icao AS dep, rf.arr_icao AS arr,
+                a.registration AS reg, a.typecode AS tc, w.fetched_at AS known
+           FROM real_flight rf
+           JOIN aircraft_db a ON a.icao24 = rf.icao24
+           LEFT JOIN opensky_window w ON w.begin_ts = rf.window_begin
+          WHERE a.registration IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?
+    {
+        let reg = normalize_reg(&r.get::<String, _>("reg"));
+        if !mine.contains_key(&reg) {
+            continue;
+        }
+        let (Some(started), Some(ended)) = (
+            DateTime::from_timestamp(r.get::<i64, _>("fs"), 0),
+            DateTime::from_timestamp(r.get::<i64, _>("ls"), 0),
+        ) else {
+            continue;
+        };
+        out.entry(reg).or_default().push(FlightEv {
+            id: 0,
+            started,
+            ended: Some(ended),
+            origin: clean_icao(r.get("dep")),
+            dest: clean_icao(r.get("arr")),
+            model: r.get("tc"),
+            real: true,
+            known_at: r.get::<Option<String>, _>("known").as_deref().and_then(parse_dt),
+        });
+    }
+    Ok(out)
+}
+
+/// (6.2d) Reservas por matrícula (todas, para la historia) y la activa.
+async fn load_reservations(pool: &SqlitePool) -> Result<HashMap<String, (Vec<ResEv>, Option<Reservation>)>> {
+    let mut out: HashMap<String, (Vec<ResEv>, Option<Reservation>)> = HashMap::new();
+    for r in sqlx::query("SELECT * FROM aircraft_reservation ORDER BY reserved_at").fetch_all(pool).await? {
+        let Some(reserved) = parse_dt(&r.get::<String, _>("reserved_at")) else { continue };
+        let status: String = r.get("status");
+        let ended = r.get::<Option<String>, _>("ended_at").as_deref().and_then(parse_dt);
+        let landed_icao: Option<String> = r.get("landed_icao");
+        let landed_at: Option<String> = r.get("landed_at");
+        let ev = ResEv {
+            reserved,
+            until: if status == "active" { None } else { ended.or(Some(reserved)) },
+            landed: match (landed_at.as_deref().and_then(parse_dt), landed_icao.clone()) {
+                (Some(t), Some(icao)) => Some((t, icao)),
+                _ => None,
+            },
+        };
+        let e = out.entry(r.get("registration")).or_default();
+        e.0.push(ev);
+        if status == "active" {
+            e.1 = Some(Reservation {
+                id: r.get("id"),
+                reserved_at: r.get("reserved_at"),
+                expires_at: r.get("expires_at"),
+                airborne: r.get::<i64, _>("airborne") != 0,
+                landed_icao,
+                landed_at,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// (6.2d) Vence las reservas viejas y libera las de aviones que el usuario
+/// ya voló después de reservarlos.
+async fn sync_reservations(pool: &SqlitePool) -> Result<()> {
+    let now = Utc::now();
+    let active = sqlx::query("SELECT id, registration, reserved_at, expires_at FROM aircraft_reservation WHERE status = 'active'")
+        .fetch_all(pool)
+        .await?;
+    if active.is_empty() {
+        return Ok(());
+    }
+    let flights = load_flights(pool).await?;
+    for r in active {
+        let id: i64 = r.get("id");
+        let reg: String = r.get("registration");
+        let Some(reserved) = parse_dt(&r.get::<String, _>("reserved_at")) else { continue };
+        let expires = parse_dt(&r.get::<String, _>("expires_at")).unwrap_or(reserved + Duration::days(RESERVATION_DAYS));
+        let flown = flights
+            .get(&reg)
+            .and_then(|fl| fl.iter().filter(|f| f.started > reserved).map(|f| f.started).min());
+        let end = match flown {
+            Some(t) => Some(("released", t)),
+            None if now > expires => Some(("expired", expires)),
+            None => None,
+        };
+        if let Some((status, t)) = end {
+            sqlx::query("UPDATE aircraft_reservation SET status = ?, ended_at = ? WHERE id = ?")
+                .bind(status)
+                .bind(t.to_rfc3339())
+                .bind(id)
+                .execute(pool)
+                .await?;
+            tracing::info!(target: "ferry", "reserva #{id} ({reg}): {status}");
+        }
+    }
+    Ok(())
+}
+
+/// (6.2d) icao24 (Mode-S) de una matrícula del usuario según la base de aviones.
+async fn icao24_of(pool: &SqlitePool, reg: &str) -> Option<String> {
+    crate::my_fleet::my_icao24(pool)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|(_, r)| r == reg)
+        .map(|(hex, _)| hex)
 }
 
 /// Traslados activos agrupados por matrícula. `only_requested` deja fuera los
@@ -337,20 +580,49 @@ pub async fn quote(pool: &SqlitePool, from: &str, to: &str, model: Option<&str>)
     Ok(quote_for(&from.trim().to_ascii_uppercase(), &to.trim().to_ascii_uppercase(), d, model))
 }
 
-/// Ubicación de una matrícula.
+/// Ubicación de una matrícula (vuelos del usuario + reales + traslados +
+/// reservas).
 pub async fn location(pool: &SqlitePool, registration: &str) -> Result<AircraftLocation> {
+    sync_reservations(pool).await?;
     let reg = normalize_reg(registration);
-    let flights = load_flights(pool).await?.remove(&reg).unwrap_or_default();
+    let mut flights = load_flights(pool).await?.remove(&reg).unwrap_or_default();
+    flights.extend(load_real_flights(pool).await?.remove(&reg).unwrap_or_default());
     let ferries = load_ferries(pool, false).await?.remove(&reg).unwrap_or_default();
-    let mut loc = locate(&reg, &flights, &ferries, Utc::now());
+    let (res, active) = load_reservations(pool).await?.remove(&reg).unwrap_or_default();
+    let mut loc = locate(&reg, &flights, &ferries, &res, Utc::now());
     loc.airport_name = airport_name(pool, loc.icao.as_deref()).await;
+    loc.reservation = active;
+    loc.icao24 = icao24_of(pool, &reg).await;
+    Ok(loc)
+}
+
+/// (6.2d) Ubicación + estado en vivo del avión real (OpenSky), si la build
+/// trae claves y el avión está en la base de aviones.
+pub async fn location_live(pool: &SqlitePool, http: &reqwest::Client, registration: &str) -> Result<AircraftLocation> {
+    let mut loc = location(pool, registration).await?;
+    if let (true, Some(hex)) = (crate::opensky::is_configured(), loc.icao24.as_deref()) {
+        match crate::opensky::live_state(http, hex).await {
+            Ok(st) => {
+                loc.live = Some(LiveInfo {
+                    airborne: st.as_ref().is_some_and(|s| !s.on_ground),
+                    callsign: st.and_then(|s| s.callsign),
+                })
+            }
+            Err(e) => tracing::debug!(target: "ferry", "estado en vivo de {hex}: {e:#}"),
+        }
+    }
     Ok(loc)
 }
 
 /// Ubicación de todas las matrículas con vuelos o traslados (para el Hangar).
 pub async fn locations(pool: &SqlitePool) -> Result<HashMap<String, AircraftLocation>> {
+    sync_reservations(pool).await?;
     let mut flights = load_flights(pool).await?;
+    for (reg, real) in load_real_flights(pool).await? {
+        flights.entry(reg).or_default().extend(real);
+    }
     let mut ferries = load_ferries(pool, false).await?;
+    let mut reservations = load_reservations(pool).await?;
     let regs: Vec<String> = flights.keys().chain(ferries.keys()).cloned().collect();
     let now = Utc::now();
     let mut out = HashMap::new();
@@ -360,17 +632,40 @@ pub async fn locations(pool: &SqlitePool) -> Result<HashMap<String, AircraftLoca
         }
         let f = flights.remove(&reg).unwrap_or_default();
         let t = ferries.remove(&reg).unwrap_or_default();
-        out.insert(reg.clone(), locate(&reg, &f, &t, now));
+        let (res, active) = reservations.remove(&reg).unwrap_or_default();
+        let mut loc = locate(&reg, &f, &t, &res, now);
+        loc.reservation = active;
+        out.insert(reg.clone(), loc);
     }
     Ok(out)
 }
 
-/// Pide un traslado de `registration` a `to_icao`, desde donde esté.
-pub async fn request(pool: &SqlitePool, registration: &str, to_icao: &str, model: Option<&str>) -> Result<Ferry> {
+/// Pide un traslado de `registration` a `to_icao`, desde donde esté. Con
+/// `http`, comprueba antes que el avión real no esté volando ahora.
+pub async fn request(
+    pool: &SqlitePool,
+    http: Option<&reqwest::Client>,
+    registration: &str,
+    to_icao: &str,
+    model: Option<&str>,
+) -> Result<Ferry> {
     let to = to_icao.trim().to_ascii_uppercase();
-    let loc = location(pool, registration).await?;
+    let loc = match http {
+        Some(h) => location_live(pool, h, registration).await?,
+        None => location(pool, registration).await?,
+    };
     if loc.in_flight {
         return Err(anyhow!(crate::tr!("ferry.err.inFlight")));
+    }
+    // En el aire no se traslada — salvo que ya esté reservado en tierra (el
+    // avión del usuario se quedó; el real sigue volando aparte).
+    let waiting_landing = loc.reservation.as_ref().is_some_and(|r| r.airborne && r.landed_icao.is_none());
+    if loc.live.as_ref().is_some_and(|l| l.airborne) && (loc.reservation.is_none() || waiting_landing) {
+        return Err(anyhow!(if waiting_landing {
+            crate::tr!("ferry.err.waitingLanding")
+        } else {
+            crate::tr!("ferry.err.airborne")
+        }));
     }
     if loc.ferry.is_some() {
         return Err(anyhow!(crate::tr!("ferry.err.enroute")));
@@ -421,6 +716,107 @@ pub async fn cancel(pool: &SqlitePool, id: i64) -> Result<()> {
         .await?;
     tracing::info!(target: "ferry", "traslado #{id} cancelado");
     Ok(())
+}
+
+/// (6.2d) Reserva un avión del usuario: al aterrizar queda para él y sus
+/// vuelos reales posteriores dejan de moverlo (hasta volarlo, cancelar o 7
+/// días). Si está volando ahora, se vigila en vivo su aterrizaje.
+pub async fn reserve(pool: &SqlitePool, http: &reqwest::Client, registration: &str) -> Result<Reservation> {
+    sync_reservations(pool).await?;
+    let loc = location_live(pool, http, registration).await?;
+    if loc.reservation.is_some() {
+        return Err(anyhow!(crate::tr!("ferry.err.alreadyReserved")));
+    }
+    let now = Utc::now();
+    let expires = now + Duration::days(RESERVATION_DAYS);
+    let airborne = loc.live.as_ref().is_some_and(|l| l.airborne);
+    let res = sqlx::query(
+        "INSERT INTO aircraft_reservation (registration, icao24, reserved_at, expires_at, airborne)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&loc.registration)
+    .bind(&loc.icao24)
+    .bind(now.to_rfc3339())
+    .bind(expires.to_rfc3339())
+    .bind(airborne as i64)
+    .execute(pool)
+    .await?;
+    let id = res.last_insert_rowid();
+    tracing::info!(target: "ferry", "reserva #{id} {} (en el aire: {airborne})", loc.registration);
+    Ok(Reservation {
+        id,
+        reserved_at: now.to_rfc3339(),
+        expires_at: expires.to_rfc3339(),
+        airborne,
+        landed_icao: None,
+        landed_at: None,
+    })
+}
+
+/// (6.2d) Cancela una reserva activa: el avión vuelve a operar.
+pub async fn cancel_reservation(pool: &SqlitePool, id: i64) -> Result<()> {
+    let n = sqlx::query("UPDATE aircraft_reservation SET status = 'cancelled', ended_at = ? WHERE id = ? AND status = 'active'")
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(anyhow!(crate::tr!("ferry.err.reservationNotFound")));
+    }
+    Ok(())
+}
+
+/// (6.2d) Aeropuerto más cercano (≤ 5 NM) a una posición.
+async fn nearest_airport(pool: &SqlitePool, lat: f64, lon: f64) -> Option<String> {
+    let rows = sqlx::query(
+        "SELECT icao, latitude, longitude FROM airports
+          WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?",
+    )
+    .bind(lat - 0.2)
+    .bind(lat + 0.2)
+    .bind(lon - 0.3)
+    .bind(lon + 0.3)
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    rows.into_iter()
+        .map(|r| {
+            let d = crate::flight_log::haversine_nm(lat, lon, r.get("latitude"), r.get("longitude"));
+            (d, r.get::<String, _>("icao"))
+        })
+        .filter(|(d, _)| *d <= 5.0)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, icao)| icao)
+}
+
+/// (6.2d) Para las reservas de aviones que estaban volando: mira en vivo si
+/// ya aterrizaron y dónde (así el usuario lo puede usar sin esperar al lote
+/// del día siguiente). Lo llama un bucle cada 10 min.
+pub async fn poll_reservation_landings(pool: &SqlitePool, http: &reqwest::Client) -> Result<usize> {
+    let rows = sqlx::query(
+        "SELECT id, registration, icao24 FROM aircraft_reservation
+          WHERE status = 'active' AND airborne = 1 AND landed_icao IS NULL AND icao24 IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut landed = 0;
+    for r in rows {
+        let id: i64 = r.get("id");
+        let hex: String = r.get("icao24");
+        let Ok(Some(st)) = crate::opensky::live_state(http, &hex).await else { continue };
+        let (true, Some(lat), Some(lon)) = (st.on_ground, st.lat, st.lon) else { continue };
+        let Some(icao) = nearest_airport(pool, lat, lon).await else { continue };
+        sqlx::query("UPDATE aircraft_reservation SET landed_icao = ?, landed_at = ? WHERE id = ?")
+            .bind(&icao)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(pool)
+            .await?;
+        tracing::info!(target: "ferry", "reserva #{id} ({}): aterrizó en {icao}", r.get::<String, _>("registration"));
+        landed += 1;
+    }
+    Ok(landed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -485,12 +881,22 @@ async fn auto_since(pool: &SqlitePool) -> Result<DateTime<Utc>> {
 /// Lo llama el recálculo de Finanzas antes de sumar costos.
 pub async fn sync_auto_ferries(pool: &SqlitePool) -> Result<usize> {
     let since = auto_since(pool).await?;
-    let flights = load_flights(pool).await?;
+    sync_reservations(pool).await?;
+    let mut flights = load_flights(pool).await?;
+    // (6.2d) Los vuelos reales del avión también lo mueven (sólo lo que se
+    // sabía al salir cada vuelo del usuario).
+    for (reg, real) in load_real_flights(pool).await? {
+        if let Some(fl) = flights.get_mut(&reg) {
+            fl.extend(real);
+        }
+    }
     let requested = load_ferries(pool, true).await?;
+    let reservations = load_reservations(pool).await?;
     let mut needs = Vec::new();
     for (reg, fl) in &flights {
         let req = requested.get(reg).map(Vec::as_slice).unwrap_or(&[]);
-        needs.extend(plan_auto(fl, req, since).into_iter().map(|n| (reg.clone(), n)));
+        let res = reservations.get(reg).map(|(r, _)| r.as_slice()).unwrap_or(&[]);
+        needs.extend(plan_auto(fl, req, res, since).into_iter().map(|n| (reg.clone(), n)));
     }
     let mut quotes = Vec::with_capacity(needs.len());
     for (reg, n) in needs {
@@ -568,6 +974,8 @@ mod tests {
             origin: Some(o.into()),
             dest: Some(d.into()),
             model: Some("A320".into()),
+            real: false,
+            known_at: None,
         }
     }
 
@@ -597,25 +1005,25 @@ mod tests {
             flight(1, "2026-10-20T10:00:00Z", Some("2026-10-20T12:00:00Z"), "SKRG", "KFLL"),
             flight(2, "2026-10-21T10:00:00Z", Some("2026-10-21T13:00:00Z"), "KFLL", "KBOS"),
         ];
-        let loc = locate("N657JB", &fl, &[], now);
+        let loc = locate("N657JB", &fl, &[], &[], now);
         assert_eq!(loc.icao.as_deref(), Some("KBOS"));
         assert_eq!(loc.since.as_deref(), Some("2026-10-21T13:00:00+00:00"));
         assert!(loc.ferry.is_none() && !loc.in_flight);
 
         // Traslado en curso → va hacia KJFK, aún sin "since".
         let tr = vec![ferry(9, "KBOS", "KJFK", "2026-10-22T11:30:00Z", "2026-10-22T12:30:00Z")];
-        let loc = locate("N657JB", &fl, &tr, now);
+        let loc = locate("N657JB", &fl, &tr, &[], now);
         assert_eq!(loc.icao.as_deref(), Some("KJFK"));
         assert_eq!(loc.ferry.as_ref().map(|f| f.id), Some(9));
         // Ya llegó.
-        let loc = locate("N657JB", &fl, &tr, t("2026-10-22T13:00:00Z"));
+        let loc = locate("N657JB", &fl, &tr, &[], t("2026-10-22T13:00:00Z"));
         assert!(loc.ferry.is_none());
         assert_eq!(loc.since.as_deref(), Some("2026-10-22T12:30:00Z"));
 
         // Vuelo abierto → en vuelo, sin aeropuerto.
         let mut open = fl.clone();
         open.push(flight(3, "2026-10-22T11:00:00Z", None, "KBOS", "KMIA"));
-        let loc = locate("N657JB", &open, &[], now);
+        let loc = locate("N657JB", &open, &[], &[], now);
         assert!(loc.in_flight && loc.icao.is_none());
     }
 
@@ -633,19 +1041,72 @@ mod tests {
             // Vuelo abierto que salta: se cobra al cerrarlo, no antes.
             flight(5, "2026-10-22T10:00:00Z", None, "KORD", "KDEN"),
         ];
-        let needs = plan_auto(&fl, &[], since);
+        let needs = plan_auto(&fl, &[], &[], since);
         assert_eq!(needs.len(), 1);
         assert_eq!((needs[0].flight_id, needs[0].from.as_str(), needs[0].to.as_str()), (3, "KBOS", "KJFK"));
 
         // Con un traslado PEDIDO a KJFK antes del vuelo 3, no hay cobro extra
         // (aunque saliera antes de que "llegara").
         let tr = vec![ferry(7, "KBOS", "KJFK", "2026-10-21T09:00:00Z", "2026-10-21T10:30:00Z")];
-        assert!(plan_auto(&fl, &tr, since).is_empty());
+        assert!(plan_auto(&fl, &tr, &[], since).is_empty());
 
         // Pedido a otro aeropuerto (KEWR) → se cobra KEWR→KJFK.
         let tr = vec![ferry(8, "KBOS", "KEWR", "2026-10-21T08:00:00Z", "2026-10-21T09:00:00Z")];
-        let needs = plan_auto(&fl, &tr, since);
+        let needs = plan_auto(&fl, &tr, &[], since);
         assert_eq!((needs[0].from.as_str(), needs[0].to.as_str()), ("KEWR", "KJFK"));
+    }
+
+    fn real(start: &str, end: &str, o: Option<&str>, d: Option<&str>, known: &str) -> FlightEv {
+        FlightEv {
+            id: 0,
+            started: t(start),
+            ended: Some(t(end)),
+            origin: o.map(str::to_string),
+            dest: d.map(str::to_string),
+            model: Some("A320".into()),
+            real: true,
+            known_at: Some(t(known)),
+        }
+    }
+
+    /// (6.2d) Los vuelos reales mueven el avión; sin llegada no; dentro de
+    /// una reserva no; y el cobro automático sólo usa lo que ya se sabía.
+    #[test]
+    fn real_flights_move_the_aircraft_without_retroactive_charges() {
+        let now = t("2026-10-23T12:00:00Z");
+        let mine = flight(1, "2026-10-21T08:00:00Z", Some("2026-10-21T10:00:00Z"), "KFLL", "KBOS");
+        // Vuelo real KBOS→KJFK el 21/10 a las 12:00, sabido el 22/10 a las 07:00.
+        let r1 = real("2026-10-21T12:00:00Z", "2026-10-21T13:00:00Z", Some("KBOS"), Some("KJFK"), "2026-10-22T07:00:00Z");
+        // Vuelo real sin aeropuerto de llegada: no mueve.
+        let r2 = real("2026-10-21T15:00:00Z", "2026-10-21T16:00:00Z", Some("KJFK"), None, "2026-10-22T07:00:00Z");
+        let loc = locate("N657JB", &[mine.clone(), r1.clone(), r2.clone()], &[], &[], now);
+        assert_eq!(loc.icao.as_deref(), Some("KJFK"));
+        assert!(loc.real);
+
+        let since = t("2026-10-20T00:00:00Z");
+        // El usuario vuela desde KBOS el 21/10 a las 18:00 (aún no se sabía del
+        // vuelo real a KJFK): sin cobro retroactivo.
+        let mine2 = flight(2, "2026-10-21T18:00:00Z", Some("2026-10-21T20:00:00Z"), "KBOS", "KMIA");
+        assert!(plan_auto(&[mine.clone(), r1.clone(), mine2], &[], &[], since).is_empty());
+        // El 22/10 a las 10:00 ya se sabía → salir de KBOS se cobra KJFK→KBOS.
+        let mine3 = flight(3, "2026-10-22T10:00:00Z", Some("2026-10-22T12:00:00Z"), "KBOS", "KMIA");
+        let needs = plan_auto(&[mine.clone(), r1.clone(), mine3], &[], &[], since);
+        assert_eq!(needs.len(), 1);
+        assert_eq!((needs[0].from.as_str(), needs[0].to.as_str()), ("KJFK", "KBOS"));
+
+        // Reservado el 21/10 a las 11:00: el vuelo real de las 12:00 no lo mueve.
+        let res = vec![ResEv { reserved: t("2026-10-21T11:00:00Z"), until: None, landed: None }];
+        let loc = locate("N657JB", &[mine.clone(), r1.clone()], &[], &res, now);
+        assert_eq!(loc.icao.as_deref(), Some("KBOS"));
+        // Aterrizaje en vivo detectado tras reservar (estaba volando): queda ahí.
+        let res = vec![ResEv {
+            reserved: t("2026-10-21T11:00:00Z"),
+            until: None,
+            landed: Some((t("2026-10-21T11:40:00Z"), "KPVD".into())),
+        }];
+        let loc = locate("N657JB", &[mine, r1], &[], &res, now);
+        assert_eq!(loc.icao.as_deref(), Some("KPVD"));
+        assert!(loc.real);
     }
 
     async fn db() -> SqlitePool {
@@ -693,11 +1154,11 @@ mod tests {
         assert_eq!(loc.icao.as_deref(), Some("KBOS"));
         assert_eq!(loc.airport_name.as_deref(), Some("KBOS Intl"));
 
-        assert!(request(&pool, "N657JB", "KBOS", None).await.is_err(), "ya está ahí");
-        let f = request(&pool, "N657-JB", "kjfk", None).await.unwrap();
+        assert!(request(&pool, None, "N657JB", "KBOS", None).await.is_err(), "ya está ahí");
+        let f = request(&pool, None, "N657-JB", "kjfk", None).await.unwrap();
         assert_eq!((f.from_icao.as_str(), f.to_icao.as_str()), ("KBOS", "KJFK"));
         assert!(f.cost_total > 0.0);
-        assert!(request(&pool, "N657JB", "KMIA", None).await.is_err(), "ya va en traslado");
+        assert!(request(&pool, None, "N657JB", "KMIA", None).await.is_err(), "ya va en traslado");
         assert_eq!(location(&pool, "N657JB").await.unwrap().ferry.map(|x| x.id), Some(f.id));
 
         cancel(&pool, f.id).await.unwrap();
@@ -719,6 +1180,15 @@ mod tests {
         assert_eq!((autos[0].from_icao.as_str(), autos[0].to_icao.as_str(), autos[0].source.as_str()), ("KBOS", "KJFK", "auto"));
         // Llega justo cuando sale el vuelo.
         assert_eq!(parse_dt(&autos[0].arrives_at), Some(soon));
+    }
+
+    /// (6.2d) El aterrizaje en vivo se asigna al aeropuerto más cercano (≤ 5 NM).
+    #[tokio::test]
+    async fn live_landing_picks_the_nearest_airport() {
+        let pool = db().await;
+        assert_eq!(nearest_airport(&pool, 42.37, -71.02).await.as_deref(), Some("KBOS"));
+        assert_eq!(nearest_airport(&pool, 40.64, -73.78).await.as_deref(), Some("KJFK"));
+        assert_eq!(nearest_airport(&pool, 41.5, -72.5).await, None, "lejos de todo");
     }
 
     #[test]

@@ -740,6 +740,26 @@ export interface AircraftLocation {
   /** Traslado en curso (aún no ha llegado). */
   ferry: Ferry | null;
   model: string | null;
+  /** (6.2d) La ubicación la dio un vuelo REAL del avión (OpenSky). */
+  real: boolean;
+  /** (6.2d) Código Mode-S del avión real (si está en la base de aviones). */
+  icao24: string | null;
+  /** (6.2d) Reserva activa. */
+  reservation: Reservation | null;
+  /** (6.2d) El avión real ahora mismo (OpenSky en vivo), si se pudo ver. */
+  live: { airborne: boolean; callsign: string | null } | null;
+}
+
+/** (v8.3 · Etapa 6.2d) Reserva: el avión queda para el usuario al aterrizar. */
+export interface Reservation {
+  id: number;
+  reservedAt: string;
+  expiresAt: string;
+  /** Estaba volando de verdad al reservarlo. */
+  airborne: boolean;
+  /** Aterrizaje detectado en vivo. */
+  landedIcao: string | null;
+  landedAt: string | null;
 }
 
 /** (v6.1) Punto de la curva de saldo en el tiempo (gráfica del detalle). */

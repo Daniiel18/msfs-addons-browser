@@ -1388,6 +1388,16 @@ async fn refresh_auto_days(
     if profiles.is_empty() {
         return Ok(0);
     }
+    // (6.2d) Aviones del usuario de TechLog/pinturas cuyo operador (base de
+    // aviones) es una aerolínea de Finanzas: también pagan costo fijo en ella.
+    for (icao, aircraft) in crate::my_fleet::mine_by_operator(pool).await.unwrap_or_default() {
+        if let Some(res) = profiles.get(&icao) {
+            let regs = user_regs.entry(res.key.clone()).or_default();
+            for (reg, a) in aircraft {
+                regs.entry(reg).or_insert(a.model);
+            }
+        }
+    }
     let coords: HashMap<String, (f64, f64)> = sqlx::query("SELECT icao, latitude, longitude FROM airports")
         .fetch_all(pool)
         .await?
@@ -1400,7 +1410,9 @@ async fn refresh_auto_days(
         let day_end = day_start + 86_400;
         let day = DateTime::from_timestamp(*day_start, 0).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
         // Flota de cada aerolínea: aviones vistos en los 30 días hasta este día.
-        let mut fleet: HashMap<String, HashMap<String, (Option<String>, Option<String>)>> = HashMap::new();
+        // aerolínea → icao24 → (tipo, matrícula)
+        type Fleet = HashMap<String, HashMap<String, (Option<String>, Option<String>)>>;
+        let mut fleet: Fleet = HashMap::new();
         for r in sqlx::query(
             "SELECT DISTINCT rf.airline_icao AS al, rf.icao24 AS hex, a.typecode AS tc, a.registration AS reg
                FROM real_flight rf LEFT JOIN aircraft_db a ON a.icao24 = rf.icao24

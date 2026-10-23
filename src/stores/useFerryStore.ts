@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api } from "../lib/tauri";
-import type { AircraftLocation, Ferry, FerryQuote } from "../lib/types";
+import type { AircraftLocation, Ferry, FerryQuote, Reservation } from "../lib/types";
 
 /**
  * (v8.3 · Etapa 6.1) Ubicación de los aviones y traslados para el prevuelo.
@@ -23,6 +23,9 @@ interface FerryState {
   load: (registration: string, originIcao: string | null, model: string | null) => Promise<void>;
   request: (registration: string, toIcao: string, model: string | null) => Promise<Ferry>;
   cancel: (id: number) => Promise<void>;
+  /** (6.2d) Reservar el avión (queda para ti al aterrizar) / cancelar. */
+  reserve: (registration: string) => Promise<Reservation>;
+  cancelReservation: (id: number) => Promise<void>;
 }
 
 /** Igual que `airline_economy::normalize_reg` en Rust. */
@@ -63,6 +66,15 @@ export const useFerryStore = create<FerryState>((set, get) => ({
   },
   async cancel(id) {
     await api.ferryCancel(id);
+    set((s) => ({ epoch: s.epoch + 1 }));
+  },
+  async reserve(registration) {
+    const r = await api.aircraftReserve(registration);
+    set((s) => ({ epoch: s.epoch + 1 }));
+    return r;
+  },
+  async cancelReservation(id) {
+    await api.aircraftReservationCancel(id);
     set((s) => ({ epoch: s.epoch + 1 }));
   },
 }));

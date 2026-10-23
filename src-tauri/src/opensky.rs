@@ -204,6 +204,70 @@ async fn fetch_window(http: &reqwest::Client, begin: i64, end: i64) -> Result<Wi
     Err(FetchError::Other(anyhow!("OpenSky no aceptó el token")))
 }
 
+// ───────────────────────── Estado en vivo (6.2d) ─────────────────────────
+
+/// Estado en vivo de un avión según OpenSky (`/states/all?icao24=`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveState {
+    pub on_ground: bool,
+    pub callsign: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    /// Último contacto (Unix, s).
+    pub last_contact: i64,
+}
+
+/// Un estado más viejo que esto no cuenta como "en el aire ahora".
+const LIVE_STALE_S: i64 = 15 * 60;
+const LIVE_CACHE: Duration = Duration::from_secs(300);
+type LiveCache = Mutex<std::collections::HashMap<String, (Instant, Option<LiveState>)>>;
+static LIVE: OnceLock<LiveCache> = OnceLock::new();
+
+/// Lee el estado de un vector de `/states/all` (índices de la doc).
+fn parse_state(body: &str) -> Option<LiveState> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let s = v.get("states")?.as_array()?.first()?.as_array()?;
+    Some(LiveState {
+        callsign: s.get(1).and_then(|x| x.as_str()).map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
+        last_contact: s.get(4).and_then(|x| x.as_i64()).unwrap_or(0),
+        lon: s.get(5).and_then(|x| x.as_f64()),
+        lat: s.get(6).and_then(|x| x.as_f64()),
+        on_ground: s.get(8).and_then(|x| x.as_bool()).unwrap_or(true),
+    })
+}
+
+/// Estado en vivo del avión `icao24` (cacheado 5 min). `None` si OpenSky no
+/// lo ve ahora (o el último contacto es viejo).
+pub async fn live_state(http: &reqwest::Client, icao24: &str) -> Result<Option<LiveState>> {
+    let hex = icao24.trim().to_ascii_lowercase();
+    let cell = LIVE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Ok(g) = cell.lock() {
+        if let Some((t, st)) = g.get(&hex) {
+            if t.elapsed() < LIVE_CACHE {
+                return Ok(st.clone());
+            }
+        }
+    }
+    let tok = token(http).await?;
+    let resp = http
+        .get(format!("{API}/states/all"))
+        .query(&[("icao24", hex.as_str())])
+        .bearer_auth(&tok)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await?;
+    if resp.status().as_u16() == 401 {
+        forget_token();
+    }
+    let body = resp.error_for_status()?.text().await?;
+    let st = parse_state(&body).filter(|s| Utc::now().timestamp() - s.last_contact <= LIVE_STALE_S);
+    if let Ok(mut g) = cell.lock() {
+        g.insert(hex, (Instant::now(), st.clone()));
+    }
+    Ok(st)
+}
+
 // ───────────────────────────── Lógica pura ─────────────────────────────
 
 /// Momento desde el que la ventana que empieza en `begin` está completa:
@@ -377,6 +441,7 @@ async fn sync_inner(pool: &SqlitePool, http: &reqwest::Client) -> Result<SyncRep
         report.stopped = Some("no_airlines".into());
         return Ok(report);
     }
+    let mine = crate::my_fleet::my_icao24(pool).await.unwrap_or_default();
     let now = Utc::now();
     let done = done_windows(pool).await?;
     let mut spent = credits_today(pool, now).await?;
@@ -396,17 +461,24 @@ async fn sync_inner(pool: &SqlitePool, http: &reqwest::Client) -> Result<SyncRep
                 let mut kept = 0i64;
                 let mut tx = pool.begin().await?;
                 for f in w.flights {
-                    let Some(cs) = f.callsign.as_deref() else { continue };
-                    let Some(airline) = airline_of(cs, &airlines) else { continue };
+                    let hex = f.icao24.trim().to_ascii_lowercase();
+                    let cs = f.callsign.as_deref().map(|c| c.trim().to_ascii_uppercase()).unwrap_or_default();
+                    // (6.2d) También los vuelos de los aviones del usuario,
+                    // aunque su aerolínea no esté en Finanzas.
+                    let airline = match airline_of(&cs, &airlines) {
+                        Some(a) => a,
+                        None if mine.contains_key(&hex) => cs.chars().take(3).collect(),
+                        None => continue,
+                    };
                     let res = sqlx::query(
                         "INSERT OR IGNORE INTO real_flight
                             (icao24, first_seen, last_seen, callsign, airline_icao, dep_icao, arr_icao, window_begin)
                          VALUES (?,?,?,?,?,?,?,?)",
                     )
-                    .bind(f.icao24.trim().to_ascii_lowercase())
+                    .bind(&hex)
                     .bind(f.first_seen)
                     .bind(f.last_seen)
-                    .bind(cs.trim().to_ascii_uppercase())
+                    .bind(&cs)
                     .bind(&airline)
                     .bind(clean_icao(f.est_departure_airport))
                     .bind(clean_icao(f.est_arrival_airport))
@@ -447,6 +519,18 @@ pub fn spawn_loop(pool: SqlitePool, http: reqwest::Client) {
     if !is_configured() {
         tracing::info!(target: "opensky", "sin claves de OpenSky en esta build: vuelos reales desactivados");
         return;
+    }
+    // (6.2d) Aterrizajes en vivo de aviones reservados mientras volaban.
+    {
+        let (pool, http) = (pool.clone(), http.clone());
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                if let Err(e) = crate::ferry::poll_reservation_landings(&pool, &http).await {
+                    tracing::debug!(target: "ferry", "aterrizajes de reservas: {e:#}");
+                }
+            }
+        });
     }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -617,6 +701,17 @@ mod tests {
         assert_eq!(pending_windows(now, &done).len(), 19);
         // Recuperar 2 días entra en el tope diario.
         assert!(w.len() as i64 * WINDOW_COST <= DAILY_BUDGET);
+    }
+
+    #[test]
+    fn parses_live_state_vector() {
+        let body = r#"{"time":1792700000,"states":[["a1b2c3","JBU123  ","United States",1792699990,1792699995,-73.5,40.7,10668.0,false,230.1,45.0,0.0,null,10900.0,"1234",false,0]]}"#;
+        let s = parse_state(body).unwrap();
+        assert!(!s.on_ground);
+        assert_eq!(s.callsign.as_deref(), Some("JBU123"));
+        assert_eq!(s.last_contact, 1_792_699_995);
+        assert_eq!((s.lat, s.lon), (Some(40.7), Some(-73.5)));
+        assert!(parse_state(r#"{"time":1,"states":null}"#).is_none());
     }
 
     #[test]

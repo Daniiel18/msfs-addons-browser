@@ -64,6 +64,8 @@ pub mod ferry;
 pub mod opensky;
 // (v8.3 · Etapa 6.2b) Base de aviones (OpenSky + adsbdb) y flotas reales.
 pub mod aircraft_db;
+// (v8.3 · Etapa 6.2d) "Tus aviones": vuelos + TechLog + pinturas instaladas.
+pub mod my_fleet;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -399,6 +401,8 @@ pub fn run() {
             commands::ferry::ferry_quote,
             commands::ferry::ferry_request,
             commands::ferry::ferry_cancel,
+            commands::ferry::aircraft_reserve,
+            commands::ferry::aircraft_reservation_cancel,
             commands::opensky::opensky_status,
             commands::opensky::opensky_sync_now,
             commands::opensky::airline_fleet,

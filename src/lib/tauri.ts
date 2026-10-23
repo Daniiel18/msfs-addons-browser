@@ -106,6 +106,7 @@ import type {
   OpenSkyStatus,
   OpenSkySyncReport,
   AirlineFleet,
+  Reservation,
 } from "./types";
 
 /** True when we're running inside the Tauri webview (vs. a plain browser). */
@@ -718,6 +719,10 @@ interface Api {
   ferryRequest: (registration: string, toIcao: string, model?: string | null) => Promise<Ferry>;
   /** (v8.3) Cancela un traslado pedido que aún no llegó (no se cobra). */
   ferryCancel: (id: number) => Promise<void>;
+  /** (v8.3 · 6.2d) Reserva el avión: al aterrizar queda para el usuario. */
+  aircraftReserve: (registration: string) => Promise<Reservation>;
+  /** (v8.3 · 6.2d) Cancela una reserva activa. */
+  aircraftReservationCancel: (id: number) => Promise<void>;
   /** (v8.3 · Etapa 6.2a) Estado de los vuelos reales de OpenSky. */
   openskyStatus: () => Promise<OpenSkyStatus>;
   /** (v8.3) Baja ya las ventanas de OpenSky pendientes. */
@@ -1131,6 +1136,8 @@ const realApi: Api = {
   ferryRequest: (registration, toIcao, model) =>
     invoke<Ferry>("ferry_request", { registration, toIcao, model: model ?? null }),
   ferryCancel: (id) => invoke<void>("ferry_cancel", { id }),
+  aircraftReserve: (registration) => invoke<Reservation>("aircraft_reserve", { registration }),
+  aircraftReservationCancel: (id) => invoke<void>("aircraft_reservation_cancel", { id }),
   openskyStatus: () => invoke<OpenSkyStatus>("opensky_status"),
   openskySyncNow: () => invoke<OpenSkySyncReport>("opensky_sync_now"),
   airlineFleet: (airlineIcao) => invoke<AirlineFleet>("airline_fleet", { airlineIcao }),
@@ -2440,6 +2447,10 @@ const demoApi: Api = {
       inFlight: false,
       ferry: null,
       model: "A320-200",
+      real: false,
+      icao24: null,
+      reservation: null,
+      live: null,
     };
   },
   async ferryQuote(fromIcao, toIcao) {
@@ -2471,6 +2482,18 @@ const demoApi: Api = {
     };
   },
   async ferryCancel() {},
+  async aircraftReserve() {
+    const now = Date.now();
+    return {
+      id: 1,
+      reservedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 7 * 86_400_000).toISOString(),
+      airborne: false,
+      landedIcao: null,
+      landedAt: null,
+    };
+  },
+  async aircraftReservationCancel() {},
   // (v8.3) Demo: sin claves de OpenSky.
   async openskyStatus() {
     return {
