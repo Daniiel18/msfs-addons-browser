@@ -5,6 +5,16 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.3.2]
+
+### Added
+- **Cabin page from Fenix TechLog 2.1** in the Hangar maintenance tab, for the Fenix loaded in the sim: water and waste (with the pre-select mark), doors and slides, lavatories, cabin temperature and pressure, lights and signs. You can also set the water pre-select (0–100 % in 25 % steps) and the cabin lights from SimFleet. Checked against Fenix TechLog 2.1.2: everything else keeps working as before.
+
+### Fixed
+- **Landing recordings were never saved** since 8.0 when the clips folder didn't exist (a new PC, or the folder was deleted): the recording failed silently and the log only said "no frames". SimFleet now creates the folder. If the folder you chose isn't available (a disconnected disk, for example), the landing is recorded in Windows' Videos › SimFleet Landings and SimFleet tells you so. The Best Landings list shows clips from both folders.
+- If a recording fails for any other reason, SimFleet now shows the real reason in a notice instead of failing silently.
+- The landing video is no longer lost when the audio device runs at a rate the encoder doesn't accept (96/192 kHz): the audio is resampled to 48 kHz, or the clip is saved without audio.
+
 ## [8.3.1]
 
 ### Changed
