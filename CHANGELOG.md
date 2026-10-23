@@ -5,6 +5,29 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.3.0]
+
+### Added
+- **AeroHub (aerohub.st) as a source** in Explore and search: MSFS add-ons with their VaultDrop/ModsFire links, multi-part downloads merged into one, and the install notes on the card.
+- **Installers, apps and navdata** (anything that doesn't go to Community) are extracted into a folder you choose and opened in Explorer. Mixed archives install the Community packages and offer the rest. Works for every source and for drag & drop.
+- **The Downloads panel follows every hoster download:** waiting, progress, processing, ready, installed or saved, failed and cancelled. Windows tells you when a download is ready, an "about to start" hint appears while the server prepares the file, and interrupted downloads resume on their own.
+- **Crew VS:** finished duels show the max altitude, max ground speed and distance of both pilots.
+- **Aircraft location and ferry flights:** each aircraft is where it last landed (shown in the Hangar). When your OFP departs from another airport, "Ready to fly?" offers a ferry that takes the real flight time and is charged to the airline in Finances (cancellable before it arrives). Flying anyway charges the ferry when the flight closes, only for flights from this version on.
+- **Real airline operations (OpenSky):** after entering the activation code in Settings › Real flights, the airlines in Finances operate on their own with the real flights OpenSky saw (complete UTC days), priced like your flights, plus fleet fixed costs. A "Real operations" card and one balance-curve point per day show it. Nothing goes to the FlightBook.
+- **Real fleets:** Finances › airline › new Fleet tab with the aircraft seen flying for that airline in the last 30 days plus yours (registration, type, flights, last landing).
+- **Your aircraft fly on their own:** aircraft from your FlightBook, Fenix/PMDG TechLog and installed liveries move with their real flights (their maintenance is never touched). "Ready to fly?" tells you when the real aircraft is flying right now and lets you reserve it so it stays with you after it lands.
+
+### Changed
+- flightsim.to downloads go to the Downloads panel without blocking the page, and the flightsim.to toolbar is gone (reload button in the Explore header).
+- In-app notifications use a single style; the install results panel and the "Installed" screen became regular notifications.
+- Cancelling or failing the install of an internal download deletes its temporary files right away.
+
+### Fixed
+- GSX receipts are read again (GSX now bills in local currency with a USD equivalent); past flights are recalculated.
+- With minimize to tray on, closing a download window no longer leaves it running hidden.
+- Windows Hello unlock failing while flightsim.to was open, and sidebar tooltips hidden behind flightsim.to.
+- Accented and special characters (e.g. "°") in Fenix/PMDG TechLog catalogs. Checked against Fenix TechLog 2.0.1.
+
 ## [8.2.0]
 
 ### Added
