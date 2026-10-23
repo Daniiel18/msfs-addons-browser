@@ -215,6 +215,7 @@ static ENTRIES: &[(&str, &str, &str)] = &[
     ("dropInstall.withVdgs", "con VDGS", "with VDGS"),
     ("dropInstall.withoutVdgs", "sin VDGS", "without VDGS"),
     ("economy.aircraftPurchase", "{route} · compra avión", "{route} · aircraft purchase"),
+    ("economy.autoDay", "{date}: {n} vuelos reales", "{date}: {n} real flights"),
     ("economy.ferry", "Traslado {from} → {to}", "Ferry {from} → {to}"),
     ("economy.ferryAuto", "Traslado {from} → {to} (sin pedir)", "Ferry {from} → {to} (not requested)"),
     ("economy.flight", "Vuelo", "Flight"),

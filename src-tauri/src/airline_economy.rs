@@ -1244,6 +1244,14 @@ struct LedgerAcc {
     /// (v8.3) Traslados (vuelos de posicionamiento) y su costo.
     cost_ferry: f64,
     ferries: i64,
+    /// (v8.3 · 6.2c) Operación autónoma: días, vuelos reales, ingresos y
+    /// costos (incluidos ya en los totales), costos fijos y flota.
+    auto_days: i64,
+    auto_flights: i64,
+    auto_revenue: f64,
+    auto_costs: f64,
+    cost_fixed: f64,
+    auto_fleet: i64,
 }
 
 /// Satisfacción del pasajero (0-100) derivada de la media de FPM al tocar
@@ -1301,6 +1309,265 @@ fn holistic_satisfaction(acc: &LedgerAcc, policy: &AirlinePolicy) -> f64 {
     s.clamp(15.0, 100.0)
 }
 
+// ─────────────────── Operación autónoma (v8.3 · Etapa 6.2c) ───────────────────
+
+/// Costo fijo diario por avión de la flota (tripulaciones, seguro,
+/// estacionamiento y estructura). Decisión del usuario: nivel "realista".
+fn fixed_daily(size: Size) -> f64 {
+    match size {
+        Size::Wide => 22_000.0,
+        Size::Narrow => 8_000.0,
+        Size::Regional => 4_000.0,
+    }
+}
+
+/// Totales de la operación autónoma de una aerolínea (todos sus días).
+#[derive(Debug, Default, Clone)]
+struct AutoTotals {
+    days: i64,
+    flights: i64,
+    revenue_tickets: f64,
+    revenue_ancillary: f64,
+    cost_fuel: f64,
+    cost_catering: f64,
+    cost_handling: f64,
+    cost_maintenance: f64,
+    cost_fees: f64,
+    cost_fixed: f64,
+    /// Flota del día más reciente.
+    last_fleet: i64,
+}
+
+/// Semilla estable de un vuelo real (para el factor de ocupación).
+fn real_flight_seed(icao24: &str, first_seen: i64) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in icao24.bytes().chain(first_seen.to_le_bytes()) {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    (h >> 1) as i64
+}
+
+/// Tipo más común (designador) entre los aviones de una aerolínea.
+fn most_common_type<'a>(types: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for t in types {
+        *count.entry(t).or_default() += 1;
+    }
+    count.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|(t, _)| t.to_string())
+}
+
+/// Recalcula los días UTC completos (12 ventanas) que aún tienen vuelos
+/// crudos: P&L de cada vuelo real con el mismo modelo que los del usuario
+/// y costos fijos de la flota (vistos volando en 30 días + los del usuario).
+async fn refresh_auto_days(
+    pool: &SqlitePool,
+    flights: &[FlightLogEntry],
+    learned: &HashMap<String, String>,
+    policies: &HashMap<String, AirlinePolicy>,
+) -> Result<usize> {
+    let days = crate::opensky::complete_days(pool).await?;
+    if days.is_empty() {
+        return Ok(0);
+    }
+    // Perfil económico por ICAO y aviones del usuario por aerolínea.
+    let mut profiles: HashMap<String, Resolved> = HashMap::new();
+    let mut user_regs: HashMap<String, HashMap<String, Option<String>>> = HashMap::new();
+    for f in flights {
+        let Some(res) = resolve_airline(f, learned) else { continue };
+        if let Some(reg) = f.aircraft_registration.as_deref().map(normalize_reg).filter(|r| !r.is_empty()) {
+            user_regs
+                .entry(res.key.clone())
+                .or_default()
+                .entry(reg)
+                .or_insert_with(|| f.aircraft_model.clone().or_else(|| f.aircraft_atc_type.clone()));
+        }
+        if let Some(icao) = res.icao.clone() {
+            profiles.entry(icao).or_insert(res);
+        }
+    }
+    if profiles.is_empty() {
+        return Ok(0);
+    }
+    let coords: HashMap<String, (f64, f64)> = sqlx::query("SELECT icao, latitude, longitude FROM airports")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| (r.get::<String, _>("icao"), (r.get("latitude"), r.get("longitude"))))
+        .collect();
+    let now = Utc::now().to_rfc3339();
+    let mut rows_out: Vec<(String, String, AutoTotals, i64)> = Vec::new();
+    for day_start in &days {
+        let day_end = day_start + 86_400;
+        let day = DateTime::from_timestamp(*day_start, 0).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+        // Flota de cada aerolínea: aviones vistos en los 30 días hasta este día.
+        let mut fleet: HashMap<String, HashMap<String, (Option<String>, Option<String>)>> = HashMap::new();
+        for r in sqlx::query(
+            "SELECT DISTINCT rf.airline_icao AS al, rf.icao24 AS hex, a.typecode AS tc, a.registration AS reg
+               FROM real_flight rf LEFT JOIN aircraft_db a ON a.icao24 = rf.icao24
+              WHERE rf.first_seen >= ? AND rf.first_seen < ?",
+        )
+        .bind(day_end - 30 * 86_400)
+        .bind(day_end)
+        .fetch_all(pool)
+        .await?
+        {
+            fleet
+                .entry(r.get("al"))
+                .or_default()
+                .insert(r.get("hex"), (r.get("tc"), r.get("reg")));
+        }
+        let common: HashMap<&String, Option<String>> = fleet
+            .iter()
+            .map(|(al, ac)| (al, most_common_type(ac.values().filter_map(|(tc, _)| tc.as_deref()))))
+            .collect();
+        // Vuelos reales del día.
+        let mut acc: HashMap<String, AutoTotals> = HashMap::new();
+        for r in sqlx::query(
+            "SELECT rf.icao24 AS hex, rf.first_seen AS fs, rf.last_seen AS ls, rf.airline_icao AS al,
+                    rf.dep_icao AS dep, rf.arr_icao AS arr, rf.callsign AS cs,
+                    a.typecode AS tc, a.registration AS reg
+               FROM real_flight rf LEFT JOIN aircraft_db a ON a.icao24 = rf.icao24
+              WHERE rf.window_begin >= ? AND rf.window_begin < ?",
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_all(pool)
+        .await?
+        {
+            let al: String = r.get("al");
+            let Some(res) = profiles.get(&al) else { continue };
+            let hex: String = r.get("hex");
+            let fs: i64 = r.get("fs");
+            let ls: i64 = r.get("ls");
+            let dep: Option<String> = r.get("dep");
+            let arr: Option<String> = r.get("arr");
+            let model = r
+                .get::<Option<String>, _>("tc")
+                .or_else(|| common.get(&al).cloned().flatten());
+            let distance = match (dep.as_deref().and_then(|d| coords.get(d)), arr.as_deref().and_then(|a| coords.get(a))) {
+                (Some(a), Some(b)) if dep != arr => Some(flight_log::haversine_nm(a.0, a.1, b.0, b.1)),
+                _ => None,
+            };
+            let entry = FlightLogEntry {
+                id: real_flight_seed(&hex, fs),
+                started_at: DateTime::from_timestamp(fs, 0).map(|d| d.to_rfc3339()).unwrap_or_default(),
+                ended_at: DateTime::from_timestamp(ls, 0).map(|d| d.to_rfc3339()),
+                origin_icao: dep,
+                destination_icao: arr,
+                aircraft_model: model,
+                aircraft_registration: r.get("reg"),
+                airline_icao: Some(al.clone()),
+                callsign: Some(r.get("cs")),
+                distance_nm: distance,
+                flight_time_s: Some((ls - fs).max(600)),
+                source: "opensky".into(),
+                ..Default::default()
+            };
+            let mut policy = auto_services(res.lowcost, res.cargo);
+            policy.maintenance_level = policies.get(&res.key).map(|p| p.maintenance_level).unwrap_or(1);
+            let pnl = compute_pnl(&entry, res, &GsxCosts::default(), &policy);
+            let t = acc.entry(res.key.clone()).or_default();
+            t.flights += 1;
+            t.revenue_tickets += pnl.revenue_tickets;
+            t.revenue_ancillary += pnl.revenue_ancillary;
+            t.cost_fuel += pnl.cost_fuel;
+            t.cost_catering += pnl.cost_catering;
+            t.cost_handling += pnl.cost_handling;
+            t.cost_maintenance += pnl.cost_maintenance;
+            t.cost_fees += pnl.cost_fees;
+        }
+        // Costos fijos: flota vista + aviones del usuario que no se vieron.
+        for (al, res) in &profiles {
+            let seen = fleet.get(al);
+            let common_size = common.get(al).cloned().flatten();
+            let mut cost = 0.0;
+            let mut n = 0i64;
+            let mut seen_regs: HashSet<String> = HashSet::new();
+            for (tc, reg) in seen.map(|m| m.values().collect::<Vec<_>>()).unwrap_or_default() {
+                let model = tc.clone().or_else(|| common_size.clone());
+                cost += fixed_daily(classify(model.as_deref()).0);
+                n += 1;
+                seen_regs.extend(reg.as_deref().map(normalize_reg));
+            }
+            for (reg, model) in user_regs.get(&res.key).into_iter().flatten() {
+                if !seen_regs.contains(reg) {
+                    cost += fixed_daily(classify(model.as_deref()).0);
+                    n += 1;
+                }
+            }
+            let t = acc.entry(res.key.clone()).or_default();
+            if t.flights == 0 && seen.is_none() {
+                // Sin vuelos reales vistos aún: no opera (ni costos fijos).
+                continue;
+            }
+            t.cost_fixed = cost;
+            rows_out.push((res.key.clone(), day.clone(), t.clone(), n));
+        }
+    }
+    let mut tx = pool.begin().await?;
+    for (key, day, t, fleet_n) in &rows_out {
+        sqlx::query(
+            "INSERT OR REPLACE INTO auto_daily
+                (airline_key, day, flights, pax, revenue_tickets, revenue_ancillary, cost_fuel,
+                 cost_catering, cost_handling, cost_maintenance, cost_fees, cost_fixed, fleet, computed_at)
+             VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(key)
+        .bind(day)
+        .bind(t.flights)
+        .bind(t.revenue_tickets)
+        .bind(t.revenue_ancillary)
+        .bind(t.cost_fuel)
+        .bind(t.cost_catering)
+        .bind(t.cost_handling)
+        .bind(t.cost_maintenance)
+        .bind(t.cost_fees)
+        .bind(t.cost_fixed)
+        .bind(fleet_n)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(rows_out.len())
+}
+
+/// Totales por aerolínea de todos los días de operación guardados.
+async fn load_auto_totals(pool: &SqlitePool) -> Result<HashMap<String, AutoTotals>> {
+    let rows = sqlx::query(
+        "SELECT airline_key, COUNT(*) AS days, SUM(flights) AS flights,
+                SUM(revenue_tickets) AS rt, SUM(revenue_ancillary) AS ra,
+                SUM(cost_fuel) AS cf, SUM(cost_catering) AS cc, SUM(cost_handling) AS ch,
+                SUM(cost_maintenance) AS cm, SUM(cost_fees) AS cfe, SUM(cost_fixed) AS cfx,
+                (SELECT fleet FROM auto_daily d2 WHERE d2.airline_key = d.airline_key
+                  ORDER BY day DESC LIMIT 1) AS last_fleet
+           FROM auto_daily d GROUP BY airline_key",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<String, _>("airline_key"),
+                AutoTotals {
+                    days: r.get("days"),
+                    flights: r.get("flights"),
+                    revenue_tickets: r.get("rt"),
+                    revenue_ancillary: r.get("ra"),
+                    cost_fuel: r.get("cf"),
+                    cost_catering: r.get("cc"),
+                    cost_handling: r.get("ch"),
+                    cost_maintenance: r.get("cm"),
+                    cost_fees: r.get("cfe"),
+                    cost_fixed: r.get("cfx"),
+                    last_fleet: r.get::<Option<i64>, _>("last_fleet").unwrap_or(0),
+                },
+            )
+        })
+        .collect())
+}
+
 /// Recalcula TODO el ledger desde `flight_log` (idempotente). Borra y
 /// reconstruye `flight_pnl` y `airline_economy`, de modo que cada llamada
 /// refleja exactamente los vuelos actuales — "consume la data actual".
@@ -1328,6 +1595,12 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         .await
         .unwrap_or_default();
     let mut reg_to_airline: HashMap<String, String> = HashMap::new();
+    // (v8.3 · Etapa 6.2c) Operación autónoma (vuelos reales de OpenSky +
+    // costos fijos), antes de abrir la transacción del ledger.
+    if let Err(e) = refresh_auto_days(pool, &flights, &learned, &policies).await {
+        tracing::warn!(target: "economy", "operación autónoma: {e:#}");
+    }
+    let auto = load_auto_totals(pool).await.unwrap_or_default();
 
     let mut ledger: HashMap<String, LedgerAcc> = HashMap::new();
     let now = Utc::now().to_rfc3339();
@@ -1409,6 +1682,12 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
             fleet_value: 0.0,
             cost_ferry: 0.0,
             ferries: 0,
+            auto_days: 0,
+            auto_flights: 0,
+            auto_revenue: 0.0,
+            auto_costs: 0.0,
+            cost_fixed: 0.0,
+            auto_fleet: 0,
         });
         // Cada avión distinto (matrícula) = compra de ese avión → inversión.
         if let Some(reg) = f.aircraft_registration.as_deref() {
@@ -1478,6 +1757,29 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         }
     }
 
+    // (v8.3 · 6.2c) Operación autónoma: entra en los totales y en cada
+    // categoría del desglose; los costos fijos van aparte.
+    for (key, a) in &auto {
+        let Some(acc) = ledger.get_mut(key) else { continue };
+        let revenue = a.revenue_tickets + a.revenue_ancillary;
+        let variable = a.cost_fuel + a.cost_catering + a.cost_handling + a.cost_maintenance + a.cost_fees;
+        acc.revenue += revenue;
+        acc.costs += variable + a.cost_fixed;
+        acc.revenue_tickets += a.revenue_tickets;
+        acc.revenue_ancillary += a.revenue_ancillary;
+        acc.cost_fuel += a.cost_fuel;
+        acc.cost_catering += a.cost_catering;
+        acc.cost_handling += a.cost_handling;
+        acc.cost_maintenance += a.cost_maintenance;
+        acc.cost_fees += a.cost_fees;
+        acc.cost_fixed += a.cost_fixed;
+        acc.auto_days = a.days;
+        acc.auto_flights = a.flights;
+        acc.auto_revenue = revenue;
+        acc.auto_costs = variable + a.cost_fixed;
+        acc.auto_fleet = a.last_fleet;
+    }
+
     for (key, acc) in &ledger {
         // (v6.1) Misma política automática usada en el P&L (servicios por tipo +
         // nivel de mantenimiento manual) para que la satisfacción cuadre.
@@ -1497,8 +1799,10 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
                  passengers, revenue_tickets, revenue_ancillary,
                  cost_fuel, cost_catering, cost_handling, cost_maintenance,
                  cost_fees, avg_landing_fpm, satisfaction, gsx_flights,
-                 fleet_size, fleet_value, cost_ferry, ferries, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+                 fleet_size, fleet_value, cost_ferry, ferries,
+                 auto_flights, auto_days, auto_revenue, auto_costs, cost_fixed, auto_fleet,
+                 updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
         )
         .bind(key)
         .bind(&acc.icao)
@@ -1524,6 +1828,12 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         .bind(acc.fleet_value)
         .bind(acc.cost_ferry)
         .bind(acc.ferries)
+        .bind(acc.auto_flights)
+        .bind(acc.auto_days)
+        .bind(acc.auto_revenue)
+        .bind(acc.auto_costs)
+        .bind(acc.cost_fixed)
+        .bind(acc.auto_fleet)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -1574,6 +1884,15 @@ pub struct AirlineLedger {
     /// (v8.3) Costo de los traslados (ya incluido en `costs`) y cuántos hubo.
     pub cost_ferry: f64,
     pub ferries: i64,
+    /// (v8.3 · 6.2c) Operación autónoma (ya incluida en revenue / costs):
+    /// días completos operados, vuelos reales, ingresos, costos (con fijos),
+    /// costos fijos y flota del último día.
+    pub auto_days: i64,
+    pub auto_flights: i64,
+    pub auto_revenue: f64,
+    pub auto_costs: f64,
+    pub cost_fixed: f64,
+    pub auto_fleet: i64,
 }
 
 /// (v8.3 · Etapa 6.2b) Matrículas que el usuario voló con una aerolínea
@@ -1613,7 +1932,8 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
                   revenue_tickets, revenue_ancillary, cost_fuel, cost_catering,
                   cost_handling, cost_maintenance, cost_fees, avg_landing_fpm,
                   satisfaction, gsx_flights, fleet_size, fleet_value,
-                  cost_ferry, ferries
+                  cost_ferry, ferries, auto_flights, auto_days, auto_revenue,
+                  auto_costs, cost_fixed, auto_fleet
              FROM airline_economy
             ORDER BY (revenue - costs) DESC"#,
     )
@@ -1655,6 +1975,12 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
             fleet_value,
             cost_ferry: r.get("cost_ferry"),
             ferries: r.get("ferries"),
+            auto_days: r.get("auto_days"),
+            auto_flights: r.get("auto_flights"),
+            auto_revenue: r.get("auto_revenue"),
+            auto_costs: r.get("auto_costs"),
+            cost_fixed: r.get("cost_fixed"),
+            auto_fleet: r.get("auto_fleet"),
         });
     }
     Ok(out)
@@ -1777,6 +2103,28 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         });
     }
 
+    // (v8.3 · 6.2c) Operación autónoma: un punto por día (neto con fijos).
+    for r in sqlx::query(
+        "SELECT day, flights, revenue_tickets + revenue_ancillary AS rev,
+                cost_fuel + cost_catering + cost_handling + cost_maintenance + cost_fees + cost_fixed AS cost
+           FROM auto_daily WHERE airline_key = ? ORDER BY day",
+    )
+    .bind(key)
+    .fetch_all(pool)
+    .await?
+    {
+        let day: String = r.get("day");
+        let rev: f64 = r.get("rev");
+        let cost: f64 = r.get("cost");
+        let label_day = day.get(5..).map(|md| format!("{}/{}", &md[3..], &md[..2])).unwrap_or_else(|| day.clone());
+        events.push(Ev {
+            t: format!("{day}T23:59:59Z"),
+            delta: rev - cost,
+            label: crate::tr!("economy.autoDay", date = label_day, n = r.get::<i64, _>("flights")),
+            kind: "auto",
+        });
+    }
+
     // (v8.3) Traslados cargados a esta aerolínea, en su fecha de salida.
     for f in crate::ferry::for_airline(pool, key).await.unwrap_or_default() {
         let label = if f.source == "auto" {
@@ -1885,6 +2233,85 @@ pub async fn set_policy(pool: &SqlitePool, key: &str, p: &AirlinePolicy) -> Resu
     .await?;
     recompute(pool).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod auto_ops_tests {
+    use super::*;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn exec(pool: &SqlitePool, sql: &str) {
+        sqlx::query(sql).execute(pool).await.unwrap();
+    }
+
+    /// Un día con sus 12 ventanas completas cuenta; uno con 11 no. El avión
+    /// sin tipo usa el tipo más común de la flota y el avión del usuario que
+    /// no se vio volar también paga costo fijo.
+    #[tokio::test]
+    async fn complete_days_become_daily_pnl_with_fixed_costs() {
+        let pool = db().await;
+        exec(&pool, "INSERT INTO airports (icao, name, latitude, longitude) VALUES
+            ('KBOS','Boston',42.3656,-71.0096), ('KJFK','JFK',40.6413,-73.7781)").await;
+        // Vuelo del usuario con JetBlue → JBU está en Finanzas.
+        exec(&pool, "INSERT INTO flight_log (started_at, ended_at, origin_lat, origin_lon, origin_icao,
+                destination_icao, aircraft_registration, aircraft_model, airline_icao)
+             VALUES ('2026-10-10T10:00:00Z','2026-10-10T11:00:00Z',0,0,'KBOS','KJFK','N657JB','A320','JBU')").await;
+        let d21 = 1_792_540_800i64; // 2026-10-21 00:00 UTC
+        let d22 = d21 + 86_400;
+        // 21/10 completo (12 ventanas, bajadas tras cerrar el día); 22/10 con 11.
+        for i in 0..12 {
+            sqlx::query("INSERT INTO opensky_window (begin_ts, end_ts, fetched_at, status) VALUES (?, ?, '2026-10-22T07:00:00Z', 'ok')")
+                .bind(d21 + i * 7_200)
+                .bind(d21 + (i + 1) * 7_200)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for i in 0..11 {
+            sqlx::query("INSERT INTO opensky_window (begin_ts, end_ts, fetched_at, status) VALUES (?, ?, '2026-10-23T07:00:00Z', 'ok')")
+                .bind(d22 + i * 7_200)
+                .bind(d22 + (i + 1) * 7_200)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        exec(&pool, "INSERT INTO aircraft_db (icao24, registration, typecode, source) VALUES
+            ('aaa001','N100JB','A320','opensky'), ('aaa003','N657JB','A320','opensky')").await;
+        for (hex, fs, win) in [("aaa001", d21 + 3_600, d21), ("aaa001", d21 + 20_000, d21 + 14_400), ("aaa002", d21 + 30_000, d21 + 28_800), ("aaa001", d22 + 3_600, d22)] {
+            sqlx::query("INSERT INTO real_flight (icao24, first_seen, last_seen, callsign, airline_icao, dep_icao, arr_icao, window_begin)
+                         VALUES (?, ?, ?, 'JBU123', 'JBU', 'KBOS', 'KJFK', ?)")
+                .bind(hex)
+                .bind(fs)
+                .bind(fs + 3_600)
+                .bind(win)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let flights = flight_log::list_entries(&pool).await.unwrap();
+        let learned = learn_airline_icaos(&flights);
+        let policies = load_policies(&pool).await.unwrap();
+        assert_eq!(refresh_auto_days(&pool, &flights, &learned, &policies).await.unwrap(), 1);
+        let totals = load_auto_totals(&pool).await.unwrap();
+        let jbu = &totals["JBU"];
+        assert_eq!((jbu.days, jbu.flights), (1, 3), "sólo el 21/10 (el 22/10 está incompleto)");
+        // Flota: aaa001 (A320) + aaa002 (sin tipo → A320) + N657JB del usuario (no visto).
+        assert_eq!(jbu.last_fleet, 3);
+        assert!((jbu.cost_fixed - 3.0 * 8_000.0).abs() < 1e-6, "{}", jbu.cost_fixed);
+        assert!(jbu.revenue_tickets > 0.0 && jbu.cost_fuel > 0.0);
+        // Idempotente: recalcular no duplica.
+        refresh_auto_days(&pool, &flights, &learned, &policies).await.unwrap();
+        assert_eq!(load_auto_totals(&pool).await.unwrap()["JBU"].flights, 3);
+    }
 }
 
 #[cfg(test)]

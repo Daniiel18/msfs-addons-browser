@@ -2415,6 +2415,12 @@ const demoApi: Api = {
         fleetValue,
         costFerry: 0,
         ferries: 0,
+        autoDays: 0,
+        autoFlights: 0,
+        autoRevenue: 0,
+        autoCosts: 0,
+        costFixed: 0,
+        autoFleet: 0,
       };
     };
     return [

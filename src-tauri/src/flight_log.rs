@@ -16,7 +16,7 @@ use sqlx::SqlitePool;
 /// Registro completo tal como vive en `flight_log`. `ended_at`
 /// `None` indica un vuelo en curso (o interrumpido si la app cerró
 /// sin que llegara aterrizaje).
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct FlightLogEntry {
     pub id: i64,

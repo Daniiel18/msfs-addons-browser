@@ -32,6 +32,7 @@ import {
   CheckCircle2,
   Trophy,
   Percent,
+  Radar,
 } from "lucide-react";
 import type { AirlineLedger, BalancePoint } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
@@ -99,6 +100,8 @@ const COST_COLORS = {
   fees: "#64748b",
   // (v8.3) Traslados (vuelos de posicionamiento).
   ferry: "#0ea5e9",
+  // (v8.3 · 6.2c) Costos fijos de la flota (operación autónoma).
+  fixed: "#e11d48",
 };
 
 type SortKey = "net" | "balance" | "satisfaction";
@@ -321,7 +324,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
   const s = useMemo(() => {
     const z = {
       revenue: 0, costs: 0, net: 0, balance: 0,
-      fuel: 0, catering: 0, handling: 0, maintenance: 0, fees: 0, ferry: 0,
+      fuel: 0, catering: 0, handling: 0, maintenance: 0, fees: 0, ferry: 0, fixed: 0,
     };
     for (const l of list) {
       z.revenue += l.revenue;
@@ -334,6 +337,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
       z.maintenance += l.costMaintenance;
       z.fees += l.costFees;
       z.ferry += l.costFerry ?? 0;
+      z.fixed += l.costFixed ?? 0;
     }
     return z;
   }, [list]);
@@ -345,6 +349,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
     { key: "maintenance", name: t("economy.costs.maintenance"), value: s.maintenance, color: COST_COLORS.maintenance },
     { key: "fees", name: t("economy.costs.fees"), value: s.fees, color: COST_COLORS.fees },
     { key: "ferry", name: t("economy.costs.ferry"), value: s.ferry, color: COST_COLORS.ferry },
+    { key: "fixed", name: t("economy.costs.fixed"), value: s.fixed, color: COST_COLORS.fixed },
   ]
     .filter((c) => c.value > 0)
     .sort((a, b) => b.value - a.value);
@@ -713,6 +718,7 @@ function AirlineDetail({
       value: led.costFerry ?? 0,
       color: COST_COLORS.ferry,
     },
+    { name: t("economy.costs.fixed"), value: led.costFixed ?? 0, color: COST_COLORS.fixed },
   ].filter((d) => d.value > 0);
 
   return (
@@ -870,6 +876,9 @@ function AirlineDetail({
         />
       </div>
 
+      {/* (v8.3 · 6.2c) Operación autónoma con vuelos reales (OpenSky). */}
+      {led.icao && <AutoOpsCard led={led} />}
+
       {/* Histórico del saldo (banco a lo largo del tiempo) */}
       <BalanceHistoryCard led={led} />
 
@@ -944,6 +953,57 @@ function AirlineDetail({
       )}
       {/* (v6.1) Servicios a bordo ahora son AUTOMÁTICOS por tipo de aerolínea
           (ver auto_services en el backend) — sin gestión manual. */}
+    </div>
+  );
+}
+
+/** (v8.3 · Etapa 6.2c) Resumen de la operación autónoma: vuelos reales que
+ *  OpenSky vio de la aerolínea (días UTC completos), su neto y los costos
+ *  fijos de la flota. Ya están sumados en el saldo y en el desglose. */
+function AutoOpsCard({ led }: { led: AirlineLedger }) {
+  const days = led.autoDays ?? 0;
+  const net = (led.autoRevenue ?? 0) - (led.autoCosts ?? 0);
+  return (
+    <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
+      <h3 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
+        <Radar className="h-4 w-4 text-brand-400" />
+        {t("economy.auto.title")}
+      </h3>
+      {days > 0 ? (
+        <>
+          <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div>
+              <div className="text-[11px] text-sf-muted">{t("economy.auto.flights")}</div>
+              <div className="text-lg font-bold text-sf-text">{(led.autoFlights ?? 0).toLocaleString()}</div>
+              <div className="text-[11px] text-sf-muted">{t("economy.auto.days", { n: String(days) })}</div>
+            </div>
+            <div>
+              <div className="text-[11px] text-sf-muted">{t("economy.auto.net")}</div>
+              <div className={`text-lg font-bold ${net >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {fmtSigned(net)}
+              </div>
+              <div className="text-[11px] text-sf-muted">
+                {t("economy.auto.per_day", { v: fmtSigned(net / days) })}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] text-sf-muted">{t("economy.auto.fixed")}</div>
+              <div className="text-lg font-bold text-sf-text">{usdCompact.format(led.costFixed ?? 0)}</div>
+              <div className="text-[11px] text-sf-muted">
+                {t("economy.auto.per_day", { v: usdCompact.format((led.costFixed ?? 0) / days) })}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] text-sf-muted">{t("economy.auto.fleet")}</div>
+              <div className="text-lg font-bold text-sf-text">{led.autoFleet ?? 0}</div>
+              <div className="text-[11px] text-sf-muted">{t("economy.auto.fleet_hint")}</div>
+            </div>
+          </div>
+          <p className="mt-2 text-[11px] text-sf-muted">{t("economy.auto.hint")}</p>
+        </>
+      ) : (
+        <p className="text-xs text-sf-muted">{t("economy.auto.none")}</p>
+      )}
     </div>
   );
 }

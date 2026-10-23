@@ -626,6 +626,15 @@ export interface AirlineLedger {
   /** (v8.3) Costo de los traslados (ya incluido en `costs`) y cuántos hubo. */
   costFerry: number;
   ferries: number;
+  /** (v8.3 · 6.2c) Operación autónoma (ya incluida en revenue / costs y en
+   *  el desglose): días completos operados, vuelos reales, ingresos, costos
+   *  (con fijos), costos fijos y flota del último día. */
+  autoDays: number;
+  autoFlights: number;
+  autoRevenue: number;
+  autoCosts: number;
+  costFixed: number;
+  autoFleet: number;
 }
 
 /** (v8.3 · Etapa 6.1) Traslado (vuelo de posicionamiento sin pasajeros). */
@@ -743,7 +752,7 @@ export interface BalancePoint {
   delta: number;
   /** Etiqueta legible (ruta o servicio de mantenimiento). */
   label: string;
-  /** "start" | "flight" | "maint" | "ferry". */
+  /** "start" | "flight" | "maint" | "ferry" | "auto". */
   kind: string;
 }
 

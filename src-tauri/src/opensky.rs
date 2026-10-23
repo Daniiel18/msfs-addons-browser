@@ -246,6 +246,22 @@ async fn done_windows(pool: &SqlitePool) -> Result<HashSet<i64>> {
         .collect())
 }
 
+/// (6.2c) Días UTC (inicio, Unix s) con sus 12 ventanas bajadas completas,
+/// del más viejo al más nuevo. Sólo esos días cuentan en Finanzas.
+pub async fn complete_days(pool: &SqlitePool) -> Result<Vec<i64>> {
+    let mut per_day: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for begin in done_windows(pool).await? {
+        *per_day.entry(begin.div_euclid(DAY_S) * DAY_S).or_default() += 1;
+    }
+    let mut days: Vec<i64> = per_day
+        .into_iter()
+        .filter(|(_, n)| *n >= DAY_S / WINDOW_S)
+        .map(|(d, _)| d)
+        .collect();
+    days.sort_unstable();
+    Ok(days)
+}
+
 /// Créditos reales de una petición: lo que bajó `X-Rate-Limit-Remaining`
 /// respecto a la petición anterior de esta misma sincronía.
 fn actual_cost(prev: Option<i64>, now: Option<i64>) -> i64 {
