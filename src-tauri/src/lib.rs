@@ -12,6 +12,8 @@ pub mod community_scanner;
 pub mod cross_link;
 pub mod damage;
 pub mod db;
+pub mod desktop_notice;
+pub mod tl_i18n;
 pub mod diagnostics;
 pub mod discord_rpc;
 pub mod drop_install;
@@ -315,6 +317,7 @@ pub fn run() {
             commands::techlog::techlog_flight,
             commands::techlog::techlog_cabin,
             commands::techlog::techlog_cabin_set,
+            commands::techlog::techlog_readings,
             commands::mx::mx_aircraft,
             commands::mx::mx_action,
             commands::mx::mx_flight,
@@ -413,6 +416,7 @@ pub fn run() {
             commands::recording::recording_config,
             commands::recording::recording_engine_status,
             commands::recording::osd_test,
+            commands::notice::desktop_notice,
             commands::recording::osd_debug,
             commands::recording::osd_show_topmost,
             commands::recording::recording_test_clip,

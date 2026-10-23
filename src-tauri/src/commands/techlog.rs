@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::techlog::{
     self, TechLogAircraft, TechLogFlight, TlActionRequest, TlActionResult, TlAppStatus, TlCabin, TlPendingOrder,
-    TlSource,
+    TlReadings, TlSource,
 };
 use crate::AppState;
 
@@ -17,7 +17,12 @@ pub async fn techlog_status() -> Result<Vec<TlAppStatus>, String> {
 /// Estado TechLog de una matrícula (`null` si ningún TechLog la conoce).
 #[tauri::command]
 pub async fn techlog_aircraft(registration: String) -> Result<Option<TechLogAircraft>, String> {
-    techlog::aircraft(&registration).await.map_err(|e| e.to_string())
+    let mut a = techlog::aircraft(&registration).await.map_err(|e| e.to_string())?;
+    // (23/10) Nombres, defectos y motivos en el idioma de la app.
+    if let Some(a) = a.as_mut() {
+        crate::tl_i18n::localize_aircraft(a);
+    }
+    Ok(a)
 }
 
 /// Matrículas (normalizadas) que gestiona TechLog → SimFleet no les aplica su
@@ -34,12 +39,23 @@ pub async fn techlog_managed_registrations() -> Result<Vec<String>, String> {
 /// sim tiene otro cargado) la orden queda en cola (`queued: true`).
 #[tauri::command]
 pub async fn techlog_action(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: TlActionRequest,
 ) -> Result<TlActionResult, String> {
-    techlog::action(&state.db, request)
+    let reg = request.registration.clone();
+    let mut r = techlog::action(&state.db, request)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    r.message = crate::tl_i18n::sentence(&r.message);
+    // (23/10) No depender sólo del aviso en vivo de TechLog (si cambió de
+    // avión para la orden, su evento puede no llegar): la campana y los
+    // paneles se refrescan ya.
+    if r.ok && !r.queued {
+        use tauri::Emitter;
+        let _ = app.emit("techlog://changed", reg);
+    }
+    Ok(r)
 }
 
 /// (20/10) Órdenes en cola de una matrícula.
@@ -77,6 +93,17 @@ pub async fn techlog_cabin(registration: String) -> Result<Option<TlCabin>, Stri
     techlog::cabin(&registration).await.map_err(|e| e.to_string())
 }
 
+/// (23/10) Lecturas en vivo del Fenix cargado (TechLog 2.2+). `null` si esa
+/// matrícula no es el avión activo de un TechLog abierto.
+#[tauri::command]
+pub async fn techlog_readings(registration: String) -> Result<Option<TlReadings>, String> {
+    let mut r = techlog::readings(&registration).await.map_err(|e| e.to_string())?;
+    if let Some(r) = r.as_mut() {
+        crate::tl_i18n::localize_readings(r);
+    }
+    Ok(r)
+}
+
 /// (23/10) Luces de cabina (`control: "lights"`, value "Bright"|"Dim1"|"Dim2"|"Off")
 /// o pre-select de agua (`"preselect"`, value 0–100 en pasos de 25).
 #[tauri::command]
@@ -85,9 +112,11 @@ pub async fn techlog_cabin_set(
     control: String,
     value: serde_json::Value,
 ) -> Result<TlActionResult, String> {
-    techlog::cabin_set(&registration, &control, &value)
+    let mut r = techlog::cabin_set(&registration, &control, &value)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    r.message = crate::tl_i18n::sentence(&r.message);
+    Ok(r)
 }
 
 /// Vuelo de TechLog que corresponde a un vuelo del FlightBook.
@@ -97,7 +126,11 @@ pub async fn techlog_flight(
     started_at: String,
     ended_at: Option<String>,
 ) -> Result<Option<TechLogFlight>, String> {
-    techlog::flight_for(&registration, &started_at, ended_at.as_deref())
+    let mut f = techlog::flight_for(&registration, &started_at, ended_at.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(f) = f.as_mut() {
+        crate::tl_i18n::localize_flight(f);
+    }
+    Ok(f)
 }

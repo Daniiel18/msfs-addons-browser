@@ -8,12 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [8.3.2]
 
 ### Added
-- **Cabin page from Fenix TechLog 2.1** in the Hangar maintenance tab, for the Fenix loaded in the sim: water and waste (with the pre-select mark), doors and slides, lavatories, cabin temperature and pressure, lights and signs. You can also set the water pre-select (0–100 % in 25 % steps) and the cabin lights from SimFleet. Checked against Fenix TechLog 2.1.2: everything else keeps working as before.
+- **Cabin page from Fenix TechLog 2.1** in the Hangar maintenance tab, for the Fenix loaded in the sim: water and waste (with the pre-select mark), doors and slides, lavatories, cabin temperature and pressure, lights and signs. You can also set the water pre-select (0–100 % in 25 % steps) and the cabin lights from SimFleet.
+- **Fenix readings from Fenix TechLog 2.2** in the Hangar, live and read only: engine oil, engines (vibration, EPR, N1 limits), hydraulics and electrical/air. Checked against Fenix TechLog 2.1.2 and 2.2.0: everything else keeps working as before.
+- **SimFleet's own desktop notices.** Notices outside the app (download ready, installed…) now use SimFleet's design in a corner of the screen, above the sim and without taking the focus, instead of Windows notifications (which showed as "PowerShell" in some builds).
+
+### Changed
+- **The Tech Log speaks Spanish.** With the app in Spanish, flight events, wear, summaries, part and system names, defect and MEL titles, checks, alerts and action messages from SimFleet's Tech Log and from Fenix/PMDG TechLog are shown in Spanish, also for flights already logged. Long MEL procedures and finding texts stay in English.
+- **FlightBook:** the flight list is narrower (300 → 240 px) with two lines per flight, so the map gets more room and more flights fit.
+- With Fenix TechLog 2.2 the Fenix keeps the engine oil level, so the Hangar shows "Kept by the Fenix" instead of a Fill button.
 
 ### Fixed
 - **Landing recordings were never saved** since 8.0 when the clips folder didn't exist (a new PC, or the folder was deleted): the recording failed silently and the log only said "no frames". SimFleet now creates the folder. If the folder you chose isn't available (a disconnected disk, for example), the landing is recorded in Windows' Videos › SimFleet Landings and SimFleet tells you so. The Best Landings list shows clips from both folders.
 - If a recording fails for any other reason, SimFleet now shows the real reason in a notice instead of failing silently.
 - The landing video is no longer lost when the audio device runs at a rate the encoder doesn't accept (96/192 kHz): the audio is resampled to 48 kHz, or the clip is saved without audio.
+- Maintenance notices in the bell (and "Ready to fly?") stayed after fixing or servicing an aircraft until SimFleet was restarted.
+- In-app notices were hidden behind flightsim.to while it was open in Explore (e.g. when a download started): they now also show on top, in the corner of the SimFleet window.
 
 ## [8.3.1]
 

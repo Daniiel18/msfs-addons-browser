@@ -390,9 +390,7 @@ mod capture_engine {
             }
             // Sin ventana = ya estamos en el monitor.
             let win = self.window.take()?;
-            let Some(mon) = win.monitor().or_else(|| Monitor::primary().ok()) else {
-                return None;
-            };
+            let mon = win.monitor().or_else(|| Monitor::primary().ok())?;
             if let Some(c) = self.control.take() {
                 let _ = c.stop();
             }

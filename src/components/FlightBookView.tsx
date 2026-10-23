@@ -605,9 +605,10 @@ export function FlightBookView() {
       <div
         ref={setGridEl}
         className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${
+          // (23/10) Lista de 300 → 240 px (filas de 2 líneas): el mapa gana ancho.
           dockDetail
-            ? "md:grid-cols-[300px_minmax(0,1fr)_360px]"
-            : "md:grid-cols-[300px_minmax(0,1fr)]"
+            ? "md:grid-cols-[240px_minmax(0,1fr)_360px]"
+            : "md:grid-cols-[240px_minmax(0,1fr)]"
         }`}
       >
         {/* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */}
@@ -658,7 +659,7 @@ export function FlightBookView() {
                 {t("fb.sidebar.no_matches")}
               </div>
             ) : (
-              <ul className="space-y-1">
+              <ul className="space-y-0.5">
                 {filteredCompleted.map((e) => (
                   <CompactFlightRow
                     key={e.id}
@@ -2138,7 +2139,7 @@ function CompactFlightRow({
       title={
         selected ? t("fb.action.deselect") : t("fb.card.select_tooltip")
       }
-      className={`group relative cursor-pointer overflow-hidden rounded-lg px-2.5 py-2 transition-colors ${
+      className={`group relative cursor-pointer overflow-hidden rounded-lg px-2 py-1.5 transition-colors ${
         selected
           ? "bg-brand-500/15 ring-1 ring-brand-500/40"
           : "hover:bg-sf-raised"
@@ -2180,16 +2181,38 @@ function CompactFlightRow({
           sobre flight_number. El usuario reportó: "DAL1803 / JBU8774 /
           AAL9833" (3-letter ICAO + número) es el formato que usa para
           identificar vuelos, no el IATA "DL3880". Fallback a
-          flight_number si no hay callsign capturado. */}
-      {(entry.callsign || entry.flightNumber || showScore || isImported) && (
-        <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px]">
-          <span className="truncate font-mono font-semibold text-sky-300">
-            {entry.callsign ?? entry.flightNumber ?? ""}
-          </span>
+          flight_number si no hay callsign capturado.
+          (23/10) Callsign, avión, fecha y nota en UNA línea (antes eran dos):
+          la lista es más angosta y caben más vuelos. */}
+      <div className="mt-0.5 flex items-center justify-between gap-1.5 text-[10px] text-sf-muted">
+        <span className="min-w-0 truncate">
+          {(entry.callsign || entry.flightNumber) && (
+            <>
+              <span className="font-mono font-semibold text-sky-300">
+                {entry.callsign ?? entry.flightNumber}
+              </span>
+              <span className="mx-1 text-sf-muted/70">·</span>
+            </>
+          )}
+          {aircraft && <span className="text-sf-muted">{aircraft}</span>}
+          {aircraft && <span className="mx-1 text-sf-muted/70">·</span>}
+          {formatDate(entry.startedAt)}
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          <button
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onDelete();
+            }}
+            title={t("fb.delete.confirm")}
+            className="hidden shrink-0 rounded p-0.5 text-sf-muted/70 transition-colors hover:bg-rose-500/15 hover:text-rose-300 group-hover:block"
+          >
+            <Trash2 className="h-2.5 w-2.5" />
+          </button>
           {isImported ? (
             <span
               title={t("fb.imported_flight.detail")}
-              className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-300 ring-1 ring-sky-500/30"
+              className="shrink-0 rounded bg-sky-500/15 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-sky-300 ring-1 ring-sky-500/30"
             >
               {t("fb.imported_flight.badge")}
             </span>
@@ -2200,31 +2223,14 @@ function CompactFlightRow({
                   ? `${entry.scoreTotal}/${entry.scoreMax}`
                   : undefined
               }
-              className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${gradeBadgeClass(
+              className={`shrink-0 rounded px-1 py-px font-mono text-[10px] font-bold ${gradeBadgeClass(
                 entry.scoreGrade!,
               )}`}
             >
               {entry.scoreGrade}
             </span>
           ) : null}
-        </div>
-      )}
-      <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-sf-muted">
-        <span className="truncate">
-          {aircraft && <span className="text-sf-muted">{aircraft}</span>}
-          {aircraft && <span className="mx-1 text-sf-muted/70">·</span>}
-          {formatDate(entry.startedAt)}
         </span>
-        <button
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onDelete();
-          }}
-          title={t("fb.delete.confirm")}
-          className="shrink-0 rounded p-0.5 text-sf-muted/70 opacity-0 transition-colors hover:bg-rose-500/15 hover:text-rose-300 group-hover:opacity-100"
-        >
-          <Trash2 className="h-2.5 w-2.5" />
-        </button>
       </div>
     </li>
   );

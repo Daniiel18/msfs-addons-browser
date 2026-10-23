@@ -7,6 +7,7 @@ import {
   Clock,
   Droplets,
   ExternalLink,
+  Gauge,
   Loader2,
   Play,
   RefreshCw,
@@ -20,6 +21,7 @@ import type {
   TechLogAircraft,
   TechLogCabin,
   TechLogCabinLights,
+  TechLogReadings,
   TechLogFlight,
   TechLogPendingOrder,
 } from "../lib/types";
@@ -522,12 +524,22 @@ export function TechLogPanel({
                       />
                     </div>
                   </div>
-                  <ActionBtn
-                    k={`svc-${c.serviceKind}`}
-                    label={c.fills ? t("techlog.empty") : t("techlog.fill")}
-                    req={{ action: "service", key: c.serviceKind }}
-                    what={c.name}
-                  />
+                  {/* (23/10) Fenix TechLog 2.2: el aceite lo lleva el Fenix; rellenar no hace nada. */}
+                  {c.followsSim ? (
+                    <span
+                      title={t("techlog.consumables.follows_sim_hint")}
+                      className="shrink-0 rounded-md border border-sf-border px-2 py-1 text-[10px] text-sf-muted"
+                    >
+                      {t("techlog.consumables.follows_sim")}
+                    </span>
+                  ) : (
+                    <ActionBtn
+                      k={`svc-${c.serviceKind}`}
+                      label={c.fills ? t("techlog.empty") : t("techlog.fill")}
+                      req={{ action: "service", key: c.serviceKind }}
+                      what={c.name}
+                    />
+                  )}
                 </li>
               );
             })}
@@ -563,9 +575,64 @@ export function TechLogPanel({
 
       {/* (23/10) TechLog 2.1: cabina del Fenix cargado en el sim. */}
       {!own && data.running && data.active && <CabinSection registration={data.registration} />}
+      {/* (23/10) TechLog 2.2: lecturas en vivo del Fenix. */}
+      {!own && data.running && data.active && <ReadingsSection registration={data.registration} />}
 
       <p className="text-[10px] text-sf-muted">{t("techlog.charges_note")}</p>
     </div>
+  );
+}
+
+/**
+ * (23/10) Página "Fenix readings" de Fenix TechLog 2.2: aceite, motores,
+ * hidráulica, eléctrico y aire del Fenix CARGADO, sólo lectura. Con TechLog
+ * anterior a 2.2 no aparece. Se refresca cada 15 s.
+ */
+function ReadingsSection({ registration }: { registration: string }) {
+  const [r, setR] = useState<TechLogReadings | null | undefined>(undefined);
+  const load = useCallback(async () => {
+    try {
+      setR(await api.techlogReadings(registration));
+    } catch {
+      setR(null);
+    }
+  }, [registration]);
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => void load(), 15_000);
+    return () => window.clearInterval(id);
+  }, [load]);
+  if (r === null) return null;
+  const fmt = (v: number | null, digits: number, unit: string) =>
+    v === null
+      ? "—"
+      : `${v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}${unit ? ` ${unit}` : ""}`;
+  return (
+    <Section
+      icon={<Gauge className="h-4 w-4 text-brand-300" />}
+      title={t("techlog.readings.title")}
+      subtitle={t("techlog.readings.subtitle")}
+    >
+      {r === undefined ? (
+        <Empty icon={<Loader2 className="h-4 w-4 animate-spin" />} text={t("techlog.cabin.loading")} />
+      ) : !r.live ? (
+        <Empty icon={<Clock className="h-4 w-4" />} text={t("techlog.readings.waiting")} />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {r.groups.map((g) => (
+            <div key={g.name} className="space-y-1">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{g.name}</div>
+              {g.items.map((i) => (
+                <div key={i.label} className="flex items-baseline justify-between gap-2 text-xs">
+                  <span className="truncate text-sf-muted">{i.label}</span>
+                  <span className="shrink-0 tabular-nums text-sf-text">{fmt(i.value, i.digits, i.unit)}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 

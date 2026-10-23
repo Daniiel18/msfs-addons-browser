@@ -1319,6 +1319,7 @@ fn consumable_views(a: &Airframe) -> Vec<TlConsumable> {
                 status: status.into(),
                 service_kind: ck,
                 service_label: c.service_label.clone().unwrap_or_else(|| if c.fills { "Empty".into() } else { "Fill".into() }),
+                follows_sim: false,
             });
         }
     }
@@ -1658,16 +1659,25 @@ pub async fn alerts(pool: &SqlitePool) -> Result<Vec<crate::aircraft_maintenance
             continue;
         }
         let title: Option<String> = row.try_get("title").ok().flatten();
-        let Some(v) = aircraft_view(pool, &reg, None).await? else { continue };
+        let Some(mut v) = aircraft_view(pool, &reg, None).await? else { continue };
+        // (23/10) Avisos de la campana en el idioma de la app.
+        crate::tl_i18n::localize_aircraft(&mut v);
         let mut soon: Vec<String> = Vec::new();
         for c in v.checks.iter().filter(|c| !c.overdue && c.hours_left.is_some_and(|h| h <= 24.0)) {
-            soon.push(format!("{} due in {:.0} h", c.name, c.hours_left.unwrap_or(0.0).max(0.0)));
+            let h = format!("{:.0}", c.hours_left.unwrap_or(0.0).max(0.0));
+            soon.push(crate::tr!("mx.alert.dueIn", name = c.name, h = h));
         }
         for c in v.consumables.iter().filter(|c| c.status != "ok") {
-            soon.push(format!("{} {}", c.name, if c.status == "below_min" { "below dispatch minimum" } else { "low" }));
+            let key = if c.status == "below_min" { "mx.alert.belowMin" } else { "mx.alert.low" };
+            soon.push(crate::tr!(key, name = c.name));
         }
         for p in v.parts.iter().filter(|p| p.status != "Ok") {
-            soon.push(format!("{} {}", p.name, p.status.to_lowercase()));
+            let key = match p.status.as_str() {
+                "Failed" => "mx.alert.partFailed",
+                "Worn" => "mx.alert.partWorn",
+                _ => "mx.alert.partDegraded",
+            };
+            soon.push(crate::tr!(key, name = p.name));
         }
         let (severity, label, count) = if v.dispatch.status == "NO_GO" {
             let n = v.dispatch.reasons.len();
@@ -1691,10 +1701,11 @@ pub async fn alerts(pool: &SqlitePool) -> Result<Vec<crate::aircraft_maintenance
         });
     }
     for (reg, _) in managed {
-        let Ok(Some(v)) = crate::techlog::aircraft(&reg).await else { continue };
+        let Ok(Some(mut v)) = crate::techlog::aircraft(&reg).await else { continue };
         if v.dispatch.status != "NO_GO" {
             continue;
         }
+        crate::tl_i18n::localize_aircraft(&mut v);
         let n = v.dispatch.reasons.len();
         let (_, airline_key, airline_name) = crate::aircraft_maintenance::airline_for_registration(pool, &reg).await;
         out.push(MaintAlert {

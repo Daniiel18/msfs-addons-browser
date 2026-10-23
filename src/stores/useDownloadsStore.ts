@@ -194,6 +194,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
       void nativeNotify({
         title: t("toast.download.installed"),
         body: job.addonTitle,
+        kind: "success",
       });
       get()
         .refreshInstalled()

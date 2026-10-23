@@ -1426,6 +1426,8 @@ export interface TechLogConsumable {
   status: string;
   serviceKind: string;
   serviceLabel: string;
+  /** (23/10) El nivel lo lleva el avión del sim (Fenix TechLog 2.2: aceite de motor): no se rellena. */
+  followsSim?: boolean;
 }
 
 export interface TechLogCheck {
@@ -1525,6 +1527,15 @@ export interface TechLogCabin {
   canSetLights: boolean;
   canSetPreselect: boolean;
   values: Record<string, number>;
+}
+
+/** (23/10) Lecturas en vivo del Fenix (TechLog 2.2, `/api/fenix-readings`). */
+export interface TechLogReadings {
+  live: boolean;
+  groups: {
+    name: string;
+    items: { label: string; value: number | null; unit: string; digits: number }[];
+  }[];
 }
 
 /** (20/10) Orden de la cola ya aplicada (evento `techlog://pending`). */

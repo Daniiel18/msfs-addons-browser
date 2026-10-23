@@ -13,21 +13,35 @@ pub async fn mx_aircraft(
     registration: String,
     title: Option<String>,
 ) -> Result<Option<TechLogAircraft>, String> {
-    crate::mx::store::aircraft_view(&state.db, &registration, title.as_deref())
+    let mut a = crate::mx::store::aircraft_view(&state.db, &registration, title.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // (23/10) Nombres, defectos y motivos en el idioma de la app.
+    if let Some(a) = a.as_mut() {
+        crate::tl_i18n::localize_aircraft(a);
+    }
+    Ok(a)
 }
 
 /// Acción de mantenimiento (reparar, diferir, reemplazar, servicio, check…).
 /// Error `in_flight` si el avión está volando.
 #[tauri::command]
 pub async fn mx_action(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: TlActionRequest,
 ) -> Result<TlActionResult, String> {
-    crate::mx::store::action(&state.db, request)
+    let mut r = crate::mx::store::action(&state.db, request)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    r.message = crate::tl_i18n::sentence(&r.message);
+    // (23/10) La campana de avisos y los paneles se refrescan con este evento:
+    // sin él, un avión reparado seguía avisando hasta reiniciar la app.
+    if r.ok {
+        use tauri::Emitter;
+        let _ = app.emit("mx://changed", 0);
+    }
+    Ok(r)
 }
 
 /// Ritmo de desgaste actual (piezas, cabina).
@@ -54,7 +68,11 @@ pub async fn mx_flight(
     state: State<'_, AppState>,
     flight_id: i64,
 ) -> Result<Option<TechLogFlight>, String> {
-    crate::mx::store::flight_view(&state.db, flight_id)
+    let mut f = crate::mx::store::flight_view(&state.db, flight_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(f) = f.as_mut() {
+        crate::tl_i18n::localize_flight(f);
+    }
+    Ok(f)
 }

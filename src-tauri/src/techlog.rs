@@ -459,6 +459,18 @@ fn read_jsonc<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
     }
 }
 
+/// (23/10) Fenix TechLog 2.2+: el aceite de motor lo lleva el Fenix y TechLog
+/// lo lee (`oil1Qt` con dataref en su catálogo); rellenarlo no hace nada.
+fn oil_follows_sim(source: TlSource, dir: &Path) -> bool {
+    if source != TlSource::Fenix {
+        return false;
+    }
+    let v: Value = read_jsonc(&dir.join("catalog").join("fenix-datarefs.json"));
+    v.pointer("/datarefs/oil1Qt")
+        .and_then(|x| x.as_str())
+        .is_some_and(|s| !s.trim().is_empty())
+}
+
 fn catalog_for(dir: &Path) -> Catalog {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, Catalog)>>> = OnceLock::new();
     let cat_dir = dir.join("catalog");
@@ -637,6 +649,9 @@ pub struct TlConsumable {
     /// Valor para `POST /api/service`.
     pub service_kind: String,
     pub service_label: String,
+    /// (23/10) El nivel lo lleva el avión del sim y TechLog sólo lo sigue
+    /// (Fenix TechLog 2.2: aceite de motor): no hay nada que rellenar.
+    pub follows_sim: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -981,6 +996,7 @@ async fn aircraft_from_db(
                 status: status.into(),
                 service_kind: ck,
                 service_label: if c.fills { "Empty".into() } else { "Fill".into() },
+                follows_sim: c.key == "ENG_OIL" && oil_follows_sim(source, dir),
             });
         }
     }
@@ -1189,6 +1205,10 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
                 status: status.into(),
                 service_kind: s(c, "serviceKind").unwrap_or_default(),
                 service_label: s(c, "serviceLabel").unwrap_or_else(|| "Fill".into()),
+                follows_sim: c.get("followsFenix").and_then(|x| x.as_bool()).unwrap_or_else(|| {
+                    s(c, "key").as_deref() == Some("ENG_OIL")
+                        && install_dir(source).is_some_and(|d| oil_follows_sim(source, &d))
+                }),
             }
         })
         .collect();
@@ -1350,6 +1370,78 @@ pub async fn cabin(registration: &str) -> Result<Option<TlCabin>> {
         Ok(v) => Ok(Some(parse_cabin(&v))),
         Err(e) => {
             tracing::debug!(target: "techlog", "{} sin página de cabina: {e}", source.id());
+            Ok(None)
+        }
+    }
+}
+
+/// (23/10) Lecturas en vivo del Fenix (TechLog 2.2, `/api/fenix-readings`):
+/// grupos con etiqueta, valor, unidad y decimales, tal como los da TechLog.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlReadingItem {
+    pub label: String,
+    pub value: Option<f64>,
+    pub unit: String,
+    pub digits: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlReadingGroup {
+    pub name: String,
+    pub items: Vec<TlReadingItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlReadings {
+    /// `false` mientras el Fenix no da ningún valor.
+    pub live: bool,
+    pub groups: Vec<TlReadingGroup>,
+}
+
+fn parse_readings(v: &Value) -> TlReadings {
+    let groups: Vec<TlReadingGroup> = v
+        .get("groups")
+        .and_then(|g| g.as_array())
+        .map(|gs| {
+            gs.iter()
+                .map(|g| TlReadingGroup {
+                    name: s(g, "name").unwrap_or_default(),
+                    items: g
+                        .get("items")
+                        .and_then(|i| i.as_array())
+                        .map(|is| {
+                            is.iter()
+                                .map(|i| TlReadingItem {
+                                    label: s(i, "label").unwrap_or_default(),
+                                    value: i.get("value").and_then(|x| x.as_f64()),
+                                    unit: i.get("unit").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                                    digits: i.get("digits").and_then(|x| x.as_u64()).unwrap_or(0).min(4) as u32,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let live = groups.iter().any(|g| g.items.iter().any(|i| i.value.is_some()));
+    TlReadings { live, groups }
+}
+
+/// Lecturas del Fenix cargado. `None` si esa matrícula no es el avión activo
+/// de un TechLog abierto o si esa versión no tiene la página (antes de 2.2).
+pub async fn readings(registration: &str) -> Result<Option<TlReadings>> {
+    let reg = normalize_reg(registration);
+    let Some(source) = active_source_for(&reg).await else {
+        return Ok(None);
+    };
+    match api_get(source, "/api/fenix-readings").await {
+        Ok(v) => Ok(Some(parse_readings(&v))),
+        Err(e) => {
+            tracing::debug!(target: "techlog", "{} sin lecturas del Fenix: {e}", source.id());
             Ok(None)
         }
     }
@@ -2444,6 +2536,25 @@ mod tests {
         assert_eq!(dispatch_of(&[mk("Deferred", "C")]).status, "GO_MEL");
         assert_eq!(dispatch_of(&[mk("Open", "C")]).status, "NO_GO");
         assert_eq!(dispatch_of(&[mk("Open", "NoGo")]).status, "NO_GO");
+    }
+
+    #[test]
+    fn parses_fenix_readings() {
+        // Forma real de GET /api/fenix-readings (TechLog 2.2.0), sin y con valores.
+        let idle = parse_readings(&serde_json::json!({ "groups": [
+            { "name": "Engine oil", "items": [{ "label": "Quantity 1", "value": null, "unit": "qt", "digits": 1 }] }
+        ]}));
+        assert!(!idle.live);
+        assert_eq!(idle.groups[0].items[0].unit, "qt");
+        let live = parse_readings(&serde_json::json!({ "groups": [
+            { "name": "Hydraulics", "items": [
+                { "label": "Green pressure", "value": 3012.4, "unit": "psi", "digits": 0 },
+                { "label": "Blue quantity", "value": null, "unit": "L", "digits": 1 }
+            ]}
+        ]}));
+        assert!(live.live);
+        assert_eq!(live.groups[0].items[0].value, Some(3012.4));
+        assert_eq!(live.groups[0].items[1].value, None);
     }
 
     #[test]

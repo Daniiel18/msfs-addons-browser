@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LandingOsd } from "./components/LandingOsd";
+import { DesktopNotices } from "./components/DesktopNotices";
 import { preloadLocale } from "./lib/i18n";
 // (Rediseño F1) Inter empaquetada (offline): latin + latin-ext, 4 pesos.
 import "@fontsource/inter/latin-400.css";
@@ -50,6 +51,13 @@ if (label === "osd") {
   root.render(
     <React.StrictMode>
       <LandingOsd />
+    </React.StrictMode>,
+  );
+} else if (label === "notify") {
+  // (23/10) Avisos de escritorio con el diseño de SimFleet.
+  root.render(
+    <React.StrictMode>
+      <DesktopNotices />
     </React.StrictMode>,
   );
 } else {

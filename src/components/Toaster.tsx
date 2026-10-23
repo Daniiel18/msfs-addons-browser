@@ -1,7 +1,11 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, Download, X } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useToastStore, type Toast } from "../stores/useToastStore";
 import { t as tr } from "../lib/i18n";
+import { isTauri } from "../lib/tauri";
+import { useFstoEmbedStore } from "./FlightsimEmbed";
 
 /**
  * Renderizador global de toasts. Pinta una columna en la esquina
@@ -12,6 +16,28 @@ import { t as tr } from "../lib/i18n";
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
+
+  // (23/10) flightsim.to es un webview NATIVO encima de la app: tapa estos
+  // toasts HTML (p. ej. "descarga iniciada"). Mientras se ve, cada toast nuevo
+  // sale también en la ventana de avisos de SimFleet, que queda encima, anclada
+  // a la esquina de la app. El toast HTML sigue ahí para cuando se oculte.
+  const forwarded = useRef(new Set<string>());
+  useEffect(() => {
+    if (!isTauri) return;
+    for (const t of toasts) {
+      if (forwarded.current.has(t.id)) continue;
+      forwarded.current.add(t.id);
+      if (!useFstoEmbedStore.getState().visible) continue;
+      void invoke("desktop_notice", {
+        title: t.title,
+        body: t.message ?? null,
+        kind: t.kind,
+        anchor: "app",
+      }).catch(() => {});
+    }
+    const alive = new Set(toasts.map((t) => t.id));
+    for (const id of forwarded.current) if (!alive.has(id)) forwarded.current.delete(id);
+  }, [toasts]);
 
   return (
     <div className="pointer-events-none fixed bottom-4 right-4 z-[70] flex w-[min(380px,calc(100vw-2rem))] flex-col gap-2">

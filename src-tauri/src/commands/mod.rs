@@ -15,6 +15,7 @@ pub mod gsx;
 pub mod install;
 pub mod livery;
 pub mod mx;
+pub mod notice;
 pub mod perf;
 pub mod recording;
 pub mod scoring;

@@ -60,6 +60,7 @@ import type {
   TechLogActionResult,
   TechLogCabin,
   TechLogCabinLights,
+  TechLogReadings,
   TechLogFlight,
   TechLogPendingOrder,
   TechLogSource,
@@ -241,6 +242,8 @@ interface Api {
   techlogLaunch: (source: TechLogSource) => Promise<boolean>;
   /** (23/10) Cabina del Fenix cargado (TechLog 2.1); `null` si no es el avión activo. */
   techlogCabin: (registration: string) => Promise<TechLogCabin | null>;
+  /** (23/10) Lecturas en vivo del Fenix (TechLog 2.2); `null` si no es el avión activo. */
+  techlogReadings: (registration: string) => Promise<TechLogReadings | null>;
   /** (23/10) Luces de cabina o pre-select de agua (0–100, pasos de 25). */
   techlogCabinSet: (
     registration: string,
@@ -861,6 +864,7 @@ const realApi: Api = {
   techlogCancelPending: (id) => invoke<void>("techlog_cancel_pending", { id }),
   techlogLaunch: (source) => invoke<boolean>("techlog_launch", { source }),
   techlogCabin: (registration) => invoke<TechLogCabin | null>("techlog_cabin", { registration }),
+  techlogReadings: (registration) => invoke<TechLogReadings | null>("techlog_readings", { registration }),
   techlogCabinSet: (registration, control, value) =>
     invoke<TechLogActionResult>("techlog_cabin_set", { registration, control, value }),
   techlogFlight: (registration, startedAt, endedAt) =>
@@ -1618,6 +1622,21 @@ const demoApi: Api = {
   // (23/10) Demo: cabina de ejemplo para ver el panel sin el sim.
   async techlogCabin() {
     return { ...demoCabin, values: { ...demoCabin.values } };
+  },
+  async techlogReadings() {
+    const g = (name: string, items: [string, number | null, string, number][]) => ({
+      name,
+      items: items.map(([label, value, unit, digits]) => ({ label, value, unit, digits })),
+    });
+    return {
+      live: true,
+      groups: [
+        g("Aceite de motor", [["Cantidad 1", 17.2, "qt", 1], ["Cantidad 2", 16.8, "qt", 1], ["Presión 1", 42, "psi", 0], ["Presión 2", 41, "psi", 0], ["Temperatura 1", 88, "°C", 0], ["Temperatura 2", 90, "°C", 0]]),
+        g("Motores", [["Vibración 1", 0.6, "", 1], ["Vibración 2", 0.7, "", 1], ["Límite N1 ascenso", 89.1, "%", 1], ["Límite N1 TOGA", 95.4, "%", 1], ["Límite N1 FLEX", 91.0, "%", 1]]),
+        g("Hidráulica", [["Presión verde", 3008, "psi", 0], ["Presión azul", 2995, "psi", 0], ["Presión amarilla", 3011, "psi", 0], ["Cantidad verde", 14.1, "L", 1], ["Cantidad azul", 6.4, "L", 1], ["Cantidad amarilla", 12.3, "L", 1]]),
+        g("Eléctrico y aire", [["Batería 1", 25.9, "V", 1], ["Batería 2", 26.1, "V", 1], ["Presión de cabina", 14.69, "psi", 2], ["Diferencial de cabina", 0, "psi", 2], ["Aire de cabina de mando", 22, "°C", 0]]),
+      ],
+    };
   },
   async techlogCabinSet(_registration, control, value) {
     if (control === "lights") demoCabin.lights = value as TechLogCabinLights;
@@ -3026,8 +3045,8 @@ function demoTechLogAircraft(): TechLogAircraft {
     ],
     condition: { good: 302, low: 7, failed: 0, avgRemainingPct: 71.4 },
     consumables: [
-      { key: "ENG_OIL", position: "1", name: "Engine 1 oil", unit: "qt", level: 13.2, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "ok", serviceKind: "ENG_OIL:1", serviceLabel: "Fill" },
-      { key: "ENG_OIL", position: "2", name: "Engine 2 oil", unit: "qt", level: 11.6, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "below_min", serviceKind: "ENG_OIL:2", serviceLabel: "Fill" },
+      { key: "ENG_OIL", position: "1", name: "Engine 1 oil", unit: "qt", level: 13.2, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "ok", serviceKind: "ENG_OIL:1", serviceLabel: "Fill", followsSim: true },
+      { key: "ENG_OIL", position: "2", name: "Engine 2 oil", unit: "qt", level: 11.6, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "below_min", serviceKind: "ENG_OIL:2", serviceLabel: "Fill", followsSim: true },
       { key: "CREW_O2", position: null, name: "Crew oxygen", unit: "psi", level: 1610, capacity: 1850, minDispatch: 1000, low: 1200, fills: false, status: "ok", serviceKind: "CREW_O2", serviceLabel: "Fill" },
       { key: "WASTE", position: null, name: "Waste tank", unit: "L", level: 140, capacity: 170, minDispatch: 0, low: 0, fills: true, status: "low", serviceKind: "WASTE", serviceLabel: "Empty" },
     ],

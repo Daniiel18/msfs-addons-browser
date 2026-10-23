@@ -297,7 +297,7 @@ export function DragDropOverlay() {
       (i) => i.displayName ?? i.archivePath.split(/[\\/]/).pop() ?? "",
     );
     if (names.length > 0 && insps.some((i) => hasJobKey(i.archivePath))) {
-      void nativeNotify({ title: t("downloads.ready_title"), body: names.join(", ") });
+      void nativeNotify({ title: t("downloads.ready_title"), body: names.join(", "), kind: "success" });
     }
   };
 
