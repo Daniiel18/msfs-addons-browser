@@ -16,6 +16,7 @@ import { useFlightsimUpdateStore } from "./stores/useFlightsimUpdateStore";
 import { SourceToggle } from "./components/SourceToggle";
 import { FlightsimEmbed, FlightsimReloadButton } from "./components/FlightsimEmbed";
 import { initTechLogSync } from "./stores/useTechLogStore";
+import { initRecorderNotices } from "./lib/recorderNotices";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
 import { DownloadsButton } from "./components/DownloadsButton";
@@ -275,7 +276,10 @@ export default function App() {
   // (19/10) Etapa 2: sincronía con Fenix/PMDG TechLog (matrículas gestionadas
   // + escucha de cambios en vivo) una vez cargada la app.
   useEffect(() => {
-    if (ready) initTechLogSync();
+    if (ready) {
+      initTechLogSync();
+      initRecorderNotices();
+    }
   }, [ready]);
   // Tareas que el splash AWAITEA antes de dar paso a la app.
   //

@@ -1275,6 +1275,112 @@ pub async fn aircraft(registration: &str) -> Result<Option<TechLogAircraft>> {
 }
 
 // ---------------------------------------------------------------------------
+// (23/10) Cabina del Fenix — página "Cabin" de Fenix TechLog 2.1
+// ---------------------------------------------------------------------------
+
+/// Estado de cabina que TechLog lee del Fenix CARGADO en el sim (agua y
+/// residuos, puertas y toboganes, baños, temperatura, presión, luces y
+/// señales). `values` lleva las claves de TechLog (`cabWaterPct`,
+/// `cabDoorD1L`…): las booleanas llegan como 0/1.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlCabin {
+    /// `false` mientras el Fenix aún no entrega valores (~15 s tras cargar).
+    pub live: bool,
+    pub utc: Option<String>,
+    /// "Bright" | "Dim1" | "Dim2" | "Off".
+    pub lights: Option<String>,
+    pub can_set_lights: bool,
+    pub can_set_preselect: bool,
+    pub values: HashMap<String, f64>,
+}
+
+fn parse_cabin(v: &Value) -> TlCabin {
+    let values = v
+        .get("values")
+        .and_then(|x| x.as_object())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, x)| {
+                    x.as_f64()
+                        .or_else(|| x.as_bool().map(|b| if b { 1.0 } else { 0.0 }))
+                        .map(|n| (k.clone(), n))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let flag = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+    TlCabin {
+        live: flag("live"),
+        utc: s(v, "utc"),
+        lights: s(v, "lights"),
+        can_set_lights: flag("canSetLights"),
+        can_set_preselect: flag("canSetPreselect"),
+        values,
+    }
+}
+
+/// App TechLog abierta cuyo avión ACTIVO es esta matrícula (la cabina es la
+/// del avión cargado en el sim: nunca se cambia de avión para esto).
+async fn active_source_for(reg: &str) -> Option<TlSource> {
+    for source in TlSource::ALL {
+        if install_dir(source).is_none() || !is_running(source).await {
+            continue;
+        }
+        let Ok(state) = api_get(source, "/api/state").await else { continue };
+        let active = state
+            .get("airframe")
+            .and_then(|a| s(a, "registration"))
+            .map(|r| normalize_reg(&r));
+        if active.as_deref() == Some(reg) {
+            return Some(source);
+        }
+    }
+    None
+}
+
+/// Cabina de una matrícula. `None` si no es el avión activo de un TechLog
+/// abierto o si esa versión de TechLog no tiene la página (antes de 2.1).
+pub async fn cabin(registration: &str) -> Result<Option<TlCabin>> {
+    let reg = normalize_reg(registration);
+    let Some(source) = active_source_for(&reg).await else {
+        return Ok(None);
+    };
+    match api_get(source, "/api/cabin-systems").await {
+        Ok(v) => Ok(Some(parse_cabin(&v))),
+        Err(e) => {
+            tracing::debug!(target: "techlog", "{} sin página de cabina: {e}", source.id());
+            Ok(None)
+        }
+    }
+}
+
+/// Luces de cabina ("Bright"/"Dim1"/"Dim2"/"Off") o pre-select de agua
+/// (0–100 en pasos de 25) del Fenix cargado. Sólo con ese avión activo.
+pub async fn cabin_set(registration: &str, control: &str, value: &Value) -> Result<TlActionResult> {
+    let reg = normalize_reg(registration);
+    let source = active_source_for(&reg)
+        .await
+        .ok_or_else(|| anyhow!("not_active"))?;
+    let (path, body) = match control {
+        "lights" => {
+            let text = value.as_str().filter(|t| matches!(*t, "Bright" | "Dim1" | "Dim2" | "Off"));
+            let text = text.ok_or_else(|| anyhow!("luces no válidas"))?;
+            ("/api/cabin-systems/lights", serde_json::json!({ "text": text }))
+        }
+        "preselect" => {
+            let n = value.as_i64().filter(|n| (0..=100).contains(n) && n % 25 == 0);
+            let n = n.ok_or_else(|| anyhow!("pre-select no válido"))?;
+            ("/api/cabin-systems/preselect", serde_json::json!({ "number": n }))
+        }
+        other => return Err(anyhow!("control desconocido: {other}")),
+    };
+    let (ok, message) = api_post(source, path, Some(body)).await?;
+    tracing::info!(target: "techlog", "{} {reg} cabina {control}={value}: ok={ok} {message}", source.id());
+    Ok(TlActionResult { ok, message, queued: false })
+}
+
+// ---------------------------------------------------------------------------
 // Matrículas gestionadas por TechLog ("manda TechLog")
 // ---------------------------------------------------------------------------
 
@@ -2338,5 +2444,26 @@ mod tests {
         assert_eq!(dispatch_of(&[mk("Deferred", "C")]).status, "GO_MEL");
         assert_eq!(dispatch_of(&[mk("Open", "C")]).status, "NO_GO");
         assert_eq!(dispatch_of(&[mk("Open", "NoGo")]).status, "NO_GO");
+    }
+
+    #[test]
+    fn parses_techlog_cabin_page() {
+        // Forma real de GET /api/cabin-systems (TechLog 2.1.2), sin y con Fenix.
+        let idle = parse_cabin(&serde_json::json!({
+            "live": false, "utc": null, "lights": null, "values": {},
+            "canSetLights": false, "canSetPreselect": false
+        }));
+        assert!(!idle.live && idle.values.is_empty() && idle.lights.is_none());
+        let live = parse_cabin(&serde_json::json!({
+            "live": true, "utc": "2026-10-23T17:00:00Z", "lights": "Dim1",
+            "values": { "cabWaterPct": 75.5, "cabDoorD1L": true, "cabSlideD1L": false, "x": "texto" },
+            "canSetLights": true, "canSetPreselect": true
+        }));
+        assert!(live.live && live.can_set_lights && live.can_set_preselect);
+        assert_eq!(live.lights.as_deref(), Some("Dim1"));
+        assert_eq!(live.values.get("cabWaterPct"), Some(&75.5));
+        assert_eq!(live.values.get("cabDoorD1L"), Some(&1.0));
+        assert_eq!(live.values.get("cabSlideD1L"), Some(&0.0));
+        assert!(!live.values.contains_key("x"));
     }
 }

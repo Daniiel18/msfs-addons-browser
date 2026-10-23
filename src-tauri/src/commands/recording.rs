@@ -120,11 +120,10 @@ pub async fn recording_test_clip(
         return Err(crate::tr!("recording.landingInProgress"));
     }
 
-    let output_dir = PathBuf::from(&cfg.output_path);
-    std::fs::create_dir_all(&output_dir).map_err(|e| {
-        landing_recorder::release_recording();
-        e.to_string()
-    })?;
+    // (v8.3.2) Misma carpeta que el auto-disparo (la configurada o la de
+    // respaldo en Vídeos), así la prueba refleja lo que pasará al aterrizar.
+    let (output_dir, _notice) = landing_recorder::resolve_output_dir(&cfg.output_path, &data)
+        .inspect_err(|_| landing_recorder::release_recording())?;
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -187,7 +186,16 @@ pub async fn list_landing_clips(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<LandingClip>, String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    let mut clips = landing_recorder::load_clips(&PathBuf::from(&cfg.output_path));
+    // (v8.3.2) También los grabados en la carpeta de respaldo (Vídeos) cuando
+    // la configurada no estaba disponible.
+    let mut clips: Vec<LandingClip> = Vec::new();
+    for dir in landing_recorder::clip_dirs(&cfg.output_path) {
+        for c in landing_recorder::load_clips(&dir) {
+            if !clips.iter().any(|x| x.id == c.id) {
+                clips.push(c);
+            }
+        }
+    }
     // Mejores (FPM más fino) primero; los de prueba/sin FPM al final.
     clips.sort_by(|a, b| match (b.fpm, a.fpm) {
         (Some(x), Some(y)) => x.cmp(&y),
@@ -206,8 +214,11 @@ pub async fn set_landing_favorite(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    landing_recorder::set_favorite(&PathBuf::from(&cfg.output_path), &id, favorite)
-        .map_err(|e| e.to_string())
+    let dirs = landing_recorder::clip_dirs(&cfg.output_path);
+    let Some(dir) = landing_recorder::clip_dir_of(&dirs, &id) else {
+        return Ok(());
+    };
+    landing_recorder::set_favorite(&dir, &id, favorite).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -217,6 +228,9 @@ pub async fn delete_landing_clip(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    landing_recorder::delete_clip(&PathBuf::from(&cfg.output_path), &id)
-        .map_err(|e| e.to_string())
+    let dirs = landing_recorder::clip_dirs(&cfg.output_path);
+    let Some(dir) = landing_recorder::clip_dir_of(&dirs, &id) else {
+        return Ok(());
+    };
+    landing_recorder::delete_clip(&dir, &id).map_err(|e| e.to_string())
 }

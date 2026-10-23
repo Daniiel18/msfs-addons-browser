@@ -1510,6 +1510,23 @@ export interface TechLogPendingOrder {
   createdAt: string;
 }
 
+/** (23/10) Luces de cabina del Fenix (TechLog 2.1). */
+export type TechLogCabinLights = "Bright" | "Dim1" | "Dim2" | "Off";
+
+/**
+ * (23/10) Cabina del Fenix cargado en el sim (página "Cabin" de TechLog 2.1).
+ * `values` usa las claves de TechLog (`cabWaterPct`, `cabDoorD1L`…); las
+ * booleanas llegan como 0/1 y las que el Fenix no da, no están.
+ */
+export interface TechLogCabin {
+  live: boolean;
+  utc: string | null;
+  lights: TechLogCabinLights | null;
+  canSetLights: boolean;
+  canSetPreselect: boolean;
+  values: Record<string, number>;
+}
+
 /** (20/10) Orden de la cola ya aplicada (evento `techlog://pending`). */
 export interface TechLogPendingResult {
   registration: string;

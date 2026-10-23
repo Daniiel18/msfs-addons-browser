@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
+  Armchair,
   CheckCircle2,
   ClipboardCheck,
   Clock,
@@ -17,6 +18,8 @@ import type {
   FlightLogEntry,
   TechLogActionRequest,
   TechLogAircraft,
+  TechLogCabin,
+  TechLogCabinLights,
   TechLogFlight,
   TechLogPendingOrder,
 } from "../lib/types";
@@ -558,8 +561,292 @@ export function TechLogPanel({
         </Section>
       </div>
 
+      {/* (23/10) TechLog 2.1: cabina del Fenix cargado en el sim. */}
+      {!own && data.running && data.active && <CabinSection registration={data.registration} />}
+
       <p className="text-[10px] text-sf-muted">{t("techlog.charges_note")}</p>
     </div>
+  );
+}
+
+const CABIN_LIGHTS: TechLogCabinLights[] = ["Bright", "Dim1", "Dim2", "Off"];
+const WATER_STEPS = [0, 25, 50, 75, 100];
+const CABIN_DOORS = ["1L", "1R", "2L", "2R", "3L", "3R", "4L", "4R"];
+
+/**
+ * (23/10) Página "Cabin" de Fenix TechLog 2.1 dentro del Hangar: agua y
+ * residuos, puertas y toboganes, baños, temperatura, luces y señales del
+ * Fenix CARGADO, más el pre-select de agua y las luces de cabina. TechLog la
+ * refresca cada ~15 s; aquí igual. Con TechLog < 2.1 no aparece.
+ */
+function CabinSection({ registration }: { registration: string }) {
+  const pushToast = useToastStore((s) => s.push);
+  const [cab, setCab] = useState<TechLogCabin | null | undefined>(undefined);
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      setCab(await api.techlogCabin(registration));
+    } catch {
+      setCab(null);
+    }
+  }, [registration]);
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => void load(), 15_000);
+    return () => window.clearInterval(id);
+  }, [load]);
+  if (cab === null) return null;
+
+  const v = cab?.values ?? {};
+  const has = (k: string) => v[k] !== undefined;
+  const on = (k: string) => (v[k] ?? 0) > 0.5;
+  const set = async (control: "lights" | "preselect", value: TechLogCabinLights | number) => {
+    setBusy(`${control}-${value}`);
+    try {
+      const r = await api.techlogCabinSet(registration, control, value);
+      pushToast({
+        kind: r.ok ? "success" : "error",
+        title: r.ok ? t("techlog.cabin.set_done") : t("techlog.cabin.set_refused"),
+        message: r.message || undefined,
+      });
+      // El Fenix tarda unos segundos en reflejarlo.
+      window.setTimeout(() => void load(), 2_000);
+    } catch (e) {
+      pushToast({ kind: "error", title: t("techlog.cabin.set_refused"), message: actionError(String(e)) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doors = CABIN_DOORS.filter((d) => has(`cabDoorD${d}`));
+  const doorState = (d: string) =>
+    on(`cabDoorD${d}`) ? "open" : has(`cabSlideD${d}`) && !on(`cabSlideD${d}`) ? "disarmed" : "ok";
+  const overall = doors.some((d) => doorState(d) === "open")
+    ? "open"
+    : doors.some((d) => doorState(d) === "disarmed")
+      ? "disarmed"
+      : "ok";
+  const lavs = ["A", "D", "E", "M"].filter((l) => has(`cabLav${l}Locked`) && (l !== "M" || on("cabLavMFlush")));
+  const preselect = has("cabWaterPreselect") ? Math.round(v.cabWaterPreselect / 25) * 25 : undefined;
+  const waste = on("cabWasteFull")
+    ? t("techlog.cabin.waste_full")
+    : (v.cabWastePct ?? 0) > 3
+      ? t("techlog.cabin.waste_service")
+      : t("techlog.cabin.waste_empty");
+  const num = (x: number | undefined, d = 0) =>
+    x === undefined ? "—" : x.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+  const tone = (s: string) =>
+    s === "open"
+      ? "border-rose-500/40 bg-rose-500/15 text-rose-300"
+      : s === "disarmed"
+        ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+
+  const Pill = ({ label, ok, warn }: { label: string; ok: boolean; warn?: boolean }) => (
+    <span
+      className={cn(
+        "rounded-md border px-1.5 py-0.5 text-[10px]",
+        warn
+          ? "border-rose-500/40 bg-rose-500/15 text-rose-300"
+          : ok
+            ? "border-brand-500/40 bg-brand-500/10 text-brand-200"
+            : "border-sf-border bg-sf-raised text-sf-muted",
+      )}
+    >
+      {label}
+    </span>
+  );
+  const Choice = ({
+    k,
+    label,
+    current,
+    disabled,
+    onPick,
+  }: {
+    k: string;
+    label: string;
+    current: boolean;
+    disabled: boolean;
+    onPick: () => void;
+  }) => (
+    <button
+      disabled={disabled || busy !== null}
+      onClick={onPick}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+        current
+          ? "border-brand-500/50 bg-brand-500/15 text-brand-200"
+          : "border-sf-border bg-sf-raised text-sf-text hover:border-brand-500/40",
+      )}
+    >
+      {busy === k && <Loader2 className="h-3 w-3 animate-spin" />}
+      {label}
+    </button>
+  );
+  const Tank = ({ label, pct, kg, mark, cls }: { label: string; pct?: number; kg?: number; mark?: number; cls: string }) => (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="text-sf-text">{label}</span>
+        <span className="tabular-nums text-sf-muted">
+          {pct === undefined ? "—" : `${num(pct)} %`} · {num(kg)} kg
+        </span>
+      </div>
+      <div className="relative mt-1 h-1.5 overflow-hidden rounded-full bg-sf-raised">
+        <div className={cn("h-full rounded-full", cls)} style={{ width: `${Math.max(2, Math.min(100, pct ?? 0))}%` }} />
+        {mark !== undefined && (
+          <div className="absolute inset-y-0 w-0.5 bg-sf-text/80" style={{ left: `${Math.min(99, mark)}%` }} />
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <Section
+      icon={<Armchair className="h-4 w-4 text-brand-300" />}
+      title={t("techlog.cabin.title")}
+      subtitle={t("techlog.cabin.subtitle")}
+    >
+      {cab === undefined ? (
+        <Empty icon={<Loader2 className="h-4 w-4 animate-spin" />} text={t("techlog.cabin.loading")} />
+      ) : !cab.live ? (
+        <Empty icon={<Clock className="h-4 w-4" />} text={t("techlog.cabin.waiting")} />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          {/* Agua y residuos. */}
+          <div className="space-y-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{t("techlog.cabin.water_waste")}</div>
+            <div className="flex gap-3">
+              <Tank label={t("techlog.cabin.water")} pct={v.cabWaterPct} kg={v.cabWaterKg} mark={preselect} cls="bg-sky-400" />
+              <Tank label={t("techlog.cabin.waste")} pct={v.cabWastePct} kg={v.cabWasteKg} cls={on("cabWasteFull") ? "bg-rose-400" : "bg-amber-400"} />
+            </div>
+            <div className={cn("text-[11px]", on("cabWasteFull") ? "text-rose-300" : "text-sf-muted")}>
+              {t("techlog.cabin.waste")}: {waste}
+            </div>
+            <div className="text-[11px] text-sf-muted">{t("techlog.cabin.preselect")}</div>
+            <div className="flex flex-wrap gap-1">
+              {WATER_STEPS.map((n) => (
+                <Choice
+                  key={n}
+                  k={`preselect-${n}`}
+                  label={`${n} %`}
+                  current={preselect === n}
+                  disabled={!cab.canSetPreselect}
+                  onPick={() => void set("preselect", n)}
+                />
+              ))}
+            </div>
+            <p className="text-[10px] text-sf-muted">{t("techlog.cabin.preselect_hint")}</p>
+            <div className="flex flex-wrap gap-1">
+              <Pill label={t(on("cabVacuumPowered") ? "techlog.cabin.vacuum_on" : "techlog.cabin.vacuum_off")} ok={on("cabVacuumPowered")} />
+              {has("cabVacuumGen") && !on("cabVacuumGen") && <Pill label={t("techlog.cabin.vacgen_failed")} ok={false} warn />}
+              {on("cabWaterPanel") && <Pill label={t("techlog.cabin.water_panel_open")} ok />}
+              {on("cabWastePanel") && <Pill label={t("techlog.cabin.waste_panel_open")} ok />}
+            </div>
+          </div>
+
+          {/* Puertas, toboganes y baños. */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{t("techlog.cabin.doors")}</span>
+              <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px]", tone(overall))}>
+                {t(`techlog.cabin.doors_${overall}`)}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {doors.map((d) => (
+                <span
+                  key={d}
+                  title={t(`techlog.cabin.door_${doorState(d)}`)}
+                  className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[10px]", tone(doorState(d)))}
+                >
+                  {d}
+                </span>
+              ))}
+              {(["L", "R"] as const)
+                .filter((s) => has(`cabSlideOW${s}`))
+                .map((s) => (
+                  <span
+                    key={s}
+                    title={t(on(`cabSlideOW${s}`) ? "techlog.cabin.door_ok" : "techlog.cabin.door_disarmed")}
+                    className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[10px]", tone(on(`cabSlideOW${s}`) ? "ok" : "disarmed"))}
+                  >
+                    OW {s}
+                  </span>
+                ))}
+            </div>
+            {lavs.length > 0 && (
+              <>
+                <div className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{t("techlog.cabin.lavs")}</div>
+                <ul className="space-y-1">
+                  {lavs.map((l) => (
+                    <li key={l} className="flex items-center gap-1.5 text-[11px]">
+                      <span className="w-4 font-mono text-sf-text">{l}</span>
+                      <Pill
+                        label={t(on(`cabLav${l}Occupied`) ? "techlog.cabin.lav_occupied" : on(`cabLav${l}Locked`) ? "techlog.cabin.lav_locked" : "techlog.cabin.lav_free")}
+                        ok={on(`cabLav${l}Occupied`)}
+                      />
+                      {!on(`cabLav${l}Flush`) && <Pill label={t("techlog.cabin.flush_failed")} ok={false} warn />}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+
+          {/* Temperatura y presión. */}
+          <div className="space-y-1.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{t("techlog.cabin.temp")}</div>
+            {[
+              { k: "fwd", air: v.cabTempFwdAir, sel: v.cabTempFwdSel, seat: v.cabTempFwdSeat },
+              { k: "aft", air: v.cabTempAftAir, sel: v.cabTempAftSel, seat: undefined },
+            ].map((z) => (
+              <div key={z.k} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                <span className="w-20 text-sf-text">{t(`techlog.cabin.${z.k}`)}</span>
+                <span className="font-semibold tabular-nums text-sf-text">{num(z.air, 1)} °C</span>
+                {z.sel !== undefined && (
+                  <span className="text-[11px] text-sf-muted">{t("techlog.cabin.selected", { v: `${num(z.sel, 1)} °C` })}</span>
+                )}
+                {z.seat !== undefined && (
+                  <span className="text-[11px] text-sf-muted">{t("techlog.cabin.seats", { v: `${num(z.seat, 1)} °C` })}</span>
+                )}
+              </div>
+            ))}
+            {has("cabPressure") && (
+              <div className="text-[11px] text-sf-muted">
+                {t("techlog.cabin.pressure", { p: num(v.cabPressure), d: num(v.cabDiffPressure, 2) })}
+              </div>
+            )}
+            <p className="text-[10px] text-sf-muted">{t("techlog.cabin.temp_hint")}</p>
+          </div>
+
+          {/* Luces y señales. */}
+          <div className="space-y-1.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{t("techlog.cabin.lights")}</div>
+            <div className="flex flex-wrap gap-1">
+              {CABIN_LIGHTS.map((l) => (
+                <Choice
+                  key={l}
+                  k={`lights-${l}`}
+                  label={t(`techlog.cabin.light_${l}`)}
+                  current={cab.lights === l}
+                  disabled={!cab.canSetLights}
+                  onPick={() => void set("lights", l)}
+                />
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-1 pt-1">
+              <Pill label={t(on("cabSeatbelts") ? "techlog.cabin.seatbelts_on" : "techlog.cabin.seatbelts_off")} ok={on("cabSeatbelts")} />
+              <Pill label={t(on("cabNoSmoking") ? "techlog.cabin.nosmoking_on" : "techlog.cabin.nosmoking_off")} ok={on("cabNoSmoking")} />
+              <Pill label={t(on("cabReady") ? "techlog.cabin.ready" : "techlog.cabin.not_ready")} ok={on("cabReady")} />
+              {on("cabCalled") && <Pill label={t("techlog.cabin.called")} ok />}
+              {has("cabCids") && !on("cabCids") && <Pill label={t("techlog.cabin.cids_failed")} ok={false} warn />}
+              {has("cabFap") && !on("cabFap") && <Pill label={t("techlog.cabin.fap_failed")} ok={false} warn />}
+            </div>
+            <p className="text-[10px] text-sf-muted">{t("techlog.cabin.signs_hint")}</p>
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 

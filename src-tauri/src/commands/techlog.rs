@@ -3,7 +3,8 @@
 use tauri::State;
 
 use crate::techlog::{
-    self, TechLogAircraft, TechLogFlight, TlActionRequest, TlActionResult, TlAppStatus, TlPendingOrder, TlSource,
+    self, TechLogAircraft, TechLogFlight, TlActionRequest, TlActionResult, TlAppStatus, TlCabin, TlPendingOrder,
+    TlSource,
 };
 use crate::AppState;
 
@@ -67,6 +68,26 @@ pub async fn techlog_launch(source: String) -> Result<bool, String> {
         .filter(|s| *s != TlSource::Simfleet)
         .ok_or_else(|| "not_installed".to_string())?;
     techlog::launch(source).await.map_err(|e| e.to_string())
+}
+
+/// (23/10) Cabina del Fenix cargado (TechLog 2.1+). `null` si esa matrícula
+/// no es el avión activo de un TechLog abierto.
+#[tauri::command]
+pub async fn techlog_cabin(registration: String) -> Result<Option<TlCabin>, String> {
+    techlog::cabin(&registration).await.map_err(|e| e.to_string())
+}
+
+/// (23/10) Luces de cabina (`control: "lights"`, value "Bright"|"Dim1"|"Dim2"|"Off")
+/// o pre-select de agua (`"preselect"`, value 0–100 en pasos de 25).
+#[tauri::command]
+pub async fn techlog_cabin_set(
+    registration: String,
+    control: String,
+    value: serde_json::Value,
+) -> Result<TlActionResult, String> {
+    techlog::cabin_set(&registration, &control, &value)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Vuelo de TechLog que corresponde a un vuelo del FlightBook.

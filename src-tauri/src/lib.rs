@@ -313,6 +313,8 @@ pub fn run() {
             commands::techlog::techlog_cancel_pending,
             commands::techlog::techlog_launch,
             commands::techlog::techlog_flight,
+            commands::techlog::techlog_cabin,
+            commands::techlog::techlog_cabin_set,
             commands::mx::mx_aircraft,
             commands::mx::mx_action,
             commands::mx::mx_flight,

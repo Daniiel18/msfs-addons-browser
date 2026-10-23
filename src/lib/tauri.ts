@@ -58,6 +58,8 @@ import type {
   TechLogAppStatus,
   TechLogActionRequest,
   TechLogActionResult,
+  TechLogCabin,
+  TechLogCabinLights,
   TechLogFlight,
   TechLogPendingOrder,
   TechLogSource,
@@ -237,6 +239,14 @@ interface Api {
   techlogCancelPending: (id: number) => Promise<void>;
   /** Abre la app TechLog minimizada; `false` si ya estaba abierta. */
   techlogLaunch: (source: TechLogSource) => Promise<boolean>;
+  /** (23/10) Cabina del Fenix cargado (TechLog 2.1); `null` si no es el avión activo. */
+  techlogCabin: (registration: string) => Promise<TechLogCabin | null>;
+  /** (23/10) Luces de cabina o pre-select de agua (0–100, pasos de 25). */
+  techlogCabinSet: (
+    registration: string,
+    control: "lights" | "preselect",
+    value: TechLogCabinLights | number,
+  ) => Promise<TechLogActionResult>;
   techlogFlight: (
     registration: string,
     startedAt: string,
@@ -850,6 +860,9 @@ const realApi: Api = {
   techlogPending: (registration) => invoke<TechLogPendingOrder[]>("techlog_pending", { registration }),
   techlogCancelPending: (id) => invoke<void>("techlog_cancel_pending", { id }),
   techlogLaunch: (source) => invoke<boolean>("techlog_launch", { source }),
+  techlogCabin: (registration) => invoke<TechLogCabin | null>("techlog_cabin", { registration }),
+  techlogCabinSet: (registration, control, value) =>
+    invoke<TechLogActionResult>("techlog_cabin_set", { registration, control, value }),
   techlogFlight: (registration, startedAt, endedAt) =>
     invoke<TechLogFlight | null>("techlog_flight", { registration, startedAt, endedAt }),
   gsxAirportParkings: (icao) =>
@@ -1601,6 +1614,15 @@ const demoApi: Api = {
   },
   async techlogLaunch() {
     return false;
+  },
+  // (23/10) Demo: cabina de ejemplo para ver el panel sin el sim.
+  async techlogCabin() {
+    return { ...demoCabin, values: { ...demoCabin.values } };
+  },
+  async techlogCabinSet(_registration, control, value) {
+    if (control === "lights") demoCabin.lights = value as TechLogCabinLights;
+    else demoCabin.values.cabWaterPreselect = Number(value);
+    return { ok: true, message: "Demo." };
   },
   async techlogFlight() {
     return null;
@@ -2965,6 +2987,26 @@ export const api: Api = isTauri ? realApi : demoApi;
 // (19/10) Avión de ejemplo del modo demo para el panel TechLog del Hangar.
 /** (20/10) Demo: cola de órdenes de TechLog (en memoria). */
 const demoTlQueue: TechLogPendingOrder[] = [];
+
+/** (23/10) Demo: cabina del Fenix (valores típicos en el gate). */
+const demoCabin: TechLogCabin = {
+  live: true,
+  utc: null,
+  lights: "Bright",
+  canSetLights: true,
+  canSetPreselect: true,
+  values: {
+    cabWaterPct: 68, cabWaterKg: 136, cabWaterPreselect: 75, cabWastePct: 12, cabWasteKg: 21,
+    cabWasteFull: 0, cabWaterPanel: 0, cabWastePanel: 0, cabVacuumPowered: 1, cabVacuumGen: 1,
+    cabTempFwdAir: 22.4, cabTempFwdSel: 22, cabTempFwdSeat: 21.8, cabTempAftAir: 23.1, cabTempAftSel: 22,
+    cabPressure: 1013, cabDiffPressure: 0, cabSeatbelts: 1, cabNoSmoking: 1, cabReady: 0, cabCalled: 0,
+    cabCids: 1, cabFap: 1,
+    cabDoorD1L: 1, cabSlideD1L: 0, cabDoorD1R: 0, cabSlideD1R: 1, cabDoorD4L: 0, cabSlideD4L: 1,
+    cabDoorD4R: 0, cabSlideD4R: 1, cabSlideOWL: 1, cabSlideOWR: 1,
+    cabLavAOccupied: 0, cabLavALocked: 0, cabLavAFlush: 1, cabLavDOccupied: 1, cabLavDLocked: 1,
+    cabLavDFlush: 1, cabLavEOccupied: 0, cabLavELocked: 0, cabLavEFlush: 1,
+  },
+};
 
 function demoTechLogAircraft(): TechLogAircraft {
   return {

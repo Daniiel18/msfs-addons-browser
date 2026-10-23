@@ -82,6 +82,12 @@ mod capture_engine {
         /// en el siguiente frame (el encoder vive en su hilo).
         finish: AtomicBool,
         done_tx: Mutex<Option<mpsc::Sender<Result<(), String>>>>,
+        /// (v8.3.2) El encoder se creó SIN audio (el del dispositivo no le
+        /// sirvió): el hilo de audio deja de empujar muestras.
+        audio_off: AtomicBool,
+        /// (v8.3.2) Motivo REAL por el que el handler paró (carpeta, encoder…).
+        /// Antes se perdía y el log sólo decía "sin frames".
+        last_error: Mutex<Option<String>>,
     }
 
     impl Shared {
@@ -124,23 +130,42 @@ mod capture_engine {
                 // Dimensiones PARES (requisito típico de H.264/NV12).
                 let w = frame.width() & !1;
                 let h = frame.height() & !1;
-                let video = VideoSettingsBuilder::new(w, h)
-                    .frame_rate(sh.fps)
-                    .bitrate(sh.bitrate)
-                    .sub_type(VideoSettingsSubType::H264);
-                let audio = match *sh.audio_fmt.lock().unwrap() {
-                    Some((rate, ch)) => AudioSettingsBuilder::new()
-                        .sample_rate(rate)
-                        .channel_count(ch)
-                        .bit_per_sample(16),
-                    None => AudioSettingsBuilder::new().disabled(true),
+                let make = |audio: AudioSettingsBuilder| {
+                    VideoEncoder::new(
+                        VideoSettingsBuilder::new(w, h)
+                            .frame_rate(sh.fps)
+                            .bitrate(sh.bitrate)
+                            .sub_type(VideoSettingsSubType::H264),
+                        audio,
+                        ContainerSettingsBuilder::new(),
+                        &sh.temp_path,
+                    )
                 };
-                let enc = VideoEncoder::new(
-                    video,
-                    audio,
-                    ContainerSettingsBuilder::new(),
-                    &sh.temp_path,
-                )?;
+                let fmt = *sh.audio_fmt.lock().unwrap();
+                let created = match fmt {
+                    Some((rate, ch)) => make(
+                        AudioSettingsBuilder::new()
+                            .sample_rate(rate)
+                            .channel_count(ch)
+                            .bit_per_sample(16),
+                    )
+                    .or_else(|e| {
+                        // (v8.3.2) Un audio que el encoder no acepta no debe
+                        // costar el vídeo: clip sin audio.
+                        tracing::warn!(target: "rec", "encoder con audio falló ({e}) — sigo sin audio");
+                        sh.audio_off.store(true, Ordering::Relaxed);
+                        make(AudioSettingsBuilder::new().disabled(true))
+                    }),
+                    None => make(AudioSettingsBuilder::new().disabled(true)),
+                };
+                let enc = match created {
+                    Ok(enc) => enc,
+                    Err(e) => {
+                        let msg = crate::tr!("recorder.encoderFailed", e = e);
+                        *sh.last_error.lock().unwrap() = Some(msg.clone());
+                        return Err(msg.into());
+                    }
+                };
                 *guard = Some(enc);
                 sh.first_frame.store(true, Ordering::Release);
                 tracing::info!(
@@ -151,7 +176,11 @@ mod capture_engine {
                 );
             }
             if let Some(enc) = guard.as_mut() {
-                enc.send_frame(frame)?;
+                if let Err(e) = enc.send_frame(frame) {
+                    let msg = crate::tr!("recorder.encoderFailed", e = e);
+                    *sh.last_error.lock().unwrap() = Some(msg.clone());
+                    return Err(msg.into());
+                }
             }
             Ok(())
         }
@@ -175,6 +204,8 @@ mod capture_engine {
         window: Option<Window>,
         interval: Duration,
         started_at: Instant,
+        /// (v8.3.2) El fallo de esta sesión ya se avisó (una vez basta).
+        pub reported: bool,
     }
 
     /// (v7.4.2) Procesos del simulador (mismos que `simconnect_watcher`).
@@ -238,6 +269,14 @@ mod capture_engine {
             temp_path: PathBuf,
             capture_audio: bool,
         ) -> anyhow::Result<Self> {
+            // (v8.3.2) La carpeta del temporal TIENE que existir: el encoder
+            // crea el archivo en el primer frame y, si falta la carpeta (PC
+            // nueva, carpeta borrada), fallaba en silencio → "sin frames".
+            if let Some(dir) = temp_path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| {
+                    anyhow!("{}", crate::tr!("recorder.folderFailed", path = dir.display(), e = e))
+                })?;
+            }
             let _ = std::fs::remove_file(&temp_path);
             let (done_tx, done_rx) = mpsc::channel();
             let shared = Arc::new(Shared {
@@ -249,6 +288,8 @@ mod capture_engine {
                 first_frame: AtomicBool::new(false),
                 finish: AtomicBool::new(false),
                 done_tx: Mutex::new(Some(done_tx)),
+                audio_off: AtomicBool::new(false),
+                last_error: Mutex::new(None),
             });
 
             // ── Audio (WASAPI loopback) ── se inicializa en SU hilo (COM) y
@@ -308,7 +349,13 @@ mod capture_engine {
                 window,
                 interval,
                 started_at: Instant::now(),
+                reported: false,
             })
+        }
+
+        /// (v8.3.2) Motivo del fallo que paró la captura, si lo hubo.
+        pub fn last_error(&self) -> Option<String> {
+            self.shared.last_error.lock().unwrap().clone()
         }
 
         /// (v7.4.2) Plan B anti "0 frames": si la captura de la VENTANA no
@@ -317,17 +364,34 @@ mod capture_engine {
         /// la del MONITOR donde está el sim. El encoder se crea con el primer
         /// frame, así que cambiar de origen antes de él no corrompe nada.
         /// Lo llama el hilo del grabador una vez por segundo.
-        pub fn watchdog(&mut self) {
-            if self.shared.first_frame.load(Ordering::Acquire)
-                || self.started_at.elapsed() < NO_FRAMES_FALLBACK
-            {
-                return;
+        ///
+        /// (v8.3.2) Devuelve el motivo si la captura acaba de PARAR por un
+        /// error del handler (carpeta, encoder…): cambiar al monitor no lo
+        /// arregla, así que se avisa en vez de esperar al "sin frames".
+        pub fn watchdog(&mut self) -> Option<String> {
+            let stopped = self.control.as_ref().is_some_and(|c| c.is_finished());
+            if stopped {
+                if let Some(c) = self.control.take() {
+                    let _ = c.wait();
+                }
+                if let Some(e) = self.last_error() {
+                    if self.reported {
+                        return None;
+                    }
+                    self.reported = true;
+                    tracing::warn!(target: "rec", "la captura se detuvo: {e}");
+                    return Some(e);
+                }
             }
-            let Some(win) = self.window.take() else {
-                return; // ya estamos en el monitor
-            };
+            if self.shared.first_frame.load(Ordering::Acquire)
+                || (!stopped && self.started_at.elapsed() < NO_FRAMES_FALLBACK)
+            {
+                return None;
+            }
+            // Sin ventana = ya estamos en el monitor.
+            let win = self.window.take()?;
             let Some(mon) = win.monitor().or_else(|| Monitor::primary().ok()) else {
-                return;
+                return None;
             };
             if let Some(c) = self.control.take() {
                 let _ = c.stop();
@@ -340,8 +404,15 @@ mod capture_engine {
                         NO_FRAMES_FALLBACK.as_secs()
                     );
                     self.control = Some(c);
+                    None
                 }
-                Err(e) => tracing::warn!(target: "rec", "plan B (monitor) falló: {e}"),
+                Err(e) => {
+                    tracing::warn!(target: "rec", "plan B (monitor) falló: {e}");
+                    let msg = crate::tr!("recorder.captureMonitorFailed", e = e);
+                    *self.shared.last_error.lock().unwrap() = Some(msg.clone());
+                    self.reported = true;
+                    Some(msg)
+                }
             }
         }
 
@@ -350,7 +421,10 @@ mod capture_engine {
             self.shared.finish.store(true, Ordering::Relaxed);
             // El handler finaliza en el siguiente frame; si no llegan frames
             // (ventana minimizada / cerrada), caemos al plan B tras timeout.
-            let res = self.done_rx.recv_timeout(Duration::from_secs(10));
+            // Si la captura ya paró, no hay frame que esperar.
+            let alive = self.control.as_ref().is_some_and(|c| !c.is_finished());
+            let wait = if alive { Duration::from_secs(10) } else { Duration::ZERO };
+            let res = self.done_rx.recv_timeout(wait);
             self.audio_stop.store(true, Ordering::Relaxed);
             if let Some(j) = self.audio_join.take() {
                 let _ = j.join();
@@ -369,7 +443,8 @@ mod capture_engine {
                             .finish()
                             .map_err(|e| anyhow!("finish (plan B): {e:?}"))?,
                         None => {
-                            return Err(anyhow!("{}", crate::tr!("recorder.noFrames")))
+                            let why = self.last_error().unwrap_or_else(|| crate::tr!("recorder.noFrames"));
+                            return Err(anyhow!("{why}"));
                         }
                     }
                 }
@@ -514,7 +589,7 @@ mod capture_engine {
     }
 
     fn push_audio(shared: &Shared, bytes: &[u8]) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || shared.audio_off.load(Ordering::Relaxed) {
             return;
         }
         if let Some(enc) = shared.encoder.lock().unwrap().as_mut() {
@@ -541,8 +616,15 @@ mod capture_engine {
                 return;
             }
         };
-        // El encoder SIEMPRE recibe estéreo PCM16 al sample rate del mix.
-        let _ = fmt_tx.send(Some((lb.rate, 2)));
+        // El encoder SIEMPRE recibe estéreo PCM16. (v8.3.2) El AAC de Windows
+        // sólo acepta 44,1/48 kHz: un dispositivo a 96/192 kHz (DACs USB,
+        // algunos cascos) se remuestrea a 48 kHz en vez de romper el clip.
+        let out_rate = super::encoder_sample_rate(lb.rate);
+        let mut resampler = (out_rate != lb.rate).then(|| super::Resampler::new(lb.rate, out_rate));
+        if resampler.is_some() {
+            tracing::info!(target: "rec", "audio a {} Hz → remuestreado a {out_rate} Hz", lb.rate);
+        }
+        let _ = fmt_tx.send(Some((out_rate, 2)));
 
         // Espera al primer frame de vídeo — el reloj de audio del encoder
         // empieza en la primera muestra, así que arrancar antes desincroniza.
@@ -587,16 +669,21 @@ mod capture_engine {
                     } else {
                         unsafe { lb.to_stereo_i16(data, frames as usize) }
                     };
+                    let bytes = match resampler.as_mut() {
+                        Some(r) => r.process(&bytes),
+                        None => bytes,
+                    };
+                    sent += (bytes.len() / 4) as u64;
                     push_audio(&shared, &bytes);
-                    sent += frames as u64;
                 }
                 let _ = unsafe { lb.capture.ReleaseBuffer(frames) };
             }
             // Relleno de silencio si WASAPI no entregó nada (sin sesiones de
             // audio activas) — mantiene el A/V sync del reloj monotónico.
-            let expected = (started.elapsed().as_secs_f64() * f64::from(lb.rate)) as u64;
-            if expected > sent + u64::from(lb.rate) / 5 {
-                let deficit = (expected - sent).min(u64::from(lb.rate));
+            // (`sent` cuenta muestras ya al rate del encoder.)
+            let expected = (started.elapsed().as_secs_f64() * f64::from(out_rate)) as u64;
+            if expected > sent + u64::from(out_rate) / 5 {
+                let deficit = (expected - sent).min(u64::from(out_rate));
                 push_audio(&shared, &vec![0u8; deficit as usize * 4]);
                 sent += deficit;
             }
@@ -606,6 +693,108 @@ mod capture_engine {
         }
         drop(lb);
         unsafe { CoUninitialize() };
+    }
+
+    #[cfg(test)]
+    mod probe {
+        use super::*;
+
+        /// Diagnóstico manual: `REC_TARGET=<título> REC_AUDIO=0|1 cargo test
+        /// --lib rec_probe -- --ignored --nocapture`.
+        #[test]
+        #[ignore]
+        fn rec_probe() {
+            let dir = std::env::var_os("REC_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+            let out = dir.join("simfleet-rec-probe.mp4");
+            let _ = std::fs::remove_file(&out);
+            let target = std::env::var("REC_TARGET").unwrap_or_else(|_| "__none__".into());
+            let audio = std::env::var("REC_AUDIO").map(|v| v == "1").unwrap_or(true);
+            let mut s = CaptureSession::start(
+                &target,
+                30,
+                8_000_000,
+                dir.join("simfleet-rec-probe.part.mp4"),
+                audio,
+            )
+            .expect("start");
+            eprintln!("audio_fmt={:?} window={:?}", s.shared.audio_fmt.lock().unwrap(), s.window.map(|w| w.title()));
+            for i in 0..8 {
+                std::thread::sleep(Duration::from_secs(1));
+                s.watchdog();
+                let finished = s.control.as_ref().map(|c| c.is_finished()).unwrap_or(true);
+                eprintln!("t={} first_frame={} capture_finished={finished}", i + 1, s.shared.first_frame.load(Ordering::Acquire));
+                if finished {
+                    if let Some(c) = s.control.take() {
+                        eprintln!("capture thread ended: {:?}", c.wait().err());
+                    }
+                }
+            }
+            let r = s.finish_and_save(&out);
+            eprintln!("result={r:?} size={:?}", std::fs::metadata(&out).map(|m| m.len()));
+        }
+    }
+}
+
+/// (v8.3.2) Sample rate que se le da al encoder: el del dispositivo si el AAC
+/// de Windows lo acepta (44,1/48 kHz); si no, 48 kHz (se remuestrea).
+fn encoder_sample_rate(device_rate: u32) -> u32 {
+    if matches!(device_rate, 44_100 | 48_000) {
+        device_rate
+    } else {
+        48_000
+    }
+}
+
+/// (v8.3.2) Remuestreo lineal de PCM16 estéreo intercalado, con estado entre
+/// paquetes (posición fraccionaria + última muestra) para no meter clics.
+/// Calidad de sobra para el audio de un clip del sim.
+struct Resampler {
+    /// Muestras de entrada por muestra de salida.
+    step: f64,
+    /// Posición en la entrada del paquete actual; -1 = última del anterior.
+    pos: f64,
+    prev: (i16, i16),
+}
+
+impl Resampler {
+    fn new(from: u32, to: u32) -> Self {
+        Self {
+            step: f64::from(from) / f64::from(to.max(1)),
+            pos: 0.0,
+            prev: (0, 0),
+        }
+    }
+
+    fn process(&mut self, input: &[u8]) -> Vec<u8> {
+        let n = input.len() / 4;
+        if n == 0 {
+            return Vec::new();
+        }
+        let prev = self.prev;
+        let at = |i: isize| -> (i16, i16) {
+            if i < 0 {
+                return prev;
+            }
+            let o = i as usize * 4;
+            (
+                i16::from_le_bytes([input[o], input[o + 1]]),
+                i16::from_le_bytes([input[o + 2], input[o + 3]]),
+            )
+        };
+        let mut out = Vec::with_capacity(((n as f64 / self.step) as usize + 2) * 4);
+        let mut pos = self.pos;
+        while pos < (n - 1) as f64 {
+            let i = pos.floor();
+            let frac = pos - i;
+            let (a, b) = (at(i as isize), at(i as isize + 1));
+            let lerp = |x: i16, y: i16| (f64::from(x) + (f64::from(y) - f64::from(x)) * frac).round() as i16;
+            out.extend_from_slice(&lerp(a.0, b.0).to_le_bytes());
+            out.extend_from_slice(&lerp(a.1, b.1).to_le_bytes());
+            pos += self.step;
+        }
+        self.prev = at(n as isize - 1);
+        self.pos = pos - n as f64;
+        out
     }
 }
 
@@ -659,17 +848,101 @@ fn default_output_path(fallback_data: &Path) -> String {
             return p;
         }
     }
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        return PathBuf::from(profile)
-            .join("Videos")
-            .join(crate::test_env::landings_folder_name())
-            .to_string_lossy()
-            .into_owned();
+    if let Some(p) = videos_landings_dir() {
+        return p.to_string_lossy().into_owned();
     }
     fallback_data
         .join("landings")
         .to_string_lossy()
         .into_owned()
+}
+
+/// (v8.3.2) Carpeta Vídeos REAL de Windows, también si el usuario la movió a
+/// otro disco u OneDrive (`User Shell Folders\My Video`; `RegGetValueW`
+/// expande el `%USERPROFILE%`). Antes se asumía `%USERPROFILE%\Videos`.
+fn videos_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        use windows::core::HSTRING;
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+        let mut buf = [0u16; 1024];
+        let mut size = (buf.len() * 2) as u32;
+        let ok = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"),
+                &HSTRING::from("My Video"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+                Some(&mut size),
+            )
+        }
+        .is_ok();
+        if ok {
+            let len = (size as usize / 2).saturating_sub(1);
+            let s = String::from_utf16_lossy(&buf[..len.min(buf.len())]);
+            let s = s.trim();
+            if !s.is_empty() && !s.contains('%') {
+                return Some(PathBuf::from(s));
+            }
+        }
+    }
+    std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("Videos"))
+}
+
+/// (v8.3.2) `Vídeos\SimFleet Landings`: carpeta por defecto y de respaldo.
+fn videos_landings_dir() -> Option<PathBuf> {
+    // Los tests nunca tocan la carpeta Vídeos real del usuario.
+    if cfg!(test) {
+        return Some(std::env::temp_dir().join(format!("simfleet-videos-test-{}", std::process::id())));
+    }
+    videos_dir().map(|v| v.join(crate::test_env::landings_folder_name()))
+}
+
+/// (v8.3.2) Carpeta donde se graba DE VERDAD: la configurada (creándola si
+/// falta — en una PC nueva o si se borró, antes la grabación fallaba en
+/// silencio) o, si no se puede (disco desconectado…), la de Vídeos. Devuelve
+/// además el aviso para el usuario cuando hubo que usar la de respaldo.
+pub fn resolve_output_dir(
+    configured: &str,
+    fallback_data: &Path,
+) -> Result<(PathBuf, Option<String>), String> {
+    let cfg = PathBuf::from(configured);
+    let err = match std::fs::create_dir_all(&cfg) {
+        Ok(()) => return Ok((cfg, None)),
+        Err(e) => e,
+    };
+    let backup = videos_landings_dir().unwrap_or_else(|| fallback_data.join("landings"));
+    if backup != cfg && std::fs::create_dir_all(&backup).is_ok() {
+        tracing::warn!(
+            target: "rec",
+            "carpeta «{}» no disponible ({err}) — grabo en «{}»",
+            cfg.display(),
+            backup.display()
+        );
+        let notice = crate::tr!("recorder.folderFallback", from = cfg.display(), to = backup.display());
+        return Ok((backup, Some(notice)));
+    }
+    Err(crate::tr!("recorder.folderFailed", path = cfg.display(), e = err))
+}
+
+/// (v8.3.2) Carpetas que pueden tener clips: la configurada y la de respaldo.
+pub fn clip_dirs(configured: &str) -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from(configured)];
+    if let Some(b) = videos_landings_dir() {
+        if !dirs.contains(&b) {
+            dirs.push(b);
+        }
+    }
+    dirs
+}
+
+/// Carpeta (de `dirs`) cuyo manifiesto tiene el clip `id`.
+pub fn clip_dir_of(dirs: &[PathBuf], id: &str) -> Option<PathBuf> {
+    dirs.iter()
+        .find(|d| load_clips(d).iter().any(|c| c.id == id))
+        .cloned()
 }
 
 fn landingtoast_config() -> Option<serde_json::Value> {
@@ -1130,16 +1403,27 @@ enum RecCmd {
 /// (v6.2.17) Con el motor nuevo NO hay replay buffer en RAM: `Arm` empieza a
 /// grabar EN DISCO a un temporal; `Save` finaliza el contenedor y lo renombra
 /// como clip (cubre toda la aproximación final); `Stop` descarta y borra.
+/// (v8.3.2) Aviso dentro de SimFleet (toast) — el usuario eligió enterarse
+/// de los fallos de grabación sólo en la app. `kind`: "error" | "folder".
 #[cfg(windows)]
-fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
+fn notify(app: &tauri::AppHandle, kind: &str, message: String) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "recorder://notice",
+        serde_json::json!({ "kind": kind, "message": message }),
+    );
+}
+
+#[cfg(windows)]
+fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>, app: tauri::AppHandle) {
     let mut session: Option<capture_engine::CaptureSession> = None;
     loop {
         // (v7.4.2) Despertamos cada segundo para el watchdog de "0 frames".
         let cmd = match rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(cmd) => cmd,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if let Some(s) = session.as_mut() {
-                    s.watchdog();
+                if let Some(e) = session.as_mut().and_then(|s| s.watchdog()) {
+                    notify(&app, "error", e);
                 }
                 continue;
             }
@@ -1175,20 +1459,25 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
                     Err(e) => {
                         release_recording();
                         tracing::warn!(target: "rec", "no se pudo armar la captura: {e:#}");
+                        notify(&app, "error", format!("{e:#}"));
                     }
                 }
             }
             RecCmd::Save { path, reply } => {
                 let res = match session.take() {
                     Some(s) => {
+                        let reported = s.reported;
                         let r = s
                             .finish_and_save(Path::new(&path))
                             .map_err(|e| format!("{e:#}"));
                         release_recording();
                         // (v7.4.2) Antes se logueaba "clip guardado" SIEMPRE,
                         // también cuando el guardado fallaba.
-                        if r.is_ok() {
-                            tracing::info!(target: "rec", "clip guardado: {path}");
+                        match &r {
+                            Ok(()) => tracing::info!(target: "rec", "clip guardado: {path}"),
+                            // (v8.3.2) Si el watchdog ya avisó del motivo, no repetir.
+                            Err(e) if !reported => notify(&app, "error", e.clone()),
+                            Err(_) => {}
                         }
                         r
                     }
@@ -1210,9 +1499,10 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>) {
 #[cfg(windows)]
 pub fn spawn_controller(pool: SqlitePool, app: tauri::AppHandle, data_dir: PathBuf) {
     let (tx, rx) = std::sync::mpsc::channel::<RecCmd>();
+    let app_rec = app.clone();
     let _ = std::thread::Builder::new()
         .name("landing-recorder".into())
-        .spawn(move || recorder_thread(rx));
+        .spawn(move || recorder_thread(rx, app_rec));
     tokio::spawn(controller_loop(pool, app, data_dir, tx));
 }
 
@@ -1248,6 +1538,11 @@ async fn controller_loop(
     // clip se perdía. Mientras haya un guardado pendiente NO se desarma.
     let mut save_pending_until: Option<std::time::Instant> = None;
     const SAVE_GRACE: Duration = Duration::from_secs(16);
+    // (v8.3.2) Carpeta donde se armó la grabación (la configurada o la de
+    // respaldo): el clip se guarda AHÍ. Y si no hubo carpeta posible, no se
+    // reintenta (ni se re-avisa) cada segundo hasta tocar tierra.
+    let mut armed_dir: Option<PathBuf> = None;
+    let mut arm_blocked = false;
 
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1286,6 +1581,7 @@ async fn controller_loop(
         }
         if on_ground {
             reached_cruise = false;
+            arm_blocked = false;
         }
         // (v6.1 perf · v6.2.14) Armamos LO MÁS TARDE posible — solo en aproximación
         // real. La fase "approach"/"descent" del watcher es por ALTURA SOBRE EL
@@ -1315,21 +1611,34 @@ async fn controller_loop(
                 tracing::warn!(target: "rec", "pruebas: la instancia principal está grabando — cedo la captura");
             }
             // Armar el replay buffer al entrar en aproximación.
-            if approaching && !on_ground && !armed && !yield_to_main {
-                let (w, h) = target_monitor_size(&app, false);
-                let _ = tx.send(RecCmd::Arm {
-                    output_path: cfg.output_path.clone(),
-                    width: w,
-                    height: h,
-                    // (v6.2.17) 60 fps de vuelta: el motor nuevo (WGC + encoder
-                    // por hardware) drena a disco — sin buffer en RAM que
-                    // acumular. El tope de 30 era del motor viejo (windows-record).
-                    fps: cfg.fps.clamp(24, 60) as u32,
-                });
-                armed = true;
-                armed_at = Some(std::time::Instant::now());
-                saved = false;
-                crate::diagnostics::note_recorder_armed(true);
+            if approaching && !on_ground && !armed && !yield_to_main && !arm_blocked {
+                match resolve_output_dir(&cfg.output_path, &data_dir) {
+                    Ok((dir, notice)) => {
+                        if let Some(n) = notice {
+                            notify(&app, "folder", n);
+                        }
+                        let (w, h) = target_monitor_size(&app, false);
+                        let _ = tx.send(RecCmd::Arm {
+                            output_path: dir.to_string_lossy().into_owned(),
+                            width: w,
+                            height: h,
+                            // (v6.2.17) 60 fps de vuelta: el motor nuevo (WGC + encoder
+                            // por hardware) drena a disco — sin buffer en RAM que
+                            // acumular. El tope de 30 era del motor viejo (windows-record).
+                            fps: cfg.fps.clamp(24, 60) as u32,
+                        });
+                        armed_dir = Some(dir);
+                        armed = true;
+                        armed_at = Some(std::time::Instant::now());
+                        saved = false;
+                        crate::diagnostics::note_recorder_armed(true);
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "rec", "no se arma la captura: {e}");
+                        notify(&app, "error", e);
+                        arm_blocked = true;
+                    }
+                }
             }
             // Tope de tiempo armado: si lleva demasiado sin aterrizar (holding,
             // fase atascada), paramos para liberar memoria del grabador. Se
@@ -1368,10 +1677,13 @@ async fn controller_loop(
                 let duration_s = armed_at
                     .map(|t| t.elapsed().as_secs() as i64 + 12)
                     .unwrap_or(60);
+                let out_dir = armed_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(&cfg.output_path));
                 schedule_save(
                     &pool,
                     &tx,
-                    &cfg.output_path,
+                    &out_dir,
                     duration_s,
                     cfg.max_clips,
                     status.destination_icao.clone(),
@@ -1403,7 +1715,7 @@ async fn controller_loop(
 fn schedule_save(
     pool: &SqlitePool,
     tx: &std::sync::mpsc::Sender<RecCmd>,
-    output_path: &str,
+    out_dir: &Path,
     // Duración estimada del clip (armado→touchdown + rollout) para el manifest.
     clip_seconds: i64,
     max_clips: i64,
@@ -1414,7 +1726,7 @@ fn schedule_save(
     use std::time::Duration;
     let pool = pool.clone();
     let tx = tx.clone();
-    let out_dir = PathBuf::from(output_path);
+    let out_dir = out_dir.to_path_buf();
     tokio::spawn(async move {
         // ~12s para que el rollout completo entre en el buffer antes de
         // guardar (antes se cortaba muy temprano el vídeo).
@@ -1498,3 +1810,93 @@ async fn enrich_clip_from_flightlog(pool: &SqlitePool, out_dir: &Path, id: &str)
 
 #[cfg(not(windows))]
 pub fn spawn_controller(_pool: SqlitePool, _app: tauri::AppHandle, _data_dir: PathBuf) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pcm(frames: &[(i16, i16)]) -> Vec<u8> {
+        frames
+            .iter()
+            .flat_map(|(l, r)| l.to_le_bytes().into_iter().chain(r.to_le_bytes()))
+            .collect()
+    }
+
+    fn frames(bytes: &[u8]) -> Vec<(i16, i16)> {
+        bytes
+            .chunks_exact(4)
+            .map(|c| (i16::from_le_bytes([c[0], c[1]]), i16::from_le_bytes([c[2], c[3]])))
+            .collect()
+    }
+
+    #[test]
+    fn encoder_rate_only_changes_unsupported_rates() {
+        assert_eq!(encoder_sample_rate(48_000), 48_000);
+        assert_eq!(encoder_sample_rate(44_100), 44_100);
+        assert_eq!(encoder_sample_rate(96_000), 48_000);
+        assert_eq!(encoder_sample_rate(192_000), 48_000);
+        assert_eq!(encoder_sample_rate(32_000), 48_000);
+    }
+
+    #[test]
+    fn resampler_halves_96k_across_packets_without_gaps() {
+        let mut r = Resampler::new(96_000, 48_000);
+        // Rampa 0..2000 partida en paquetes de tamaños raros.
+        let ramp: Vec<(i16, i16)> = (0..2000).map(|i| (i as i16, -(i as i16))).collect();
+        let mut out = Vec::new();
+        for chunk in ramp.chunks(333) {
+            out.extend(frames(&r.process(&pcm(chunk))));
+        }
+        // ~la mitad de muestras, y la rampa sigue siendo continua (paso 2).
+        assert!((out.len() as i64 - 1000).abs() <= 1, "len {}", out.len());
+        for w in out.windows(2) {
+            assert_eq!(w[1].0 - w[0].0, 2);
+            assert_eq!(w[1].1, -w[1].0);
+        }
+    }
+
+    #[test]
+    fn resampler_upsamples_32k_to_48k() {
+        let mut r = Resampler::new(32_000, 48_000);
+        let input: Vec<(i16, i16)> = (0..3200).map(|i| (i as i16, 0)).collect();
+        let out = frames(&r.process(&pcm(&input)));
+        assert!((out.len() as i64 - 4800).abs() <= 2, "len {}", out.len());
+        assert!(out.windows(2).all(|w| w[1].0 >= w[0].0));
+    }
+
+    #[test]
+    fn output_dir_is_created_when_missing() {
+        let base = std::env::temp_dir().join(format!("simfleet-rec-test-{}", std::process::id()));
+        let missing = base.join("Videos").join("SimFleet Landings");
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, notice) = resolve_output_dir(&missing.to_string_lossy(), &base).unwrap();
+        assert_eq!(dir, missing);
+        assert!(notice.is_none());
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unavailable_output_dir_falls_back_with_notice() {
+        // Una ruta imposible: un ARCHIVO hace de carpeta padre.
+        let base = std::env::temp_dir().join(format!("simfleet-rec-fb-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("no-soy-carpeta");
+        std::fs::write(&file, b"x").unwrap();
+        let bad = file.join("clips");
+        let (dir, notice) = resolve_output_dir(&bad.to_string_lossy(), &base).unwrap();
+        assert_ne!(dir, bad);
+        assert!(dir.is_dir());
+        assert!(notice.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn videos_dir_is_expanded() {
+        let v = videos_dir().expect("videos dir");
+        assert!(!v.to_string_lossy().contains('%'));
+        assert!(v.is_absolute());
+    }
+}
