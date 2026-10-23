@@ -887,7 +887,8 @@ fn compute_bitrate(width: u32, height: u32, fps: u32) -> u32 {
 #[cfg(windows)]
 pub fn target_monitor_size(app: &tauri::AppHandle, prefer_current: bool) -> (u32, u32) {
     use tauri::Manager;
-    let Some(win) = app.get_webview_window("main") else {
+    // (v8.3) `get_window`: también con el webview de flightsim.to dentro.
+    let Some(win) = app.get_window("main") else {
         return (1920, 1080);
     };
     let mon = if prefer_current {

@@ -635,6 +635,12 @@ export interface AirlineLedger {
   autoCosts: number;
   costFixed: number;
   autoFleet: number;
+  /** (v8.3) Carga de tus vuelos (kg; del OFP de SimBrief o estimada) y
+   *  pasajeros y carga estimados de la operación autónoma. Los pasajeros de
+   *  tus vuelos están en `passengers` (los cargueros, como mucho 3). */
+  cargoKg: number;
+  autoPax: number;
+  autoCargoKg: number;
 }
 
 /** (v8.3 · Etapa 6.1) Traslado (vuelo de posicionamiento sin pasajeros). */
@@ -770,11 +776,14 @@ export interface BalancePoint {
   t: string;
   /** Saldo ("banco") acumulado tras este evento. */
   balance: number;
+  /** (v8.3) Saldo sin compras de aviones: la curva se dibuja con este valor
+   *  para que cada vuelo se note; las compras van como marcas. */
+  operating: number;
   /** Variación del saldo en este evento. */
   delta: number;
-  /** Etiqueta legible (ruta o servicio de mantenimiento). */
+  /** Etiqueta legible (ruta, hora de operación, compra o mantenimiento). */
   label: string;
-  /** "start" | "flight" | "maint" | "ferry" | "auto". */
+  /** "start" | "flight" | "purchase" | "maint" | "ferry" | "auto". */
   kind: string;
 }
 

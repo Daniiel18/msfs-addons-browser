@@ -469,10 +469,9 @@ fn resolve_airline(e: &FlightLogEntry, learned: &HashMap<String, String>) -> Opt
             let lc = detect_lowcost(&canon.name);
             (if lc { 2.0 * B } else { 4.0 * B }, lc)
         });
-    // Carga: aerolínea de carga conocida, o vuelo con flete y sin pasajeros
-    // (SimBrief no trae pax → es obvio que es carga).
-    let cargo = known.map(|p| p.cargo).unwrap_or(false)
-        || (e.passengers.unwrap_or(0) <= 0 && e.cargo_kg.unwrap_or(0) > 0);
+    // (v8.3) Aquí sólo la aerolínea de carga CONOCIDA; si sus vuelos son todos
+    // de carga lo decide `airline_cargo_flags`, y cada vuelo `is_cargo_flight`.
+    let cargo = known.map(|p| p.cargo).unwrap_or(false);
     Some(Resolved {
         key: canon.key,
         icao: canon.icao,
@@ -481,6 +480,49 @@ fn resolve_airline(e: &FlightLogEntry, learned: &HashMap<String, String>) -> Opt
         lowcost,
         cargo,
     })
+}
+
+/// (v8.3) Asientos auxiliares (jumpseats): lo máximo que lleva un carguero.
+const JUMPSEATS: i64 = 3;
+
+/// (v8.3) Modelo/título de un carguero: 777F, 747-8F, 767-300F, MD-11F,
+/// A330-200F, 737-800BCF/SF, P2F, "Freighter", "Cargo"… y los códigos de
+/// cliente de la base de aviones (777-FB5, 747-8HVF, 767-3S2F).
+static FREIGHTER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(freighter|cargo|\bbcf\b|\bbdsf\b|p2f\b|\d{3}sf\b|\bsf\b|md-?11f\b|777-?f|(?:^|[^0-9])\d{3}(?:-[0-9a-z]{1,5})?f\b)")
+        .unwrap()
+});
+
+pub(crate) fn is_freighter(text: Option<&str>) -> bool {
+    text.is_some_and(|t| FREIGHTER_RE.is_match(t))
+}
+
+/// (v8.3) ¿Es un vuelo de carga? Aerolínea de carga, avión carguero, o con
+/// carga y como mucho los jumpseats a bordo (OFP de SimBrief).
+fn is_cargo_flight(e: &FlightLogEntry, airline_cargo: bool) -> bool {
+    airline_cargo
+        || is_freighter(e.aircraft_model.as_deref())
+        || is_freighter(e.aircraft_title.as_deref())
+        || (e.cargo_kg.unwrap_or(0) > 0 && e.passengers.unwrap_or(0) <= JUMPSEATS)
+}
+
+/// (v8.3) Aerolíneas "de carga": las conocidas como tales y las que tienen
+/// TODOS sus vuelos de carga. Una aerolínea de pasaje con algún carguero
+/// (p. ej. Korean Air con un 777F) queda mixta: cada vuelo se valora por sí.
+fn airline_cargo_flags(flights: &[FlightLogEntry], learned: &HashMap<String, String>) -> HashMap<String, bool> {
+    let mut count: HashMap<String, (bool, i64, i64)> = HashMap::new();
+    for f in flights {
+        let Some(res) = resolve_airline(f, learned) else { continue };
+        let c = count.entry(res.key).or_insert((res.cargo, 0, 0));
+        c.1 += 1;
+        if is_cargo_flight(f, c.0) {
+            c.2 += 1;
+        }
+    }
+    count
+        .into_iter()
+        .map(|(k, (known, n, cargo))| (k, known || (n > 0 && cargo == n)))
+        .collect()
 }
 
 // ─────────────────────────── Clasificación de avión ──────────────────────────
@@ -981,6 +1023,8 @@ struct Pnl {
     cost_fees: f64,
     net: f64,
     gsx_matched: bool,
+    /// (v8.3) Carga transportada (kg) en vuelos de carga; 0 en los de pasaje.
+    cargo_kg: f64,
 }
 
 /// Carga útil típica de un carguero por tamaño (kg) — cuando el vuelo no
@@ -1130,7 +1174,9 @@ fn compute_cargo_pnl(
     let revenue = revenue_tickets + revenue_ancillary;
     let costs = cost_fuel + cost_catering + cost_handling + cost_maintenance + cost_fees;
     Pnl {
-        pax: 0,
+        // (v8.3) A bordo de un carguero sólo van los jumpseats (máx. 3) que
+        // traiga el OFP; no pagan billete.
+        pax: e.passengers.unwrap_or(0).clamp(0, JUMPSEATS),
         seats: 0,
         revenue_tickets,
         revenue_ancillary,
@@ -1141,15 +1187,16 @@ fn compute_cargo_pnl(
         cost_fees,
         net: revenue - costs,
         gsx_matched: gsx.matched(),
+        cargo_kg: payload,
     }
 }
 
-/// Calcula el P&L de un vuelo. Ruta de carga o de pasajeros según la aerolínea.
-fn compute_pnl(e: &FlightLogEntry, res: &Resolved, gsx: &GsxCosts, policy: &AirlinePolicy) -> Pnl {
+/// Calcula el P&L de un vuelo. `cargo` = vuelo de carga (`is_cargo_flight`).
+fn compute_pnl(e: &FlightLogEntry, res: &Resolved, gsx: &GsxCosts, policy: &AirlinePolicy, cargo: bool) -> Pnl {
     let (size, seats) = classify(e.aircraft_model.as_deref().or(e.aircraft_atc_type.as_deref()));
     let d = distance_nm(e, size);
 
-    if res.cargo {
+    if cargo {
         return compute_cargo_pnl(e, gsx, policy, size, d);
     }
 
@@ -1206,6 +1253,7 @@ fn compute_pnl(e: &FlightLogEntry, res: &Resolved, gsx: &GsxCosts, policy: &Airl
         cost_fees,
         net: revenue - costs,
         gsx_matched: gsx.matched(),
+        cargo_kg: 0.0,
     }
 }
 
@@ -1252,6 +1300,11 @@ struct LedgerAcc {
     auto_costs: f64,
     cost_fixed: f64,
     auto_fleet: i64,
+    /// (v8.3) Carga de tus vuelos (kg) y pasajeros/carga estimados de la
+    /// operación autónoma.
+    cargo_kg: f64,
+    auto_pax: i64,
+    auto_cargo_kg: f64,
 }
 
 /// Satisfacción del pasajero (0-100) derivada de la media de FPM al tocar
@@ -1336,6 +1389,12 @@ struct AutoTotals {
     cost_fixed: f64,
     /// Flota del día más reciente.
     last_fleet: i64,
+    /// (v8.3) Pasajeros y carga (kg) estimados de los vuelos reales.
+    pax: i64,
+    cargo_kg: f64,
+    /// (v8.3) Por hora UTC del día: (vuelos, neto sin costos fijos). Para
+    /// que la curva de saldo se mueva con los vuelos, no una vez al día.
+    hourly: Vec<(i64, f64)>,
 }
 
 /// Semilla estable de un vuelo real (para el factor de ocupación).
@@ -1370,10 +1429,12 @@ async fn refresh_auto_days(
         return Ok(0);
     }
     // Perfil económico por ICAO y aviones del usuario por aerolínea.
+    let cargo_flags = airline_cargo_flags(flights, learned);
     let mut profiles: HashMap<String, Resolved> = HashMap::new();
     let mut user_regs: HashMap<String, HashMap<String, Option<String>>> = HashMap::new();
     for f in flights {
-        let Some(res) = resolve_airline(f, learned) else { continue };
+        let Some(mut res) = resolve_airline(f, learned) else { continue };
+        res.cargo = cargo_flags.get(&res.key).copied().unwrap_or(res.cargo);
         if let Some(reg) = f.aircraft_registration.as_deref().map(normalize_reg).filter(|r| !r.is_empty()) {
             user_regs
                 .entry(res.key.clone())
@@ -1437,7 +1498,7 @@ async fn refresh_auto_days(
         for r in sqlx::query(
             "SELECT rf.icao24 AS hex, rf.first_seen AS fs, rf.last_seen AS ls, rf.airline_icao AS al,
                     rf.dep_icao AS dep, rf.arr_icao AS arr, rf.callsign AS cs,
-                    a.typecode AS tc, a.registration AS reg
+                    a.typecode AS tc, a.registration AS reg, a.model AS mdl
                FROM real_flight rf LEFT JOIN aircraft_db a ON a.icao24 = rf.icao24
               WHERE rf.window_begin >= ? AND rf.window_begin < ?",
         )
@@ -1467,6 +1528,9 @@ async fn refresh_auto_days(
                 origin_icao: dep,
                 destination_icao: arr,
                 aircraft_model: model,
+                // (v8.3) Modelo de la base de aviones ("777-FB5", "747-8HVF"):
+                // decide si es un carguero.
+                aircraft_title: r.get("mdl"),
                 aircraft_registration: r.get("reg"),
                 airline_icao: Some(al.clone()),
                 callsign: Some(r.get("cs")),
@@ -1477,7 +1541,8 @@ async fn refresh_auto_days(
             };
             let mut policy = auto_services(res.lowcost, res.cargo);
             policy.maintenance_level = policies.get(&res.key).map(|p| p.maintenance_level).unwrap_or(1);
-            let pnl = compute_pnl(&entry, res, &GsxCosts::default(), &policy);
+            let cargo = is_cargo_flight(&entry, res.cargo);
+            let pnl = compute_pnl(&entry, res, &GsxCosts::default(), &policy, cargo);
             let t = acc.entry(res.key.clone()).or_default();
             t.flights += 1;
             t.revenue_tickets += pnl.revenue_tickets;
@@ -1487,6 +1552,15 @@ async fn refresh_auto_days(
             t.cost_handling += pnl.cost_handling;
             t.cost_maintenance += pnl.cost_maintenance;
             t.cost_fees += pnl.cost_fees;
+            // Pasajeros estimados (los cargueros reales no llevan) y carga.
+            t.pax += if cargo { 0 } else { pnl.pax };
+            t.cargo_kg += pnl.cargo_kg;
+            if t.hourly.is_empty() {
+                t.hourly = vec![(0, 0.0); 24];
+            }
+            let h = ((fs - day_start).div_euclid(3_600)).clamp(0, 23) as usize;
+            t.hourly[h].0 += 1;
+            t.hourly[h].1 += pnl.net;
         }
         // Costos fijos: flota vista + aviones del usuario que no se vieron.
         for (al, res) in &profiles {
@@ -1521,12 +1595,14 @@ async fn refresh_auto_days(
         sqlx::query(
             "INSERT OR REPLACE INTO auto_daily
                 (airline_key, day, flights, pax, revenue_tickets, revenue_ancillary, cost_fuel,
-                 cost_catering, cost_handling, cost_maintenance, cost_fees, cost_fixed, fleet, computed_at)
-             VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)",
+                 cost_catering, cost_handling, cost_maintenance, cost_fees, cost_fixed, fleet, computed_at,
+                 cargo_kg, hourly)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(key)
         .bind(day)
         .bind(t.flights)
+        .bind(t.pax)
         .bind(t.revenue_tickets)
         .bind(t.revenue_ancillary)
         .bind(t.cost_fuel)
@@ -1537,6 +1613,8 @@ async fn refresh_auto_days(
         .bind(t.cost_fixed)
         .bind(fleet_n)
         .bind(&now)
+        .bind(t.cargo_kg)
+        .bind(serde_json::to_string(&t.hourly).unwrap_or_else(|_| "[]".into()))
         .execute(&mut *tx)
         .await?;
     }
@@ -1551,6 +1629,7 @@ async fn load_auto_totals(pool: &SqlitePool) -> Result<HashMap<String, AutoTotal
                 SUM(revenue_tickets) AS rt, SUM(revenue_ancillary) AS ra,
                 SUM(cost_fuel) AS cf, SUM(cost_catering) AS cc, SUM(cost_handling) AS ch,
                 SUM(cost_maintenance) AS cm, SUM(cost_fees) AS cfe, SUM(cost_fixed) AS cfx,
+                SUM(pax) AS pax, SUM(cargo_kg) AS kg,
                 (SELECT fleet FROM auto_daily d2 WHERE d2.airline_key = d.airline_key
                   ORDER BY day DESC LIMIT 1) AS last_fleet
            FROM auto_daily d GROUP BY airline_key",
@@ -1574,6 +1653,9 @@ async fn load_auto_totals(pool: &SqlitePool) -> Result<HashMap<String, AutoTotal
                     cost_fees: r.get("cfe"),
                     cost_fixed: r.get("cfx"),
                     last_fleet: r.get::<Option<i64>, _>("last_fleet").unwrap_or(0),
+                    pax: r.get("pax"),
+                    cargo_kg: r.get("kg"),
+                    hourly: Vec::new(),
                 },
             )
         })
@@ -1617,6 +1699,10 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
     let mut ledger: HashMap<String, LedgerAcc> = HashMap::new();
     let now = Utc::now().to_rfc3339();
 
+    // (v8.3) Aerolínea de carga sólo si es conocida como tal o si TODOS sus
+    // vuelos son de carga; cada vuelo se valora como carga o pasaje por sí.
+    let cargo_flags = airline_cargo_flags(&flights, &learned);
+
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM flight_pnl").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM airline_economy")
@@ -1624,9 +1710,10 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     for f in &flights {
-        let Some(res) = resolve_airline(f, &learned) else {
+        let Some(mut res) = resolve_airline(f, &learned) else {
             continue;
         };
+        res.cargo = cargo_flags.get(&res.key).copied().unwrap_or(res.cargo);
         // (v6.1) Servicios AUTOMÁTICOS por tipo; solo el nivel de mantenimiento
         // se conserva de la política manual del usuario.
         let stored_level = policies
@@ -1642,7 +1729,9 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
             }
         }
         let gsx = gsx_for_flight(&receipts, f);
-        let pnl = compute_pnl(f, &res, &gsx, &policy);
+        // Pasajeros y carga del OFP de SimBrief (registrados en el vuelo);
+        // sólo se estiman si faltan.
+        let pnl = compute_pnl(f, &res, &gsx, &policy, is_cargo_flight(f, res.cargo));
 
         sqlx::query(
             r#"INSERT OR REPLACE INTO flight_pnl
@@ -1700,6 +1789,9 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
             auto_costs: 0.0,
             cost_fixed: 0.0,
             auto_fleet: 0,
+            cargo_kg: 0.0,
+            auto_pax: 0,
+            auto_cargo_kg: 0.0,
         });
         // Cada avión distinto (matrícula) = compra de ese avión → inversión.
         if let Some(reg) = f.aircraft_registration.as_deref() {
@@ -1718,6 +1810,7 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
             + pnl.cost_fees;
         acc.flights += 1;
         acc.passengers += pnl.pax;
+        acc.cargo_kg += pnl.cargo_kg;
         acc.seat_sum += pnl.seats;
         acc.revenue_tickets += pnl.revenue_tickets;
         acc.revenue_ancillary += pnl.revenue_ancillary;
@@ -1790,6 +1883,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         acc.auto_revenue = revenue;
         acc.auto_costs = variable + a.cost_fixed;
         acc.auto_fleet = a.last_fleet;
+        acc.auto_pax = a.pax;
+        acc.auto_cargo_kg = a.cargo_kg;
     }
 
     for (key, acc) in &ledger {
@@ -1813,8 +1908,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
                  cost_fees, avg_landing_fpm, satisfaction, gsx_flights,
                  fleet_size, fleet_value, cost_ferry, ferries,
                  auto_flights, auto_days, auto_revenue, auto_costs, cost_fixed, auto_fleet,
-                 updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+                 cargo_kg, auto_pax, auto_cargo_kg, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
         )
         .bind(key)
         .bind(&acc.icao)
@@ -1846,6 +1941,9 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         .bind(acc.auto_costs)
         .bind(acc.cost_fixed)
         .bind(acc.auto_fleet)
+        .bind(acc.cargo_kg)
+        .bind(acc.auto_pax)
+        .bind(acc.auto_cargo_kg)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -1905,6 +2003,11 @@ pub struct AirlineLedger {
     pub auto_costs: f64,
     pub cost_fixed: f64,
     pub auto_fleet: i64,
+    /// (v8.3) Carga de tus vuelos (kg, del OFP o estimada) y pasajeros y carga
+    /// estimados de la operación autónoma.
+    pub cargo_kg: f64,
+    pub auto_pax: i64,
+    pub auto_cargo_kg: f64,
 }
 
 /// (v8.3 · Etapa 6.2b) Matrículas que el usuario voló con una aerolínea
@@ -1945,7 +2048,7 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
                   cost_handling, cost_maintenance, cost_fees, avg_landing_fpm,
                   satisfaction, gsx_flights, fleet_size, fleet_value,
                   cost_ferry, ferries, auto_flights, auto_days, auto_revenue,
-                  auto_costs, cost_fixed, auto_fleet
+                  auto_costs, cost_fixed, auto_fleet, cargo_kg, auto_pax, auto_cargo_kg
              FROM airline_economy
             ORDER BY (revenue - costs) DESC"#,
     )
@@ -1993,6 +2096,9 @@ pub async fn list_economy(pool: &SqlitePool) -> Result<Vec<AirlineLedger>> {
             auto_costs: r.get("auto_costs"),
             cost_fixed: r.get("cost_fixed"),
             auto_fleet: r.get("auto_fleet"),
+            cargo_kg: r.get("cargo_kg"),
+            auto_pax: r.get("auto_pax"),
+            auto_cargo_kg: r.get("auto_cargo_kg"),
         });
     }
     Ok(out)
@@ -2006,19 +2112,25 @@ pub struct BalancePoint {
     pub t: String,
     /// Saldo ("banco") acumulado tras este evento.
     pub balance: f64,
+    /// (v8.3) Saldo sin las compras de aviones: la curva se dibuja con este
+    /// valor para que cada vuelo se note (las compras van como marcas).
+    pub operating: f64,
     /// Variación del saldo en este evento.
     pub delta: f64,
-    /// Etiqueta legible (ruta o servicio de mantenimiento).
+    /// Etiqueta legible (ruta, hora de operación, compra o mantenimiento).
     pub label: String,
-    /// "start" | "flight" | "maint".
+    /// "start" | "flight" | "purchase" | "maint" | "ferry" | "auto".
     pub kind: String,
 }
 
-/// Serie temporal del saldo de una aerolínea, reconstruida vuelo a vuelo desde
-/// `flight_pnl` + `flight_log`: parte del valor base, suma el neto de cada vuelo
-/// en orden cronológico, descuenta la compra de cada avión la primera vez que
-/// aparece y los servicios de mantenimiento en su fecha real. El último punto
-/// coincide con el `balance` de `list_economy`.
+/// (v8.3) La operación real se dibuja por hora los últimos días; antes, por día.
+const HOURLY_DAYS: i64 = 30;
+
+/// Serie temporal del saldo de una aerolínea: parte del valor base y suma, en
+/// orden, el neto de cada vuelo tuyo, la operación real por hora (con su parte
+/// de los costos fijos), traslados, mantenimiento y la compra de cada avión la
+/// primera vez que aparece (como evento propio). El último punto coincide con
+/// el `balance` de `list_economy`.
 ///
 /// Asume que `flight_pnl` está al día (lo deja `list_economy`, que corre al
 /// abrir la pantalla); no recalcula para que abrir el detalle sea instantáneo.
@@ -2050,7 +2162,7 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         label: String,
         kind: &'static str,
     }
-    let mut events: Vec<Ev> = Vec::with_capacity(rows.len());
+    let mut events: Vec<Ev> = Vec::with_capacity(rows.len() * 2);
     let mut seen_regs: HashSet<String> = HashSet::new();
     let mut airline_regs: HashSet<String> = HashSet::new();
 
@@ -2063,16 +2175,20 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         let origin: Option<String> = r.get("origin");
         let dest: Option<String> = r.get("dest");
 
-        let mut delta = net;
-        let mut bought = false;
+        // Compra del avión la primera vez que vuela con la aerolínea: evento
+        // propio (antes del vuelo; el orden es estable a igual hora).
         if let Some(rr) = reg_raw.as_deref() {
             let nreg = normalize_reg(rr);
             if !nreg.is_empty() {
                 airline_regs.insert(nreg.clone());
                 if seen_regs.insert(nreg) {
                     let (size, _) = classify(model.as_deref().or(atc.as_deref()));
-                    delta -= purchase_price(size);
-                    bought = true;
+                    events.push(Ev {
+                        t: t.clone(),
+                        delta: -purchase_price(size),
+                        label: crate::tr!("economy.purchase", reg = rr.trim().to_ascii_uppercase()),
+                        kind: "purchase",
+                    });
                 }
             }
         }
@@ -2082,15 +2198,10 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
             (None, Some(d)) => d.to_string(),
             _ => crate::tr!("economy.flight"),
         };
-        let label = if bought {
-            crate::tr!("economy.aircraftPurchase", route = route)
-        } else {
-            route
-        };
         events.push(Ev {
             t,
-            delta,
-            label,
+            delta: net,
+            label: route,
             kind: "flight",
         });
     }
@@ -2115,10 +2226,13 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         });
     }
 
-    // (v8.3 · 6.2c) Operación autónoma: un punto por día (neto con fijos).
+    // (v8.3) Operación real: por hora (vuelos de esa hora menos 1/24 de los
+    // costos fijos del día) los últimos 30 días; antes, un punto por día.
+    let hourly_since = (Utc::now() - Duration::days(HOURLY_DAYS)).format("%Y-%m-%d").to_string();
     for r in sqlx::query(
-        "SELECT day, flights, revenue_tickets + revenue_ancillary AS rev,
-                cost_fuel + cost_catering + cost_handling + cost_maintenance + cost_fees + cost_fixed AS cost
+        "SELECT day, flights, hourly, cost_fixed,
+                revenue_tickets + revenue_ancillary AS rev,
+                cost_fuel + cost_catering + cost_handling + cost_maintenance + cost_fees AS cost
            FROM auto_daily WHERE airline_key = ? ORDER BY day",
     )
     .bind(key)
@@ -2128,13 +2242,29 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         let day: String = r.get("day");
         let rev: f64 = r.get("rev");
         let cost: f64 = r.get("cost");
+        let fixed: f64 = r.get("cost_fixed");
         let label_day = day.get(5..).map(|md| format!("{}/{}", &md[3..], &md[..2])).unwrap_or_else(|| day.clone());
-        events.push(Ev {
-            t: format!("{day}T23:59:59Z"),
-            delta: rev - cost,
-            label: crate::tr!("economy.autoDay", date = label_day, n = r.get::<i64, _>("flights")),
-            kind: "auto",
-        });
+        let hourly: Vec<(i64, f64)> = r
+            .get::<Option<String>, _>("hourly")
+            .and_then(|h| serde_json::from_str(&h).ok())
+            .unwrap_or_default();
+        if day >= hourly_since && hourly.len() == 24 {
+            for (h, (n, net)) in hourly.iter().enumerate() {
+                events.push(Ev {
+                    t: format!("{day}T{h:02}:59:59Z"),
+                    delta: net - fixed / 24.0,
+                    label: crate::tr!("economy.autoHour", date = label_day, hour = format!("{h:02}"), n = n),
+                    kind: "auto",
+                });
+            }
+        } else {
+            events.push(Ev {
+                t: format!("{day}T23:59:59Z"),
+                delta: rev - cost - fixed,
+                label: crate::tr!("economy.autoDay", date = label_day, n = r.get::<i64, _>("flights")),
+                kind: "auto",
+            });
+        }
     }
 
     // (v8.3) Traslados cargados a esta aerolínea, en su fecha de salida.
@@ -2156,10 +2286,12 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
 
     let mut out: Vec<BalancePoint> = Vec::with_capacity(events.len() + 1);
     let mut bal = valuation;
+    let mut op = valuation;
     if let Some(first) = events.first() {
         out.push(BalancePoint {
             t: first.t.clone(),
             balance: bal,
+            operating: op,
             delta: 0.0,
             label: crate::tr!("economy.start"),
             kind: "start".to_string(),
@@ -2167,9 +2299,13 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
     }
     for ev in events {
         bal += ev.delta;
+        if ev.kind != "purchase" {
+            op += ev.delta;
+        }
         out.push(BalancePoint {
             t: ev.t,
             balance: bal,
+            operating: op,
             delta: ev.delta,
             label: ev.label,
             kind: ev.kind.to_string(),
@@ -2323,6 +2459,86 @@ mod auto_ops_tests {
         // Idempotente: recalcular no duplica.
         refresh_auto_days(&pool, &flights, &learned, &policies).await.unwrap();
         assert_eq!(load_auto_totals(&pool).await.unwrap()["JBU"].flights, 3);
+
+        // (v8.3) Pasajeros estimados y neto por hora UTC (24 horas).
+        assert!(jbu.pax > 300, "3 vuelos de A320: {}", jbu.pax);
+        assert_eq!(jbu.cargo_kg, 0.0);
+        let hourly: String = sqlx::query_scalar("SELECT hourly FROM auto_daily WHERE airline_key = 'JBU'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let hourly: Vec<(i64, f64)> = serde_json::from_str(&hourly).unwrap();
+        assert_eq!(hourly.len(), 24);
+        assert_eq!(hourly.iter().map(|h| h.0).sum::<i64>(), 3);
+        assert_eq!((hourly[1].0, hourly[5].0, hourly[8].0), (1, 1, 1), "01:00, 05:33 y 08:20 UTC");
+    }
+
+    fn flight(model: &str, title: &str, pax: Option<i64>, cargo: Option<i64>) -> FlightLogEntry {
+        FlightLogEntry {
+            aircraft_model: Some(model.into()),
+            aircraft_title: Some(title.into()),
+            passengers: pax,
+            cargo_kg: cargo,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn freighters_are_detected_by_model() {
+        for f in ["777F", "PMDG 777F China Cargo", "747-8F", "767-300ERF", "A330-200F", "MD-11F",
+                  "737-800BCF", "737-800SF", "A321P2F", "777-FB5", "747-8HVF", "767-3S2F", "Boeing 757 Freighter"] {
+            assert!(is_freighter(Some(f)), "{f}");
+        }
+        for p in ["FenixA320 IAE WF", "A20N", "737-8 MAX", "B38M", "737-7CT", "Boeing 737-8K5", "A321neo",
+                  "777-3F2ER", "737-8F2", "iFly 737-MAX8", "B789"] {
+            assert!(!is_freighter(Some(p)), "{p}");
+        }
+    }
+
+    /// Un carguero con 4 personas en el OFP cuenta 3 (jumpseats) y su carga;
+    /// un vuelo de pasaje con carga en bodega sigue siendo de pasaje.
+    #[test]
+    fn cargo_flights_carry_at_most_three_jumpseats() {
+        let res = Resolved {
+            key: "DHL".into(),
+            icao: Some("DHL".into()),
+            name: "DHL".into(),
+            valuation: 1e9,
+            lowcost: false,
+            cargo: false,
+        };
+        let policy = AirlinePolicy::default();
+        let dhl = flight("PMDG 777F DHL UK G", "", Some(4), Some(26_200));
+        assert!(is_cargo_flight(&dhl, false));
+        let p = compute_pnl(&dhl, &res, &GsxCosts::default(), &policy, true);
+        assert_eq!((p.pax, p.cargo_kg), (3, 26_200.0));
+        let kal = flight("Airbus A321Neo", "Korean Air", Some(160), Some(4_000));
+        assert!(!is_cargo_flight(&kal, false), "pasaje con carga en bodega");
+        let p = compute_pnl(&kal, &res, &GsxCosts::default(), &policy, false);
+        assert_eq!((p.pax, p.cargo_kg), (160, 0.0));
+        // Carga sin pasajeros en el OFP → carga aunque el modelo no lo diga.
+        assert!(is_cargo_flight(&flight("777", "", Some(0), Some(50_000)), false));
+    }
+
+    /// Korean Air con un 777F y un A321neo queda MIXTA (no "de carga");
+    /// China Cargo, con todos sus vuelos de carga, sí lo es.
+    #[test]
+    fn mixed_airlines_are_not_flagged_as_cargo() {
+        let mk = |icao: &str, model: &str, pax: i64, cargo: i64| FlightLogEntry {
+            airline_icao: Some(icao.into()),
+            aircraft_model: Some(model.into()),
+            passengers: Some(pax),
+            cargo_kg: Some(cargo),
+            ..Default::default()
+        };
+        let flights = vec![
+            mk("KAL", "777F", 0, 46_873),
+            mk("KAL", "Airbus A321Neo", 160, 4_000),
+            mk("CKK", "PMDG 777F China Cargo", 0, 72_548),
+        ];
+        let flags = airline_cargo_flags(&flights, &HashMap::new());
+        assert_eq!(flags.get("KAL"), Some(&false));
+        assert_eq!(flags.get("CKK"), Some(&true));
     }
 }
 

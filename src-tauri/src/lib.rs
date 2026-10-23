@@ -151,7 +151,8 @@ pub fn run() {
     // al frente. En MODO SEGURO NO se registra, para permitir la 2ª instancia.
     if !safe_mode {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
+            // (v8.3) `get_window`: también con el webview de flightsim.to dentro.
+            if let Some(win) = app.get_window("main") {
                 let _ = win.show();
                 let _ = win.unminimize();
                 let _ = win.set_focus();
@@ -1025,8 +1026,11 @@ fn init_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit_item = MenuItem::with_id(app, "tray_quit", "Salir", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
+    // (v8.3) `get_window`, no `get_webview_window`: con el webview de
+    // flightsim.to dentro (multi-webview) la principal deja de ser un
+    // WebviewWindow y el clic en la bandeja no hacía nada.
     let toggle_window = |handle: &tauri::AppHandle| {
-        if let Some(window) = handle.get_webview_window("main") {
+        if let Some(window) = handle.get_window("main") {
             match window.is_visible() {
                 Ok(true) => {
                     let _ = window.hide();

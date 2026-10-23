@@ -33,6 +33,7 @@ import {
   Trophy,
   Percent,
   Radar,
+  Package,
 } from "lucide-react";
 import type { AirlineLedger, BalancePoint } from "../lib/types";
 import { api, isTauri } from "../lib/tauri";
@@ -61,6 +62,21 @@ const intFmt = new Intl.NumberFormat("en-US");
 function fmtSigned(n: number): string {
   const s = usdCompact.format(Math.abs(n));
   return n < 0 ? `−${s}` : `+${s}`;
+}
+
+/** (v8.3) Totales de la aerolínea: tus vuelos + los reales (OpenSky);
+ *  pasajeros (del OFP en los tuyos, estimados en los reales) y carga en kg. */
+function totals(led: AirlineLedger) {
+  return {
+    flights: led.flights + (led.autoFlights ?? 0),
+    pax: led.passengers + (led.autoPax ?? 0),
+    cargoKg: (led.cargoKg ?? 0) + (led.autoCargoKg ?? 0),
+  };
+}
+
+/** Carga en toneladas ("1,234 t"). */
+function fmtCargo(kg: number): string {
+  return `${intFmt.format(Math.round(kg / 1000))} t`;
 }
 
 /** Margen neto en % (neto / ingresos). 0 si no facturó. */
@@ -554,6 +570,7 @@ function AirlineCard({
 }) {
   const profit = led.net >= 0;
   const margin = led.revenue > 0 ? (led.net / led.revenue) * 100 : 0;
+  const tot = totals(led);
   const sat = led.satisfaction;
   const tier = sat != null ? satTier(sat) : null;
 
@@ -649,12 +666,20 @@ function AirlineCard({
       </div>
 
       <div className="flex items-center gap-3 text-[11px] text-sf-muted">
-        <span className="flex items-center gap-1">
-          <Plane className="h-3 w-3" /> {intFmt.format(led.flights)}
+        {/* (v8.3) Totales: tus vuelos + reales; carga en las de carga. */}
+        <span className="flex items-center gap-1" title={t("economy.card.flights_hint")}>
+          <Plane className="h-3 w-3" /> {intFmt.format(tot.flights)}
         </span>
-        <span className="flex items-center gap-1">
-          <Users className="h-3 w-3" /> {intFmt.format(led.passengers)}
-        </span>
+        {!led.cargo && (
+          <span className="flex items-center gap-1" title={t("economy.card.pax_hint")}>
+            <Users className="h-3 w-3" /> {intFmt.format(tot.pax)}
+          </span>
+        )}
+        {(led.cargo || tot.cargoKg > 0) && (
+          <span className="flex items-center gap-1" title={t("economy.card.cargo_hint")}>
+            <Package className="h-3 w-3" /> {fmtCargo(tot.cargoKg)}
+          </span>
+        )}
         <span className="ml-auto font-medium text-sf-muted">
           {margin >= 0 ? "+" : ""}
           {margin.toFixed(0)}% {t("economy.kpi.margin").toLowerCase()}
@@ -695,12 +720,17 @@ function AirlineDetail({
   }, [initialMaintReg]);
   const profit = led.net >= 0;
   const margin = led.revenue > 0 ? (led.net / led.revenue) * 100 : 0;
+  const tot = totals(led);
   const sat = led.satisfaction;
   const tier = sat != null ? satTier(sat) : null;
 
   const revData = [
     {
-      name: led.cargo ? t("economy.revenue.freight") : t("economy.revenue.tickets"),
+      name: led.cargo
+        ? t("economy.revenue.freight")
+        : tot.cargoKg > 0
+          ? t("economy.revenue.tickets_freight")
+          : t("economy.revenue.tickets"),
       value: led.revenueTickets,
       color: REV_COLORS.tickets,
     },
@@ -861,13 +891,31 @@ function AirlineDetail({
         <Kpi
           icon={<Plane className="h-4 w-4" />}
           label={t("economy.kpi.flights")}
-          value={intFmt.format(led.flights)}
+          value={intFmt.format(tot.flights)}
+          hint={t("economy.kpi.flights_split", {
+            mine: intFmt.format(led.flights),
+            real: intFmt.format(led.autoFlights ?? 0),
+          })}
         />
-        <Kpi
-          icon={<Users className="h-4 w-4" />}
-          label={t("economy.kpi.passengers")}
-          value={intFmt.format(led.passengers)}
-        />
+        {led.cargo ? (
+          <Kpi
+            icon={<Package className="h-4 w-4" />}
+            label={t("economy.kpi.cargo")}
+            value={fmtCargo(tot.cargoKg)}
+            hint={t("economy.kpi.cargo_hint")}
+          />
+        ) : (
+          <Kpi
+            icon={<Users className="h-4 w-4" />}
+            label={t("economy.kpi.passengers")}
+            value={intFmt.format(tot.pax)}
+            hint={
+              tot.cargoKg > 0
+                ? t("economy.kpi.pax_cargo_hint", { cargo: fmtCargo(tot.cargoKg) })
+                : t("economy.kpi.pax_hint")
+            }
+          />
+        )}
         <Kpi
           icon={<Plane className="h-4 w-4" />}
           label={t("economy.kpi.fleet")}
@@ -1034,6 +1082,13 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
           month: "short",
           day: "numeric",
         }),
+        // (v8.3) Con la operación real por hora, el tooltip lleva la hora.
+        timeLabel: new Date(p.t).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
       })),
     [pts],
   );
@@ -1042,17 +1097,23 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
   const stroke = positive ? "#34d399" : "#f87171";
   const gradId = `bal-${led.key.replace(/[^a-z0-9]/gi, "")}`;
 
-  // El valor base (miles de millones) eclipsa las variaciones por vuelo: hacemos
-  // zoom al rango real de datos para que se vean las compras de flota y la
-  // recuperación, en vez de una línea plana pegada arriba.
+  // El valor base (miles de millones) eclipsa las variaciones por vuelo: zoom
+  // al rango real de datos. (v8.3) La curva es el saldo SIN compras de aviones
+  // (`operating`): cada vuelo la mueve; las compras van como puntos rojos.
   const domain = useMemo<[number, number]>(() => {
     if (data.length < 2) return [0, 1];
-    const vals = data.map((d) => d.balance).concat(led.valuation);
+    const vals = data.map((d) => d.operating).concat(led.valuation);
     const lo = Math.min(...vals);
     const hi = Math.max(...vals);
-    const pad = Math.max((hi - lo) * 0.15, Math.abs(hi) * 0.003, 1);
+    // Margen proporcional al rango REAL (no al saldo, que lo aplastaría).
+    const pad = Math.max((hi - lo) * 0.15, 1_000);
     return [lo - pad, hi + pad];
   }, [data, led.valuation]);
+  // (v8.3) Si el rango es chico frente al saldo, el eje muestra la diferencia
+  // con el valor inicial ("+$2.1M") en vez de "$32B" repetido.
+  const relativeAxis = domain[1] - domain[0] < Math.abs(led.valuation) * 0.05;
+  const tickFmt = (v: number) =>
+    relativeAxis ? fmtSigned(v - led.valuation) : usdCompact.format(v);
 
   return (
     <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
@@ -1094,8 +1155,8 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
                 tick={{ fill: "#64748b", fontSize: 11 }}
                 axisLine={false}
                 tickLine={false}
-                width={56}
-                tickFormatter={(v: number) => usdCompact.format(v)}
+                width={64}
+                tickFormatter={tickFmt}
               />
               <ReferenceLine
                 y={led.valuation}
@@ -1104,17 +1165,24 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
               />
               <Tooltip content={<BalanceTooltip />} />
               <Area
-                type="monotone"
-                dataKey="balance"
+                type="linear"
+                dataKey="operating"
                 stroke={stroke}
                 strokeWidth={2}
                 fill={`url(#${gradId})`}
-                dot={false}
+                dot={PurchaseDot}
                 activeDot={{ r: 3, fill: stroke }}
+                isAnimationActive={false}
               />
             </AreaChart>
           </ResponsiveContainer>
         </div>
+      )}
+      {data.some((d) => d.kind === "purchase") && (
+        <p className="mt-1 flex items-center gap-1.5 text-[11px] text-sf-muted">
+          <span className="inline-block h-2 w-2 rounded-full bg-red-400" />
+          {t("economy.history.purchases_hint")}
+        </p>
       )}
     </div>
   );
@@ -1123,12 +1191,12 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function BalanceTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
-  const p = payload[0].payload as BalancePoint & { dateLabel: string };
+  const p = payload[0].payload as BalancePoint & { dateLabel: string; timeLabel: string };
   const up = p.delta >= 0;
   return (
     <div className="rounded-lg border border-sf-border bg-sf-surface/95 px-3 py-2 text-xs shadow-xl">
-      <div className="font-semibold text-sf-text">{p.label}</div>
-      <div className="text-sf-muted">{p.dateLabel}</div>
+      <div className={`font-semibold ${p.kind === "purchase" ? "text-red-300" : "text-sf-text"}`}>{p.label}</div>
+      <div className="text-sf-muted">{p.kind === "flight" || p.kind === "purchase" ? p.dateLabel : p.timeLabel}</div>
       <div className="mt-1 flex items-center justify-between gap-4">
         <span className="text-sf-muted">{t("economy.history.balance")}</span>
         <span className="font-semibold text-sf-text">{usdFull.format(p.balance)}</span>
@@ -1144,6 +1212,14 @@ function BalanceTooltip({ active, payload }: any) {
       )}
     </div>
   );
+}
+
+/** (v8.3) Marca roja en la curva para las compras de aviones (el resto sin punto). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function PurchaseDot(props: any) {
+  const { cx, cy, payload, index } = props;
+  if (payload?.kind !== "purchase" || cx == null || cy == null) return <g key={index} />;
+  return <circle key={index} cx={cx} cy={cy} r={4} fill="#f87171" stroke="#0f172a" strokeWidth={1.5} />;
 }
 
 function Kpi({

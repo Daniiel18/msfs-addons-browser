@@ -2431,6 +2431,9 @@ const demoApi: Api = {
         autoCosts: 0,
         costFixed: 0,
         autoFleet: 0,
+        cargoKg: cargo ? flights * 60_000 : 0,
+        autoPax: 0,
+        autoCargoKg: 0,
       };
     };
     return [
@@ -2561,31 +2564,32 @@ const demoApi: Api = {
     ];
     const pts: BalancePoint[] = [];
     let bal = led.valuation;
+    let op = led.valuation;
     pts.push({
       t: new Date(now - (n + 1) * 3 * dayMs).toISOString(),
       balance: bal,
+      operating: op,
       delta: 0,
       label: "Inicio",
       kind: "start",
     });
     for (let i = 0; i < n; i++) {
-      let delta = avgNet * (0.6 + rnd() * 0.8);
-      const bought = i < led.fleetSize;
-      if (bought) delta -= purchase;
+      const t = new Date(now - (n - i) * 3 * dayMs).toISOString();
+      if (i < led.fleetSize) {
+        bal -= purchase;
+        pts.push({ t, balance: bal, operating: op, delta: -purchase, label: "Compra de avión", kind: "purchase" });
+      }
+      const delta = avgNet * (0.6 + rnd() * 0.8);
       bal += delta;
+      op += delta;
       const [o, d] = routes[i % routes.length];
-      pts.push({
-        t: new Date(now - (n - i) * 3 * dayMs).toISOString(),
-        balance: bal,
-        delta,
-        label: bought ? `${o} → ${d} · compra avión` : `${o} → ${d}`,
-        kind: "flight",
-      });
+      pts.push({ t, balance: bal, operating: op, delta, label: `${o} → ${d}`, kind: "flight" });
     }
     // Aterriza exacto en el balance de la tarjeta (absorbe el jitter).
     const last = pts[pts.length - 1];
     const adj = led.balance - last.balance;
     last.balance += adj;
+    last.operating += adj;
     last.delta += adj;
     return pts;
   },
