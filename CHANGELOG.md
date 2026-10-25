@@ -5,6 +5,33 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.3.3]
+
+### Added
+- **Pending updates window.** The "Addon updates" notice and the Updates card on Home open a window with every addon that has a new version, as cards like the ones in Explore: the catalog image, where it comes from and "Update vX → vY". Click one to go straight to its card in its catalog (SceneryAddons, Simplaza or AeroHub) or to its page in the flightsim.to tab. You can also ignore that version, see a scenery on the map, or update everything with the wizard.
+- **AeroHub updates without opening its catalog:** at startup SimFleet reads AeroHub's listing (at most every 12 hours) and compares the versions with what you have installed.
+- **flightsim.to updates** count on Home and appear in the window too. They open in Explore's flightsim.to tab (also from the bell) instead of a separate window.
+- **Airport card on the FlightBook map:** hover an airport to see its name; click it for your departures and arrivals, passengers, what you spent there (GSX services, fuel, landing fees), your best and average landing (with its clip), the aircraft parked there, top gate and route, last visit and a photo.
+- **PMDG 777 with PMDG TechLog 0.2:** each aircraft uses its own TechLog catalog (the 777 has its own parts, MEL and limits) and widebody prices for parts and checks.
+- **Cloud sync carries maintenance, finances and deletions** between your PCs: each aircraft's Tech Log state (the latest change wins), maintenance and GSX charges, airline policies, ferries and reservations. A flight deleted on one PC is deleted on the others, and comes back everywhere if you import it again.
+
+### Changed
+- **Real maintenance prices** for A320 and 737 parts (exchange/overhauled price plus removal and installation), consumables and checks, with the labor rate of the region where the aircraft is (North America, Europe and Oceania 110 USD/h; Asia and the Middle East 95; Latin America and Africa 85). Past TechLog and Tech Log charges are recalculated once.
+- **GSX is charged per service:** each line of a GSX receipt goes to the flight it belongs to (deboarding to the arriving flight; boarding, pushback, catering and fuel to the departing one; taxes pro rata). Only the last attempt before takeoff and the first after landing count. Fuel is charged at the GSX price per kg for the fuel burned, and TechLog servicing that GSX already billed is not charged twice.
+- **Deleting a flight undoes everything it caused:** its P&L, GSX charges, automatic ferry and its Tech Log effects (wear, defects, records), here and in the cloud.
+- **Fenix/PMDG TechLog orders wait for the aircraft:** an order (fix, service, defer…) is queued until that aircraft is loaded in the sim and parked, and work still running in TechLog isn't charged until it's done.
+- **A requested ferry arrives in 5 minutes**, with a live countdown in Pre-flight and the Hangar. It still costs the full trip.
+- Engine oil quantities follow Fenix TechLog 2.2.1.
+
+### Fixed
+- **Livery downloads from flightsim.to no longer pause when you close its window:** SimFleet downloads the file itself.
+- Updates weren't detected when the installed version has a two-digit year (ChasePlane 26.33.5 vs 2026.39.1.16), and versions with four numbers are now compared number by number.
+- The PMDG 777F wasn't matched with AeroHub's "777-Freighter" (whose card showed as the 777-200ER), and the 777-200LR opened the 777-200ER's card.
+- Clicking an update in the bell searched by keyword and could show many results; "Update all" didn't find AeroHub addons.
+- Opening a result from the bell or Ctrl+K while Explore was on flightsim.to left it hidden behind the page.
+- "View on map" showed for aircraft and utilities; now it's only for sceneries.
+- The bell stayed empty when browsing a catalog found new updates.
+
 ## [8.3.2]
 
 ### Added
