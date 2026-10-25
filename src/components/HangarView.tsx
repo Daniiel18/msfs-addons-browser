@@ -71,6 +71,7 @@ import { deriveMaintenance, type MaintenanceReport } from "../lib/hangarMaintena
 import { useAircraftPhoto } from "./FlightBookView";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
+import { FerryCountdown } from "./FerryCountdown";
 
 /**
  * (v6 #2a) Vista "Hangar & Fleet Analytics" — rediseño maestro/detalle.
@@ -740,18 +741,17 @@ function AircraftDetail({
         ? "bg-amber-400"
         : "bg-emerald-400";
   const model = ac.model ? cleanAtcType(ac.model) ?? ac.model : null;
-  // (v8.3) Ubicación con traslados: en curso → "En traslado a X · llega HH:MM".
+  // (v8.3 · 24/10) Ubicación con traslados: en curso → "En traslado a X ·
+  // llega en 4:32" (cuenta atrás); ya llegado → su destino.
+  const [, setArrived] = useState(0);
   const ferryEnroute =
-    ac.ferryToIcao && ac.ferryArrivesAt && Date.parse(ac.ferryArrivesAt) > Date.now();
+    !!ac.ferryToIcao && !!ac.ferryArrivesAt && Date.parse(ac.ferryArrivesAt) > Date.now();
+  const ferryArrived = !!ac.ferryToIcao && !!ac.ferryArrivesAt && !ferryEnroute;
   const location = ferryEnroute
-    ? t("hangar.ferry_enroute", {
-        to: ac.ferryToIcao as string,
-        time: new Date(ac.ferryArrivesAt as string).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      })
-    : ac.lastAirportName && ac.lastIcao
+    ? t("hangar.ferry_enroute", { to: ac.ferryToIcao as string })
+    : ferryArrived
+      ? ac.ferryToIcao
+      : ac.lastAirportName && ac.lastIcao
       ? `${ac.lastAirportName} (${ac.lastIcao})`
       : ac.lastIcao ?? null;
 
@@ -810,6 +810,12 @@ function AircraftDetail({
             </div>
             <p className="mt-0.5 text-xs text-sf-muted">
               {[model, location].filter(Boolean).join(" · ") || "—"}
+              {ferryEnroute && (
+                <>
+                  {" "}
+                  <FerryCountdown to={ac.ferryArrivesAt as string} onArrived={() => setArrived((n) => n + 1)} />
+                </>
+              )}
             </p>
           </div>
           {!photo && (

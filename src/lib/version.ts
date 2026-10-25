@@ -23,10 +23,39 @@ export function compareVersions(a: string, b: string): number {
     // determinista pero no necesariamente "correcta".
     return a.trim().localeCompare(b.trim());
   }
-  for (let i = 0; i < 3; i++) {
-    if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  // (25/10) Todos los números, no sólo tres: "2026.39.1.16" vs "2026.39.1.9".
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x - y;
   }
   return 0;
+}
+
+/**
+ * (25/10) Paridad con `align_year` de `updates.rs`. ChasePlane: su manifest
+ * dice "26.33.5" (año con dos cifras) y aerohub "2026.39.1.16". Si una
+ * versión empieza por un año 20AA y la otra por sus dos últimas cifras (±1
+ * por el cambio de año), la corta se reescribe con el año entero. Un major
+ * corriente ("10.2.0" frente a "2026.01.03") queda lejos y sigue siendo de
+ * otro formato.
+ */
+function alignYear(a: string, b: string): [string, string] {
+  const strip = (s: string) => s.trim().replace(/^v/i, "").trim();
+  const sa = strip(a);
+  const sb = strip(b);
+  const widen = (short: string, long: string): string | null => {
+    const ms = short.split(".")[0] ?? "";
+    const ml = long.split(".")[0] ?? "";
+    if (!/^\d{2}$/.test(ms) || !/^20\d{2}$/.test(ml)) return null;
+    const yy = 2000 + parseInt(ms, 10);
+    return Math.abs(yy - parseInt(ml, 10)) <= 1 ? `${yy}${short.slice(2)}` : null;
+  };
+  const wa = widen(sa, sb);
+  if (wa) return [wa, sb];
+  const wb = widen(sb, sa);
+  if (wb) return [sa, wb];
+  return [sa, sb];
 }
 
 /**
@@ -62,14 +91,13 @@ function versionsHaveCompatibleShape(a: string, b: string): boolean {
  */
 export function isNewer(latest: string | null | undefined, installed: string | null | undefined): boolean {
   if (!latest || !installed) return false;
-  const l = latest.trim();
-  const i = installed.trim();
-  if (!l || !i) return false;
+  if (!latest.trim() || !installed.trim()) return false;
+  const [l, i] = alignYear(latest, installed);
   if (!versionsHaveCompatibleShape(l, i)) return false;
   return compareVersions(l, i) > 0;
 }
 
-function parseLenient(input: string): [number, number, number] | null {
+function parseLenient(input: string): number[] | null {
   const s = input.trim().replace(/^v/i, "");
   if (!s) return null;
   const parts = s.split(".").map((p) => p.trim());
@@ -82,5 +110,5 @@ function parseLenient(input: string): [number, number, number] | null {
     nums.push(parseInt(m[1], 10));
   }
   while (nums.length < 3) nums.push(0);
-  return [nums[0], nums[1], nums[2]];
+  return nums;
 }

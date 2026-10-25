@@ -127,17 +127,34 @@ impl Source for AerohubSource {
     }
 
     async fn browse(&self, page: usize) -> Result<BrowsePage, SourceError> {
-        let url = if page <= 1 {
-            format!("{}/browse", BASE)
-        } else {
-            format!("{}/browse?p={}", BASE, page)
-        };
+        let url = browse_url(page);
         tracing::info!("aerohub: browsing {}", url);
         let html = self.fetch_html(&url).await?;
         let (tiles, has_more) = parse_tiles(&html);
         let tiles: Vec<Tile> = tiles.into_iter().filter(|t| sim_matches(&t.sim)).collect();
         let addons = self.with_details(tiles).await;
         Ok(BrowsePage { addons, page, has_more })
+    }
+
+    /// (25/10) Para las updates basta la tarjeta (trae la versión): una
+    /// petición por página en vez de 24 fichas.
+    async fn listing(&self, page: usize) -> Result<BrowsePage, SourceError> {
+        let html = self.fetch_html(&browse_url(page)).await?;
+        let (tiles, has_more) = parse_tiles(&html);
+        let addons = tiles
+            .into_iter()
+            .filter(|t| sim_matches(&t.sim))
+            .map(|t| to_addon(t, Detail::default()))
+            .collect();
+        Ok(BrowsePage { addons, page, has_more })
+    }
+}
+
+fn browse_url(page: usize) -> String {
+    if page <= 1 {
+        format!("{}/browse", BASE)
+    } else {
+        format!("{}/browse?p={}", BASE, page)
     }
 }
 

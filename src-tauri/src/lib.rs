@@ -2,9 +2,12 @@ pub mod achievements;
 pub mod airac;
 pub mod aircraft_maintenance;
 pub mod airline_economy;
+pub mod airport_card;
 pub mod airport_thumbs;
 pub mod airports;
 pub mod cloud_sync;
+pub mod ledger_sync;
+pub mod maint_prices;
 pub mod owner_ids;
 pub mod commands;
 pub mod community;
@@ -167,7 +170,7 @@ pub fn run() {
     let autostart = if safe_mode {
         builder = builder.plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("simfleet-test-env")
-                .js_init_script(test_env::JS_INIT_SCRIPT)
+                .js_init_script(test_env::js_init_script())
                 .build(),
         );
         tauri_plugin_autostart::Builder::new()
@@ -219,6 +222,8 @@ pub fn run() {
                     if let Err(e) = scoring::rescore_all_if_needed(&pool).await {
                         tracing::warn!(target: "scoring", "recalcular vuelos: {e:#}");
                     }
+                    // (24/10) Una vez: cobros de mantenimiento ya hechos a precios reales.
+                    maint_prices::reprice_history_once(&pool).await;
                 });
             }
             // (19/10) Etapa 3B: mantenimiento nocturno de la aerolínea.
@@ -285,6 +290,7 @@ pub fn run() {
             commands::search::search,
             commands::search::list_sources,
             commands::search::browse_source,
+            commands::search::catalog_addon,
             commands::addons::list_installed,
             commands::downloads::list_downloads,
             commands::downloads::start_download,
@@ -340,6 +346,8 @@ pub fn run() {
             commands::airports::list_addons_on_map,
             commands::airports::refresh_airports_dataset,
             commands::airports::lookup_airports,
+            commands::airports::airport_card,
+            commands::airports::airport_photo,
             commands::community::scan_community,
             commands::community::get_installed_sims,
             commands::community::community_targets,

@@ -59,6 +59,7 @@ import { getActiveLocale } from "../lib/i18n";
 import { derivedType } from "../lib/packageType";
 import { cn } from "../lib/cn";
 import { t } from "../lib/i18n";
+import { usePendingUpdatesCount, usePendingUpdatesModal } from "./PendingUpdatesModal";
 
 const RADAR_THROTTLE_MS = 30 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -102,6 +103,10 @@ export function DashboardView() {
   // false para recargar las stats.
   const scanning = useCommunityStore((s) => s.scanning);
   const packages = useCommunityStore((s) => s.packages);
+  // (25/10) Lo que lista el modal de updates (catálogos + flightsim.to; no
+  // el conteo del último cálculo de estadísticas): número y lista cuadran.
+  const pendingCount = usePendingUpdatesCount();
+  const openPendingUpdates = () => usePendingUpdatesModal.getState().setOpen(true);
   const packagesCount = packages.length;
 
   // (v6.2.26 / R3, v6.2.34) Chequeo pre-vuelo "¿Listo para volar?" +
@@ -247,14 +252,14 @@ export function DashboardView() {
   // (Rediseño F2) Avisos que antes eran banners sueltos. Cada uno conserva
   // la misma acción que tenía.
   const notices: Notice[] = [];
-  if (stats && stats.updatesAvailable > 0) {
+  if (pendingCount > 0) {
     notices.push({
       key: "updates",
       icon: <Sparkles className="h-4 w-4" />,
       tone: "amber",
       title: t("home.notices.addon_updates"),
-      desc: t("home.notices.addon_updates_desc", { n: String(stats.updatesAvailable) }),
-      onClick: () => window.dispatchEvent(new Event("simfleet:notifications")),
+      desc: t("home.notices.addon_updates_desc", { n: String(pendingCount) }),
+      onClick: openPendingUpdates,
     });
   }
   if (showGsx && gsxInfo) {
@@ -381,18 +386,25 @@ export function DashboardView() {
               hint={t("home.kpi.disk_hint")}
             />
           </button>
-          <StatCard
-            icon={<Sparkles className="h-5 w-5" />}
-            label={t("home.kpi.updates")}
-            value={stats.updatesAvailable.toLocaleString("es-ES")}
-            valueTone={stats.updatesAvailable > 0 ? "warning" : undefined}
-            hint={
-              stats.updatesAvailable === 0
-                ? t("dashboard.kpi.updates.all_clear")
-                : t("home.kpi.updates_pending")
-            }
-            hintTone={stats.updatesAvailable > 0 ? "warning" : "muted"}
-          />
+          <button
+            onClick={openPendingUpdates}
+            disabled={pendingCount === 0}
+            title={pendingCount > 0 ? t("updates.modal.title") : undefined}
+            className="rounded-xl text-left outline-none transition-transform enabled:hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-brand-500/60"
+          >
+            <StatCard
+              icon={<Sparkles className="h-5 w-5" />}
+              label={t("home.kpi.updates")}
+              value={pendingCount.toLocaleString("es-ES")}
+              valueTone={pendingCount > 0 ? "warning" : undefined}
+              hint={
+                pendingCount === 0
+                  ? t("dashboard.kpi.updates.all_clear")
+                  : t("home.kpi.updates_pending")
+              }
+              hintTone={pendingCount > 0 ? "warning" : "muted"}
+            />
+          </button>
           <StatCard
             icon={<PlaneTakeoff className="h-5 w-5" />}
             label={t("home.kpi.flights")}

@@ -648,6 +648,10 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
     let r = rates(pool).await;
     let now = Utc::now();
     let mut comps = load_components(pool, &reg).await?;
+    // (24/10) Foto de antes: si se borra el vuelo, se resta exactamente lo
+    // que cambió (aunque haya vuelos después).
+    let before_af = (a.counters.clone(), a.consumables.clone(), a.egt.clone());
+    let before_comps = comps.clone();
     let mut wear = WearLog(Vec::new());
     let mut events = std::mem::take(&mut rec.events);
 
@@ -918,8 +922,40 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
         rec.landings.len(),
         if warnings > 0 { format!(", {warnings} warning(s)") } else { String::new() }
     );
+    let undo = FlightUndo {
+        counters_before: before_af.0,
+        counters_after: a.counters.clone(),
+        consumables_before: before_af.1,
+        consumables_after: a.consumables.clone(),
+        egt_before: before_af.2,
+        egt_after: a.egt.clone(),
+        parts: comps
+            .iter()
+            .filter_map(|c| {
+                let b = before_comps.iter().find(|b| b.id == c.id)?;
+                let changed = b.basis_at_install != c.basis_at_install
+                    || b.wear != c.wear
+                    || b.status != c.status
+                    || b.defect_id != c.defect_id;
+                changed.then(|| PartUndo {
+                    id: c.id,
+                    key: c.key.clone(),
+                    pos: c.pos.clone(),
+                    serial: c.serial,
+                    basis_before: b.basis_at_install,
+                    basis_after: c.basis_at_install,
+                    wear_before: b.wear,
+                    wear_after: c.wear,
+                    status_before: b.status.clone(),
+                    status_after: c.status.clone(),
+                    defect_before: b.defect_id,
+                    defect_after: c.defect_id,
+                })
+            })
+            .collect(),
+    };
     sqlx::query(
-        "INSERT OR REPLACE INTO mx_flight (flight_id, registration, summary, events, wear, dispatch_violation, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT OR REPLACE INTO mx_flight (flight_id, registration, summary, events, wear, dispatch_violation, created_at, undo) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
     )
     .bind(rec.flight_id)
     .bind(&reg)
@@ -928,10 +964,166 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
     .bind(serde_json::to_string(&wear.0)?)
     .bind(violation)
     .bind(now.to_rfc3339())
+    .bind(serde_json::to_string(&undo)?)
     .execute(pool)
     .await?;
     tracing::info!(target: "mx", "vuelo {} aplicado al Tech Log de {reg}: {summary}", rec.flight_id);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// (24/10) Borrar un vuelo revierte lo que dejó en el Tech Log
+// ---------------------------------------------------------------------------
+
+/// Lo que un vuelo cambió en el avión (antes/después), guardado en
+/// `mx_flight.undo` al aplicarlo.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct FlightUndo {
+    counters_before: Counters,
+    counters_after: Counters,
+    consumables_before: HashMap<String, f64>,
+    consumables_after: HashMap<String, f64>,
+    egt_before: Vec<f64>,
+    egt_after: Vec<f64>,
+    parts: Vec<PartUndo>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PartUndo {
+    id: i64,
+    /// Pieza por clave + posición + serie: el `id` local cambia si el Tech
+    /// Log se restaura desde la nube en otra PC.
+    key: String,
+    pos: String,
+    serial: i64,
+    basis_before: f64,
+    basis_after: f64,
+    wear_before: f64,
+    wear_after: f64,
+    status_before: String,
+    status_after: String,
+    defect_before: Option<i64>,
+    defect_after: Option<i64>,
+}
+
+/// `cur -= (after - before)` campo a campo (sin bajar de 0).
+fn undo_counters(cur: &mut Counters, before: &Counters, after: &Counters) {
+    let d = |c: &mut f64, b: f64, a: f64| *c = (*c + b - a).max(0.0);
+    d(&mut cur.flight_hours, before.flight_hours, after.flight_hours);
+    d(&mut cur.block_hours, before.block_hours, after.block_hours);
+    d(&mut cur.cycles, before.cycles, after.cycles);
+    d(&mut cur.landings, before.landings, after.landings);
+    d(&mut cur.pax_cycles, before.pax_cycles, after.pax_cycles);
+    d(&mut cur.apu_hours, before.apu_hours, after.apu_hours);
+    d(&mut cur.apu_starts, before.apu_starts, after.apu_starts);
+    for i in 0..2 {
+        d(&mut cur.eng_hours[i], before.eng_hours[i], after.eng_hours[i]);
+        d(&mut cur.eng_cycles[i], before.eng_cycles[i], after.eng_cycles[i]);
+        d(&mut cur.eng_starts[i], before.eng_starts[i], after.eng_starts[i]);
+        d(&mut cur.rev_deploys[i], before.rev_deploys[i], after.rev_deploys[i]);
+    }
+    for (k, a) in &after.wear_extra {
+        let b = before.wear_extra.get(k).copied().unwrap_or(0.0);
+        let c = cur.wear_extra.entry(k.clone()).or_default();
+        *c = (*c + b - a).max(0.0);
+    }
+}
+
+/// Revierte lo que el vuelo `flight_id` dejó en el Tech Log de SimFleet (el
+/// vuelo se borró). Con su `undo` (vuelos desde v8.3.3) se restan exactamente
+/// sus cambios —contadores, consumibles, margen EGT y piezas— aunque haya
+/// vuelos después; una pieza reemplazada desde entonces ya no se toca. Sin
+/// `undo` (vuelos anteriores) sólo se quita su registro y sus defectos
+/// abiertos. Los defectos que abrió y siguen abiertos o diferidos se borran;
+/// lo ya reparado queda como historial. `false` si el vuelo no tenía registro.
+pub async fn revert_flight(pool: &SqlitePool, flight_id: i64) -> Result<bool> {
+    let Some(row) = sqlx::query("SELECT registration, undo FROM mx_flight WHERE flight_id = ?1")
+        .bind(flight_id)
+        .fetch_optional(pool)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let reg: String = row.try_get("registration")?;
+    let undo: Option<FlightUndo> = row
+        .try_get::<Option<String>, _>("undo")
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    if let Some(u) = &undo {
+        if let Some(mut a) = load_airframe(pool, &reg).await? {
+            undo_counters(&mut a.counters, &u.counters_before, &u.counters_after);
+            for (k, after) in &u.consumables_after {
+                let before = u.consumables_before.get(k).copied().unwrap_or(*after);
+                let cur = a.consumables.entry(k.clone()).or_insert(*after);
+                *cur = (*cur + before - after).max(0.0);
+            }
+            for (i, cur) in a.egt.iter_mut().enumerate() {
+                if let (Some(b), Some(af)) = (u.egt_before.get(i), u.egt_after.get(i)) {
+                    *cur += b - af;
+                }
+            }
+            save_airframe(pool, &a).await?;
+            let mut comps = load_components(pool, &reg).await?;
+            for p in &u.parts {
+                let same = |c: &Comp| {
+                    c.serial == p.serial && if p.key.is_empty() { c.id == p.id } else { c.key == p.key && c.pos == p.pos }
+                };
+                let Some(c) = comps.iter_mut().find(|c| same(c)) else {
+                    continue;
+                };
+                c.basis_at_install += p.basis_before - p.basis_after;
+                c.wear = (c.wear + p.wear_before - p.wear_after).clamp(0.0, 100.0);
+                if c.status == p.status_after {
+                    c.status = p.status_before.clone();
+                }
+                if c.defect_id == p.defect_after {
+                    c.defect_id = p.defect_before;
+                }
+                save_component(pool, c).await?;
+            }
+        }
+    }
+    let defects = sqlx::query("DELETE FROM mx_defect WHERE raised_flight_id = ?1 AND status IN ('Open', 'Deferred')")
+        .bind(flight_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    // Ninguna pieza apunta a un defecto que ya no existe.
+    sqlx::query(
+        "UPDATE mx_component SET defect_id = NULL WHERE registration = ?1 AND defect_id IS NOT NULL
+           AND defect_id NOT IN (SELECT id FROM mx_defect)",
+    )
+    .bind(&reg)
+    .execute(pool)
+    .await?;
+    sqlx::query("DELETE FROM mx_flight WHERE flight_id = ?1")
+        .bind(flight_id)
+        .execute(pool)
+        .await?;
+    tracing::info!(
+        target: "mx",
+        "vuelo {flight_id} borrado: revertido en el Tech Log de {reg} ({}; {defects} defecto(s) quitados)",
+        if undo.is_some() { "exacto" } else { "sólo registro, vuelo anterior a v8.3.3" }
+    );
+    Ok(true)
+}
+
+/// Revierte los registros del Tech Log de vuelos que ya no existen.
+pub async fn revert_orphans(pool: &SqlitePool) -> Result<u64> {
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT flight_id FROM mx_flight WHERE flight_id NOT IN (SELECT id FROM flight_log)")
+            .fetch_all(pool)
+            .await?;
+    let mut n = 0;
+    for id in ids {
+        if revert_flight(pool, id).await? {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,8 +1233,100 @@ async fn in_flight(pool: &SqlitePool, reg: &str) -> bool {
 // Acciones
 // ---------------------------------------------------------------------------
 
-fn part_base_cost(cat: &Catalog, def: &CompDef) -> f64 {
-    crate::techlog::part_cost_by_ata(Some(def.ata), &cat.spares.common_ata, &cat.spares.rare_ata)
+/// (24/10) Precio real de cambiar o reparar una pieza (`maint_prices`): a
+/// precio de intercambio, con la mano de obra de la región del aeropuerto
+/// donde está el avión. Sin precio en la tabla, el de antes por ATA.
+async fn part_job_cost(pool: &SqlitePool, a: &Airframe, def: &CompDef, repair: bool) -> f64 {
+    use crate::maint_prices as mp;
+    let fleet = mp::Fleet::from_family(a.family.id());
+    let rate = mp::labor_rate(pool, &a.reg).await;
+    let priced = if repair {
+        mp::repair_cost(&def.key, fleet, rate)
+    } else {
+        mp::replace_cost(&def.key, fleet, rate)
+    };
+    priced.unwrap_or_else(|| {
+        let cat = a.cat();
+        let base = crate::techlog::part_cost_by_ata(Some(def.ata), &cat.spares.common_ata, &cat.spares.rare_ata);
+        mp::fallback_part(base, repair, rate)
+    })
+}
+
+/// (24/10) Recalcula una vez, con los precios reales, los cobros ya hechos
+/// del Tech Log propio: checks, piezas y defectos (con la tarifa de donde está
+/// hoy el avión y su nivel de mantenimiento actual). Los servicios de
+/// consumibles no guardan la cantidad servida: quedan como estaban.
+pub async fn reprice_history(pool: &SqlitePool) -> Result<usize> {
+    use crate::maint_prices as mp;
+    let rows = sqlx::query("SELECT id, registration, component, cost, serviced_at FROM maintenance_log WHERE component LIKE 'mx:%'")
+        .fetch_all(pool)
+        .await?;
+    let mut rates: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut changed = 0;
+    for r in rows {
+        let id: i64 = r.try_get("id").unwrap_or(0);
+        let reg: String = r.try_get("registration").unwrap_or_default();
+        let component: String = r.try_get("component").unwrap_or_default();
+        let old: f64 = r.try_get("cost").unwrap_or(0.0);
+        let at: String = r.try_get("serviced_at").unwrap_or_default();
+        let Some((kind, detail)) = component.strip_prefix("mx:").and_then(|c| c.split_once(':')) else { continue };
+        let Some(a) = load_airframe(pool, &reg).await? else { continue };
+        let (rate, mult) = match rates.get(&reg) {
+            Some(v) => *v,
+            None => {
+                let v = (
+                    mp::labor_rate(pool, &reg).await,
+                    crate::aircraft_maintenance::level_mult_for_registration(pool, &reg).await,
+                );
+                *rates.entry(reg.clone()).or_insert(v)
+            }
+        };
+        let cat = a.cat();
+        let fleet = mp::Fleet::from_family(a.family.id());
+        let base = match kind {
+            "check" => Some(mp::check_cost(detail, fleet, rate)),
+            "part_replace" | "part_repair" => cat
+                .components
+                .iter()
+                .find(|d| d.positions_or_single().iter().any(|p| d.name_for(p).eq_ignore_ascii_case(detail)))
+                .map(|d| {
+                    let repair = kind == "part_repair";
+                    let priced = if repair { mp::repair_cost(&d.key, fleet, rate) } else { mp::replace_cost(&d.key, fleet, rate) };
+                    priced.unwrap_or_else(|| {
+                        let base = crate::techlog::part_cost_by_ata(Some(d.ata), &cat.spares.common_ata, &cat.spares.rare_ata);
+                        mp::fallback_part(base, repair, rate)
+                    })
+                }),
+            "defect" => {
+                let mel: Option<String> = sqlx::query_scalar("SELECT mel_id FROM mx_defect WHERE registration = ?1 AND title = ?2 ORDER BY id DESC LIMIT 1")
+                    .bind(&reg)
+                    .bind(detail)
+                    .fetch_optional(pool)
+                    .await?
+                    .flatten();
+                let hours = mel.as_deref().and_then(|m| cat.mel_item(m)).and_then(|m| m.fix_hours).unwrap_or(1.0).max(0.5);
+                Some(mp::defect_cost(hours, 0.0, rate))
+            }
+            _ => None,
+        };
+        let Some(base) = base else { continue };
+        let new = (base * mult).round();
+        if (new - old).abs() < 0.5 {
+            continue;
+        }
+        sqlx::query("UPDATE maintenance_log SET cost = ?2 WHERE id = ?1").bind(id).bind(new).execute(pool).await?;
+        sqlx::query("UPDATE mx_servicing SET cost = ?5 WHERE registration = ?1 AND at = ?2 AND kind = ?3 AND detail = ?4")
+            .bind(&reg)
+            .bind(&at)
+            .bind(kind)
+            .bind(detail)
+            .bind(new)
+            .execute(pool)
+            .await?;
+        tracing::info!(target: "mx", "{reg} {component}: {old:.0} → {new:.0} USD (precios reales)");
+        changed += 1;
+    }
+    Ok(changed)
 }
 
 async fn replace_part(pool: &SqlitePool, a: &Airframe, c: &mut Comp, def: &CompDef) -> Result<f64> {
@@ -1062,7 +1346,8 @@ async fn replace_part(pool: &SqlitePool, a: &Airframe, c: &mut Comp, def: &CompD
         .execute(pool)
         .await?;
     save_component(pool, c).await?;
-    charge(pool, &a.reg, "part_replace", &def.name_for(&c.pos), part_base_cost(a.cat(), def)).await
+    let cost = part_job_cost(pool, a, def, false).await;
+    charge(pool, &a.reg, "part_replace", &def.name_for(&c.pos), cost).await
 }
 
 async fn repair_part(pool: &SqlitePool, a: &Airframe, r: &Rates, c: &mut Comp, def: &CompDef) -> Result<Option<f64>> {
@@ -1078,7 +1363,8 @@ async fn repair_part(pool: &SqlitePool, a: &Airframe, r: &Rates, c: &mut Comp, d
         rectify(pool, d, &format!("part repaired to {to:.0}%")).await?;
     }
     save_component(pool, c).await?;
-    Ok(Some(charge(pool, &a.reg, "part_repair", &def.name_for(&c.pos), (part_base_cost(a.cat(), def) * 0.3).round()).await?))
+    let cost = part_job_cost(pool, a, def, true).await;
+    Ok(Some(charge(pool, &a.reg, "part_repair", &def.name_for(&c.pos), cost).await?))
 }
 
 async fn perform_check(pool: &SqlitePool, a: &Airframe, key: &str) -> Result<f64> {
@@ -1103,7 +1389,9 @@ async fn perform_check(pool: &SqlitePool, a: &Airframe, key: &str) -> Result<f64
     for id in ids {
         rectify(pool, id, "check performed").await?;
     }
-    charge(pool, &a.reg, "check", key, crate::techlog::check_cost(key)).await
+    let rate = crate::maint_prices::labor_rate(pool, &a.reg).await;
+    let fleet = crate::maint_prices::Fleet::from_family(a.family.id());
+    charge(pool, &a.reg, "check", key, crate::maint_prices::check_cost(key, fleet, rate)).await
 }
 
 /// Rectifica un defecto: si es de una pieza, la repara (si se puede) o la
@@ -1147,7 +1435,8 @@ async fn fix_defect(pool: &SqlitePool, a: &Airframe, id: i64, how: &str) -> Resu
         .max(0.5);
     let title: String = row.try_get("title").unwrap_or_default();
     rectify(pool, id, how).await?;
-    charge(pool, &a.reg, "defect", &title, (hours * crate::techlog::LABOR_PER_HOUR).round()).await
+    let rate = crate::maint_prices::labor_rate(pool, &a.reg).await;
+    charge(pool, &a.reg, "defect", &title, crate::maint_prices::defect_cost(hours, 0.0, rate)).await
 }
 
 async fn defer_defect(pool: &SqlitePool, a: &Airframe, id: i64) -> Result<bool> {
@@ -1180,7 +1469,9 @@ async fn service(pool: &SqlitePool, a: &mut Airframe, kind: &str) -> Result<f64>
     let after = if cdef.fills { 0.0 } else { cap };
     a.consumables.insert(kind.to_string(), after);
     save_airframe(pool, a).await?;
-    charge(pool, &a.reg, "service", kind, crate::techlog::consumable_cost(key, (after - before).abs())).await
+    let rate = crate::maint_prices::labor_rate(pool, &a.reg).await;
+    let cost = crate::maint_prices::consumable_cost(key, (after - before).abs(), rate);
+    charge(pool, &a.reg, "service", kind, cost).await
 }
 
 pub async fn action(pool: &SqlitePool, req: TlActionRequest) -> Result<TlActionResult> {
@@ -1455,6 +1746,8 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
         consumables: consumable_views(&a),
         checks,
         last_seen_utc: last_seen,
+        order_wait: None,
+        pending_work: None,
     }))
 }
 
@@ -1740,6 +2033,106 @@ mod tests {
     /// alta del avión, defectos NO-GO, desgaste; reparar desde el Hangar
     /// cobra en Finanzas.
     #[tokio::test]
+    async fn deleting_a_flight_reverts_exactly_its_changes() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for stmt in include_str!("../../migrations/065_mx_techlog.sql").split(';') {
+            if stmt.lines().any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--")) {
+                sqlx::query(stmt).execute(&pool).await.unwrap();
+            }
+        }
+        for sql in [
+            "ALTER TABLE mx_flight ADD COLUMN undo TEXT",
+            "CREATE TABLE flight_log (id INTEGER PRIMARY KEY, aircraft_registration TEXT, aircraft_title TEXT, aircraft_atc_type TEXT, started_at TEXT, ended_at TEXT)",
+            "CREATE TABLE maintenance_log (id INTEGER PRIMARY KEY, registration TEXT, component TEXT, cost REAL, serviced_at TEXT)",
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "INSERT INTO flight_log VALUES (1, 'EC-TST', 'iFly 737-MAX8 Test', 'B38M', '2026-10-19T10:00:00Z', '2026-10-19T12:00:00Z')",
+            "INSERT INTO flight_log VALUES (2, 'EC-TST', 'iFly 737-MAX8 Test', 'B38M', '2026-10-19T14:00:00Z', '2026-10-19T15:00:00Z')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        let wears = |pool: SqlitePool| async move {
+            let rows: Vec<(i64, f64, f64, String)> =
+                sqlx::query_as("SELECT id, wear, basis_at_install, status FROM mx_component ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            rows
+        };
+        // Vuelo 1: aterrizaje duro + VMO (defectos NO-GO, desgaste fuerte).
+        commit_flight(
+            &pool,
+            FlightRecord {
+                flight_id: 1,
+                block_h: 2.0,
+                air_h: 1.6,
+                eng_h: [2.0, 2.0],
+                eng_starts: [1, 1],
+                eng_ran: [true, true],
+                takeoffs: 1,
+                toga_takeoffs: 1,
+                landings: vec![LandingRec { sink_fpm: 700.0, peak_g: 1.5, weight_kg: 60_000.0, gs_kt: 135.0, brake_energy_mj: 20.0, ..Default::default() }],
+                effects: vec![Effect::Raise { mel: "05-51-03", pos: None, detail: "VMO exceeded: 362 kt (limit 340)".into() }],
+                ..Default::default()
+            },
+            Some(-700),
+        )
+        .await
+        .unwrap();
+        let after1 = wears(pool.clone()).await;
+        // Vuelo 2: normal.
+        commit_flight(
+            &pool,
+            FlightRecord {
+                flight_id: 2,
+                block_h: 1.0,
+                air_h: 0.8,
+                eng_h: [1.0, 1.0],
+                eng_starts: [1, 1],
+                eng_ran: [true, true],
+                takeoffs: 1,
+                landings: vec![LandingRec { sink_fpm: 150.0, peak_g: 1.2, weight_kg: 55_000.0, gs_kt: 130.0, ..Default::default() }],
+                ..Default::default()
+            },
+            Some(-150),
+        )
+        .await
+        .unwrap();
+        let after2 = wears(pool.clone()).await;
+
+        // Se borra el vuelo 1 (el de en medio): se resta SÓLO lo suyo.
+        sqlx::query("DELETE FROM flight_log WHERE id = 1").execute(&pool).await.unwrap();
+        assert_eq!(revert_orphans(&pool).await.unwrap(), 1);
+        let v = aircraft_view(&pool, "EC-TST", None).await.unwrap().unwrap();
+        assert!((v.flight_hours - 0.8).abs() < 1e-9, "quedan las horas del vuelo 2: {}", v.flight_hours);
+        assert_eq!(v.cycles, 1.0);
+        let raised_by_1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mx_defect WHERE raised_flight_id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(raised_by_1, 0, "los defectos del vuelo borrado se van");
+        assert!(flight_view(&pool, 1).await.unwrap().is_none());
+        let reverted = wears(pool.clone()).await;
+        for ((r, a1), a2) in reverted.iter().zip(&after1).zip(&after2) {
+            // desgaste final = el del vuelo 2 solo (fresco → +vuelo 2).
+            let expected = (a2.1 - a1.1).max(0.0);
+            assert!((r.1 - expected).abs() < 1e-6, "pieza {}: {} vs {}", r.0, r.1, expected);
+            assert_eq!(r.3, "Ok", "pieza {} sigue {}", r.0, r.3);
+        }
+
+        // Y borrando también el vuelo 2 el avión vuelve a estar como nuevo.
+        sqlx::query("DELETE FROM flight_log WHERE id = 2").execute(&pool).await.unwrap();
+        assert_eq!(revert_orphans(&pool).await.unwrap(), 1);
+        let v = aircraft_view(&pool, "EC-TST", None).await.unwrap().unwrap();
+        assert!(v.flight_hours.abs() < 1e-9 && v.cycles == 0.0);
+        assert!(v.defects.iter().all(|d| d.mel_id.as_deref().is_some_and(|m| m.starts_with("05-20"))), "{:?}", v.defects);
+        assert!(wears(pool.clone()).await.iter().all(|r| r.1.abs() < 1e-6 && r.3 == "Ok"));
+    }
+
+    #[tokio::test]
     async fn full_cycle_flight_fix_and_charge() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -1752,6 +2145,7 @@ mod tests {
             }
         }
         for sql in [
+            "ALTER TABLE mx_flight ADD COLUMN undo TEXT",
             "CREATE TABLE flight_log (id INTEGER PRIMARY KEY, aircraft_registration TEXT, aircraft_title TEXT, aircraft_atc_type TEXT, started_at TEXT, ended_at TEXT)",
             "CREATE TABLE maintenance_log (id INTEGER PRIMARY KEY, registration TEXT, component TEXT, cost REAL, serviced_at TEXT)",
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -1868,7 +2262,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert!(rows[0].0.starts_with("mx:defect:") && rows[0].1 > 0.0, "{rows:?}");
-        assert_eq!(rows[1], ("mx:check:DAILY".to_string(), 350.0));
+        assert_eq!(rows[1], ("mx:check:DAILY".to_string(), 374.0), "2,5 h × 110 USD/h × 1,36");
         let v = aircraft_view(&pool, "EC-TST", None).await.unwrap().unwrap();
         assert_eq!(v.defects.len(), 1, "queda el overspeed");
     }

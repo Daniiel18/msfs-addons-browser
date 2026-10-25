@@ -304,8 +304,8 @@ pub mod repo {
         // el theme cambia.
         sqlx::query(
             r#"
-            INSERT INTO addons (id, source, title, developer, name, version, icao, simulator, page_url, released_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            INSERT INTO addons (id, source, title, developer, name, version, icao, simulator, page_url, released_at, image_url)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 developer = excluded.developer,
@@ -315,6 +315,7 @@ pub mod repo {
                 simulator = excluded.simulator,
                 page_url = excluded.page_url,
                 released_at = COALESCE(excluded.released_at, addons.released_at),
+                image_url = COALESCE(excluded.image_url, addons.image_url),
                 last_seen_at = datetime('now')
             "#,
         )
@@ -328,6 +329,7 @@ pub mod repo {
         .bind(&addon.simulator)
         .bind(&addon.page_url)
         .bind(&addon.released_at)
+        .bind(&addon.image_url)
         .execute(pool)
         .await?;
         Ok(())
@@ -346,6 +348,18 @@ pub mod repo {
                 .fetch_optional(pool)
                 .await?;
         Ok(row.filter(|(url, _)| !url.is_empty()))
+    }
+
+    /// (25/10) `(source, name, icao)` de un addon del catálogo: con qué
+    /// buscarlo de nuevo en su fuente para abrir su tarjeta.
+    pub async fn addon_lookup(
+        pool: &SqlitePool,
+        addon_id: &str,
+    ) -> anyhow::Result<Option<(String, String, Option<String>)>> {
+        Ok(sqlx::query_as("SELECT source, name, icao FROM addons WHERE id = ?1")
+            .bind(addon_id)
+            .fetch_optional(pool)
+            .await?)
     }
 
     /// Contexto necesario para registrar una instalación en DB. Los
@@ -768,6 +782,12 @@ pub mod repo {
         pub creator: String,
         #[sqlx(default)]
         pub developer: String,
+        /// (25/10) Nombre e imagen del addon en el catálogo: desempate entre
+        /// variantes (777-200ER/LR) y la tarjeta del modal de updates.
+        #[sqlx(default)]
+        pub catalog_name: String,
+        #[sqlx(default)]
+        pub catalog_image_url: Option<String>,
     }
 
     // -----------------------------------------------------------------
@@ -1160,6 +1180,8 @@ pub mod repo {
                    a.source              AS catalog_source,
                    a.id                  AS catalog_addon_id,
                    a.page_url            AS catalog_page_url,
+                   a.name                AS catalog_name,
+                   a.image_url           AS catalog_image_url,
                    cp.creator            AS creator,
                    a.developer           AS developer
             FROM community_packages cp
@@ -1239,6 +1261,8 @@ pub mod repo {
                    a.source              AS catalog_source,
                    a.id                  AS catalog_addon_id,
                    a.page_url            AS catalog_page_url,
+                   a.name                AS catalog_name,
+                   a.image_url           AS catalog_image_url,
                    cp.creator            AS creator,
                    a.developer           AS developer
             FROM community_packages cp
@@ -1270,6 +1294,9 @@ pub mod repo {
                 OR (LOWER(cp.title) GLOB '*747-8*' AND LOWER(a.name) GLOB '*747-8*')
                 OR (LOWER(cp.title) GLOB '*777-200*' AND LOWER(a.name) GLOB '*777-200*')
                 OR (LOWER(cp.title) GLOB '*777-300*' AND LOWER(a.name) GLOB '*777-300*')
+                -- (25/10) El carguero: PMDG lo llama "777F" en el manifest y
+                -- aerohub "Boeing 777-Freighter".
+                OR ((LOWER(cp.title) GLOB '*777f*' OR LOWER(cp.title) GLOB '*777*freighter*') AND (LOWER(a.name) GLOB '*777f*' OR LOWER(a.name) GLOB '*777*freighter*'))
                 OR (LOWER(cp.title) GLOB '*cessna*172*' AND LOWER(a.name) GLOB '*cessna*172*')
                 OR (LOWER(cp.title) GLOB '*787-8*' AND LOWER(a.name) GLOB '*787-8*')
                 OR (LOWER(cp.title) GLOB '*787-9*' AND LOWER(a.name) GLOB '*787-9*')
@@ -1338,6 +1365,9 @@ pub mod repo {
                   OR (LOWER(cp.title) GLOB '*747-8*' AND LOWER(a.name) GLOB '*747-8*')
                   OR (LOWER(cp.title) GLOB '*777-200*' AND LOWER(a.name) GLOB '*777-200*')
                   OR (LOWER(cp.title) GLOB '*777-300*' AND LOWER(a.name) GLOB '*777-300*')
+                  -- (25/10) El carguero: PMDG lo llama "777F" en el manifest y
+                  -- aerohub "Boeing 777-Freighter".
+                  OR ((LOWER(cp.title) GLOB '*777f*' OR LOWER(cp.title) GLOB '*777*freighter*') AND (LOWER(a.name) GLOB '*777f*' OR LOWER(a.name) GLOB '*777*freighter*'))
                   OR (LOWER(cp.title) GLOB '*cessna*172*' AND LOWER(a.name) GLOB '*cessna*172*')
                   OR (LOWER(cp.title) GLOB '*787-8*' AND LOWER(a.name) GLOB '*787-8*')
                   OR (LOWER(cp.title) GLOB '*787-9*' AND LOWER(a.name) GLOB '*787-9*')

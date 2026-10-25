@@ -67,12 +67,14 @@ export function UpdateWizard() {
     setError(null);
     setSearching(true);
     const query = deriveUpdateSearchQuery(current.icao, current.title);
+    // (25/10) Más el addon exacto de su propio catálogo (aerohub incluido).
     Promise.all([
+      api.catalogAddon(current.addonId).catch(() => [] as Addon[]),
       api.search(query, "sceneryaddons").catch(() => [] as Addon[]),
       api.search(query, "simplaza").catch(() => [] as Addon[]),
     ])
-      .then(([sa, sp]) => {
-        if (!cancelled) setMatches([...sa, ...sp]);
+      .then(([own, sa, sp]) => {
+        if (!cancelled) setMatches([...own, ...sa, ...sp]);
       })
       .finally(() => {
         if (!cancelled) setSearching(false);
@@ -118,7 +120,12 @@ export function UpdateWizard() {
       // El flujo es el mismo que "Reparar limpio": desinstala +
       // descarga + instala. La instalación borra el folder previo
       // antes de copiar, así que la sobrescritura es consistente.
-      await api.uninstallCommunityPackage(current.folderName);
+      // (25/10) Salvo aerohub: su descarga pasa por la página del hoster
+      // y, si el usuario la deja a medias, se quedaría sin el addon. La
+      // instalación reemplaza la carpeta igualmente.
+      if (addon.source !== "aerohub") {
+        await api.uninstallCommunityPackage(current.folderName);
+      }
       await startDownload({
         addonId: addon.id,
         addonTitle: addon.name,

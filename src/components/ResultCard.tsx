@@ -92,8 +92,11 @@ function sameCreator(a: string | null | undefined, b: string | null | undefined)
  */
 function aircraftModels(text: string): string[] {
   const out: string[] = [];
+  // (25/10) El carguero: "777-Freighter" (aerohub) es el "777F" del manifest
+  // de PMDG; si no, quedaba como "777" a secas y casaba con el 777-200ER.
+  text = text.replace(/\b(77\d)[\s-]?freighter\b/gi, "$1F");
   const re =
-    /\b(A\d{3}(?:-?\d{3})?|B\d{3}(?:-?\d{3}[A-Z]{0,3})?|73[6-9](?:-?\d{3})?|74[478](?:-?\d{1,3})?|76\d|77\d(?:-?\d{3}[A-Z]{0,3})?|78\d|CRJ\d?\d?|ATR-?\d{2}\d?|MD-?\d{2}|DC-?\d|TBM\d{3}|C\d{3,4}|CJ\d|Q\d{3})\b/gi;
+    /\b(A\d{3}(?:-?\d{3})?|B\d{3}(?:-?\d{3}[A-Z]{0,3})?|73[6-9](?:-?\d{3})?|74[478](?:-?\d{1,3})?|76\d|77\d(?:F|-?\d{3}[A-Z]{0,3})?|78\d|CRJ\d?\d?|ATR-?\d{2}\d?|MD-?\d{2}|DC-?\d|TBM\d{3}|C\d{3,4}|CJ\d|Q\d{3})\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     // Normalizamos: "A350-900" → "A350900"; "737-800" → "737800";

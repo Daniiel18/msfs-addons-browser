@@ -23,6 +23,10 @@ use std::collections::HashMap;
 /// Fecha desde la que se cobran traslados automáticos (se fija la 1ª vez).
 const KEY_AUTO_SINCE: &str = "ferry_auto_since";
 
+/// (24/10) Un traslado pedido llega en 5 minutos (antes tardaba el bloque
+/// real del vuelo). El costo sigue siendo el del trayecto entero.
+pub const REQUESTED_FERRY_MINUTES: i64 = 5;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Ferry {
@@ -45,7 +49,10 @@ pub struct FerryQuote {
     pub from_icao: String,
     pub to_icao: String,
     pub distance_nm: f64,
+    /// Bloque real del trayecto (base del costo).
     pub block_minutes: i64,
+    /// (24/10) Lo que tarda en llegar si se pide.
+    pub arrive_minutes: i64,
     pub cost_fuel: f64,
     pub cost_crew: f64,
     pub cost_maintenance: f64,
@@ -347,6 +354,7 @@ fn quote_for(from: &str, to: &str, d: f64, model: Option<&str>) -> FerryQuote {
         to_icao: to.to_string(),
         distance_nm: d,
         block_minutes: (block_h * 60.0).round() as i64,
+        arrive_minutes: REQUESTED_FERRY_MINUTES,
         cost_fuel,
         cost_crew,
         cost_maintenance,
@@ -679,9 +687,16 @@ pub async fn request(
     let model = model.filter(|m| !m.trim().is_empty()).map(str::to_string).or(loc.model.clone());
     let q = quote(pool, &from, &to, model.as_deref()).await?;
     let now = Utc::now();
-    let arrives = now + Duration::minutes(q.block_minutes);
+    let arrives = now + Duration::minutes(q.arrive_minutes);
     let id = insert(pool, &loc.registration, &q, model.as_deref(), now, arrives, "requested", None).await?;
-    tracing::info!(target: "ferry", "traslado pedido #{id} {} {from}→{to} · {} min · {:.0} USD", loc.registration, q.block_minutes, q.cost_total);
+    tracing::info!(
+        target: "ferry",
+        "traslado pedido #{id} {} {from}→{to} · llega en {} min (bloque {} min) · {:.0} USD",
+        loc.registration,
+        q.arrive_minutes,
+        q.block_minutes,
+        q.cost_total
+    );
     Ok(Ferry {
         id,
         registration: loc.registration,
@@ -1157,7 +1172,12 @@ mod tests {
         assert!(request(&pool, None, "N657JB", "KBOS", None).await.is_err(), "ya está ahí");
         let f = request(&pool, None, "N657-JB", "kjfk", None).await.unwrap();
         assert_eq!((f.from_icao.as_str(), f.to_icao.as_str()), ("KBOS", "KJFK"));
-        assert!(f.cost_total > 0.0);
+        // (24/10) Llega en 5 minutos, pero cuesta el trayecto entero.
+        let q = quote(&pool, "KBOS", "KJFK", None).await.unwrap();
+        assert!(q.block_minutes > REQUESTED_FERRY_MINUTES);
+        assert_eq!(f.cost_total, q.cost_total);
+        let wait = parse_dt(&f.arrives_at).unwrap() - parse_dt(&f.requested_at).unwrap();
+        assert_eq!(wait, Duration::minutes(REQUESTED_FERRY_MINUTES));
         assert!(request(&pool, None, "N657JB", "KMIA", None).await.is_err(), "ya va en traslado");
         assert_eq!(location(&pool, "N657JB").await.unwrap().ferry.map(|x| x.id), Some(f.id));
 

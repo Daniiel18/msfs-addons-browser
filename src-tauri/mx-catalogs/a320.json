@@ -2255,17 +2255,17 @@
     "2"
    ],
    "capacityByEngine": {
-    "CFM": 20,
+    "CFM": 23,
     "IAE": 23,
     "LEAP-1A": 20
    },
    "minDispatchByEngine": {
-    "CFM": 12,
-    "IAE": 14,
+    "CFM": 10,
+    "IAE": 10,
     "LEAP-1A": 12
    },
    "lowByEngine": {
-    "CFM": 7,
+    "CFM": 8,
     "IAE": 8,
     "LEAP-1A": 7
    },

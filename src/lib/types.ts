@@ -286,6 +286,39 @@ export interface AirportBrief {
   isoCountry: string | null;
 }
 
+/** (24/10) Dinero gastado en un aeropuerto por grupo de servicios. */
+export interface AirportCardMoney {
+  /** catering | boarding | ground | water | bus | deice | fuel | other | landing */
+  group: string;
+  usd: number;
+}
+
+/** (24/10) Tarjeta de aeropuerto del FlightBook (clic en el mapa). */
+export interface AirportCardData {
+  icao: string;
+  name: string | null;
+  municipality: string | null;
+  isoCountry: string | null;
+  departures: number;
+  arrivals: number;
+  paxBoarded: number;
+  paxDisembarked: number;
+  money: AirportCardMoney[];
+  moneyTotal: number;
+  bestFpm: number | null;
+  avgFpm: number | null;
+  landingsMeasured: number;
+  bestLandingAt: string | null;
+  /** Tus aviones aparcados ahí ahora. */
+  parked: string[];
+  topGate: string | null;
+  topGateCount: number;
+  topRoute: string | null;
+  topRouteCount: number;
+  lastVisitAt: string | null;
+  lastVisitLabel: string | null;
+}
+
 /** (v4.10.0) Un punto del plan de ruta (navlog de SimBrief). */
 export interface RouteFix {
   ident: string;
@@ -664,7 +697,10 @@ export interface FerryQuote {
   fromIcao: string;
   toIcao: string;
   distanceNm: number;
+  /** Bloque real del trayecto (base del costo). */
   blockMinutes: number;
+  /** (24/10) Lo que tarda en llegar si se pide (5 min). */
+  arriveMinutes?: number;
   costFuel: number;
   costCrew: number;
   costMaintenance: number;
@@ -1133,6 +1169,10 @@ export interface AvailableUpdate {
   source: string;
   addonId: string;
   pageUrl: string;
+  /** (25/10) Imagen y desarrollador del addon en el catálogo (tarjeta del
+   *  modal de updates). `null` hasta que el catálogo la vuelve a listar. */
+  imageUrl: string | null;
+  developer: string;
 }
 
 /** Changelog scrapeado del detail page. Lista de líneas en orden. */
@@ -1463,6 +1503,11 @@ export interface TechLogAircraft {
   consumables: TechLogConsumable[];
   checks: TechLogCheck[];
   lastSeenUtc: string | null;
+  /** (24/10) Por qué una orden quedaría en cola: el simulador está cerrado,
+   *  tiene otro avión o no está estacionado. `null`: las órdenes salen ya. */
+  orderWait?: "sim_closed" | "not_loaded" | "not_parked" | string | null;
+  /** (24/10) Trabajo en curso en TechLog (tiempos realistas): se cobra al terminar. */
+  pendingWork?: string | null;
 }
 
 export interface TechLogAppStatus {
@@ -1802,6 +1847,10 @@ export interface CloudDownloadReport {
   skippedExisting: number;
   newTracks: number;
   newSettings: number;
+  /** (24/10) Vuelos borrados aquí porque se borraron en otra PC. */
+  deletedFlights: number;
+  /** (24/10) Cambios del libro traídos (Tech Log, cobros, líneas GSX…). */
+  ledgerChanges: number;
 }
 
 /** (v2.0.2) Un paso del diagnóstico de Cloud Sync. Espejo de

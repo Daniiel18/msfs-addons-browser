@@ -15,11 +15,18 @@
 declare global {
   interface Window {
     __SIMFLEET_TEST_ENV__?: boolean;
+    __SIMFLEET_NO_LOCK__?: boolean;
   }
 }
 
 export function isTestEnv(): boolean {
   return typeof window !== "undefined" && window.__SIMFLEET_TEST_ENV__ === true;
+}
+
+/** (25/10) Sin bloqueo de Windows Hello: sólo la instancia de pruebas en
+ *  una compilación de desarrollo (el backend sólo pone la marca ahí). */
+export function lockDisabled(): boolean {
+  return isTestEnv() && window.__SIMFLEET_NO_LOCK__ === true;
 }
 
 /** Nombre de tabla de Supabase para este entorno. */

@@ -13,6 +13,7 @@ import type {
   PerfToggleResult,
   AddonOnMap,
   AirportBrief,
+  AirportCardData,
   RouteFix,
   AppSettings,
   AvailableUpdate,
@@ -189,6 +190,9 @@ interface Api {
   search: (query: string, sourceId: string) => Promise<Addon[]>;
   /** Lista paginada del catálogo (sin query). Page 1-based. */
   browseSource: (sourceId: string, page: number) => Promise<BrowsePage>;
+  /** (25/10) Un addon concreto del catálogo (modal de updates/campanita):
+   *  sólo ese, con sus enlaces; si su fuente ya no lo lista, lo encontrado. */
+  catalogAddon: (addonId: string) => Promise<Addon[]>;
   openExternal: (url: string) => Promise<void>;
   /** Abre un path local con la app por defecto del SO (Explorer en
    *  Windows, Finder en macOS). Lo usamos para «Abrir carpeta» desde
@@ -456,6 +460,10 @@ interface Api {
   refreshAirportsDataset: () => Promise<number>;
   /** (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. */
   lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
+  /** (24/10) Tarjeta de aeropuerto del FlightBook. */
+  airportCard: (icao: string) => Promise<AirportCardData>;
+  /** (24/10) Foto del aeropuerto (ruta local en caché) o null. */
+  airportPhoto: (icao: string, name: string | null) => Promise<string | null>;
   /** (v4.12.0) Ruta planificada (navlog SimBrief) pegada a un vuelo. */
   flightRouteFixes: (flightId: number) => Promise<RouteFix[]>;
 
@@ -795,6 +803,7 @@ const realApi: Api = {
   search: (query, sourceId) => invoke<Addon[]>("search", { query, sourceId }),
   browseSource: (sourceId, page) =>
     invoke<BrowsePage>("browse_source", { sourceId, page }),
+  catalogAddon: (addonId) => invoke<Addon[]>("catalog_addon", { addonId }),
   // `tauri-plugin-opener` reemplaza al viejo `plugin-shell` para
   // abrir paths y URLs. Diferencia clave: `openPath` invoca al
   // shell del sistema (Explorer en Windows, Finder en macOS) sin
@@ -997,6 +1006,9 @@ const realApi: Api = {
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
   lookupAirports: (icaos: string[]) =>
     invoke<AirportBrief[]>("lookup_airports", { icaos }),
+  airportCard: (icao: string) => invoke<AirportCardData>("airport_card", { icao }),
+  airportPhoto: (icao: string, name: string | null) =>
+    invoke<string | null>("airport_photo", { icao, name }),
   flightRouteFixes: (flightId: number) =>
     invoke<RouteFix[]>("flight_route_fixes", { flightId }),
 
@@ -1398,6 +1410,11 @@ const demoApi: Api = {
           (a.developer?.toLowerCase().includes(q) ?? false),
       );
   },
+  async catalogAddon(addonId) {
+    await sleep(300);
+    const hit = demoAddons.find((a) => a.id === addonId);
+    return hit ? [hit] : demoAddons.slice(0, 1);
+  },
   async openExternal(url) {
     window.open(url, "_blank", "noopener,noreferrer");
   },
@@ -1606,7 +1623,7 @@ const demoApi: Api = {
       label: request.label ?? null,
       createdAt: new Date().toISOString(),
     });
-    return { ok: true, queued: true, message: "Demo: the order waits until TechLog has this aircraft active." };
+    return { ok: true, queued: true, message: "sim_closed" };
   },
   async techlogPending(registration) {
     const reg = registration.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
@@ -1737,6 +1754,8 @@ const demoApi: Api = {
       skippedExisting: 0,
       newTracks: 0,
       newSettings: 0,
+      deletedFlights: 0,
+      ledgerChanges: 0,
     };
   },
   async cloudTestConnection() {
@@ -1930,6 +1949,41 @@ const demoApi: Api = {
     };
     return icaos.map((i) => demo[i]).filter(Boolean) as AirportBrief[];
   },
+  async airportCard(icao: string) {
+    await sleep(80);
+    return {
+      icao,
+      name: "Calgary International Airport",
+      municipality: "Calgary",
+      isoCountry: "CA",
+      departures: 18,
+      arrivals: 17,
+      paxBoarded: 1702,
+      paxDisembarked: 1512,
+      money: [
+        { group: "catering", usd: 1245 },
+        { group: "boarding", usd: 6410 },
+        { group: "ground", usd: 2520 },
+        { group: "fuel", usd: 312 },
+        { group: "landing", usd: 2100 },
+      ],
+      moneyTotal: 12587,
+      bestFpm: -87,
+      avgFpm: -212,
+      landingsMeasured: 12,
+      bestLandingAt: "2026-10-23T18:00:00Z",
+      parked: ["C-GORP"],
+      topGate: "17",
+      topGateCount: 6,
+      topRoute: "CYYC→CYYZ",
+      topRouteCount: 5,
+      lastVisitAt: "2026-10-23T18:00:00Z",
+      lastVisitLabel: "WJA168",
+    };
+  },
+  async airportPhoto() {
+    return null;
+  },
   async flightRouteFixes() {
     await sleep(20);
     return [];
@@ -2008,6 +2062,8 @@ const demoApi: Api = {
         source: "sceneryaddons",
         addonId: "demo-mdsd",
         pageUrl: "https://sceneryaddons.org/",
+        imageUrl: null,
+        developer: "Bravo Airspace",
       },
     ];
   },
@@ -2506,6 +2562,7 @@ const demoApi: Api = {
       toIcao,
       distanceNm: 850,
       blockMinutes: 146,
+      arriveMinutes: 5,
       costFuel: 5100,
       costCrew: 4400,
       costMaintenance: 1950,

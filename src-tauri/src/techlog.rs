@@ -19,7 +19,7 @@
 //! Eventos en vivo: un hilo por app escucha `GET /api/events` (SSE) y, ante un
 //! evento `state`, avisa al front (`techlog://changed`) y sincroniza cobros.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -378,13 +378,19 @@ impl Catalog {
     /// ATA de una pieza a partir de su nombre visible ("Brake 3", "Pack 1
     /// flow control"): los registros de servicio de TechLog guardan el nombre.
     fn ata_by_name(&self, name: &str) -> Option<i64> {
+        self.by_name(name).map(|c| c.ata)
+    }
+    /// (24/10) Clave de catálogo de una pieza por su nombre visible.
+    fn key_by_name(&self, name: &str) -> Option<String> {
+        self.by_name(name).map(|c| c.key.clone())
+    }
+    fn by_name(&self, name: &str) -> Option<&CompDef> {
         let name = name.trim();
-        self.components.iter().find_map(|c| {
+        self.components.iter().find(|c| {
             let positions = c.positions.clone().unwrap_or_else(|| vec![String::new()]);
             positions
                 .iter()
                 .any(|p| c.name.replace("{pos}", p).trim().eq_ignore_ascii_case(name))
-                .then_some(c.ata)
         })
     }
 }
@@ -471,15 +477,32 @@ fn oil_follows_sim(source: TlSource, dir: &Path) -> bool {
         .is_some_and(|s| !s.trim().is_empty())
 }
 
-fn catalog_for(dir: &Path) -> Catalog {
+/// (25/10) ¿Es un 777? PMDG TechLog 0.2 lleva el 777 ("777-200" … "777F").
+fn is_777(variant: &str) -> bool {
+    variant.trim().starts_with("777")
+}
+
+/// Carpeta de catálogo de un avión: PMDG TechLog 0.2 trae el del 777 aparte
+/// (`catalog/b777`: sus piezas, MEL, límites y fallos).
+fn catalog_dir(dir: &Path, variant: &str) -> PathBuf {
+    let root = dir.join("catalog");
+    let b777 = root.join("b777");
+    if is_777(variant) && b777.join("components.json").is_file() {
+        b777
+    } else {
+        root
+    }
+}
+
+fn catalog_for(dir: &Path, variant: &str) -> Catalog {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, Catalog)>>> = OnceLock::new();
-    let cat_dir = dir.join("catalog");
+    let cat_dir = catalog_dir(dir, variant);
     let stamp = std::fs::metadata(cat_dir.join("components.json"))
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(g) = cache.lock() {
-        if let Some((s, c)) = g.get(dir) {
+        if let Some((s, c)) = g.get(&cat_dir) {
             if *s == stamp {
                 return c.clone();
             }
@@ -488,7 +511,9 @@ fn catalog_for(dir: &Path) -> Catalog {
     let comps: ComponentsFile = read_jsonc(&cat_dir.join("components.json"));
     let limits: LimitsFile = read_jsonc(&cat_dir.join("limits.json"));
     let mel: MelFile = read_jsonc(&cat_dir.join("mel.json"));
-    let spares: SparesFile = read_jsonc(&cat_dir.join("spares.json"));
+    // El del 777 no trae repuestos propios: los del catálogo general.
+    let spares_dir = if cat_dir.join("spares.json").is_file() { cat_dir.clone() } else { dir.join("catalog") };
+    let spares: SparesFile = read_jsonc(&spares_dir.join("spares.json"));
     let cat = Catalog {
         components: comps.components,
         consumables: comps.consumables,
@@ -497,7 +522,7 @@ fn catalog_for(dir: &Path) -> Catalog {
         spares,
     };
     if let Ok(mut g) = cache.lock() {
-        g.insert(dir.to_path_buf(), (stamp, cat.clone()));
+        g.insert(cat_dir, (stamp, cat.clone()));
     }
     cat
 }
@@ -518,9 +543,12 @@ async fn open_snapshot(source: TlSource, db: &Path) -> Result<SqliteConnection> 
     static SIGS: OnceLock<Mutex<HashMap<TlSource, String>>> = OnceLock::new();
     let wal = PathBuf::from(format!("{}-wal", db.display()));
     let sig = format!("{:?}|{:?}", file_sig(db), file_sig(&wal));
-    // En tests, carpeta propia: no pisar la copia que use la app abierta.
+    // En tests, carpeta propia: no pisar la copia que use la app abierta. Y una
+    // por base: las pruebas corren a la vez en el mismo proceso (una con una
+    // base de prueba, otra leyendo qué matrículas lleva TechLog).
     let dir = if cfg!(test) {
-        std::env::temp_dir().join(format!("simfleet-techlog-test-{}", std::process::id()))
+        let tag = db.display().to_string().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+        std::env::temp_dir().join(format!("simfleet-techlog-test-{}-{tag:08x}", std::process::id()))
     } else {
         std::env::temp_dir().join("simfleet-techlog")
     }
@@ -692,6 +720,12 @@ pub struct TechLogAircraft {
     pub consumables: Vec<TlConsumable>,
     pub checks: Vec<TlCheck>,
     pub last_seen_utc: Option<String>,
+    /// (24/10) Por qué una orden ahora quedaría en cola: `sim_closed` |
+    /// `not_loaded` | `not_parked`. `None`: las órdenes salen ya.
+    pub order_wait: Option<String>,
+    /// (24/10) Trabajo en curso en TechLog (tiempos realistas): se cobra al
+    /// terminar.
+    pub pending_work: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -868,7 +902,7 @@ async fn aircraft_from_db(
         conn.close().await.ok();
         return Ok(None);
     };
-    let cat = catalog_for(dir);
+    let cat = catalog_for(dir, &a.variant);
     let (rate, cabin_rate) = wear_rates(&mut conn).await;
     let now = Utc::now();
 
@@ -1064,6 +1098,8 @@ async fn aircraft_from_db(
         consumables,
         checks,
         last_seen_utc: a.last_seen_utc,
+        order_wait: Some("sim_closed".into()),
+        pending_work: None,
     }))
 }
 
@@ -1259,6 +1295,11 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
         consumables,
         checks,
         last_seen_utc: None,
+        order_wait: match readiness_of(state, &normalize_reg(&s(&af, "registration").unwrap_or_default())) {
+            Readiness::Ready => None,
+            Readiness::Waiting(why) => Some(why.into()),
+        },
+        pending_work: s(state, "pendingWork").filter(|w| !w.trim().is_empty()),
     })
 }
 
@@ -1273,6 +1314,7 @@ pub async fn aircraft(registration: &str) -> Result<Option<TechLogAircraft>> {
     for source in TlSource::ALL {
         let Some(dir) = install_dir(source) else { continue };
         let running = is_running(source).await;
+        let mut live_state = None;
         if running {
             if let Ok(state) = api_get(source, "/api/state").await {
                 let active_reg = state
@@ -1282,11 +1324,15 @@ pub async fn aircraft(registration: &str) -> Result<Option<TechLogAircraft>> {
                 if active_reg.as_deref() == Some(reg.as_str()) {
                     return aircraft_live(source, &state).await.map(Some);
                 }
+                live_state = Some(state);
             }
         }
         if let Some(db) = db_path(source, &dir) {
             if let Some(mut a) = aircraft_from_db(source, &dir, &db, &reg).await? {
                 a.running = running;
+                if let Some(Readiness::Waiting(why)) = live_state.as_ref().map(|st| readiness_of(st, &reg)) {
+                    a.order_wait = Some(why.into());
+                }
                 return Ok(Some(a));
             }
         }
@@ -1521,14 +1567,13 @@ fn invalidate_managed() {
 // Acciones
 // ---------------------------------------------------------------------------
 //
-// La API de TechLog actúa sobre su avión ACTIVO. (20/10) Etapa 4: si TechLog
-// está cerrado, SimFleet lo abre (minimizado, como un doble clic) y elige el
-// avión con `/api/airframes/{id}/select`. TechLog sólo deja elegir cuando el
-// simulador no tiene un avión cargado ("The loaded aircraft decides the
-// airframe while the sim is running"): entonces la orden queda en cola
-// (`techlog_pending`) y se aplica sola cuando TechLog tenga ese avión
-// activo. Si cambiamos el avión activo, después volvemos al que tenía.
-// TechLog se queda abierto.
+// La API de TechLog actúa sobre su avión ACTIVO. (24/10) Una orden sólo va a
+// TechLog con ESE avión cargado en el simulador y estacionado: con el sim
+// cerrado TechLog la apuntaba en su base, el avión no la recibía y SimFleet
+// la cobraba igual. Si no, queda en cola (`techlog_pending`) y sale sola
+// cuando cargues el avión. Se cobra lo que TechLog termina (con tiempos
+// realistas, cuando acaba su `pendingWork`). SimFleet ya no abre TechLog ni
+// le cambia el avión para una orden.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1617,42 +1662,42 @@ fn spawn_minimized(_exe: &Path, _dir: &Path, _args: &str) -> Result<()> {
     Err(anyhow!("not_installed"))
 }
 
-enum Activation {
-    /// Ya era el avión activo.
-    Active,
-    /// Lo elegimos nosotros; `previous` = el que tenía (para devolverlo).
-    Switched { previous: Option<i64> },
-    /// TechLog no deja cambiar (el simulador tiene otro avión cargado).
-    Blocked(String),
+/// (24/10) ¿Puede TechLog hacer ya una orden para un avión?
+#[derive(Debug, PartialEq)]
+enum Readiness {
+    Ready,
+    /// Por qué espera: `sim_closed` | `not_loaded` | `not_parked`.
+    Waiting(&'static str),
 }
 
-/// Pone `reg` (normalizada) como avión activo de TechLog si se puede.
-async fn activate(source: TlSource, reg: &str) -> Result<Activation> {
-    let state = api_get(source, "/api/state").await?;
-    let af = state.get("airframe");
-    if af.and_then(|a| s(a, "registration")).map(|r| normalize_reg(&r)).as_deref() == Some(reg) {
-        return Ok(Activation::Active);
+/// Lista sólo si el simulador está conectado con ESE avión cargado
+/// (`sim.registration`: TechLog sólo lo da cuando el avión cargado es suyo y
+/// manda sobre el activo) y estacionado, como pide TechLog para mantenimiento.
+fn readiness_of(state: &Value, reg: &str) -> Readiness {
+    let sim = state.get("sim");
+    let flag = |k: &str| sim.and_then(|x| x.get(k)).and_then(|x| x.as_bool()).unwrap_or(false);
+    if !flag("connected") {
+        return Readiness::Waiting("sim_closed");
     }
-    let previous = af.and_then(|a| a.get("id")).and_then(|v| v.as_i64());
-    let list = api_get(source, "/api/airframes").await?;
-    let id = list
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|a| s(a, "registration").map(|r| normalize_reg(&r)).as_deref() == Some(reg))
-        .and_then(|a| a.get("id"))
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| anyhow!("no_airframe"))?;
-    let (ok, message) = api_post(source, &format!("/api/airframes/{id}/select"), None).await?;
-    Ok(if ok { Activation::Switched { previous } } else { Activation::Blocked(message) })
+    let norm = |v: Option<&Value>| v.and_then(|x| s(x, "registration")).map(|r| normalize_reg(&r));
+    let loaded = norm(sim);
+    let active = norm(state.get("airframe"));
+    if loaded.as_deref() != Some(reg) || active.as_deref() != Some(reg) {
+        return Readiness::Waiting("not_loaded");
+    }
+    if !flag("parked") {
+        return Readiness::Waiting("not_parked");
+    }
+    Readiness::Ready
 }
 
-/// Devuelve TechLog al avión que tenía antes de una orden nuestra.
-async fn restore(source: TlSource, previous: Option<i64>) {
-    if let Some(id) = previous {
-        if let Err(e) = api_post(source, &format!("/api/airframes/{id}/select"), None).await {
-            tracing::debug!(target: "techlog", "no se pudo volver al avión {id}: {e}");
-        }
+async fn readiness(source: TlSource, reg: &str) -> Readiness {
+    if !is_running(source).await {
+        return Readiness::Waiting("sim_closed");
+    }
+    match api_get(source, "/api/state").await {
+        Ok(state) => readiness_of(&state, reg),
+        Err(_) => Readiness::Waiting("sim_closed"),
     }
 }
 
@@ -1663,23 +1708,17 @@ pub async fn action(pool: &SqlitePool, req: TlActionRequest) -> Result<TlActionR
         .get(&reg)
         .copied()
         .ok_or_else(|| anyhow!("not_techlog"))?;
-    launch(source).await?;
-    let previous = match activate(source, &reg).await? {
-        Activation::Active => None,
-        Activation::Switched { previous } => previous,
-        Activation::Blocked(why) => {
-            enqueue(pool, source, &reg, &req).await?;
-            tracing::info!(target: "techlog", "{} {} {}: en cola ({why})", source.id(), reg, req.action);
-            return Ok(TlActionResult { ok: true, message: why, queued: true });
-        }
-    };
+    if let Readiness::Waiting(why) = readiness(source, &reg).await {
+        enqueue(pool, source, &reg, &req).await?;
+        tracing::info!(target: "techlog", "{} {} {}: en cola ({why})", source.id(), reg, req.action);
+        return Ok(TlActionResult { ok: true, message: why.into(), queued: true });
+    }
     let (ok, message) = perform(source, &req).await?;
     tracing::info!(target: "techlog", "{} {} {}: ok={ok} {message}", source.id(), reg, req.action);
-    // Con el avión ya activo, de paso, lo que tuviera en cola.
+    // Con el avión en el sim, de paso, lo que tuviera en cola.
     let applied = apply_queued(pool, source, &reg).await.len();
-    restore(source, previous).await;
     if ok || applied > 0 {
-        // TechLog escribe su base al instante: cobramos lo nuevo ya.
+        // Se cobra lo que TechLog ya terminó (con trabajo en curso, al acabar).
         if let Err(e) = sync_charges(pool, source).await {
             tracing::warn!(target: "techlog", "cobros tras acción: {e}");
         }
@@ -1848,9 +1887,8 @@ async fn apply_queued(pool: &SqlitePool, source: TlSource, reg: &str) -> Vec<TlP
     out
 }
 
-/// Con TechLog abierto: aplica lo que haya en cola. La del avión activo
-/// directamente; la de otros aviones eligiéndolos, si TechLog lo permite
-/// (simulador sin avión cargado), y luego vuelve al avión que tenía.
+/// Con TechLog abierto: aplica la cola del avión que está cargado y
+/// estacionado en el simulador (las demás esperan a que lo cargues).
 pub async fn process_pending(pool: &SqlitePool, source: TlSource) -> Vec<TlPendingResult> {
     let regs: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT registration FROM techlog_pending WHERE status = 'pending' AND source = ?1",
@@ -1862,20 +1900,14 @@ pub async fn process_pending(pool: &SqlitePool, source: TlSource) -> Vec<TlPendi
     if regs.is_empty() || !is_running(source).await {
         return Vec::new();
     }
+    let Ok(state) = api_get(source, "/api/state").await else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    let mut first_previous: Option<Option<i64>> = None;
     for reg in regs {
-        match activate(source, &reg).await {
-            Ok(Activation::Active) => {}
-            Ok(Activation::Switched { previous }) => {
-                first_previous.get_or_insert(previous);
-            }
-            Ok(Activation::Blocked(_)) | Err(_) => continue,
+        if readiness_of(&state, &reg) == Readiness::Ready {
+            out.extend(apply_queued(pool, source, &reg).await);
         }
-        out.extend(apply_queued(pool, source, &reg).await);
-    }
-    if let Some(previous) = first_previous {
-        restore(source, previous).await;
     }
     if !out.is_empty() {
         if let Err(e) = sync_charges(pool, source).await {
@@ -1898,15 +1930,17 @@ async fn drain_queue(app: &tauri::AppHandle, pool: &SqlitePool, source: TlSource
 // Cobros en Finanzas
 // ---------------------------------------------------------------------------
 
-/// Tarifa de taller (USD/h) para rectificar defectos.
-pub(crate) const LABOR_PER_HOUR: f64 = 115.0;
+// (24/10) Los precios salen de `maint_prices` (piezas a precio de intercambio,
+// mano de obra de la región del aeropuerto, checks por horas-hombre). Aquí
+// sólo queda el precio por ATA de antes, como red para piezas sin tabla.
 
 fn part_cost(cat: &Catalog, ata: Option<i64>) -> f64 {
     part_cost_by_ata(ata, &cat.spares.common_ata, &cat.spares.rare_ata)
 }
 
 /// (19/10) Coste de una pieza nueva según su ATA (repuesto común / normal /
-/// raro o de motor). Compartido con el Tech Log propio (`mx`).
+/// raro o de motor). (24/10) Sólo para piezas que no están en la tabla de
+/// precios. Compartido con el Tech Log propio (`mx`).
 pub(crate) fn part_cost_by_ata(ata: Option<i64>, common: &[i64], rare: &[i64]) -> f64 {
     match ata {
         Some(a) if rare.contains(&a) || a == 72 => 60_000.0,
@@ -1915,57 +1949,104 @@ pub(crate) fn part_cost_by_ata(ata: Option<i64>, common: &[i64], rare: &[i64]) -
     }
 }
 
-pub(crate) fn check_cost(key: &str) -> f64 {
-    match key {
-        "DAILY" => 350.0,
-        "WEEKLY" => 1_500.0,
-        "A" => 28_000.0,
-        "C" => 420_000.0,
-        _ => 2_000.0,
+/// (24/10) Flota de precios de un avión de TechLog. (25/10) PMDG TechLog
+/// 0.2 lleva también el 777: precios de fuselaje ancho.
+fn fleet_of(source: TlSource, variant: &str) -> crate::maint_prices::Fleet {
+    match source {
+        TlSource::Pmdg if is_777(variant) => crate::maint_prices::Fleet::Widebody,
+        TlSource::Pmdg => crate::maint_prices::Fleet::B737,
+        TlSource::Fenix | TlSource::Simfleet => crate::maint_prices::Fleet::A320,
     }
 }
 
-/// Coste (USD, antes del multiplicador del nivel de mantenimiento) y etiqueta
-/// de un registro de `servicing` de TechLog.
-fn servicing_charge(cat: &Catalog, kind: &str, before: f64, after: f64) -> (f64, String) {
-    if let Some(name) = kind.strip_prefix("Replaced: ") {
-        return (part_cost(cat, cat.ata_by_name(name)), format!("techlog:part_replace:{name}"));
-    }
-    if let Some(name) = kind.strip_prefix("Repaired: ") {
-        return (
-            (part_cost(cat, cat.ata_by_name(name)) * 0.3).round(),
-            format!("techlog:part_repair:{name}"),
-        );
-    }
-    if kind.starts_with("ENGINE_WASH:") {
-        return (6_500.0, format!("techlog:service:{kind}"));
-    }
-    let key = kind.split(':').next().unwrap_or(kind);
-    let _ = cat;
-    (consumable_cost(key, (after - before).abs()), format!("techlog:service:{kind}"))
+/// (24/10) De qué sale un cobro. El importe se calcula sólo para lo nuevo,
+/// con la tarifa del aeropuerto donde está el avión.
+enum Basis {
+    Free,
+    Part { key: Option<String>, ata: Option<i64>, repair: bool },
+    Consumable { key: String, amount: f64 },
+    Defect { hours: f64, material: f64 },
+    Check(String),
 }
 
-/// (19/10) Coste de reponer un consumible (`key` sin posición) según la
-/// cantidad servida. Compartido con el Tech Log propio (`mx`).
-pub(crate) fn consumable_cost(key: &str, amount: f64) -> f64 {
-    match key {
-        "ENG_OIL" | "APU_OIL" => (45.0 * amount).max(45.0),
-        "HYD_FLUID" => (25.0 * amount).max(60.0),
-        "CREW_O2" => 400.0,
-        "TYRE_PRESSURE" => 60.0,
-        "WATER" => 120.0,
-        "WASTE" => 150.0,
-        "CATERING" => 900.0,
-        "CABIN_CLEAN" => 350.0,
-        "ENGINE_WASH" => 6_500.0,
-        _ => 200.0,
+impl Basis {
+    /// USD, antes del multiplicador del nivel de mantenimiento.
+    fn cost(&self, cat: &Catalog, fleet: crate::maint_prices::Fleet, rate: f64) -> f64 {
+        use crate::maint_prices as mp;
+        match self {
+            Basis::Free => 0.0,
+            Basis::Part { key, ata, repair } => {
+                let priced = key.as_deref().and_then(|k| {
+                    if *repair {
+                        mp::repair_cost(k, fleet, rate)
+                    } else {
+                        mp::replace_cost(k, fleet, rate)
+                    }
+                });
+                priced.unwrap_or_else(|| mp::fallback_part(part_cost(cat, *ata), *repair, rate))
+            }
+            Basis::Consumable { key, amount } => mp::consumable_cost(key, *amount, rate),
+            Basis::Defect { hours, material } => mp::defect_cost(*hours, *material, rate),
+            Basis::Check(key) => mp::check_cost(key, fleet, rate),
+        }
     }
+}
+
+/// Qué cobra un defecto rectificado de TechLog (`None`: reemplazado por
+/// otro). Si se arregló cambiando o reparando la pieza, haciendo el check o
+/// sirviendo el consumible ("Servicing required: …"), eso ya se cobra (la
+/// pieza con su mano de obra, el check o el servicio): aquí no se cobra dos
+/// veces. Un "finding" lleva su material.
+fn defect_basis(cat: &Catalog, r: &sqlx::sqlite::SqliteRow) -> Option<Basis> {
+    let how = opt_str(r, "rectified_how").unwrap_or_default();
+    if how.contains("superseded") {
+        return None;
+    }
+    let hours = opt_str(r, "mel_id")
+        .as_deref()
+        .and_then(|m| cat.mel.get(m))
+        .and_then(|m| m.fix_hours)
+        .unwrap_or(1.0)
+        .max(0.5);
+    let comp = opt_str(r, "component_key").unwrap_or_default();
+    Some(if how.contains("part") || comp.starts_with("CHECK:") || comp.starts_with("CONS:") {
+        Basis::Free
+    } else {
+        let material = comp
+            .strip_prefix("FINDING:")
+            .map(crate::maint_prices::finding_material)
+            .unwrap_or(0.0);
+        Basis::Defect { hours, material }
+    })
+}
+
+/// Qué cobra y con qué etiqueta un registro de `servicing` de TechLog.
+fn servicing_charge(cat: &Catalog, kind: &str, before: f64, after: f64) -> (Basis, String) {
+    for (prefix, repair, label) in [("Replaced: ", false, "part_replace"), ("Repaired: ", true, "part_repair")] {
+        if let Some(name) = kind.strip_prefix(prefix) {
+            let basis = Basis::Part { key: cat.key_by_name(name), ata: cat.ata_by_name(name), repair };
+            return (basis, format!("techlog:{label}:{name}"));
+        }
+    }
+    let key = kind.split(':').next().unwrap_or(kind).to_string();
+    // Lavado de motor: uno por motor (`ENGINE_WASH:1`), precio fijo.
+    let amount = if key == "ENGINE_WASH" { 1.0 } else { (after - before).abs() };
+    (Basis::Consumable { key, amount }, format!("techlog:service:{kind}"))
+}
+
+/// (24/10) Servicios de TechLog que GSX factura con su propio recibo (y
+/// SimFleet cobra por ahí): catering, agua potable y baños ("Potable water",
+/// "Lavatory service" en el recibo de handling).
+fn gsx_bills(kind: &str) -> bool {
+    kind.split(':')
+        .next()
+        .is_some_and(|k| ["CATERING", "WATER", "WASTE"].iter().any(|g| k.eq_ignore_ascii_case(g)))
 }
 
 struct ChargeEvent {
     key: String,
     component: String,
-    cost: f64,
+    basis: Basis,
     at: String,
 }
 
@@ -1975,11 +2056,26 @@ struct ChargeEvent {
 pub async fn sync_charges(pool: &SqlitePool, source: TlSource) -> Result<u64> {
     let Some(dir) = install_dir(source) else { return Ok(0) };
     let Some(db) = db_path(source, &dir) else { return Ok(0) };
+    // (24/10) Trabajo en curso (tiempos realistas): se cobra cuando TechLog
+    // lo termine, no al empezar.
+    if is_running(source).await {
+        if let Ok(state) = api_get(source, "/api/state").await {
+            if let Some(work) = s(&state, "pendingWork").filter(|w| !w.trim().is_empty()) {
+                tracing::debug!(target: "techlog", "{}: cobros en espera, trabajo en curso ({work})", source.id());
+                return Ok(0);
+            }
+        }
+    }
     sync_charges_at(pool, source, &dir, &db).await
 }
 
+/// (24/10) Un evento con fecha futura es trabajo que TechLog guardó con su
+/// hora de fin: aún no está hecho ni se cobra (ni se marca como visto).
+fn not_done_yet(at: &str) -> bool {
+    DateTime::parse_from_rfc3339(at).is_ok_and(|t| t.with_timezone(&Utc) > Utc::now() + chrono::Duration::minutes(1))
+}
+
 async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &Path) -> Result<u64> {
-    let cat = catalog_for(dir);
     let mut conn = open_snapshot(source, db).await?;
     let airframes = db_airframes(&mut conn).await?;
     let now = Utc::now().to_rfc3339();
@@ -1989,6 +2085,9 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
         if reg.is_empty() {
             continue;
         }
+        // (25/10) Cada avión con el catálogo y los precios de su tipo (777).
+        let cat = catalog_for(dir, &a.variant);
+        let fleet = fleet_of(source, &a.variant);
         let mut events: Vec<ChargeEvent> = Vec::new();
         for r in sqlx::query("SELECT * FROM servicing WHERE airframe_id = ?1")
             .bind(a.id)
@@ -1997,17 +2096,49 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
         {
             let id: i64 = r.try_get("id").unwrap_or(0);
             let kind = opt_str(&r, "kind").unwrap_or_default();
-            let (cost, component) = servicing_charge(
+            let (basis, component) = servicing_charge(
                 &cat,
                 &kind,
                 r.try_get("before").unwrap_or(0.0),
                 r.try_get("after").unwrap_or(0.0),
             );
+            let at = opt_str(&r, "utc").unwrap_or_else(|| now.clone());
+            // (24/10) Catering hecho por GSX: lo cobra el recibo de GSX (que
+            // se reparte por vuelo). TechLog sólo lo registra ("%, by GSX");
+            // cobrarlo aquí también era pagarlo dos veces. Y se borra el
+            // cobro doble que hubiera quedado de antes (idempotente).
+            let by_gsx = opt_str(&r, "unit").is_some_and(|u| u.to_ascii_lowercase().contains("by gsx"));
+            if by_gsx && gsx_bills(&kind) {
+                let removed = sqlx::query(
+                    "DELETE FROM maintenance_log WHERE registration = ?1 AND component = ?2 AND serviced_at = ?3",
+                )
+                .bind(&reg)
+                .bind(&component)
+                .bind(&at)
+                .execute(pool)
+                .await?
+                .rows_affected();
+                let key = format!("svc:{}:{}:{id}", source.id(), a.id);
+                if removed > 0 {
+                    sqlx::query("UPDATE techlog_seen SET cost = 0 WHERE event_key = ?1")
+                        .bind(&key)
+                        .execute(pool)
+                        .await?;
+                    // Que la nube tampoco lo devuelva.
+                    let mk = crate::ledger_sync::maint_key(&reg, &component, &at);
+                    if let Err(e) = crate::ledger_sync::record(pool, crate::ledger_sync::KIND_MAINT, &mk).await {
+                        tracing::warn!(target: "techlog", "anotar cobro quitado: {e:#}");
+                    }
+                    tracing::info!(target: "techlog", "{} {reg}: quitado cobro doble de {component} (lo factura GSX)", source.id());
+                }
+                events.push(ChargeEvent { key, component, basis: Basis::Free, at });
+                continue;
+            }
             events.push(ChargeEvent {
                 key: format!("svc:{}:{}:{id}", source.id(), a.id),
                 component,
-                cost,
-                at: opt_str(&r, "utc").unwrap_or_else(|| now.clone()),
+                basis,
+                at,
             });
         }
         for r in sqlx::query(
@@ -2017,23 +2148,13 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
         .fetch_all(&mut conn)
         .await?
         {
-            let how = opt_str(&r, "rectified_how").unwrap_or_default();
-            if how.contains("superseded") {
-                continue;
-            }
+            let Some(basis) = defect_basis(&cat, &r) else { continue };
             let id: i64 = r.try_get("id").unwrap_or(0);
-            let mel = opt_str(&r, "mel_id");
-            let hours = mel
-                .as_deref()
-                .and_then(|m| cat.mel.get(m))
-                .and_then(|m| m.fix_hours)
-                .unwrap_or(1.0)
-                .max(0.5);
             let title = opt_str(&r, "title").unwrap_or_default();
             events.push(ChargeEvent {
                 key: format!("def:{}:{}:{id}", source.id(), a.id),
                 component: format!("techlog:defect:{}", title),
-                cost: (hours * LABOR_PER_HOUR).round(),
+                basis,
                 at: opt_str(&r, "rectified_utc").unwrap_or_else(|| now.clone()),
             });
         }
@@ -2047,7 +2168,7 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
             events.push(ChargeEvent {
                 key: format!("chk:{}:{}:{key}:{done}", source.id(), a.id),
                 component: format!("techlog:check:{key}"),
-                cost: check_cost(&key),
+                basis: Basis::Check(key.clone()),
                 at: done,
             });
         }
@@ -2064,18 +2185,38 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
         } else {
             crate::aircraft_maintenance::level_mult_for_registration(pool, &reg).await
         };
+        let seen: HashSet<String> = sqlx::query_scalar("SELECT event_key FROM techlog_seen WHERE registration = ?1")
+            .bind(&reg)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+        // Tarifa de la región donde está el avión: sólo si hay algo nuevo.
+        let mut rate: Option<f64> = None;
         for e in &events {
+            if seen.contains(&e.key) || (!first_time && not_done_yet(&e.at)) {
+                continue;
+            }
+            let cost = if first_time {
+                0.0
+            } else {
+                let r = match rate {
+                    Some(r) => r,
+                    None => *rate.insert(crate::maint_prices::labor_rate(pool, &reg).await),
+                };
+                e.basis.cost(&cat, fleet, r) * mult
+            };
             let res = sqlx::query(
                 "INSERT OR IGNORE INTO techlog_seen (event_key, source, registration, cost, seen_at) VALUES (?1,?2,?3,?4,?5)",
             )
             .bind(&e.key)
             .bind(source.id())
             .bind(&reg)
-            .bind(if first_time { 0.0 } else { e.cost * mult })
+            .bind(cost)
             .bind(&now)
             .execute(pool)
             .await?;
-            if res.rows_affected() == 0 || first_time || e.cost <= 0.0 {
+            if res.rows_affected() == 0 || first_time || cost <= 0.0 {
                 continue;
             }
             sqlx::query(
@@ -2083,7 +2224,7 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
             )
             .bind(&reg)
             .bind(&e.component)
-            .bind((e.cost * mult).round())
+            .bind(cost.round())
             .bind(&e.at)
             .execute(pool)
             .await?;
@@ -2093,7 +2234,7 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
                 "cobro {} {reg}: {} = {} USD",
                 source.id(),
                 e.component,
-                (e.cost * mult).round() as i64
+                cost.round() as i64
             );
         }
         if first_time {
@@ -2116,6 +2257,124 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
     }
     conn.close().await.ok();
     Ok(charged)
+}
+
+/// Un defecto cobrado que ya no está rectificado en la base de TechLog (se
+/// volvió a abrir o se reinició el avión): se deduce de su título y de lo que
+/// costó con la tarifa vieja (horas del MEL × 115 USD/h × nivel).
+fn defect_basis_from_charge(title: &str, old: f64, mult: f64) -> Basis {
+    let t = title.to_ascii_lowercase();
+    if t.starts_with("servicing required") || t.ends_with("check overdue") {
+        return Basis::Free;
+    }
+    let hours = (old / (115.0 * mult.max(0.1)) * 4.0).round() / 4.0;
+    Basis::Defect { hours: hours.max(0.5), material: 0.0 }
+}
+
+/// (24/10) Recalcula una vez, con los precios reales, los cobros ya hechos de
+/// Fenix/PMDG TechLog: checks, piezas y defectos (tarifa de donde está hoy el
+/// avión, nivel de mantenimiento actual). Los servicios de consumibles no
+/// guardan la cantidad servida: quedan como estaban.
+pub async fn reprice_history(pool: &SqlitePool) -> Result<usize> {
+    let rows = sqlx::query("SELECT id, registration, component, cost, serviced_at FROM maintenance_log WHERE component LIKE 'techlog:%'")
+        .fetch_all(pool)
+        .await?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let managed = managed_registrations().await;
+    // Por app TechLog: su base abierta y la variante de cada avión (777).
+    type Open = (Option<SqliteConnection>, HashMap<String, String>);
+    let mut cats: HashMap<TlSource, Open> = HashMap::new();
+    let mut rates: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut changed = 0;
+    for r in rows {
+        let id: i64 = r.try_get("id").unwrap_or(0);
+        let reg: String = r.try_get("registration").unwrap_or_default();
+        let component: String = r.try_get("component").unwrap_or_default();
+        let old: f64 = r.try_get("cost").unwrap_or(0.0);
+        let at: String = r.try_get("serviced_at").unwrap_or_default();
+        let Some((label, detail)) = component.strip_prefix("techlog:").and_then(|c| c.split_once(':')) else { continue };
+        let Some(&source) = managed.get(&reg) else { continue };
+        let Some(dir) = install_dir(source) else { continue };
+        if let std::collections::hash_map::Entry::Vacant(slot) = cats.entry(source) {
+            let mut conn = match db_path(source, &dir) {
+                Some(db) => open_snapshot(source, &db).await.ok(),
+                None => None,
+            };
+            let mut variants = HashMap::new();
+            if let Some(c) = conn.as_mut() {
+                for a in db_airframes(c).await.unwrap_or_default() {
+                    variants.insert(normalize_reg(&a.registration), a.variant);
+                }
+            }
+            slot.insert((conn, variants));
+        }
+        let (rate, mult) = match rates.get(&reg) {
+            Some(v) => *v,
+            None => {
+                let v = (
+                    crate::maint_prices::labor_rate(pool, &reg).await,
+                    crate::aircraft_maintenance::level_mult_for_registration(pool, &reg).await,
+                );
+                *rates.entry(reg.clone()).or_insert(v)
+            }
+        };
+        let (conn, variants) = cats.get_mut(&source).expect("base abierta");
+        let variant = variants.get(&reg).cloned().unwrap_or_default();
+        let cat = &catalog_for(&dir, &variant);
+        let basis = match label {
+            "check" => Some(Basis::Check(detail.to_string())),
+            "part_replace" | "part_repair" => Some(Basis::Part {
+                key: cat.key_by_name(detail),
+                ata: cat.ata_by_name(detail),
+                repair: label == "part_repair",
+            }),
+            "defect" => match conn.as_mut() {
+                Some(c) => {
+                    let found = sqlx::query(
+                        "SELECT d.*, a.registration AS af_reg FROM defect d JOIN airframe a ON a.id = d.airframe_id
+                         WHERE d.title = ?1 AND d.rectified_utc = ?2",
+                    )
+                    .bind(detail)
+                    .bind(&at)
+                    .fetch_all(&mut *c)
+                    .await
+                    .unwrap_or_default();
+                    match found.iter().find(|d| opt_str(d, "af_reg").is_some_and(|x| normalize_reg(&x) == reg)) {
+                        Some(d) => defect_basis(cat, d),
+                        None => Some(defect_basis_from_charge(detail, old, mult)),
+                    }
+                }
+                None => Some(defect_basis_from_charge(detail, old, mult)),
+            },
+            _ => None,
+        };
+        let Some(basis) = basis else { continue };
+        let new = (basis.cost(cat, fleet_of(source, &variant), rate) * mult).round();
+        if (new - old).abs() < 0.5 {
+            continue;
+        }
+        if new <= 0.0 {
+            // Ya se cobraba por otro lado (servicio, check, pieza): fuera, y
+            // que la nube tampoco lo devuelva.
+            sqlx::query("DELETE FROM maintenance_log WHERE id = ?1").bind(id).execute(pool).await?;
+            let key = crate::ledger_sync::maint_key(&reg, &component, &at);
+            crate::ledger_sync::record(pool, crate::ledger_sync::KIND_MAINT, &key).await?;
+            tracing::info!(target: "techlog", "{reg} {component}: {old:.0} USD quitado (ya se cobraba aparte)");
+            changed += 1;
+            continue;
+        }
+        sqlx::query("UPDATE maintenance_log SET cost = ?2 WHERE id = ?1").bind(id).bind(new).execute(pool).await?;
+        tracing::info!(target: "techlog", "{reg} {component}: {old:.0} → {new:.0} USD (precios reales)");
+        changed += 1;
+    }
+    for (_, (conn, _)) in cats {
+        if let Some(c) = conn {
+            c.close().await.ok();
+        }
+    }
+    Ok(changed)
 }
 
 // ---------------------------------------------------------------------------
@@ -2389,6 +2648,87 @@ async fn listen_events(
 mod tests {
     use super::*;
 
+    /// (25/10) PMDG TechLog 0.2: el 777 con su catálogo y precios de ancho.
+    #[test]
+    fn a_pmdg_777_gets_its_own_catalog_and_widebody_prices() {
+        use crate::maint_prices::Fleet;
+        assert!(is_777("777-300ER") && is_777("777F") && !is_777("737-800BCF"));
+        assert_eq!(fleet_of(TlSource::Pmdg, "777-200LR"), Fleet::Widebody);
+        assert_eq!(fleet_of(TlSource::Pmdg, "737-900ER"), Fleet::B737);
+        assert_eq!(fleet_of(TlSource::Fenix, "A320"), Fleet::A320);
+        let root = std::env::temp_dir().join(format!("simfleet-tl-b777-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("catalog/b777")).unwrap();
+        std::fs::write(root.join("catalog/components.json"), r#"{"components":[{"key":"BRAKE","name":"Brake {pos}","ata":32,"positions":["1"]}],"consumables":[]}"#).unwrap();
+        std::fs::write(root.join("catalog/b777/components.json"), r#"// del 777
+{"components":[{"key":"RAT","name":"Ram air turbine","ata":29}],"consumables":[]}"#).unwrap();
+        assert_eq!(catalog_for(&root, "777-300ER").key_by_name("Ram air turbine").as_deref(), Some("RAT"));
+        assert_eq!(catalog_for(&root, "737-800").key_by_name("Brake 1").as_deref(), Some("BRAKE"));
+        assert!(catalog_for(&root, "737-800").key_by_name("Ram air turbine").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Con el PMDG TechLog instalado (sólo lee su catálogo): el del 777
+    /// carga con su MEL y límites, y cada pieza tiene precio de ancho.
+    #[test]
+    #[ignore]
+    fn pmdg_777_real_catalog() {
+        use crate::maint_prices::{part, Fleet};
+        let dir = install_dir(TlSource::Pmdg).expect("PMDG TechLog instalado");
+        let cat = catalog_for(&dir, "777-300ER");
+        let b737 = catalog_for(&dir, "737-800");
+        println!("777: {} piezas, {} consumibles, {} MEL, {} checks; 737: {} piezas",
+            cat.components.len(), cat.consumables.len(), cat.mel.len(), cat.limits.checks.len(), b737.components.len());
+        assert!(cat.components.len() > 100 && !cat.mel.is_empty() && !cat.limits.checks.is_empty());
+        assert!(cat.component("RAT").is_some() && b737.component("RAT").is_none());
+        let missing: Vec<&str> = cat
+            .components
+            .iter()
+            .map(|c| c.key.as_str())
+            .filter(|k| part(k, Fleet::Widebody).is_none())
+            .collect();
+        assert!(missing.is_empty(), "sin precio: {missing:?}");
+    }
+
+    #[test]
+    fn an_old_defect_charge_is_repriced_from_its_title_and_old_cost() {
+        let c = |title: &str, old: f64| match defect_basis_from_charge(title, old, 1.0) {
+            Basis::Free => None,
+            Basis::Defect { hours, .. } => Some(hours),
+            _ => unreachable!(),
+        };
+        assert_eq!(c("Servicing required: Tyre 1 pressure", 58.0), None, "lo cobra el servicio");
+        assert_eq!(c("Daily check overdue", 115.0), None, "lo cobra el check");
+        assert_eq!(c("Overspeed inspection (VMO/MMO)", 345.0), Some(3.0));
+        assert_eq!(c("Captain's map light dim", 58.0), Some(0.5));
+    }
+
+    /// (24/10) Una orden sólo sale con ESE avión cargado y estacionado.
+    #[test]
+    fn orders_wait_for_the_aircraft_loaded_and_parked_in_the_sim() {
+        let state = |connected: bool, loaded: Option<&str>, parked: bool| {
+            serde_json::json!({
+                "sim": { "connected": connected, "registration": loaded, "parked": parked },
+                "airframe": { "registration": "PH-BCL" }
+            })
+        };
+        let r = |st: Value| readiness_of(&st, "PHBCL");
+        assert_eq!(r(state(false, None, true)), Readiness::Waiting("sim_closed"), "sim cerrado (el caso de la luz de mapa)");
+        assert_eq!(r(state(true, None, true)), Readiness::Waiting("not_loaded"), "sim abierto con otro avión");
+        assert_eq!(r(state(true, Some("C-GORP"), true)), Readiness::Waiting("not_loaded"));
+        assert_eq!(r(state(true, Some("PH-BCL"), false)), Readiness::Waiting("not_parked"));
+        assert_eq!(r(state(true, Some("PH-BCL"), true)), Readiness::Ready);
+        assert_eq!(readiness_of(&serde_json::json!({}), "PHBCL"), Readiness::Waiting("sim_closed"));
+    }
+
+    #[test]
+    fn work_saved_with_its_finish_time_is_not_charged_yet() {
+        let later = (Utc::now() + chrono::Duration::hours(3)).to_rfc3339();
+        assert!(not_done_yet(&later));
+        assert!(!not_done_yet("2026-10-02T10:00:00Z"));
+        assert!(!not_done_yet("no es una fecha"));
+    }
+
     #[test]
     fn normalizes_techlog_type_suffix() {
         assert_eq!(normalize_reg("G-FENX-A320-CFM"), "GFENX");
@@ -2489,23 +2829,33 @@ mod tests {
             "INSERT INTO servicing (airframe_id, utc, kind, before, after) VALUES (1, '2026-10-02T10:05:00Z', 'ENG_OIL:1', 15, 20)",
             "INSERT INTO defect (airframe_id, title, mel_id, rectified_utc, rectified_how) VALUES (1, 'Hard landing inspection', '05-51-01', '2026-10-02T11:00:00Z', 'fixed')",
             "UPDATE check_record SET last_done_utc = '2026-10-02T12:00:00Z' WHERE key = 'DAILY'",
+            // (24/10) Catering hecho por GSX: lo cobra el recibo de GSX.
+            "INSERT INTO servicing (airframe_id, utc, kind, before, after, unit) VALUES (1, '2026-10-02T10:10:00Z', 'CATERING', 100, 100, '%, by GSX')",
         ] {
             sqlx::query(sql).execute(&mut tl).await.unwrap();
         }
         tl.close().await.unwrap();
+        // Un cobro doble de antes (versión vieja) que debe desaparecer.
+        sqlx::query("INSERT INTO maintenance_log (registration, component, cost, serviced_at) VALUES ('ECTST', 'techlog:service:CATERING', 900, '2026-10-02T10:10:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
         assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db).await.unwrap(), 4);
         let rows: Vec<(String, f64)> =
             sqlx::query_as("SELECT component, cost FROM maintenance_log ORDER BY component")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
+        // (24/10) Precios reales, tarifa por defecto (110 USD/h, sin ubicación):
+        // Daily 2,5 h × 1,36 de material; inspección 2 h; freno de carbono
+        // del 737 por intercambio 48.000 + 3 h; 5 qt de aceite a 23,31 + 0,25 h.
         assert_eq!(
             rows,
             vec![
-                ("techlog:check:DAILY".to_string(), 350.0),
-                ("techlog:defect:Hard landing inspection".to_string(), 230.0),
-                ("techlog:part_replace:Brake 2".to_string(), 900.0),
-                ("techlog:service:ENG_OIL:1".to_string(), 225.0),
+                ("techlog:check:DAILY".to_string(), 374.0),
+                ("techlog:defect:Hard landing inspection".to_string(), 220.0),
+                ("techlog:part_replace:Brake 2".to_string(), 48_330.0),
+                ("techlog:service:ENG_OIL:1".to_string(), 144.0),
             ]
         );
         // 3ª pasada: nada nuevo → nada cobrado.

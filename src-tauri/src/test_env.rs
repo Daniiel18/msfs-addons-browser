@@ -134,4 +134,14 @@ pub fn landings_folder_name() -> &'static str {
 /// Script inyectado en TODOS los webviews de la instancia de pruebas antes de
 /// cargar la página: el frontend lo lee de forma síncrona (sin esperar un IPC)
 /// para elegir tablas/canales de Supabase de pruebas desde el primer render.
-pub const JS_INIT_SCRIPT: &str = "window.__SIMFLEET_TEST_ENV__ = true;";
+/// (25/10) En una compilación de desarrollo (`tauri dev`, la de
+/// `dev-safe.ps1`) además se salta el bloqueo de Windows Hello (pedido del
+/// usuario: sólo en pruebas). Un build de release lo pide siempre, aunque se
+/// fuerce el modo pruebas.
+pub fn js_init_script() -> &'static str {
+    if cfg!(debug_assertions) {
+        "window.__SIMFLEET_TEST_ENV__ = true; window.__SIMFLEET_NO_LOCK__ = true;"
+    } else {
+        "window.__SIMFLEET_TEST_ENV__ = true;"
+    }
+}

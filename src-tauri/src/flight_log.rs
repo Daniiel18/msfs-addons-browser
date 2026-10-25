@@ -602,12 +602,18 @@ pub async fn delete_by_source(
     .await
     .unwrap_or(0);
 
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM flight_log WHERE source = ?1")
+        .bind(source)
+        .fetch_all(pool)
+        .await?;
+    note_deleted(pool, &ids).await;
     let result = sqlx::query("DELETE FROM flight_log WHERE source = ?1")
         .bind(source)
         .execute(pool)
         .await?;
-    // (v6.2.18) Los cargos de Finanzas de esos vuelos también se van.
-    let _ = purge_orphan_pnl(pool).await;
+    // (v6.2.18 · 24/10) Todo lo de esos vuelos también se va (Finanzas y
+    // Tech Log).
+    cascade_after_delete(pool).await;
     Ok((result.rows_affected(), track_count as u64))
 }
 
@@ -1381,6 +1387,7 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
     // (flight_pnl no tiene FK, a diferencia de track/phase/score que caen
     // por CASCADE). Sin esto el P&L quedaba huérfano hasta el siguiente
     // recompute y el usuario veía cargos de vuelos eliminados.
+    note_deleted(pool, &[id]).await;
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM flight_pnl WHERE flight_id = ?1")
         .bind(id)
@@ -1391,7 +1398,30 @@ pub async fn delete_entry(pool: &SqlitePool, id: i64) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    cascade_after_delete(pool).await;
     Ok(())
+}
+
+/// (24/10) Anota en la nube que estos vuelos se borraron a propósito (no
+/// vuelven a bajar y se borran en las demás PCs). Llamar ANTES de borrarlos.
+async fn note_deleted(pool: &SqlitePool, ids: &[i64]) {
+    if let Err(e) = crate::ledger_sync::record_flights_deleted(pool, ids).await {
+        tracing::warn!(target: "cloud", "anotar vuelos borrados: {e:#}");
+    }
+}
+
+/// (24/10) Contabilidad sólida: tras borrar vuelos (uno o muchos), nada suyo
+/// queda — su registro en el Tech Log de SimFleet se revierte (desgaste,
+/// defectos abiertos), sus cargos de Finanzas se purgan y la economía se
+/// recalcula sin ellos (P&L, líneas de GSX, traslados automáticos).
+pub async fn cascade_after_delete(pool: &SqlitePool) {
+    if let Err(e) = crate::mx::store::revert_orphans(pool).await {
+        tracing::warn!(target: "mx", "revertir Tech Log de vuelos borrados: {e:#}");
+    }
+    let _ = purge_orphan_pnl(pool).await;
+    if let Err(e) = crate::airline_economy::recompute(pool).await {
+        tracing::warn!(target: "economy", "recalcular tras borrar vuelos: {e:#}");
+    }
 }
 
 /// (v6.2.18) Barrido de P&L huérfanos — cargos de vuelos que ya no existen
@@ -2176,9 +2206,22 @@ pub async fn pilot_profile(pool: &SqlitePool) -> anyhow::Result<PilotProfile> {
 /// los `flight_log_track` asociados (ON DELETE CASCADE en
 /// migración 015).
 pub async fn delete_junk_flights(pool: &SqlitePool) -> anyhow::Result<u64> {
-    let r = sqlx::query(
-        r#"
-        DELETE FROM flight_log
+    let ids: Vec<i64> = sqlx::query_scalar(&format!("SELECT id FROM flight_log {JUNK_WHERE}"))
+        .fetch_all(pool)
+        .await?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    // (24/10) Tampoco vuelven de la nube.
+    note_deleted(pool, &ids).await;
+    let r = sqlx::query(&format!("DELETE FROM flight_log {JUNK_WHERE}"))
+        .execute(pool)
+        .await?;
+    cascade_after_delete(pool).await;
+    Ok(r.rows_affected())
+}
+
+const JUNK_WHERE: &str = r#"
         WHERE (
                 source IS NOT 'msfs-logbook'
                 AND ABS(origin_lat) < 0.01 AND ABS(origin_lon) < 0.01
@@ -2189,12 +2232,7 @@ pub async fn delete_junk_flights(pool: &SqlitePool) -> anyhow::Result<u64> {
                 AND COALESCE(flight_time_s, 0) < 60
                 AND ended_at IS NOT NULL
               )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-    Ok(r.rows_affected())
-}
+        "#;
 
 /// Busca el aeropuerto en `airports` cuya distancia haversine al
 /// punto sea mínima y < `NEAREST_THRESHOLD_NM`. SQLite no tiene

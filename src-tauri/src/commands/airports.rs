@@ -1,5 +1,39 @@
 use crate::airports::{self, AddonOnMap, AirportBrief};
 use crate::AppState;
+use tauri::Manager;
+
+/// (24/10) Tarjeta de aeropuerto del FlightBook (clic en el mapa).
+#[tauri::command]
+pub async fn airport_card(
+    icao: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::airport_card::AirportCard, String> {
+    crate::airport_card::card(&state.db, &icao)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// (24/10) Foto del aeropuerto (Wikipedia, en caché local). Ruta del archivo
+/// o `None` si no hay foto.
+#[tauri::command]
+pub async fn airport_photo(
+    icao: String,
+    name: Option<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    // El entorno de pruebas guarda la caché en su propio dir de datos.
+    let base = if crate::test_env::is_active() {
+        crate::test_env::data_dir().map_err(|e| e.to_string())?
+    } else {
+        app.path().app_local_data_dir().map_err(|e| e.to_string())?
+    };
+    let dir = base.join("airport-photos");
+    crate::airport_card::photo(&state.http, &dir, &icao, name.as_deref())
+        .await
+        .map(|p| p.map(|p| p.to_string_lossy().into_owned()))
+        .map_err(|e| e.to_string())
+}
 
 /// (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. Lo usa el
 /// FlightBook para mostrar el aeropuerto bajo el código de origen/destino.

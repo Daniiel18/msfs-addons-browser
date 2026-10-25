@@ -204,6 +204,7 @@ pub fn localize_aircraft(a: &mut TechLogAircraft) {
     for r in &mut a.dispatch.reasons {
         *r = sentence(r);
     }
+    opt(&mut a.pending_work);
     for d in &mut a.defects {
         d.title = sentence(&d.title);
         opt(&mut d.detail);

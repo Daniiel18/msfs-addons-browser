@@ -1,6 +1,11 @@
 import { create } from "zustand";
-import type { Addon, SourceDescriptor } from "../lib/types";
+import type { Addon, AvailableUpdate, SourceDescriptor } from "../lib/types";
 import { api } from "../lib/tauri";
+import { useCommunityStore } from "./useCommunityStore";
+
+/** (25/10) Explorar o buscar guarda versiones en el catálogo local: la
+ *  campanita y el modal de updates las releen al momento. */
+const catalogSeen = () => void useCommunityStore.getState().reloadUpdates();
 
 type Status = "idle" | "loading" | "success" | "error";
 
@@ -72,6 +77,17 @@ interface AppState {
    *  usuario clica una update — queremos llevarlo al resultado
    *  con sus métodos de descarga ya cargados. */
   triggerSearch: (query: string, sourceId?: string) => Promise<void>;
+  /** (25/10) Lleva a la tarjeta de un addon con update pendiente, sea del
+   *  catálogo que sea (modal de updates y campanita). */
+  openCatalogAddon: (u: AvailableUpdate) => Promise<void>;
+  /** (25/10) Sube con cada búsqueda pedida desde fuera de Explorar
+   *  (campanita, modal de updates, paleta): Explorar sale de la pestaña
+   *  flightsim.to, cuya web embebida taparía el resultado. */
+  searchRequest: number;
+  /** (25/10) Sube al pedir la pestaña flightsim.to de Explorar desde fuera
+   *  (update de flightsim.to en el modal o la campanita). */
+  fstoTabRequest: number;
+  openFlightsimTab: () => void;
   /** Carga la página `n` (1-based) del catálogo de la fuente activa. */
   loadBrowsePage: (page: number) => Promise<void>;
 
@@ -150,6 +166,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().catalogCache[sourceId]) return;
     try {
       const res = await api.browseSource(sourceId, 1);
+      catalogSeen();
       set((s) => {
         const isActiveAndIdle =
           s.activeSourceId === sourceId &&
@@ -211,9 +228,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ view: "hangar", hangarFocusRequest: registration }),
   clearHangarFocusRequest: () => set({ hangarFocusRequest: null }),
 
+  searchRequest: 0,
+  fstoTabRequest: 0,
+  openFlightsimTab: () => set({ view: "search", fstoTabRequest: get().fstoTabRequest + 1 }),
+
   async triggerSearch(query, sourceId) {
     const targetSource = sourceId ?? get().activeSourceId;
     set({
+      searchRequest: get().searchRequest + 1,
       view: "search",
       activeSourceId: targetSource,
       query,
@@ -225,6 +247,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const r = await api.search(query, targetSource);
       set({ results: r, status: "success" });
+      catalogSeen();
+    } catch (e) {
+      set({ error: String(e), status: "error" });
+    }
+  },
+
+  async openCatalogAddon(u) {
+    set({
+      searchRequest: get().searchRequest + 1,
+      view: "search",
+      activeSourceId: u.source,
+      query: u.title,
+      status: "loading",
+      error: null,
+      results: [],
+      browseMode: "search",
+    });
+    try {
+      const r = await api.catalogAddon(u.addonId);
+      // El usuario pudo irse a otra cosa mientras cargaba.
+      if (get().query !== u.title || get().activeSourceId !== u.source) return;
+      set({ results: r, status: "success" });
+      catalogSeen();
     } catch (e) {
       set({ error: String(e), status: "error" });
     }
@@ -263,6 +308,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         browseHasMore: res.hasMore,
         browseMode: "browse",
       });
+      catalogSeen();
       // Actualizamos cache en página 1 — los resultados pueden haber
       // cambiado entre el preload y ahora.
       if (page === 1) {

@@ -28,6 +28,7 @@ import {
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 import { buildTerminatorPolygon } from "../lib/terminator";
+import { AirportCard } from "./AirportCard";
 
 /** (v4.18.1 → v4.21.0) Bandas del terminator día/noche. Cada banda es el
  *  polígono donde el sol está por debajo de `altitudeDeg`; al apilarlas
@@ -246,6 +247,10 @@ export function RoutesMapView({
   // inicial, dejando el state inconsistente. Ahora init es ONCE
   // en el on("load"), y todos los updates son `setData` puros.
   const [mapReady, setMapReady] = useState(false);
+  // (24/10) Aeropuertos del mapa: nombre + ICAO al pasar el ratón; tarjeta
+  // con sus datos al hacer clic.
+  const [airportHover, setAirportHover] = useState<{ x: number; y: number; icao: string; name: string | null } | null>(null);
+  const [airportCard, setAirportCard] = useState<{ icao: string; name: string | null } | null>(null);
 
   const simbriefFlights = useSimBriefStore((s) => s.flights);
   // (19/10) El plan del RIVAL (Crew VS) no está en `flights` (sólo los míos).
@@ -490,6 +495,62 @@ export function RoutesMapView({
           "circle-stroke-color": "#0f172a",
           "circle-opacity": 0.95,
         },
+      });
+      // (24/10) Aeropuertos clicables: un aro al pasar el ratón y un área
+      // invisible más grande que el punto para acertar fácil.
+      map.addLayer({
+        id: "rt-endpoints-hover",
+        type: "circle",
+        source: "rt-endpoints",
+        filter: ["==", ["get", "icao"], ""],
+        paint: {
+          "circle-radius": 8,
+          "circle-color": "rgba(0,0,0,0)",
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#34d399",
+        },
+      });
+      map.addLayer({
+        id: "rt-endpoints-hit",
+        type: "circle",
+        source: "rt-endpoints",
+        paint: { "circle-radius": 11, "circle-color": "#000000", "circle-opacity": 0 },
+      });
+      const airportOf = (e: maplibregl.MapLayerMouseEvent) => {
+        const p = e.features?.[0]?.properties;
+        const icao = typeof p?.icao === "string" ? p.icao : "";
+        const name = typeof p?.name === "string" && p.name ? p.name : null;
+        return icao ? { icao, name } : null;
+      };
+      // Vuelos sin nombre de aeropuerto guardado: se busca en la base.
+      const airportNames = new Map<string, string | null>();
+      map.on("mousemove", "rt-endpoints-hit", (e) => {
+        const a = airportOf(e);
+        if (!a) return;
+        map.getCanvas().style.cursor = "pointer";
+        map.setFilter("rt-endpoints-hover", ["==", ["get", "icao"], a.icao]);
+        const name = a.name ?? airportNames.get(a.icao) ?? null;
+        setAirportHover({ x: e.point.x, y: e.point.y, icao: a.icao, name });
+        if (!name && !airportNames.has(a.icao)) {
+          airportNames.set(a.icao, null);
+          void api
+            .lookupAirports([a.icao])
+            .then((rows) => {
+              const found = rows[0]?.name ?? null;
+              airportNames.set(a.icao, found);
+              if (found) setAirportHover((h) => (h && h.icao === a.icao ? { ...h, name: found } : h));
+            })
+            .catch(() => {});
+        }
+      });
+      map.on("mouseleave", "rt-endpoints-hit", () => {
+        map.getCanvas().style.cursor = "";
+        map.setFilter("rt-endpoints-hover", ["==", ["get", "icao"], ""]);
+        setAirportHover(null);
+      });
+      map.on("click", "rt-endpoints-hit", (e) => {
+        const a = airportOf(e);
+        if (a) setAirportCard(a);
       });
       // Track real — ámbar (modo detalle). Encima de todo para que
       // se vea bien sobre el globo satelital.
@@ -1214,7 +1275,7 @@ export function RoutesMapView({
       if (selected) {
         features.push({
           type: "Feature",
-          properties: { kind: "real", role: "origin", icao: selected.originIcao },
+          properties: { kind: "real", role: "origin", icao: selected.originIcao, name: selected.originName },
           geometry: {
             type: "Point",
             coordinates: [selected.originLon, selected.originLat],
@@ -1230,6 +1291,7 @@ export function RoutesMapView({
               kind: "real",
               role: "dest",
               icao: selected.destinationIcao,
+              name: selected.destinationName,
             },
             geometry: {
               type: "Point",
@@ -1246,12 +1308,12 @@ export function RoutesMapView({
         if (e.destinationLat === null || e.destinationLon === null) continue;
         features.push({
           type: "Feature",
-          properties: { kind: "real", role: "origin", icao: e.originIcao },
+          properties: { kind: "real", role: "origin", icao: e.originIcao, name: e.originName },
           geometry: { type: "Point", coordinates: [e.originLon, e.originLat] },
         });
         features.push({
           type: "Feature",
-          properties: { kind: "real", role: "dest", icao: e.destinationIcao },
+          properties: { kind: "real", role: "dest", icao: e.destinationIcao, name: e.destinationName },
           geometry: {
             type: "Point",
             coordinates: [e.destinationLon, e.destinationLat],
@@ -1729,6 +1791,25 @@ export function RoutesMapView({
       style={{ height }}
     >
       <div ref={containerRef} className="absolute inset-0" />
+      {/* (24/10) Aeropuerto bajo el ratón: nombre + ICAO. */}
+      {airportHover && (
+        <div
+          className="pointer-events-none absolute z-10 whitespace-nowrap rounded-lg border border-sf-border bg-sf-surface/95 px-2.5 py-1 text-xs text-sf-text shadow-lg"
+          style={{ left: airportHover.x + 14, top: airportHover.y - 34 }}
+        >
+          {airportHover.name && <>{airportHover.name} · </>}
+          <span className="font-mono text-emerald-300">{airportHover.icao}</span>
+        </div>
+      )}
+      {/* (24/10) Tarjeta del aeropuerto, dentro del mapa. */}
+      {airportCard && (
+        <AirportCard
+          key={airportCard.icao}
+          icao={airportCard.icao}
+          name={airportCard.name}
+          onClose={() => setAirportCard(null)}
+        />
+      )}
       {/* Leyenda flotante. En modo globo muestra los conteos; en
           modo detalle, sólo el badge ámbar del track real.
           (v3.5.0) Movida a top-RIGHT — la card de detalle vive en

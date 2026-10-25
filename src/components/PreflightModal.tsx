@@ -26,6 +26,8 @@ import { useToastStore } from "../stores/useToastStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useFerryStore } from "../stores/useFerryStore";
+import { fmtFerryDuration } from "../lib/preflight";
+import { FerryCountdown } from "./FerryCountdown";
 
 interface Props {
   onClose: () => void;
@@ -80,13 +82,10 @@ export function PreflightModal({ onClose }: Props) {
       const f = await useFerryStore
         .getState()
         .request(action.registration, action.toIcao, action.model);
-      const time = new Date(f.arrivesAt).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      const duration = fmtFerryDuration((Date.parse(f.arrivesAt) - Date.now()) / 60_000);
       pushToast({
         kind: "success",
-        title: t("preflight.ferry.requested", { to: f.toIcao, time }),
+        title: t("preflight.ferry.requested", { to: f.toIcao, duration }),
         message: t("preflight.ferry.requested_hint", { cost: action.cost }),
       });
     } catch (e) {
@@ -293,6 +292,16 @@ export function PreflightModal({ onClose }: Props) {
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-sf-text">
                       {t(c.titleKey, c.titleArgs)}
+                      {/* (24/10) Traslado en curso: cuenta atrás; al llegar, se recarga. */}
+                      {c.countdownTo && (
+                        <>
+                          {" "}
+                          <FerryCountdown
+                            to={c.countdownTo}
+                            onArrived={() => useFerryStore.setState((s) => ({ epoch: s.epoch + 1 }))}
+                          />
+                        </>
+                      )}
                     </p>
                     {c.detailKey && (
                       <p className="mt-0.5 text-[11px] leading-snug text-sf-muted">

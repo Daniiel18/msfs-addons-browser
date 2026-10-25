@@ -151,6 +151,28 @@ async fn fetch_one(
     secondary: &str,
     kind: &str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
+    fetch_sized(http, primary, secondary, kind, None).await
+}
+
+/// (24/10) Foto de un aeropuerto para la tarjeta del FlightBook: la miniatura
+/// de Wikipedia a `px` de ancho (la original pesa hasta 4 MB). Wikimedia sólo
+/// sirve anchos estándar (250, 330, 500, 960…).
+pub(crate) async fn fetch_airport_photo(
+    http: &reqwest::Client,
+    icao: &str,
+    name: &str,
+    px: u32,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    fetch_sized(http, icao, name, "airport", Some(px)).await
+}
+
+async fn fetch_sized(
+    http: &reqwest::Client,
+    primary: &str,
+    secondary: &str,
+    kind: &str,
+    thumb_px: Option<u32>,
+) -> anyhow::Result<Option<Vec<u8>>> {
     for term in [primary, secondary] {
         if term.is_empty() {
             continue;
@@ -206,18 +228,27 @@ async fn fetch_one(
         if !looks_right {
             continue;
         }
-        let img_url = body
-            .pointer("/originalimage/source")
-            .or_else(|| body.pointer("/thumbnail/source"))
-            .and_then(|v| v.as_str());
+        let img_url = match thumb_px {
+            // Miniatura de Wikimedia ".../320px-Foto.jpg": se pide al ancho que toca.
+            Some(px) => body.pointer("/thumbnail/source").and_then(|v| v.as_str()).map(|u| resize_thumb(u, px)),
+            None => body
+                .pointer("/originalimage/source")
+                .or_else(|| body.pointer("/thumbnail/source"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        };
         let Some(img_url) = img_url else {
             continue; // artículo sin foto
         };
-        let img = http
-            .get(img_url)
-            .timeout(std::time::Duration::from_secs(20))
-            .send()
-            .await?;
+        let get = |u: String| http.get(u).timeout(std::time::Duration::from_secs(20)).send();
+        let mut img = get(img_url.clone()).await?;
+        // Original más pequeña que el ancho pedido: Wikimedia no agranda;
+        // vale la miniatura tal cual.
+        if !img.status().is_success() && thumb_px.is_some() {
+            if let Some(orig) = body.pointer("/thumbnail/source").and_then(|v| v.as_str()).filter(|u| *u != img_url) {
+                img = get(orig.to_string()).await?;
+            }
+        }
         if !img.status().is_success() {
             continue;
         }
@@ -238,6 +269,17 @@ async fn fetch_one(
         return Ok(Some(bytes.to_vec()));
     }
     Ok(None)
+}
+
+/// ".../thumb/a/ab/Foto.jpg/320px-Foto.jpg" → mismo archivo a `px` de ancho.
+fn resize_thumb(url: &str, px: u32) -> String {
+    match url.rsplit_once('/') {
+        Some((dir, file)) => match file.split_once("px-") {
+            Some((w, rest)) if w.chars().all(|c| c.is_ascii_digit()) && !w.is_empty() => format!("{dir}/{px}px-{rest}"),
+            _ => url.to_string(),
+        },
+        None => url.to_string(),
+    }
 }
 
 /// (v5.0.0 N6) Imagen de marketing desde flightsim.to: busca el addon,
@@ -383,4 +425,20 @@ fn og_image(html: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wikimedia_thumbnail_is_asked_at_the_needed_width() {
+        let u = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/JFK_Airport.jpg/320px-JFK_Airport.jpg";
+        assert_eq!(
+            resize_thumb(u, 640),
+            "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/JFK_Airport.jpg/640px-JFK_Airport.jpg"
+        );
+        let plain = "https://upload.wikimedia.org/wikipedia/commons/a/ab/JFK_Airport.jpg";
+        assert_eq!(resize_thumb(plain, 640), plain, "sin tamaño en el nombre: tal cual");
+    }
 }

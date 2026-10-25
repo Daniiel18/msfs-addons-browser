@@ -34,6 +34,7 @@ import { Sidebar } from "./components/Sidebar";
 import { LiveUpdateBadge } from "./components/LiveUpdateBadge";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { UpdateWizard } from "./components/UpdateWizard";
+import { PendingUpdatesModal } from "./components/PendingUpdatesModal";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Toaster } from "./components/Toaster";
 import { LiveVsManager } from "./components/LiveVsManager";
@@ -62,7 +63,7 @@ import { SimVersionModal } from "./components/SimVersionModal";
 import { ImportInventoryModal } from "./components/ImportInventoryModal";
 import { CrossLinkModal } from "./components/CrossLinkModal";
 import type { CrossLinkOffer } from "./lib/types";
-import { isTestEnv } from "./lib/testEnv";
+import { isTestEnv, lockDisabled } from "./lib/testEnv";
 
 /**
  * Bootstrap centralizado: una sola tarea async awaita Promise.all
@@ -170,6 +171,19 @@ export default function App() {
       return false;
     }
   });
+  // (25/10) Una búsqueda pedida desde fuera (campanita, modal de updates,
+  // Ctrl+K) se ve aunque la última pestaña fuera flightsim.to.
+  const searchRequest = useAppStore((s) => s.searchRequest);
+  useEffect(() => {
+    if (searchRequest > 0) setFstoMode(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchRequest]);
+  // (25/10) …y una update de flightsim.to abre su pestaña de Explorar.
+  const fstoTabRequest = useAppStore((s) => s.fstoTabRequest);
+  useEffect(() => {
+    if (fstoTabRequest > 0) setFstoMode(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fstoTabRequest]);
   const setFstoMode = (on: boolean) => {
     setFstoModeState(on);
     try {
@@ -323,9 +337,10 @@ export default function App() {
   // (19/10) BLOQUEO DE INICIO: la app no se abre hasta verificar al usuario
   // de Windows (Windows Hello o su contraseña de Windows). La carga sigue en
   // segundo plano; al terminar, el bootstrap espera aquí al desbloqueo.
-  // En el modo demo (navegador) no hay bloqueo.
-  const [unlocked, setUnlocked] = useState(!isTauri);
-  const unlockedRef = useRef(!isTauri);
+  // En el modo demo (navegador) no hay bloqueo. (25/10) Ni en el entorno de
+  // pruebas (`tauri dev`); en producción, siempre.
+  const [unlocked, setUnlocked] = useState(!isTauri || lockDisabled());
+  const unlockedRef = useRef(!isTauri || lockDisabled());
   const unlockWaiterRef = useRef<(() => void) | null>(null);
   const [lockInfo, setLockInfo] = useState<{ helloAvailable: boolean; username: string } | null>(null);
   const [lockBusy, setLockBusy] = useState(false);
@@ -1178,6 +1193,7 @@ export default function App() {
       )}
       <DragDropOverlay />
       <UpdateWizard />
+      <PendingUpdatesModal />
       <Toaster />
       <LiveVsManager />
       <GsxUpdateGate />

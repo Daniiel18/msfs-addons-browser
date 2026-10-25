@@ -53,6 +53,9 @@ interface CommunityState {
    *  reciente. Lo expone aparte para que el splash lo cuente como
    *  un paso visible. */
   refreshUpdatesActive: () => Promise<void>;
+  /** (25/10) Relee las updates ya conocidas (sin red): tras explorar o
+   *  buscar en un catálogo, que la campanita y el modal las vean ya. */
+  reloadUpdates: () => Promise<void>;
   rescan: () => Promise<void>;
   /** Refresh manual — limpia primero todas las dismissed para que
    *  el usuario siempre vea lo que sigue pendiente. */
@@ -132,6 +135,15 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       throw e;
     } finally {
       set({ refreshing: false });
+    }
+  },
+
+  async reloadUpdates() {
+    try {
+      const updates = await api.listAvailableUpdates();
+      set({ updates });
+    } catch (e) {
+      console.warn("reloadUpdates falló:", e);
     }
   },
 

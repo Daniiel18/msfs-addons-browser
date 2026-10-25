@@ -29,7 +29,9 @@ import {
   airacUpdateVisible,
 } from "../stores/useAiracUpdateStore";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
-import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
+import { useFlightsimUpdateStore, useInstalledFlightsimUpdates } from "../stores/useFlightsimUpdateStore";
+import { useFstoEmbedStore } from "./FlightsimEmbed";
+import { updateOnMap } from "./PendingUpdatesModal";
 import { useGsxOfferStore } from "../stores/useGsxOfferStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
 import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
@@ -48,7 +50,6 @@ import type {
   UpdateInfo,
 } from "../lib/types";
 import { api } from "../lib/tauri";
-import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
 import { t } from "../lib/i18n";
 
 const APP_UPDATE_DISMISSED_KEY = "msfs-addons-browser:updater:dismissed-version";
@@ -71,7 +72,8 @@ export function NotificationsBell() {
   const dismissAll = useCommunityStore((s) => s.dismissAll);
   const startUpdateAll = useCommunityStore((s) => s.startUpdateAll);
   const setView = useAppStore((s) => s.setView);
-  const triggerSearch = useAppStore((s) => s.triggerSearch);
+  const openCatalogAddon = useAppStore((s) => s.openCatalogAddon);
+  const openFlightsimTab = useAppStore((s) => s.openFlightsimTab);
   const requestCrewVs = useAppStore((s) => s.requestCrewVs);
 
   const [open, setOpen] = useState(false);
@@ -101,7 +103,6 @@ export function NotificationsBell() {
   // (v6.2.60) Updates de addons descargados de flightsim.to por el embebido.
   // Clic → abre la página del addon (re-descargar) y avanza el baseline; la X
   // sólo lo descarta (también avanza el baseline).
-  const flightsimUpdatesMap = useFlightsimUpdateStore((s) => s.updates);
   const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
 
   // (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir → aviso en la campana;
@@ -136,12 +137,7 @@ export function NotificationsBell() {
   const fpsNotices = useFpsNoticesStore((s) => s.notices);
   const fpsDismiss = useFpsNoticesStore((s) => s.dismiss);
   const communityPackages = useCommunityStore((s) => s.packages);
-  // (v6.2.63) Sólo mostramos updates de flightsim.to de addons AÚN instalados
-  // (defensivo: cubre desinstalación manual fuera de la app; la desinstalación
-  // por la app ya borra la fila de tracking en el backend).
-  const flightsimUpdates = Array.from(flightsimUpdatesMap.values()).filter((u) =>
-    communityPackages.some((p) => p.folderName === u.folderName),
-  );
+  const flightsimUpdates = useInstalledFlightsimUpdates();
   const [perfPkg, setPerfPkg] = useState<CommunityPackage | null>(null);
   useEffect(() => {
     fpsStart();
@@ -223,14 +219,10 @@ export function NotificationsBell() {
     setOpen(false);
   };
 
+  // (25/10) Directo a la tarjeta de ese addon en su catálogo (antes una
+  // búsqueda por palabra clave que podía traer muchos resultados).
   const openInSearch = (u: AvailableUpdate) => {
-    // El SQL de la rama AIRCRAFT emite `icao = ""` para paquetes
-    // no-SCENERY (aviones, liveries, sounds). Sin este helper,
-    // clicar una update de A350/A320/etc. lanzaba `search("", source)`
-    // y caía en "Sin resultados para """. Ahora caemos a un keyword
-    // del título cuando el icao no es plausible.
-    const query = deriveUpdateSearchQuery(u.icao, u.title);
-    triggerSearch(query, u.source);
+    void openCatalogAddon(u);
     setOpen(false);
   };
 
@@ -503,8 +495,11 @@ export function NotificationsBell() {
                   <Download className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
                   <button
                     onClick={() => {
+                      // (25/10) En la pestaña flightsim.to de Explorar, como
+                      // los demás catálogos (antes, en otra ventana).
                       ackFlightsimUpdate(u.folderName);
-                      void api.openLiveryBrowser(u.link);
+                      useFstoEmbedStore.getState().openUrl(u.link);
+                      openFlightsimTab();
                       setOpen(false);
                     }}
                     className="min-w-0 flex-1 text-left"
@@ -758,7 +753,7 @@ export function NotificationsBell() {
                       <button
                         onClick={() => openInSearch(u)}
                         className="flex flex-1 items-start gap-3 px-4 py-3 text-left"
-                        title={t("notificationsBell.search_update_tooltip", { name: String(u.icao || u.title), source: u.source })}
+                        title={t("updates.modal.go_tooltip", { source: u.source })}
                       >
                         <div className="mt-1 shrink-0">
                           <Download className="h-4 w-4 text-amber-300" />
@@ -781,13 +776,16 @@ export function NotificationsBell() {
                         </div>
                       </button>
                       <div className="flex flex-col items-center gap-1 px-2 py-3">
-                        <button
-                          onClick={() => focusOnMap(u.folderName)}
-                          title={t("common.view_on_map")}
-                          className="rounded-md border border-sf-border p-1 text-sf-muted hover:border-brand-500/40 hover:text-sf-text"
-                        >
-                          <MapIcon className="h-3.5 w-3.5" />
-                        </button>
+                        {/* (25/10) Sólo escenarios: un avión no está en el mapa. */}
+                        {updateOnMap(u, communityPackages) && (
+                          <button
+                            onClick={() => focusOnMap(u.folderName)}
+                            title={t("common.view_on_map")}
+                            className="rounded-md border border-sf-border p-1 text-sf-muted hover:border-brand-500/40 hover:text-sf-text"
+                          >
+                            <MapIcon className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         <button
                           onClick={() => dismissUpdate(u.folderName)}
                           title={t("common.dismiss")}

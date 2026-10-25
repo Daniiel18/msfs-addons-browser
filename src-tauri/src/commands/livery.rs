@@ -20,6 +20,10 @@ use crate::download::manager::HosterStatus;
 
 const LIVERY_WIN: &str = "livery-browser";
 
+/// (24/10) La ventana de liveries se cerró con una descarga en curso: está
+/// oculta, bajando, y se cierra de verdad al terminar la última descarga.
+static LIVERY_CLOSING: AtomicBool = AtomicBool::new(false);
+
 /// (v7) Carpeta PADRE de extensiones para el WebView (contiene `ublock-lite/`).
 /// La prepara `lib.rs` al arranque (extrae el zip bundleado de uBlock Origin
 /// Lite). Las ventanas de descarga la usan para cargar la extensión y matar
@@ -96,6 +100,8 @@ pub async fn open_livery_browser(
     // nuevo ICAO en la misma ventana, no sólo focus.
     if let Some(w) = app.get_webview_window(LIVERY_WIN) {
         tracing::info!(target: "livery", "reabrir: navegar → {}", start);
+        // Si estaba oculta terminando una descarga, vuelve a ser la ventana normal.
+        LIVERY_CLOSING.store(false, Ordering::SeqCst);
         let _ = w.navigate(parsed);
         let _ = w.show();
         let _ = w.set_focus();
@@ -120,6 +126,9 @@ pub async fn open_livery_browser(
     let url_jobs_dl = url_jobs.clone();
     // Para el botón ✕ del overlay (cerrar la ventana de liveries).
     let app_cancel_lv = app.clone();
+    let app_close_lv = app.clone();
+    let url_jobs_done = url_jobs.clone();
+    LIVERY_CLOSING.store(false, Ordering::SeqCst);
 
     // (v6.2.55) FIX del render en BLANCO: proveer un `initialization_script`
     // fuerza a Tauri a preparar la tubería de inyección ANTES de navegar.
@@ -191,8 +200,22 @@ pub async fn open_livery_browser(
             );
         })
         .on_download(move |webview, event| {
+            let finished = matches!(event, tauri::webview::DownloadEvent::Finished { .. });
             // (19/10) Lógica compartida con el flightsim.to embebido en Explore.
-            handle_flightsim_download(&app_emit, &dl_dir_cb, &lfp_dl, &url_jobs_dl, &webview, event)
+            let keep = handle_flightsim_download(&app_emit, &dl_dir_cb, &lfp_dl, &url_jobs_dl, &webview, event);
+            // (24/10) Se había cerrado con la descarga en curso: terminada la
+            // última, se cierra de verdad (fuera de este callback de WebView2).
+            if finished && LIVERY_CLOSING.load(Ordering::SeqCst) && url_jobs_done.lock().unwrap().is_empty() {
+                LIVERY_CLOSING.store(false, Ordering::SeqCst);
+                let app = app_close_lv.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(w) = app.get_webview_window(LIVERY_WIN) {
+                        tracing::info!(target: "livery", "descargas terminadas: se cierra la ventana de liveries");
+                        let _ = w.destroy();
+                    }
+                });
+            }
+            keep
         });
     // (v7) uBlock Origin Lite también en la ventana de flightsim.to (misma
     // extensión; si no cargó, se ignora).
@@ -205,6 +228,24 @@ pub async fn open_livery_browser(
         builder = builder.parent(&main_win).map_err(|e| e.to_string())?;
     }
     let win = builder.build().map_err(|e| e.to_string())?;
+
+    // (24/10) Cerrar la ventana con una descarga en curso la dejaba en pausa
+    // para siempre: la descarga es del WebView2 de ESTA ventana. Ahora se oculta
+    // y sigue bajando (con su progreso en Descargas); se cierra sola al acabar.
+    {
+        let jobs = url_jobs.clone();
+        let w = win.clone();
+        win.on_window_event(move |e| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                if !jobs.lock().unwrap().is_empty() {
+                    api.prevent_close();
+                    LIVERY_CLOSING.store(true, Ordering::SeqCst);
+                    let _ = w.hide();
+                    tracing::info!(target: "livery", "ventana de liveries oculta: la descarga sigue en Descargas");
+                }
+            }
+        });
+    }
 
     // (v6.2.66) Ad blocker A NIVEL DE RED: bloquea las peticiones a dominios de
     // anuncios/tracking (no las oculta con CSS/JS). No toca el DOM ni la
@@ -586,17 +627,54 @@ pub(crate) fn handle_flightsim_download(
             // la página sigue usable y la descarga se ve en el panel de
             // Descargas como un job más, con progreso y "cancelar".
             let id = uuid::Uuid::new_v4().to_string();
-            url_jobs.lock().unwrap().insert(url.to_string(), id.clone());
+            // (25/10) El CDN de flightsim.to es público y admite reanudar: lo
+            // baja SimFleet (reanuda, reintenta) y la ventana se puede cerrar
+            // sin cortar nada. Si el CDN pidiera la sesión, va por el WebView.
+            let direct = is_flightsim_cdn(&url) && !flightsim_webview_only().lock().unwrap().contains(url.as_str());
+            if !direct {
+                url_jobs.lock().unwrap().insert(url.to_string(), id.clone());
+            }
             if let Some(state) = app_emit.try_state::<crate::AppState>() {
                 let downloads = state.downloads.clone();
-                let (title, u) = (fname.clone(), url.to_string());
+                let (title, u, job) = (fname.clone(), url.to_string(), id.clone());
                 tauri::async_runtime::spawn(async move {
                     downloads
-                        .register_external(id, title, "flightsim.to".into(), "flightsim.to".into(), u)
+                        .register_external(job, title, "flightsim.to".into(), "flightsim.to".into(), u)
                         .await;
                 });
             }
             let _ = app_emit.emit("embedded-download://started", fname.clone());
+            if direct {
+                let src_url = flightsim_source_page(webview, last_file_page);
+                let (app, u) = (app_emit.clone(), url.to_string());
+                let retry = webview.label().to_string();
+                tracing::info!(target: "livery", "descarga por SimFleet (directa): {} → {}", u, target.display());
+                tauri::async_runtime::spawn(async move {
+                    let res = fetch_direct_to_file(u.clone(), target.clone(), app.clone(), DirectSink::Job { id: id.clone() }).await;
+                    match res {
+                        Ok(_) => finish_flightsim_file(&app, &target, src_url.as_deref(), Some(&id), true),
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&target);
+                            let cancelled = external_cancels().lock().unwrap().remove(&id);
+                            if cancelled || e == CANCELLED {
+                                external_job(&app, &id, HosterStatus::Cancelled);
+                            } else if e.starts_with(AUTH_FALLBACK) {
+                                // Pide la sesión: se reintenta en la ventana (si sigue abierta).
+                                tracing::warn!(target: "livery", "el CDN pidió la sesión ({e}) → reintento en la ventana");
+                                flightsim_webview_only().lock().unwrap().insert(u.clone());
+                                external_job(&app, &id, HosterStatus::Failed(crate::tr!("livery.downloadFailed")));
+                                if let (Some(w), Ok(parsed)) = (app.get_webview(&retry), u.parse::<tauri::Url>()) {
+                                    let _ = w.navigate(parsed);
+                                }
+                            } else {
+                                tracing::warn!(target: "livery", "descarga directa falló: {e}");
+                                external_job(&app, &id, HosterStatus::Failed(crate::tr!("livery.downloadFailed")));
+                            }
+                        }
+                    }
+                });
+                return false;
+            }
             *destination = target;
         }
         DownloadEvent::Finished { url, path, success } => {
@@ -623,44 +701,59 @@ pub(crate) fn handle_flightsim_download(
             }
             if success {
                 if let Some(p) = path {
-                    // (v7) Corrección de extensión por firma (por si un CDN
-                    // sirve el archivo sin nombre).
-                    let fixed = fix_archive_extension(&p);
-                    let ps = fixed.to_string_lossy().to_string();
-                    // (v6.2.60) Asociar la descarga con la página de
-                    // flightsim.to de la que salió → tracking de updates.
-                    // Fuente primaria: la URL ACTUAL del webview (cubre la
-                    // navegación SPA, que no dispara on_navigation).
-                    // Respaldo: la última página de archivo navegada.
-                    let live = webview
-                        .url()
-                        .ok()
-                        .map(|u| u.to_string())
-                        .filter(|u| crate::flightsim_track::file_id_from_url(u).is_some());
-                    let src_url = live.or_else(|| last_file_page.lock().ok().and_then(|g| g.clone()));
-                    if let Some(fid) = src_url
-                        .as_deref()
-                        .and_then(crate::flightsim_track::file_id_from_url)
-                    {
-                        if let Some(state) = app_emit.try_state::<crate::AppState>() {
-                            if let Ok(mut m) = state.livery_downloads.lock() {
-                                tracing::info!(target: "livery", "descarga {} ↔ flightsim file_id={}", ps, fid);
-                                m.insert(ps.clone(), fid);
-                            }
-                        }
-                    }
-                    // (v8.3) Con el job → el frontend cuenta el procesado en
-                    // el panel de Descargas.
-                    let _ = app_emit.emit(
-                        "livery-download://finished",
-                        serde_json::json!({ "path": ps, "job": job }),
-                    );
+                    let src_url = flightsim_source_page(webview, last_file_page);
+                    // El job ya quedó como bajado arriba.
+                    finish_flightsim_file(app_emit, &p, src_url.as_deref(), job.as_deref(), false);
                 }
             }
         }
         _ => {}
     }
     true
+}
+
+/// (25/10) ¿Es el CDN público de flightsim.to (`cdn.*.flightsim.to`)?
+fn is_flightsim_cdn(url: &tauri::Url) -> bool {
+    url.host_str().is_some_and(|h| h.starts_with("cdn") && (h == "flightsim.to" || h.ends_with(".flightsim.to")))
+}
+
+/// URLs del CDN que pidieron la sesión del navegador: van por el WebView.
+fn flightsim_webview_only() -> &'static Mutex<HashSet<String>> {
+    static ONLY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ONLY.get_or_init(Default::default)
+}
+
+/// (v6.2.60) Página de flightsim.to de la que sale una descarga (tracking de
+/// updates del addon): la URL ACTUAL del webview (cubre la navegación SPA,
+/// que no dispara on_navigation) o, si no, la última página de archivo.
+fn flightsim_source_page(webview: &tauri::Webview, last_file_page: &Arc<Mutex<Option<String>>>) -> Option<String> {
+    let live = webview
+        .url()
+        .ok()
+        .map(|u| u.to_string())
+        .filter(|u| crate::flightsim_track::file_id_from_url(u).is_some());
+    live.or_else(|| last_file_page.lock().ok().and_then(|g| g.clone()))
+}
+
+/// Archivo de flightsim.to ya bajado: corrige la extensión por firma (por si
+/// el CDN lo sirve sin nombre), lo asocia a su `file_id` (tracking de
+/// updates) y avisa al front para instalarlo. `job`: el de Descargas, si lo
+/// lleva SimFleet (directa), para marcarlo como bajado.
+fn finish_flightsim_file(app: &tauri::AppHandle, path: &Path, src_url: Option<&str>, job: Option<&str>, mark_done: bool) {
+    let fixed = fix_archive_extension(path);
+    let ps = fixed.to_string_lossy().to_string();
+    if let Some(fid) = src_url.and_then(crate::flightsim_track::file_id_from_url) {
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            if let Ok(mut m) = state.livery_downloads.lock() {
+                tracing::info!(target: "livery", "descarga {} ↔ flightsim file_id={}", ps, fid);
+                m.insert(ps.clone(), fid);
+            }
+        }
+    }
+    if let Some(id) = job.filter(|_| mark_done) {
+        external_job(app, id, HosterStatus::Downloaded);
+    }
+    let _ = app.emit("livery-download://finished", serde_json::json!({ "path": ps, "job": job }));
 }
 
 /// (v8.3) URL de cada descarga de flightsim.to en curso → id de su job en el
@@ -1661,6 +1754,8 @@ fn pick_download_name(suggested: Option<&str>, url: &tauri::Url) -> String {
 /// rechaza la descarga sin la sesión del navegador (401/403 al primer intento,
 /// sin bytes): el enlace se reintenta dentro del WebView, que sí la tiene.
 const AUTH_FALLBACK: &str = "AUTH:";
+/// Error de una descarga directa que el usuario canceló.
+const CANCELLED: &str = "cancelado";
 
 /// (v7) Corrige la extensión de un archivo descargado según sus BYTES MÁGICOS
 /// (la firma del contenido), no según la URL. Los hosters sirven el archivo
@@ -1852,8 +1947,7 @@ impl DirectCtx {
                 url.clone(),
                 target.clone(),
                 ctx.app.clone(),
-                ctx.label.clone(),
-                part_label,
+                DirectSink::Hoster { win_label: ctx.label.clone(), part_label },
             )
             .await;
             match result {
@@ -2048,12 +2142,55 @@ fn hoster_job(app: &tauri::AppHandle, win_label: &str, status: HosterStatus) {
 /// WebView2 se cuelga). Aborta si la ventana se cerró (cancelar). `part_label`
 /// se muestra como "parte X de N". (v8.3) Devuelve el nombre de archivo del
 /// `Content-Disposition`, si lo hubo, y cuenta el progreso al panel de Descargas.
+/// (25/10) A quién avisa del progreso una descarga directa y qué la cancela.
+#[derive(Clone)]
+enum DirectSink {
+    /// Ventana de hoster: progreso en su overlay y en su job; cerrar la
+    /// ventana cancela.
+    Hoster { win_label: String, part_label: String },
+    /// Livery de flightsim.to: progreso en su job de Descargas; sólo la
+    /// cancela el botón del panel (la ventana se puede cerrar).
+    Job { id: String },
+}
+
+impl DirectSink {
+    fn cancelled(&self, app: &tauri::AppHandle) -> bool {
+        match self {
+            DirectSink::Hoster { win_label, .. } => app.get_webview_window(win_label).is_none(),
+            DirectSink::Job { id } => external_cancels().lock().unwrap().contains(id),
+        }
+    }
+
+    fn overlay(&self, app: &tauri::AppHandle, pct: f64, bps: f64, eta: &str) {
+        if let DirectSink::Hoster { win_label, part_label } = self {
+            if let Some(w) = app.get_webview_window(win_label) {
+                let js = format!(
+                    "window.__sfPart={part_label:?};window.__sfProgress&&window.__sfProgress({pct:.1},'{}','{}')",
+                    fmt_speed(bps),
+                    eta
+                );
+                let _ = w.eval(&js);
+            }
+        }
+    }
+
+    fn job(&self, app: &tauri::AppHandle, done: u64, total: u64, bps: u64) {
+        match self {
+            DirectSink::Hoster { win_label, part_label } => hoster_job(
+                app,
+                win_label,
+                HosterStatus::Progress { done, total, bps, part: (!part_label.is_empty()).then(|| part_label.clone()) },
+            ),
+            DirectSink::Job { id } => external_job(app, id, HosterStatus::Progress { done, total, bps, part: None }),
+        }
+    }
+}
+
 async fn fetch_direct_to_file(
     url: String,
     target: PathBuf,
     app: tauri::AppHandle,
-    win_label: String,
-    part_label: String,
+    sink: DirectSink,
 ) -> Result<Option<String>, String> {
     use futures_util::StreamExt;
     use std::time::Duration;
@@ -2073,9 +2210,9 @@ async fn fetch_direct_to_file(
     let mut last_err = String::new();
     let mut server_name: Option<String> = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        // Cancelado (ventana cerrada) antes de (re)empezar.
-        if app.get_webview_window(&win_label).is_none() {
-            return Err("cancelado (ventana cerrada)".into());
+        // Cancelado (ventana cerrada / botón del panel) antes de (re)empezar.
+        if sink.cancelled(&app) {
+            return Err(CANCELLED.into());
         }
         // Reanuda desde lo ya bajado (si quedó algo de un intento previo).
         let have = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
@@ -2141,8 +2278,8 @@ async fn fetch_direct_to_file(
             // un stall (reintenta/reanuda) o el usuario canceló (ventana cerrada).
             let chunk = match tokio::time::timeout(Duration::from_secs(STALL_SECS), stream.next()).await {
                 Err(_) => {
-                    if app.get_webview_window(&win_label).is_none() {
-                        return Err("cancelado (ventana cerrada)".into());
+                    if sink.cancelled(&app) {
+                        return Err(CANCELLED.into());
                     }
                     last_err = format!("sin datos {STALL_SECS}s (stall)");
                     mid_fail = true;
@@ -2163,9 +2300,9 @@ async fn fetch_direct_to_file(
             let now = std::time::Instant::now();
             let dt = now.duration_since(last_t).as_secs_f64();
             if dt >= 0.3 {
-                // ¿Ventana cerrada (el usuario canceló)? → abortar limpio.
-                if app.get_webview_window(&win_label).is_none() {
-                    return Err("cancelado (ventana cerrada)".into());
+                // ¿El usuario canceló? → abortar limpio.
+                if sink.cancelled(&app) {
+                    return Err(CANCELLED.into());
                 }
                 let bps = (downloaded - last_bytes) as f64 / dt;
                 last_bytes = downloaded;
@@ -2180,25 +2317,10 @@ async fn fetch_direct_to_file(
                 } else {
                     String::new()
                 };
-                if let Some(w) = app.get_webview_window(&win_label) {
-                    let js = format!(
-                        "window.__sfPart={part_label:?};window.__sfProgress&&window.__sfProgress({pct:.1},'{}','{}')",
-                        fmt_speed(bps), eta
-                    );
-                    let _ = w.eval(&js);
-                }
+                sink.overlay(&app, pct, bps, &eta);
                 if last_job.elapsed().as_secs_f64() >= 1.0 {
                     last_job = std::time::Instant::now();
-                    hoster_job(
-                        &app,
-                        &win_label,
-                        HosterStatus::Progress {
-                            done: downloaded,
-                            total,
-                            bps: bps as u64,
-                            part: (!part_label.is_empty()).then(|| part_label.clone()),
-                        },
-                    );
+                    sink.job(&app, downloaded, total, bps as u64);
                 }
             }
         }

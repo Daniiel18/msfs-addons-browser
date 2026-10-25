@@ -1,6 +1,8 @@
+import { useMemo } from "react";
 import { create } from "zustand";
 import { api } from "../lib/tauri";
 import type { FlightsimUpdate } from "../lib/types";
+import { useCommunityStore } from "./useCommunityStore";
 
 /**
  * (v6.2.60) Updates de addons descargados de flightsim.to por el navegador
@@ -49,3 +51,16 @@ export const useFlightsimUpdateStore = create<FlightsimUpdateState>((set, get) =
     void api.flightsimAckUpdate(folderName);
   },
 }));
+
+/** (v6.2.63) Sólo las de addons AÚN instalados (defensivo: cubre la
+ *  desinstalación manual fuera de la app; la de la app ya borra el
+ *  rastreo). (25/10) Una sola lista para la campanita, el modal de updates
+ *  y la cuenta de Inicio. */
+export function useInstalledFlightsimUpdates(): FlightsimUpdate[] {
+  const map = useFlightsimUpdateStore((s) => s.updates);
+  const packages = useCommunityStore((s) => s.packages);
+  return useMemo(
+    () => Array.from(map.values()).filter((u) => packages.some((p) => p.folderName === u.folderName)),
+    [map, packages],
+  );
+}

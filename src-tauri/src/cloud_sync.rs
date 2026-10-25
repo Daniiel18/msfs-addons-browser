@@ -945,6 +945,9 @@ pub async fn purge(
 // Snapshot model
 // =============================================================================
 
+/// (24/10) v3: + libro (`ledger`) y borrados (`deleted`).
+const SNAPSHOT_VERSION: u32 = 3;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
@@ -962,6 +965,13 @@ struct Snapshot {
     /// para que el re-scoring funcione desde cualquier máquina.
     #[serde(default)]
     flight_log_phase: Vec<serde_json::Value>,
+    /// (24/10) Libro de mantenimiento y finanzas (Tech Log de SimFleet,
+    /// cobros, líneas de GSX, políticas, traslados…) — `ledger_sync`.
+    #[serde(default)]
+    ledger: crate::ledger_sync::Ledger,
+    /// (24/10) Lo borrado a propósito: no vuelve y se borra en las demás PCs.
+    #[serde(default)]
+    deleted: Vec<crate::ledger_sync::Tombstone>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -1005,7 +1015,7 @@ async fn build_snapshot(pool: &SqlitePool) -> anyhow::Result<Snapshot> {
     .fetch_all(pool)
     .await?;
     Ok(Snapshot {
-        version: 2,
+        version: SNAPSHOT_VERSION,
         exported_at: chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string(),
@@ -1014,6 +1024,8 @@ async fn build_snapshot(pool: &SqlitePool) -> anyhow::Result<Snapshot> {
         settings: settings_rows,
         flight_log_score_item: score_rows.iter().map(row_to_json).collect(),
         flight_log_phase: phase_rows.iter().map(row_to_json).collect(),
+        ledger: crate::ledger_sync::export(pool).await?,
+        deleted: crate::ledger_sync::load_tombstones(pool).await?,
     })
 }
 
@@ -1021,7 +1033,7 @@ async fn build_snapshot(pool: &SqlitePool) -> anyhow::Result<Snapshot> {
 /// objeto, con claves en camelCase y valores tipados según el `type
 /// info` de SQLite (INTEGER → number, REAL → number, TEXT → string,
 /// NULL → null).
-fn row_to_json(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
+pub(crate) fn row_to_json(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
     use sqlx::{Column, Row, TypeInfo, ValueRef};
     let mut obj = serde_json::Map::new();
     for (i, col) in row.columns().iter().enumerate() {
@@ -1201,6 +1213,16 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         .await
         .unwrap_or(0)
         == 0;
+    // (24/10) Lo borrado a propósito no se restaura (ni sus tracks/fases).
+    crate::ledger_sync::apply_remote_tombstones(pool, &snap.deleted).await?;
+    let tombs = crate::ledger_sync::load_tombstones(pool).await?;
+    let dead = crate::ledger_sync::active_keys(&tombs, crate::ledger_sync::KIND_FLIGHT);
+    let dead_ids: std::collections::HashSet<i64> = snap
+        .flight_log
+        .iter()
+        .filter(|r| crate::ledger_sync::flight_row_dead(r, &dead))
+        .filter_map(|r| r.get("id").and_then(|v| v.as_i64()))
+        .collect();
     // (v7.4.2) Mismo problema que `merge_remote_snapshot`: el snapshot puede
     // traer el mismo nº de vuelo el mismo día en varias sesiones y el índice
     // `uq_flight_log_va_dedup_completed` tumbaba el restore entero (lo vio el
@@ -1232,6 +1254,9 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
             Some(v) => v,
             None => continue,
         };
+        if dead_ids.contains(&id) {
+            continue;
+        }
         let started_at = json_str(row, "startedAt").unwrap_or_default();
         // (v3.6.0 Phase H) Extendido para incluir flight_number,
         // callsign, airline_icao, status y los score_* del scoring
@@ -1253,12 +1278,13 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         } else {
             upsert(false).execute(&mut *tx).await?;
         }
+        complete_flight(&mut tx, row, id, true).await?;
         flights += 1;
     }
     for row in &snap.flight_log_track {
         let flight_id = json_i64(row, "flightId").unwrap_or(0);
         let ts = json_str(row, "ts").unwrap_or_default();
-        if flight_id == 0 || ts.is_empty() {
+        if flight_id == 0 || ts.is_empty() || dead_ids.contains(&flight_id) {
             continue;
         }
         // (v2.2.0) FIX: la columna real en la tabla es `gs_kt`, no
@@ -1359,7 +1385,7 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
     // (re-scoring desde otra máquina) pise el local. La FK con CASCADE
     // garantiza que estos quedaron limpios si el vuelo padre se borró.
     for row in &snap.flight_log_score_item {
-        let Some(flight_id) = json_i64(row, "flightId") else { continue };
+        let Some(flight_id) = json_i64(row, "flightId").filter(|id| !dead_ids.contains(id)) else { continue };
         let Some(phase) = json_str(row, "phase") else { continue };
         let Some(rule_id) = json_str(row, "ruleId") else { continue };
         sqlx::query(
@@ -1391,7 +1417,7 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
     }
 
     for row in &snap.flight_log_phase {
-        let Some(flight_id) = json_i64(row, "flightId") else { continue };
+        let Some(flight_id) = json_i64(row, "flightId").filter(|id| !dead_ids.contains(id)) else { continue };
         let Some(phase) = json_str(row, "phase") else { continue };
         let Some(entered_at) = json_str(row, "enteredAt") else { continue };
         sqlx::query(
@@ -1434,11 +1460,53 @@ async fn restore_snapshot(pool: &SqlitePool, snap: &Snapshot) -> anyhow::Result<
         }
     }
 
+    // (24/10) El libro (Tech Log, cobros, GSX…) y lo derivado.
+    crate::ledger_sync::apply(pool, &snap.ledger, &tombs).await?;
+    settle_after_sync(pool).await;
+
     Ok(RestoreReport {
         flights,
         tracks,
         settings,
     })
+}
+
+/// (24/10) Columnas del vuelo que los INSERT de la nube no llevaban (se
+/// añadieron después): sin ellas otra PC calculaba otro desgaste y otro
+/// dinero (frenos, neumáticos, rebotes) y perdía la ruta y el OFP.
+/// `with_source`: el restore por id tampoco llevaba origen ni id externo.
+async fn complete_flight(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    row: &serde_json::Value,
+    id: i64,
+    with_source: bool,
+) -> anyhow::Result<()> {
+    const EXTRA: &[(&str, &str)] = &[
+        ("simbriefOfpId", "simbrief_ofp_id"),
+        ("bounced", "bounced"),
+        ("maxBrakeTempC", "max_brake_temp_c"),
+        ("routeFixes", "route_fixes"),
+        ("partialAck", "partial_ack"),
+        ("maxTireWearPct", "max_tire_wear_pct"),
+        ("source", "source"),
+        ("externalId", "external_id"),
+    ];
+    for (key, col) in EXTRA {
+        if !with_source && matches!(*key, "source" | "externalId") {
+            continue;
+        }
+        let q = format!("UPDATE flight_log SET {col} = ?1 WHERE id = ?2");
+        let q = match row.get(*key) {
+            Some(serde_json::Value::String(v)) => sqlx::query(&q).bind(v.clone()),
+            Some(serde_json::Value::Number(n)) => match n.as_i64() {
+                Some(i) => sqlx::query(&q).bind(i),
+                None => sqlx::query(&q).bind(n.as_f64()),
+            },
+            _ => continue,
+        };
+        q.bind(id).execute(&mut **tx).await?;
+    }
+    Ok(())
 }
 
 fn json_str(v: &serde_json::Value, key: &str) -> Option<String> {
@@ -1842,46 +1910,67 @@ pub struct DownloadReport {
     pub skipped_existing: usize,
     pub new_tracks: usize,
     pub new_settings: usize,
+    /// (24/10) Vuelos borrados aquí porque se borraron en otra PC.
+    pub deleted_flights: usize,
+    /// (24/10) Cambios del libro traídos (aviones, cobros, líneas GSX…).
+    pub ledger_changes: usize,
 }
 
-/// **Subir** TODO el contenido local a la nube (sobrescribe el snapshot
-/// remoto). Incluye vuelos sim-flown + imports (VAS-ACARS) + tracks +
-/// settings con prefijo `pref_`. Operación idempotente: re-subir no
-/// duplica nada porque el cloud guarda un único snapshot.
-pub async fn upload_all(
-    pool: &SqlitePool,
-    http: &reqwest::Client,
-    app: Option<&AppHandle>,
-) -> anyhow::Result<UploadReport> {
-    // (v7 fix, race) Serializa con las demás operaciones RMW del snapshot cloud.
-    let _cloud_guard = CLOUD_LOCK.lock().await;
-    use std::collections::{HashMap, HashSet};
-    tracing::info!(target: "cloud", "upload_all: merge incremental local → nube…");
-    // (v6.2.16) Marca el subsistema "cloud" como ocupado mientras dura la
-    // subida — el panel de Diagnóstico lo muestra en vivo. El guard garantiza
-    // el reset aunque salgamos por error (`?`).
-    crate::diagnostics::note_cloud_busy(true);
-    struct BusyGuard;
-    impl Drop for BusyGuard {
-        fn drop(&mut self) {
-            crate::diagnostics::note_cloud_busy(false);
-        }
-    }
-    let _busy = BusyGuard;
-    let access_token = fresh_access_token(pool, http).await?;
+/// (24/10) Tras bajar vuelos, borrados o el libro: lo derivado se rehace
+/// (Tech Log de vuelos que ya no están, P&L huérfanos, economía).
+async fn settle_after_sync(pool: &SqlitePool) {
+    crate::flight_log::cascade_after_delete(pool).await;
+}
 
-    // 1. Snapshot local (todo lo que hay en este PC).
+/// (24/10) Lo que `upload_all` sube: la nube (`merged`) + lo de esta PC, sin
+/// lo borrado. Separado de la red para poder probarlo.
+struct UploadMerge {
+    snapshot: Snapshot,
+    report: UploadReport,
+    /// ¿Hay algo que la nube aún no tenga?
+    changed: bool,
+    removed_flights: usize,
+    ledger_changed: bool,
+}
+
+async fn merge_for_upload(pool: &SqlitePool, mut merged: Snapshot) -> anyhow::Result<UploadMerge> {
+    use std::collections::{HashMap, HashSet};
+    // 2. (24/10) Borrados: los de otras PCs se aplican aquí antes de subir
+    //    (si no, esta PC volvería a subir lo borrado), y los vuelos que se
+    //    reimportaron aquí después de borrarlos dejan de estar borrados.
+    if crate::ledger_sync::apply_remote_tombstones(pool, &merged.deleted).await? > 0 {
+        settle_after_sync(pool).await;
+    }
+    crate::ledger_sync::revive_readded(pool).await?;
+
+    // Snapshot local (todo lo que hay en este PC).
     let local = build_snapshot(pool).await?;
 
-    // 2. Snapshot remoto actual (si existe) — base del merge. Si está
-    //    corrupto, partimos de vacío (recuperación: se reescribe entero).
-    let remote_file_id = find_sync_file(http, &access_token, crate::test_env::sync_upload_file_name()).await?;
-    // La bajada interna del snapshot remoto (para mergear) NO emite
-    // progreso — así la barra de "Subir" solo muestra la fase de subida.
-    let mut merged: Snapshot = match download_sync_file(http, &access_token, None, crate::test_env::sync_upload_file_name()).await? {
-        Some(t) => serde_json::from_str(&t).unwrap_or_default(),
-        None => Snapshot::default(),
-    };
+    // Lo borrado sale de la nube (vuelos con sus tracks, fases y puntos).
+    let tombs = crate::ledger_sync::union_tombstones(&merged.deleted, &local.deleted);
+    let dead = crate::ledger_sync::active_keys(&tombs, crate::ledger_sync::KIND_FLIGHT);
+    let dead_ids: HashSet<i64> = merged
+        .flight_log
+        .iter()
+        .filter(|r| crate::ledger_sync::flight_row_dead(r, &dead))
+        .filter_map(|r| r.get("id").and_then(|v| v.as_i64()))
+        .collect();
+    let removed_flights = merged.flight_log.len();
+    merged.flight_log.retain(|r| !crate::ledger_sync::flight_row_dead(r, &dead));
+    let removed_flights = removed_flights - merged.flight_log.len();
+    if !dead_ids.is_empty() {
+        let alive = |r: &serde_json::Value| !r.get("flightId").and_then(|v| v.as_i64()).is_some_and(|id| dead_ids.contains(&id));
+        merged.flight_log_track.retain(alive);
+        merged.flight_log_phase.retain(alive);
+        merged.flight_log_score_item.retain(alive);
+    }
+
+    // Libro: unión de la nube y esta PC, sin lo borrado.
+    let ledger = crate::ledger_sync::merge(&merged.ledger, &local.ledger, &tombs);
+    let ledger_changed = ledger != merged.ledger;
+    let deleted_changed = tombs != crate::ledger_sync::union_tombstones(&merged.deleted, &[]);
+    merged.ledger = ledger;
+    merged.deleted = tombs;
 
     // 3. Índice de claves estables de los vuelos que YA están en la nube
     //    + el id máximo usado (para asignar ids nuevos sin colisión).
@@ -1967,7 +2056,7 @@ pub async fn upload_all(
         .into_iter()
         .map(|(key, value)| SettingKV { key, value })
         .collect();
-    merged.version = 2;
+    merged.version = SNAPSHOT_VERSION;
     merged.exported_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let report = UploadReport {
@@ -1976,10 +2065,51 @@ pub async fn upload_all(
         uploaded_settings: merged.settings.len(),
     };
 
+    let changed = new_flights > 0 || settings_changed || removed_flights > 0 || ledger_changed || deleted_changed;
+    Ok(UploadMerge { snapshot: merged, report, changed, removed_flights, ledger_changed })
+}
+
+/// **Subir** TODO el contenido local a la nube (sobrescribe el snapshot
+/// remoto). Incluye vuelos sim-flown + imports (VAS-ACARS) + tracks +
+/// settings con prefijo `pref_`. Operación idempotente: re-subir no
+/// duplica nada porque el cloud guarda un único snapshot.
+pub async fn upload_all(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+    app: Option<&AppHandle>,
+) -> anyhow::Result<UploadReport> {
+    // (v7 fix, race) Serializa con las demás operaciones RMW del snapshot cloud.
+    let _cloud_guard = CLOUD_LOCK.lock().await;
+    tracing::info!(target: "cloud", "upload_all: merge incremental local → nube…");
+    // (v6.2.16) Marca el subsistema "cloud" como ocupado mientras dura la
+    // subida — el panel de Diagnóstico lo muestra en vivo. El guard garantiza
+    // el reset aunque salgamos por error (`?`).
+    crate::diagnostics::note_cloud_busy(true);
+    struct BusyGuard;
+    impl Drop for BusyGuard {
+        fn drop(&mut self) {
+            crate::diagnostics::note_cloud_busy(false);
+        }
+    }
+    let _busy = BusyGuard;
+    let access_token = fresh_access_token(pool, http).await?;
+
+    // 1. Snapshot remoto actual (si existe) — base del merge. Si está
+    //    corrupto, partimos de vacío (recuperación: se reescribe entero).
+    let remote_file_id = find_sync_file(http, &access_token, crate::test_env::sync_upload_file_name()).await?;
+    // La bajada interna del snapshot remoto (para mergear) NO emite
+    // progreso — así la barra de "Subir" solo muestra la fase de subida.
+    let cloud: Snapshot = match download_sync_file(http, &access_token, None, crate::test_env::sync_upload_file_name()).await? {
+        Some(t) => serde_json::from_str(&t).unwrap_or_default(),
+        None => Snapshot::default(),
+    };
+
+    let UploadMerge { snapshot: merged, report, changed, removed_flights, ledger_changed } = merge_for_upload(pool, cloud).await?;
+
     // 6. Si no hay nada nuevo que añadir y los settings no cambiaron, y ya
     //    existe un snapshot remoto, no re-subimos el archivo entero — era
     //    justo lo que el usuario no quería ("que no suba todo otra vez").
-    if new_flights == 0 && !settings_changed && remote_file_id.is_some() {
+    if !changed && remote_file_id.is_some() {
         tracing::info!(
             target: "cloud",
             "upload_all: nada nuevo que subir — la nube ya tiene todos los vuelos locales"
@@ -1999,9 +2129,11 @@ pub async fn upload_all(
     let payload = serde_json::to_string(&merged)?;
     tracing::info!(
         target: "cloud",
-        "upload_all: merge listo — +{} vuelos nuevos (+{} tracks) · nube ahora {} vuelos · JSON {:.1} MB (gz)",
-        new_flights,
-        new_tracks,
+        "upload_all: merge listo — +{} vuelos nuevos (+{} tracks), −{} borrados · libro {} · nube ahora {} vuelos · JSON {:.1} MB (gz)",
+        report.uploaded_flights,
+        report.uploaded_tracks,
+        removed_flights,
+        if ledger_changed { "actualizado" } else { "sin cambios" },
         merged.flight_log.len(),
         payload.len() as f64 / 1_048_576.0,
     );
@@ -2103,8 +2235,15 @@ async fn merge_remote_snapshot(
     pool: &SqlitePool,
     remote: &Snapshot,
 ) -> anyhow::Result<DownloadReport> {
-    let mut report = DownloadReport::default();
-    report.cloud_flights = remote.flight_log.len();
+    // (24/10) Primero los borrados de otras PCs: esos vuelos se van de aquí
+    // (con su Tech Log y su dinero) y no se vuelven a bajar.
+    let mut report = DownloadReport {
+        cloud_flights: remote.flight_log.len(),
+        deleted_flights: crate::ledger_sync::apply_remote_tombstones(pool, &remote.deleted).await?,
+        ..Default::default()
+    };
+    let tombs = crate::ledger_sync::load_tombstones(pool).await?;
+    let dead = crate::ledger_sync::active_keys(&tombs, crate::ledger_sync::KIND_FLIGHT);
 
     // Construye índice de claves estables existentes en local para
     // hacer dedup eficiente. Un vuelo coincide si:
@@ -2173,6 +2312,9 @@ async fn merge_remote_snapshot(
             report.skipped_existing += 1;
             continue;
         }
+        if crate::ledger_sync::flight_row_dead(row, &dead) {
+            continue;
+        }
 
         // Auto-cierre del ended_at si es NULL (vuelo "en curso" en
         // otra máquina) — evita el bug de FLYING NOW phantom.
@@ -2237,6 +2379,7 @@ async fn merge_remote_snapshot(
         local_keys.insert(sim_key);
 
         let new_id = result.last_insert_rowid();
+        complete_flight(&mut tx, row, new_id, false).await?;
         if let Some(cid) = cloud_id {
             cloud_to_local_id.insert(cid, new_id);
         }
@@ -2410,6 +2553,14 @@ async fn merge_remote_snapshot(
     }
 
     tx.commit().await?;
+
+    // (24/10) El libro (Tech Log, cobros, GSX…) después de los vuelos: sus
+    // registros se enlazan a los vuelos por clave estable.
+    let ledger = crate::ledger_sync::apply(pool, &remote.ledger, &tombs).await?;
+    report.ledger_changes = ledger.airframes + ledger.mx_flights + ledger.maintenance + ledger.gsx_lines + ledger.other;
+    if report.new_flights > 0 || report.deleted_flights > 0 || ledger.any() {
+        settle_after_sync(pool).await;
+    }
     Ok(report)
 }
 
@@ -2970,5 +3121,248 @@ mod download_merge_tests {
         let empty = mem_pool().await;
         let rr = restore_snapshot(&empty, &snap).await.expect("restore del snapshot real");
         println!("restore en DB vacía: vuelos={} tracks={}", rr.flights, rr.tracks);
+    }
+}
+
+#[cfg(test)]
+mod ledger_cloud_tests {
+    //! (24/10) Dos PCs y la nube, sin red: el Tech Log y las finanzas viajan,
+    //! lo borrado en una PC se borra en la otra con todo lo suyo y no vuelve,
+    //! y sin cambios no se re-sube.
+    use super::*;
+    use crate::ledger_sync::{self, KIND_MAINT};
+    use crate::mx::recorder::{FlightRecord, LandingRec};
+
+    async fn pc() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// La nube guarda JSON: lo que baja es lo que se serializó.
+    fn via_cloud(s: &Snapshot) -> Snapshot {
+        serde_json::from_str(&serde_json::to_string(s).unwrap()).unwrap()
+    }
+
+    async fn fly(pool: &SqlitePool, started: &str, sink_fpm: f64) -> i64 {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO flight_log (started_at, ended_at, origin_lat, origin_lon, origin_icao, destination_icao,
+                                     aircraft_title, aircraft_atc_type, aircraft_registration, status, source, flight_time_s)
+             VALUES (?1, ?1, 40.47, -3.56, 'LEMD', 'LEBL', 'iFly 737-MAX8 Test', 'B38M', 'EC-TST', 'completed', 'simconnect', 3600)
+             RETURNING id",
+        )
+        .bind(started)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let rec = FlightRecord {
+            flight_id: id,
+            block_h: 1.0,
+            air_h: 0.8,
+            eng_h: [1.0, 1.0],
+            eng_starts: [1, 1],
+            eng_ran: [true, true],
+            takeoffs: 1,
+            landings: vec![LandingRec { sink_fpm, peak_g: 1.3, weight_kg: 60_000.0, gs_kt: 135.0, ..Default::default() }],
+            ..Default::default()
+        };
+        crate::mx::store::commit_flight(pool, rec, Some(-(sink_fpm as i64))).await.unwrap();
+        id
+    }
+
+    /// Tech Log del avión sin ids (cada PC tiene los suyos). A 6 decimales: el
+    /// JSON de la nube puede mover el último bit de un REAL.
+    async fn techlog(pool: &SqlitePool) -> (Vec<(String, String, i64, f64, f64, String)>, Vec<(String, String)>, String) {
+        let comps = sqlx::query_as("SELECT key, position, serial, ROUND(wear, 6), ROUND(basis_at_install, 6), status FROM mx_component ORDER BY key, position")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let defects = sqlx::query_as("SELECT title, status FROM mx_defect ORDER BY title, status")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let counters = sqlx::query_scalar("SELECT counters FROM mx_airframe").fetch_one(pool).await.unwrap();
+        (comps, defects, counters)
+    }
+
+    async fn count(pool: &SqlitePool, sql: &str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn two_pcs_share_the_ledger_and_deletions() {
+        // PC A: dos vuelos (el primero, aterrizaje duro), un cobro y una política.
+        let a = pc().await;
+        let f1 = fly(&a, "2026-10-20T10:00:00Z", 720.0).await;
+        fly(&a, "2026-10-20T14:00:00Z", 150.0).await;
+        sqlx::query("INSERT INTO maintenance_log (registration, component, cost, serviced_at) VALUES ('ECTST', 'mx:part_repair:Brakes', 900, '2026-10-20T16:00:00Z')")
+            .execute(&a)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO maintenance_log (registration, component, cost, serviced_at) VALUES ('ECTST', 'catering', 58, '2026-10-20T17:00:00Z')")
+            .execute(&a)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO airline_policy (airline_key, maintenance_level, updated_at) VALUES ('IBE', 2, '2026-10-20T00:00:00Z')")
+            .execute(&a)
+            .await
+            .unwrap();
+        assert_eq!(count(&a, "SELECT COUNT(*) FROM mx_flight").await, 2);
+        crate::airline_economy::recompute(&a).await.unwrap(); // como al cerrar un vuelo
+
+        // A sube a una nube vacía; volver a subir sin cambios no sube nada.
+        let up = merge_for_upload(&a, Snapshot::default()).await.unwrap();
+        assert!(up.changed);
+        let cloud1 = via_cloud(&up.snapshot);
+        assert_eq!(cloud1.flight_log.len(), 2);
+        assert_eq!(cloud1.ledger.airframes.len(), 1);
+        assert_eq!(cloud1.ledger.mx_flights.len(), 2);
+        assert_eq!(cloud1.ledger.maintenance_log.len(), 2);
+        assert!(!merge_for_upload(&a, via_cloud(&cloud1)).await.unwrap().changed, "A sin cambios no re-sube");
+
+        // PC B (nueva): recibe vuelos, Tech Log, cobros y política.
+        let b = pc().await;
+        restore_snapshot(&b, &cloud1).await.unwrap();
+        assert_eq!(count(&b, "SELECT COUNT(*) FROM flight_log").await, 2);
+        assert_eq!(count(&b, "SELECT COUNT(*) FROM mx_flight").await, 2);
+        assert_eq!(techlog(&b).await, techlog(&a).await, "mismo Tech Log en las dos PCs");
+        assert_eq!(count(&b, "SELECT COUNT(*) FROM maintenance_log").await, 2);
+        assert_eq!(count(&b, "SELECT maintenance_level FROM airline_policy WHERE airline_key = 'IBE'").await, 2);
+        assert!(!merge_for_upload(&b, via_cloud(&cloud1)).await.unwrap().changed, "B sin cambios no re-sube");
+
+        // A borra el vuelo 1 (y un cobro doble): la nube los pierde.
+        let before_f1 = techlog(&a).await;
+        crate::flight_log::delete_entry(&a, f1).await.unwrap();
+        assert_ne!(techlog(&a).await, before_f1, "el Tech Log del vuelo 1 se revirtió en A");
+        sqlx::query("DELETE FROM maintenance_log WHERE component = 'catering'").execute(&a).await.unwrap();
+        ledger_sync::record(&a, KIND_MAINT, &ledger_sync::maint_key("ECTST", "catering", "2026-10-20T17:00:00Z"))
+            .await
+            .unwrap();
+        let up2 = merge_for_upload(&a, via_cloud(&cloud1)).await.unwrap();
+        assert!(up2.changed);
+        assert_eq!(up2.removed_flights, 1);
+        let cloud2 = via_cloud(&up2.snapshot);
+        assert_eq!(cloud2.flight_log.len(), 1);
+        assert_eq!(cloud2.ledger.mx_flights.len(), 1);
+        assert_eq!(cloud2.ledger.maintenance_log.len(), 1);
+
+        // B baja: el vuelo 1 se borra también allí, con su Tech Log y su cobro.
+        let rep = merge_remote_snapshot(&b, &cloud2).await.unwrap();
+        assert_eq!(rep.deleted_flights, 1);
+        assert_eq!(rep.new_flights, 0);
+        assert_eq!(count(&b, "SELECT COUNT(*) FROM flight_log").await, 1);
+        assert_eq!(count(&b, "SELECT COUNT(*) FROM mx_flight").await, 1);
+        assert_eq!(count(&b, "SELECT COUNT(*) FROM maintenance_log").await, 1);
+        assert_eq!(techlog(&b).await, techlog(&a).await, "B quedó igual que A");
+
+        // Y no vuelve: ni al bajar otra vez, ni al subir B, ni desde la nube vieja.
+        let again = merge_remote_snapshot(&b, &cloud2).await.unwrap();
+        assert_eq!((again.new_flights, again.deleted_flights), (0, 0));
+        assert!(!merge_for_upload(&b, via_cloud(&cloud2)).await.unwrap().changed, "B sin cambios no re-sube");
+        let stale = merge_for_upload(&b, via_cloud(&cloud1)).await.unwrap();
+        assert_eq!(stale.snapshot.flight_log.len(), 1, "una nube vieja (otra versión) no lo resucita");
+        let old = merge_remote_snapshot(&b, &cloud1).await.unwrap();
+        assert_eq!(old.new_flights, 0, "bajar una nube vieja tampoco");
+    }
+
+    /// Con una COPIA real (no corre por defecto):
+    ///   LEDGER_DB=<copia .db> cargo test --lib ledger_real_copy -- --ignored --nocapture
+    /// Sube todo desde la copia, lo restaura en una PC vacía y compara.
+    #[tokio::test]
+    #[ignore]
+    async fn ledger_real_copy() {
+        let Ok(path) = std::env::var("LEDGER_DB") else { return };
+        let a = SqlitePool::connect(&format!("sqlite:{path}")).await.unwrap();
+        sqlx::migrate!("./migrations").run(&a).await.unwrap();
+        crate::airline_economy::recompute(&a).await.unwrap(); // P&L con esta versión
+        let up = merge_for_upload(&a, Snapshot::default()).await.unwrap();
+        let l = &up.snapshot.ledger;
+        println!(
+            "libro: {} aviones · {} registros de vuelo · {} cobros · {} vistos · {} líneas GSX · {} políticas · {} traslados · {} reservas · {} días · {} ajustes",
+            l.airframes.len(), l.mx_flights.len(), l.maintenance_log.len(), l.techlog_seen.len(), l.gsx_lines.len(),
+            l.policies.len(), l.ferries.len(), l.reservations.len(), l.auto_daily.len(), l.settings.len()
+        );
+        println!(
+            "JSON: libro {:.0} KB · snapshot entero {:.1} MB · borrados {}",
+            serde_json::to_string(&up.snapshot.ledger).unwrap().len() as f64 / 1024.0,
+            serde_json::to_string(&up.snapshot).unwrap().len() as f64 / 1_048_576.0,
+            up.snapshot.deleted.len()
+        );
+        assert!(!merge_for_upload(&a, via_cloud(&up.snapshot)).await.unwrap().changed, "sin cambios no re-sube");
+
+        let cloud = via_cloud(&up.snapshot);
+        let b = pc().await;
+        restore_snapshot(&b, &cloud).await.unwrap();
+        for (what, sql) in [
+            ("vuelos", "SELECT COUNT(*) FROM flight_log"),
+            ("aviones", "SELECT COUNT(*) FROM mx_airframe"),
+            ("piezas", "SELECT COUNT(*) FROM mx_component"),
+            ("defectos", "SELECT COUNT(*) FROM mx_defect"),
+            ("registros de vuelo", "SELECT COUNT(*) FROM mx_flight"),
+            ("cobros", "SELECT COUNT(*) FROM maintenance_log"),
+            ("líneas GSX cobradas", "SELECT COUNT(*) FROM gsx_charge WHERE flight_id IS NOT NULL"),
+            ("P&L", "SELECT COUNT(*) FROM flight_pnl"),
+        ] {
+            let (x, y) = (count(&a, sql).await, count(&b, sql).await);
+            println!("{what:>22}: original {x:>6} · PC nueva {y:>6}");
+        }
+        // Diferencias de P&L por vuelo (clave estable: cada PC tiene sus ids).
+        let pnl = |pool: SqlitePool| async move {
+            let rows = sqlx::query(
+                "SELECT p.*, f.started_at || '|' || printf('%.2f', f.origin_lat) || '|' || printf('%.2f', f.origin_lon) AS fkey
+                   FROM flight_pnl p JOIN flight_log f ON f.id = p.flight_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            rows.iter().map(row_to_json).collect::<Vec<_>>()
+        };
+        let (pa, pb) = (pnl(a.clone()).await, pnl(b.clone()).await);
+        let mut diffs = 0;
+        for x in &pa {
+            let k = x.get("fkey").cloned();
+            let Some(y) = pb.iter().find(|y| y.get("fkey").cloned() == k) else {
+                println!("P&L sólo en original: {k:?}");
+                diffs += 1;
+                continue;
+            };
+            for (f, v) in x.as_object().unwrap() {
+                if y.get(f) != Some(v) && !matches!(f.as_str(), "flightId" | "createdAt" | "computedAt") {
+                    println!("{k:?} · {f}: original {v} · PC nueva {}", y.get(f).unwrap_or(&serde_json::Value::Null));
+                    diffs += 1;
+                }
+            }
+        }
+        println!("diferencias de P&L: {diffs}");
+        let money = "SELECT CAST(ROUND(SUM(net)) AS INTEGER) FROM flight_pnl";
+        println!("{:>22}: original {:>6} · PC nueva {:>6}", "neto de vuelos (USD)", count(&a, money).await, count(&b, money).await);
+        assert!(!merge_for_upload(&b, via_cloud(&cloud)).await.unwrap().changed, "la PC nueva no re-sube");
+    }
+
+    /// Borrado y luego reimportado a propósito: vuelve en todas las PCs.
+    #[tokio::test]
+    async fn a_reimported_flight_comes_back_everywhere() {
+        let flights = "SELECT COUNT(*) FROM flight_log";
+        let a = pc().await;
+        let f1 = fly(&a, "2026-10-20T10:00:00Z", 150.0).await;
+        let cloud1 = via_cloud(&merge_for_upload(&a, Snapshot::default()).await.unwrap().snapshot);
+        let b = pc().await;
+        restore_snapshot(&b, &cloud1).await.unwrap();
+        crate::flight_log::delete_entry(&a, f1).await.unwrap();
+        let cloud2 = via_cloud(&merge_for_upload(&a, cloud1).await.unwrap().snapshot);
+        merge_remote_snapshot(&b, &cloud2).await.unwrap();
+        assert_eq!(count(&b, flights).await, 0);
+
+        fly(&a, "2026-10-20T10:00:00Z", 150.0).await;
+        let cloud3 = via_cloud(&merge_for_upload(&a, cloud2).await.unwrap().snapshot);
+        assert_eq!(cloud3.flight_log.len(), 1);
+        assert!(cloud3.deleted.iter().all(|t| !t.active()));
+        let rep = merge_remote_snapshot(&b, &cloud3).await.unwrap();
+        assert_eq!(rep.new_flights, 1);
+        assert_eq!(count(&b, flights).await, 1);
     }
 }

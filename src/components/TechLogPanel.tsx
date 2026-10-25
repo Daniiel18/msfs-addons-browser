@@ -228,12 +228,9 @@ export function TechLogPanel({
     setBusy(busyKey);
     try {
       const request = { registration: data.registration, ...req };
-      if (!own && !data.running) {
-        pushToast({ kind: "info", title: t("techlog.launching", { app: data.appName }) });
-      }
       const r = own ? await api.mxAction(request) : await api.techlogAction(request);
       if (r.queued) {
-        pushToast({ kind: "info", title: t("techlog.queued.title"), message: t("techlog.queued.detail") });
+        pushToast({ kind: "info", title: t("techlog.queued.title"), message: waitText(r.message) });
       } else {
         pushToast({
           kind: r.ok ? "success" : "error",
@@ -249,6 +246,12 @@ export function TechLogPanel({
       setBusy(null);
     }
   };
+
+  /** (24/10) Por qué espera una orden (código del backend). */
+  const waitText = (code?: string | null) =>
+    code === "sim_closed" || code === "not_loaded" || code === "not_parked"
+      ? t(`techlog.wait.${code}`)
+      : t("techlog.queued.detail");
 
   const cancelPending = async (id: number) => {
     try {
@@ -363,9 +366,16 @@ export function TechLogPanel({
           {t("mx.in_flight")}
         </p>
       )}
-      {!own && !data.active && (
+      {/* (24/10) Las órdenes sólo salen con este avión cargado y estacionado. */}
+      {!own && data.orderWait && (
         <p className="rounded-lg border border-sf-border bg-sf-raised/40 px-3 py-2 text-[11px] text-sf-muted">
-          {t("techlog.remote_hint", { app: data.appName })}
+          {t("techlog.wait.hint", { app: data.appName, why: waitText(data.orderWait) })}
+        </p>
+      )}
+      {!own && data.pendingWork && (
+        <p className="flex items-start gap-2 rounded-lg border border-brand-500/40 bg-brand-500/10 px-3 py-2 text-[11px] text-brand-200">
+          <Clock className="mt-px h-3.5 w-3.5 shrink-0" />
+          {t("techlog.pending_work", { app: data.appName, work: data.pendingWork })}
         </p>
       )}
 

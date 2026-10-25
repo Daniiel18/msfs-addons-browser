@@ -60,6 +60,24 @@ pub struct AvailableUpdate {
     pub source: String,
     pub addon_id: String,
     pub page_url: String,
+    /// (25/10) Para la tarjeta del modal: imagen y desarrollador del catálogo.
+    pub image_url: Option<String>,
+    pub developer: String,
+}
+
+/// (25/10) Cuántas palabras del título instalado lleva el nombre del
+/// catálogo: "PMDG 777-200LR" casa mejor con "PMDG Boeing 777-200LR" (3) que
+/// con "PMDG Boeing 777-200ER" (2), que también entra por "777-200".
+fn closeness(installed: &str, catalog: &str) -> usize {
+    let words = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let cat = words(catalog);
+    words(installed).iter().filter(|w| cat.contains(w)).count()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,7 +201,12 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
                 v.insert(c);
             }
             Entry::Occupied(mut o) => {
-                if is_newer(&c.catalog_version, &o.get().catalog_version) {
+                let old = o.get();
+                // (25/10) Misma versión: la ficha que más se parece a lo
+                // instalado (el 777-200LR no abre la del 777-200ER).
+                let tie = !is_newer(&old.catalog_version, &c.catalog_version)
+                    && closeness(&c.title, &c.catalog_name) > closeness(&old.title, &old.catalog_name);
+                if is_newer(&c.catalog_version, &old.catalog_version) || tie {
                     o.insert(c);
                 }
             }
@@ -229,6 +252,8 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
                 source: c.catalog_source,
                 addon_id: c.catalog_addon_id,
                 page_url: c.catalog_page_url,
+                image_url: c.catalog_image_url.filter(|u| !u.is_empty()),
+                developer: c.developer,
             });
         } else {
             tracing::debug!(
@@ -295,8 +320,14 @@ pub async fn refresh_for_installed(
     //   · ICAOs → sólo `sceneryaddons` (catálogo de aeropuertos).
     //   · Keywords aircraft → todas las sources (los aviones se
     //     publican en ambos catálogos).
-    // (v8.3) aerohub sólo se usa en Explorar y en la búsqueda (decisión del
-    // usuario): no se le preguntan updates de lo instalado.
+    // (v8.3) A aerohub no se le busca addon por addon. (25/10) Decisión del
+    // usuario: sus updates salen sin entrar a su catálogo → se lee su
+    // listado entero en segundo plano (como mucho cada 12 h), a la vez que
+    // las búsquedas del resto de fuentes.
+    let listing = sources.iter().find(|s| s.id() == "aerohub").cloned().map(|src| {
+        let pool = pool.clone();
+        tokio::spawn(async move { refresh_listing(&pool, src).await })
+    });
     let sources: Vec<Arc<dyn Source>> =
         sources.iter().filter(|s| s.id() != "aerohub").cloned().collect();
     let sources = &sources[..];
@@ -450,6 +481,12 @@ pub async fn refresh_for_installed(
         }
     }
 
+    if let Some(h) = listing {
+        if let Ok(seen) = h.await {
+            summary.addons_seen += seen;
+        }
+    }
+
     summary.elapsed_ms = started.elapsed().as_millis();
     tracing::info!(
         "updates: refresh terminado en {}ms — {} OK, {} fail, {} skipped, {} addons vistos",
@@ -465,6 +502,57 @@ pub async fn refresh_for_installed(
 enum QueryOutcome {
     Ok { addons_seen: usize },
     Failed,
+}
+
+/// (25/10) Cada cuánto se relee entero el listado de una fuente (aerohub).
+const LISTING_EVERY_HOURS: i64 = 12;
+/// Tope de páginas por lectura (aerohub: 24 por página, ~7 hoy).
+const LISTING_MAX_PAGES: usize = 30;
+
+/// (25/10) Lee el listado entero de `source` (sólo tarjetas) y guarda sus
+/// versiones en el catálogo local, de donde las saca `compute_available`.
+/// Como mucho cada 12 h; si una página falla se reintenta en el siguiente
+/// arranque. Devuelve los addons vistos.
+async fn refresh_listing(pool: &SqlitePool, source: Arc<dyn Source>) -> usize {
+    let key = format!("{}_listing_scan_at", source.id());
+    let last: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
+        .bind(&key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let fresh = last
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(&v).ok())
+        .is_some_and(|at| chrono::Utc::now() - at.with_timezone(&chrono::Utc) < chrono::Duration::hours(LISTING_EVERY_HOURS));
+    if fresh {
+        tracing::debug!("updates: listado de {} leído hace < {LISTING_EVERY_HOURS} h", source.id());
+        return 0;
+    }
+    let mut seen = 0;
+    for page in 1..=LISTING_MAX_PAGES {
+        match source.listing(page).await {
+            Ok(res) => {
+                persist_addons(pool, &res.addons).await;
+                seen += res.addons.len();
+                if !res.has_more {
+                    let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))")
+                        .bind(&key)
+                        .bind(chrono::Utc::now().to_rfc3339())
+                        .execute(pool)
+                        .await;
+                    tracing::info!("updates: listado de {} leído ({page} páginas, {seen} addons)", source.id());
+                    return seen;
+                }
+                // Sin ráfagas: el nginx de aerohub responde 503 si van juntas.
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            Err(e) => {
+                tracing::warn!("updates: listado de {} falló en la página {page}: {e}", source.id());
+                return seen;
+            }
+        }
+    }
+    seen
 }
 
 /// (v7.4.2) Fuentes que dieron "caída" (`SourceError::is_unavailable`)
@@ -588,11 +676,11 @@ fn pick_best_for_icao<'a>(addons: &'a [Addon], query: &str) -> Option<&'a Addon>
 ///      claramente son projects distintos (formatos versioning
 ///      incompatibles).
 fn is_newer(latest: &str, installed: &str) -> bool {
-    let l = latest.trim();
-    let i = installed.trim();
-    if l.is_empty() || i.is_empty() {
+    if latest.trim().is_empty() || installed.trim().is_empty() {
         return false;
     }
+    let (l, i) = align_year(latest, installed);
+    let (l, i) = (l.as_str(), i.as_str());
     // Shape check ANTES de parsear: si los formatos son incompatibles
     // (ej. 1 dígito en major vs 4 dígitos), NO consideramos que sean
     // la misma identidad de versión, incluso si ambos parsean como
@@ -609,9 +697,50 @@ fn is_newer(latest: &str, installed: &str) -> bool {
     if let (Some(a), Some(b)) = (&lp, &ip) {
         return a > b;
     }
+    // (25/10) Más de tres números ("2026.39.1.16"): semver no los parsea;
+    // se comparan número a número (en lexicográfico "2026.4" > "2026.39").
+    if let (Some(a), Some(b)) = (numeric_parts(l), numeric_parts(i)) {
+        let n = a.len().max(b.len());
+        let at = |v: &[u64], k: usize| v.get(k).copied().unwrap_or(0);
+        return (0..n).map(|k| (at(&a, k), at(&b, k))).find(|(x, y)| x != y).is_some_and(|(x, y)| x > y);
+    }
     // Mismo shape pero alguno no parsea — comparar lexicográfico
     // (las shapes son comparables aunque no sean semver válido).
     l > i
+}
+
+/// Todas las partes numéricas ("2026.39.1.16" → [2026, 39, 1, 16]); `None`
+/// si alguna no lo es.
+fn numeric_parts(s: &str) -> Option<Vec<u64>> {
+    s.split('.').map(|p| p.parse::<u64>().ok()).collect()
+}
+
+/// (25/10) ChasePlane: su manifest dice "26.33.5" (año con dos cifras,
+/// semana, build) y aerohub "2026.39.1.16". Si una versión empieza por un
+/// año 20AA y la otra por sus dos últimas cifras (±1 por el cambio de año
+/// entre ambas), la corta se reescribe con el año entero para poder
+/// compararlas. Un major corriente ("10.2.0" frente a "2026.01.03") queda
+/// lejos del año y sigue siendo de otro formato.
+fn align_year(a: &str, b: &str) -> (String, String) {
+    let strip = |s: &str| s.trim().trim_start_matches('v').trim().to_string();
+    let (a, b) = (strip(a), strip(b));
+    let widen = |short: &str, long: &str| -> Option<String> {
+        let ms = short.split('.').next()?;
+        let ml = long.split('.').next()?;
+        if ms.len() != 2 || ml.len() != 4 || !ml.starts_with("20") {
+            return None;
+        }
+        let year: i64 = ml.parse().ok()?;
+        let yy = 2000 + ms.parse::<i64>().ok()?;
+        ((yy - year).abs() <= 1).then(|| format!("{yy}{}", &short[2..]))
+    };
+    if let Some(w) = widen(&a, &b) {
+        return (w, b);
+    }
+    if let Some(w) = widen(&b, &a) {
+        return (a, w);
+    }
+    (a, b)
 }
 
 /// True si dos strings de versión podrían razonablemente ser la
@@ -678,6 +807,83 @@ fn parse_lenient(s: &str) -> Option<semver::Version> {
 mod tests {
     use super::*;
 
+    /// Con una COPIA de la base real (`UPDATES_DB`): qué updates ve el panel.
+    #[tokio::test]
+    #[ignore]
+    async fn available_real_copy() {
+        let Ok(path) = std::env::var("UPDATES_DB") else { return };
+        // El catálogo se filtra por el sim activo (el del usuario: 2024).
+        crate::sim::set_from_str(&std::env::var("UPDATES_SIM").unwrap_or_else(|_| "msfs2024".into()));
+        let pool = SqlitePool::connect(&format!("sqlite:{path}")).await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for u in compute_available(&pool).await.unwrap() {
+            println!("{:14} {:30} {} → {}  {}  img={}", u.source, u.title, u.installed_version, u.latest_version, u.page_url, u.image_url.is_some());
+        }
+    }
+
+    /// Fuente de mentira: dos páginas de listado, cuenta las peticiones.
+    struct FakeListing(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Source for FakeListing {
+        fn id(&self) -> &'static str { "aerohub" }
+        fn name(&self) -> &'static str { "AeroHub" }
+        fn home_url(&self) -> &'static str { "https://aerohub.st" }
+        async fn search(&self, _q: &str) -> Result<Vec<Addon>, crate::sources::SourceError> {
+            Ok(vec![])
+        }
+        async fn listing(&self, page: usize) -> Result<crate::sources::BrowsePage, crate::sources::SourceError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let addon = Addon {
+                id: format!("ah-{page}"),
+                source: "aerohub".into(),
+                title: format!("Addon {page}"),
+                developer: Some("Dev".into()),
+                name: format!("Addon {page}"),
+                version: Some("1.2.7".into()),
+                icao: None,
+                simulator: "MSFS 2024".into(),
+                page_url: format!("https://aerohub.st/addon/{page}"),
+                download_methods: vec![],
+                image_url: None,
+                released_at: None,
+                notes: None,
+            };
+            Ok(crate::sources::BrowsePage { addons: vec![addon], page, has_more: page < 2 })
+        }
+    }
+
+    /// (25/10) aerohub: su listado entero va al catálogo local y no se
+    /// vuelve a leer hasta pasadas 12 h.
+    #[tokio::test]
+    async fn a_listing_source_is_read_whole_at_most_every_12_hours() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let fake = Arc::new(FakeListing(Default::default()));
+        let src: Arc<dyn Source> = fake.clone();
+        assert_eq!(refresh_listing(&pool, src.clone()).await, 2);
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM addons WHERE source = 'aerohub' AND version = '1.2.7'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, 2);
+        assert_eq!(refresh_listing(&pool, src.clone()).await, 0, "leído hace nada");
+        assert_eq!(fake.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+        sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'aerohub_listing_scan_at'")
+            .bind((chrono::Utc::now() - chrono::Duration::hours(13)).to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(refresh_listing(&pool, src).await, 2, "pasadas 12 h se relee");
+    }
+
+    /// (25/10) Variantes con la misma versión: gana la del mismo nombre.
+    #[test]
+    fn the_closest_catalog_variant_wins_a_tie() {
+        assert!(closeness("PMDG 777-200LR", "PMDG Boeing 777-200LR") > closeness("PMDG 777-200LR", "PMDG Boeing 777-200ER"));
+        assert_eq!(closeness("PMDG 777F", "PMDG Boeing 777-Freighter"), 1);
+    }
+
     #[test]
     fn newer_semver_strict() {
         assert!(is_newer("1.6.5", "1.5.5"));
@@ -726,6 +932,27 @@ mod tests {
         // Inverso también: instalado fecha, catalog semver → no
         // claim como "older".
         assert!(!is_newer("1.0.0", "2026.01.03"));
+    }
+
+    /// (25/10) ChasePlane: "26.33.5" instalado, "2026.39.1.16" en aerohub.
+    #[test]
+    fn a_two_digit_year_meets_its_four_digit_version() {
+        assert!(is_newer("2026.39.1.16", "26.33.5"));
+        assert!(!is_newer("26.33.5", "2026.39.1.16"));
+        assert!(!is_newer("2026.33.5", "26.33.5"), "la misma versión");
+        assert!(is_newer("2026.02.1", "25.50.1"), "cambio de año");
+        assert!(is_newer("v2026.39.1.16", "v26.33.5"));
+        // Un major corriente no es un año: sigue siendo otro formato.
+        assert!(!is_newer("2026.01.03", "10.2.0"));
+        assert!(!is_newer("2026.01.03", "1.0.0"));
+    }
+
+    /// (25/10) Cuatro números: número a número, no lexicográfico.
+    #[test]
+    fn four_part_versions_compare_number_by_number() {
+        assert!(!is_newer("2026.4.0.1", "2026.39.1"));
+        assert!(is_newer("2026.39.1.16", "2026.39.1.9"));
+        assert!(!is_newer("2026.39.1.16", "2026.39.1.16"));
     }
 
     #[test]

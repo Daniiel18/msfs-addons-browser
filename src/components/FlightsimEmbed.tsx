@@ -21,9 +21,26 @@ const HOME = "https://flightsim.to/";
 /** (v8.3) ¿El webview de flightsim.to está a la vista? Mientras lo está, tapa
  *  cualquier HTML que caiga encima (p.ej. los tooltips del menú lateral, que
  *  entonces usan el tooltip nativo de Windows). */
-export const useFstoEmbedStore = create<{ visible: boolean; setVisible: (v: boolean) => void }>(
-  (set) => ({ visible: false, setVisible: (visible) => set({ visible }) }),
-);
+export const useFstoEmbedStore = create<{
+  visible: boolean;
+  setVisible: (v: boolean) => void;
+  /** (25/10) Página a la que ir la próxima vez que se muestre (update de
+   *  flightsim.to abierta desde el modal o la campanita). */
+  pendingUrl: string | null;
+  openUrl: (url: string) => void;
+}>((set) => ({
+  visible: false,
+  setVisible: (visible) => set({ visible }),
+  pendingUrl: null,
+  openUrl: (pendingUrl) => set({ pendingUrl }),
+}));
+
+/** La página pendiente, una sola vez. */
+function takePendingUrl(): string | undefined {
+  const url = useFstoEmbedStore.getState().pendingUrl;
+  if (url) useFstoEmbedStore.setState({ pendingUrl: null });
+  return url ?? undefined;
+}
 
 export function FlightsimEmbed() {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -76,7 +93,7 @@ export function FlightsimEmbed() {
           useFstoEmbedStore.getState().setVisible(true);
           last = key;
           api
-            .fstoEmbedShow(b)
+            .fstoEmbedShow(b, takePendingUrl())
             .then(() => alive && setReady(true))
             .catch(() => {
               visible = false;
@@ -99,8 +116,16 @@ export function FlightsimEmbed() {
       attributes: true,
       attributeFilter: ["class", "data-sf-overlay"],
     });
+    // Ya a la vista y llega una página pendiente: se vuelve a mostrar con ella.
+    const offUrl = useFstoEmbedStore.subscribe((s, prev) => {
+      if (s.pendingUrl && s.pendingUrl !== prev.pendingUrl && visible) {
+        visible = false;
+        sync();
+      }
+    });
     return () => {
       alive = false;
+      offUrl();
       cancelAnimationFrame(raf);
       ro.disconnect();
       mo.disconnect();

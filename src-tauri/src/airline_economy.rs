@@ -659,38 +659,87 @@ pub(crate) fn burn_per_nm(size: Size) -> f64 {
 
 // ──────────────────────────────── Recibos GSX ────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq)]
+// (24/10) Contabilidad sólida: cada LÍNEA de cada recibo va, como mucho, a UN
+// vuelo. Antes un recibo de handling con el desembarque de un vuelo y el
+// embarque del siguiente se cobraba entero a los dos (ventana de ±4 h), y la
+// hora del recibo era la del SIMULADOR (con hora del sim distinta a la real no
+// casaba con ningún vuelo).
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum GsxKind {
     Fuel,
     Catering,
     Handling,
+    Bus,
 }
 
-struct GsxReceipt {
+impl GsxKind {
+    fn id(self) -> &'static str {
+        match self {
+            GsxKind::Fuel => "fuel",
+            GsxKind::Catering => "catering",
+            GsxKind::Handling => "handling",
+            GsxKind::Bus => "bus",
+        }
+    }
+}
+
+/// Lado del servicio: el vuelo que SALE del aeropuerto o el que LLEGA.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Side {
+    Dep,
+    Arr,
+}
+
+/// Una línea de un recibo de GSX, en USD con su parte de impuestos.
+#[derive(Clone, Debug)]
+struct GsxLine {
+    receipt_id: String,
+    line: usize,
     kind: GsxKind,
-    ts: DateTime<Utc>,
+    service: String,
+    side: Side,
     airport: String, // ICAO en mayúsculas
     reg: String,     // matrícula normalizada (alfanumérica, mayúsculas)
-    total: f64,
+    at: DateTime<Utc>,
+    usd: f64,
+    /// Carga de combustible: NO es gasto del vuelo (se paga lo quemado), da el
+    /// precio por kg del aeropuerto.
+    uplift_kg: Option<f64>,
 }
 
-/// Costes GSX casados para un vuelo (None = no hubo recibo de ese tipo).
-#[derive(Default)]
+impl GsxLine {
+    fn is_cost(&self) -> bool {
+        self.uplift_kg.is_none()
+    }
+}
+
+/// Lo que GSX facturó a un vuelo (None = sin línea de ese tipo → estimado).
+#[derive(Default, Debug)]
 struct GsxCosts {
-    fuel: Option<f64>,
+    /// USD/kg del combustible cargado con GSX (este vuelo o su aeropuerto).
+    fuel_price_kg: Option<f64>,
     catering: Option<f64>,
-    handling: Option<f64>,
+    handling_dep: Option<f64>,
+    handling_arr: Option<f64>,
+    /// Líneas de GSX cobradas a este vuelo.
+    lines: usize,
 }
 
 impl GsxCosts {
     fn matched(&self) -> bool {
-        self.fuel.is_some() || self.catering.is_some() || self.handling.is_some()
+        self.lines > 0
     }
 }
 
 /// Carpeta de recibos de GSX, resuelta vía `%APPDATA%` del usuario actual
 /// (NO hardcodeada — funciona igual para otra cuenta/equipo). Sólo Windows.
 fn receipts_dir() -> Option<PathBuf> {
+    // Las pruebas no leen los recibos reales de la máquina (salvo la de la
+    // copia real, `ECON_DB`).
+    if cfg!(test) && std::env::var_os("ECON_DB").is_none() {
+        return None;
+    }
     let appdata = std::env::var_os("APPDATA")?;
     let path = PathBuf::from(appdata)
         .join("Virtuali")
@@ -741,9 +790,104 @@ fn usd_from_total(total: &str) -> Option<f64> {
 }
 
 /// Total del recibo `.json` (formato actual de GSX, campo `total`).
+#[cfg(test)]
 fn parse_total_json(json: &str) -> Option<f64> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     usd_from_total(v.get("total")?.as_str()?)
+}
+
+static KG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*kg").unwrap());
+
+/// Una línea ya leída de un recibo (sin aeropuerto/matrícula/hora).
+#[derive(Debug, Clone, PartialEq)]
+struct ReceiptLine {
+    service: String,
+    side: Side,
+    usd: f64,
+    uplift_kg: Option<f64>,
+}
+
+fn has_any(s: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| s.contains(w))
+}
+
+/// (24/10) Líneas de un recibo `.json` de GSX, en USD y con su parte de los
+/// impuestos (total ÷ subtotal). Lado de cada línea:
+/// - desembarque / descarga → el vuelo que LLEGA;
+/// - embarque, pushback, carga, catering, desabastecimiento → el que SALE;
+/// - jetway/escaleras/GPU (no dicen de qué lado son) → el lado del resto del
+///   recibo (salida si tiene embarque/pushback).
+///
+/// Las cargas de combustible salen con `uplift_kg` (precio, no gasto). Las
+/// líneas de 0 USD no cuentan. Si no hay líneas legibles, una sola con el total.
+fn parse_receipt_lines(json: &str, kind: GsxKind) -> Vec<ReceiptLine> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let usd_of = |k: &str| v.get(k).and_then(|x| x.as_str()).and_then(usd_from_total);
+    let total = usd_of("total");
+    let factor = match (total, usd_of("subtotal")) {
+        (Some(t), Some(s)) if s > 0.0 && t > 0.0 => t / s,
+        _ => 1.0,
+    };
+    let items: Vec<serde_json::Value> = match v.get("items") {
+        Some(serde_json::Value::Array(a)) => a.clone(),
+        Some(o @ serde_json::Value::Object(_)) => vec![o.clone()],
+        _ => Vec::new(),
+    };
+    const ARR: &[&str] = &["deboard", "disembark", "unload", "arrival"];
+    const DEP: &[&str] = &["boarding", "pushback", "push back", "loading", "departure", "catering", "meal", "snack", "beverage", "defuel"];
+    let mut raw: Vec<(String, Option<Side>, f64, Option<f64>)> = Vec::new();
+    for it in &items {
+        let desc = it
+            .get("description")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(usd) = it.get("amount").and_then(|x| x.as_str()).and_then(usd_from_total) else {
+            continue;
+        };
+        let usd = (usd * factor * 100.0).round() / 100.0;
+        if usd <= 0.0 {
+            continue;
+        }
+        let low = desc.to_lowercase();
+        if kind == GsxKind::Fuel && !low.contains("defuel") {
+            let kg = it
+                .get("qty")
+                .and_then(|x| x.as_str())
+                .and_then(|q| KG_RE.captures(q))
+                .and_then(|c| c[1].replace(',', "").parse::<f64>().ok());
+            // Sin kilos no hay precio que sacar: la línea no aporta nada.
+            if let Some(kg) = kg.filter(|k| *k > 0.0) {
+                raw.push((desc, Some(Side::Dep), usd, Some(kg)));
+            }
+            continue;
+        }
+        // "deboarding" contiene "boarding": se mira primero la llegada.
+        let side = if has_any(&low, ARR) {
+            Some(Side::Arr)
+        } else if kind == GsxKind::Catering || has_any(&low, DEP) {
+            Some(Side::Dep)
+        } else {
+            None
+        };
+        raw.push((desc, side, usd, None));
+    }
+    if raw.is_empty() {
+        if let Some(t) = total.filter(|t| *t > 0.0 && kind != GsxKind::Fuel) {
+            raw.push(("Total".into(), None, t, None));
+        }
+    }
+    // Lo ambiguo va del lado del resto del recibo; salida si tiene salida.
+    let has_dep = raw.iter().any(|r| r.1 == Some(Side::Dep) && r.3.is_none());
+    let has_arr = raw.iter().any(|r| r.1 == Some(Side::Arr));
+    let fallback = if has_dep || !has_arr { Side::Dep } else { Side::Arr };
+    raw.into_iter()
+        .map(|(service, side, usd, uplift_kg)| ReceiptLine { service, side: side.unwrap_or(fallback), usd, uplift_kg })
+        .collect()
 }
 
 /// Total del recibo `.html` (recibos viejos sin `.json`). Antes se buscaba
@@ -757,11 +901,13 @@ fn parse_total_html(html: &str) -> Option<f64> {
         .last()
 }
 
-/// Lee y parsea todos los recibos de GSX (Fuel/Catering/Handling y, v8.3,
-/// PassengerBus → handling). Cada recibo viene como `.json` + `.html` con el
-/// mismo nombre: manda el `.json`; el `.html` sólo si no hay `.json`.
+/// Lee todos los recibos de GSX (Fuel/Catering/Handling/PassengerBus) como
+/// líneas. Cada recibo viene como `.json` + `.html` con el mismo nombre: manda
+/// el `.json` (líneas); el `.html` sólo si no hay `.json` (una línea con el
+/// total). Hora = la REAL en que GSX escribió el archivo; la del nombre es la
+/// del simulador y sólo se usa si no se puede leer la del archivo.
 /// Tolerante: si la carpeta no existe o un archivo no parsea, se omite.
-fn scan_receipts() -> Vec<GsxReceipt> {
+fn scan_receipts() -> Vec<GsxLine> {
     let Some(base) = receipts_dir() else {
         return Vec::new();
     };
@@ -770,8 +916,7 @@ fn scan_receipts() -> Vec<GsxReceipt> {
         ("Fuel", GsxKind::Fuel),
         ("Catering", GsxKind::Catering),
         ("Handling", GsxKind::Handling),
-        // El bus de pasajeros es un servicio de tierra: va con el handling.
-        ("PassengerBus", GsxKind::Handling),
+        ("PassengerBus", GsxKind::Bus),
     ] {
         let dir = base.join(sub);
         let Ok(rd) = std::fs::read_dir(&dir) else {
@@ -800,20 +945,49 @@ fn scan_receipts() -> Vec<GsxReceipt> {
             let Ok(naive) = NaiveDateTime::parse_from_str(ts_raw, "%Y%m%dT%H%M%SZ") else {
                 continue;
             };
-            let ts = naive.and_utc();
-            let total = std::fs::read_to_string(dir.join(format!("{stem}.json")))
+            let json_path = dir.join(format!("{stem}.json"));
+            let html_path = dir.join(format!("{stem}.html"));
+            let real_at = std::fs::metadata(&json_path)
+                .or_else(|_| std::fs::metadata(&html_path))
+                .and_then(|m| m.modified())
                 .ok()
-                .and_then(|j| parse_total_json(&j))
-                .or_else(|| {
-                    std::fs::read_to_string(dir.join(format!("{stem}.html")))
+                .map(DateTime::<Utc>::from)
+                .unwrap_or_else(|| naive.and_utc());
+            let (receipt_id, lines) = match std::fs::read_to_string(&json_path) {
+                Ok(j) => (
+                    serde_json::from_str::<serde_json::Value>(&j)
+                        .ok()
+                        .and_then(|v| v.get("receiptId").and_then(|x| x.as_str()).map(String::from))
+                        .unwrap_or_else(|| format!("{sub}/{stem}")),
+                    parse_receipt_lines(&j, kind),
+                ),
+                Err(_) => (
+                    format!("{sub}/{stem}"),
+                    std::fs::read_to_string(&html_path)
                         .ok()
                         .and_then(|h| parse_total_html(&h))
-                });
-            let Some(total) = total else {
-                tracing::debug!(target: "economy", "recibo GSX sin total legible: {sub}/{stem}");
-                continue;
+                        .filter(|t| *t > 0.0 && kind != GsxKind::Fuel)
+                        .map(|t| vec![ReceiptLine { service: "Total".into(), side: Side::Dep, usd: t, uplift_kg: None }])
+                        .unwrap_or_default(),
+                ),
             };
-            out.push(GsxReceipt { kind, ts, airport, reg, total });
+            if lines.is_empty() {
+                tracing::debug!(target: "economy", "recibo GSX sin líneas cobrables: {sub}/{stem}");
+            }
+            for (i, l) in lines.into_iter().enumerate() {
+                out.push(GsxLine {
+                    receipt_id: receipt_id.clone(),
+                    line: i,
+                    kind,
+                    service: l.service,
+                    side: l.side,
+                    airport: airport.clone(),
+                    reg: reg.clone(),
+                    at: real_at,
+                    usd: l.usd,
+                    uplift_kg: l.uplift_kg,
+                });
+            }
         }
     }
     out
@@ -825,75 +999,211 @@ fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
-/// Casa los recibos GSX con un vuelo por matrícula + aeropuerto (origen o
-/// destino) + ventana de ±6 h alrededor del bloque. Suma por tipo de servicio.
-fn gsx_for_flight(receipts: &[GsxReceipt], e: &FlightLogEntry) -> GsxCosts {
-    let mut costs = GsxCosts::default();
-    if receipts.is_empty() {
-        return costs;
+/// (24/10) Las líneas de GSX son registros contables: además de las de los
+/// recibos de esta PC, cuentan las ya guardadas (de la nube o de recibos que
+/// ya no están en disco). Un recibo presente en disco manda sobre lo guardado.
+async fn all_gsx_lines(pool: &SqlitePool) -> Vec<GsxLine> {
+    let mut lines = scan_receipts();
+    let on_disk: std::collections::HashSet<String> = lines.iter().map(|l| l.receipt_id.clone()).collect();
+    let stored = sqlx::query(
+        "SELECT receipt_id, line, kind, service, side, airport, registration, at, amount_usd, uplift_kg FROM gsx_charge",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for r in stored {
+        let receipt_id: String = r.get("receipt_id");
+        if on_disk.contains(&receipt_id) {
+            continue;
+        }
+        let kind = match r.get::<String, _>("kind").as_str() {
+            "fuel" => GsxKind::Fuel,
+            "catering" => GsxKind::Catering,
+            "bus" => GsxKind::Bus,
+            _ => GsxKind::Handling,
+        };
+        let Some(at) = parse_dt(&r.get::<String, _>("at")) else { continue };
+        lines.push(GsxLine {
+            receipt_id,
+            line: r.get::<i64, _>("line").max(0) as usize,
+            kind,
+            service: r.get("service"),
+            side: if r.get::<String, _>("side") == "arr" { Side::Arr } else { Side::Dep },
+            airport: r.get("airport"),
+            reg: r.get("registration"),
+            at,
+            usd: r.get("amount_usd"),
+            uplift_kg: r.get("uplift_kg"),
+        });
     }
-    let reg = match e.aircraft_registration.as_deref() {
-        Some(r) => normalize_reg(r),
-        None => return costs,
-    };
-    if reg.is_empty() {
-        return costs;
+    lines
+}
+
+/// Antes de la salida (embarque, catering, combustible…) el servicio puede ir
+/// hasta 8 h antes del bloque; el pushback llega poco después del OUT.
+const DEP_BEFORE: i64 = 8 * 60;
+const DEP_AFTER: i64 = 60;
+/// El desembarque llega tras el IN (hasta 8 h si el recibo se cierra tarde).
+const ARR_AFTER: i64 = 8 * 60;
+const ARR_BEFORE: i64 = 60;
+
+/// (24/10) Vuelo de cada línea (índice paralelo a `lines`; `None` = ninguno).
+/// Una línea va como mucho a UN vuelo: el de esa matrícula que SALE de ese
+/// aeropuerto más cerca después de la línea (salida) o el que LLEGA más cerca
+/// antes (llegada). Aeropuerto "UNKWN": sólo matrícula + hora.
+fn assign_lines(lines: &[GsxLine], flights: &[FlightLogEntry]) -> Vec<Option<i64>> {
+    struct F {
+        id: i64,
+        reg: String,
+        origin: Option<String>,
+        dest: Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     }
-    let airports: Vec<String> = [e.origin_icao.as_deref(), e.destination_icao.as_deref()]
-        .into_iter()
-        .flatten()
-        .map(|s| s.to_ascii_uppercase())
+    let fs: Vec<F> = flights
+        .iter()
+        .filter_map(|e| {
+            let reg = normalize_reg(e.aircraft_registration.as_deref()?);
+            let start = parse_dt(&e.started_at)?;
+            let end = e.ended_at.as_deref().and_then(parse_dt).unwrap_or(start);
+            (!reg.is_empty()).then(|| F {
+                id: e.id,
+                reg,
+                origin: e.origin_icao.as_deref().map(|s| s.to_ascii_uppercase()),
+                dest: e.destination_icao.as_deref().map(|s| s.to_ascii_uppercase()),
+                start,
+                end,
+            })
+        })
         .collect();
-    let origin_up = e.origin_icao.as_deref().map(|s| s.to_ascii_uppercase());
+    lines
+        .iter()
+        .map(|l| {
+            let here = |a: &Option<String>| l.airport == UNKNOWN_AIRPORT || a.as_deref() == Some(l.airport.as_str());
+            fs.iter()
+                .filter(|f| f.reg == l.reg)
+                .filter_map(|f| match l.side {
+                    Side::Dep if here(&f.origin) => {
+                        let mins = (f.start - l.at).num_minutes();
+                        (-DEP_AFTER..=DEP_BEFORE).contains(&mins).then_some((mins.abs(), f.id))
+                    }
+                    Side::Arr if here(&f.dest) => {
+                        let mins = (l.at - f.end).num_minutes();
+                        (-ARR_BEFORE..=ARR_AFTER).contains(&mins).then_some((mins.abs(), f.id))
+                    }
+                    _ => None,
+                })
+                .min()
+                .map(|(_, id)| id)
+        })
+        .collect()
+}
 
-    let start = parse_dt(&e.started_at);
-    let end = e
-        .ended_at
-        .as_deref()
-        .and_then(parse_dt)
-        .or(start);
-    // (fix) Ventana más estrecha (±4h vs ±6h) para reducir que un mismo recibo
-    // caiga en dos vuelos de la misma aeronave en el día (turnaround).
-    let window = match (start, end) {
-        (Some(s), Some(en)) => Some((s - Duration::hours(4), en + Duration::hours(4))),
-        _ => None, // sin tiempos fiables: casa sólo por matrícula + aeropuerto
-    };
-
-    for r in receipts {
-        if r.reg != reg {
-            continue;
-        }
-        // (fix) El COMBUSTIBLE es un servicio de SALIDA → sólo cuenta en el
-        // aeropuerto de ORIGEN del tramo. Antes, un recibo de fuel en el DESTINO
-        // (que es la salida del tramo SIGUIENTE de la misma aeronave) se cargaba
-        // por duplicado a este vuelo y al siguiente. Catering/handling siguen
-        // casando por origen o destino.
-        // (v8.3) Aeropuerto desconocido para GSX ("UNKWN"): se casa por
-        // matrícula + ventana de tiempo, que entonces es obligatoria.
-        let airport_ok = if r.airport == UNKNOWN_AIRPORT {
-            window.is_some()
-        } else {
-            match r.kind {
-                GsxKind::Fuel => origin_up.as_deref() == Some(r.airport.as_str()),
-                _ => airports.is_empty() || airports.contains(&r.airport),
-            }
-        };
-        if !airport_ok {
-            continue;
-        }
-        if let Some((lo, hi)) = window {
-            if r.ts < lo || r.ts > hi {
-                continue;
-            }
-        }
-        let slot = match r.kind {
-            GsxKind::Fuel => &mut costs.fuel,
-            GsxKind::Catering => &mut costs.catering,
-            GsxKind::Handling => &mut costs.handling,
-        };
-        *slot = Some(slot.unwrap_or(0.0) + r.total);
+/// Servicio "igual" a efectos de repetición: todo el catering es uno; el
+/// resto por su nombre sin lo que va entre paréntesis ("Pushback service (82
+/// t MTOW)" = "Pushback service (77 t MTOW)").
+fn service_key(l: &GsxLine) -> String {
+    if l.kind == GsxKind::Catering {
+        return "catering".into();
     }
-    costs
+    let mut out = String::new();
+    let mut depth = 0;
+    for ch in l.service.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = (depth - 1).max(0),
+            c if depth == 0 => out.push(c.to_ascii_lowercase()),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// (24/10) Servicios repetidos para un mismo vuelo (reinicios del sim,
+/// vuelo recargado): de salida cuenta sólo el ÚLTIMO antes de despegar; de
+/// llegada, el PRIMERO tras aterrizar. Los demás eran de intentos abortados:
+/// quedan sin vuelo y no se cobran (decisión del usuario).
+fn drop_repeats(lines: &[GsxLine], assigned: &mut [Option<i64>]) {
+    let mut keep: HashMap<(i64, bool, String), (DateTime<Utc>, usize)> = HashMap::new();
+    for (i, (l, fid)) in lines.iter().zip(assigned.iter()).enumerate() {
+        let Some(fid) = *fid else { continue };
+        if !l.is_cost() {
+            continue;
+        }
+        let dep = l.side == Side::Dep;
+        let k = (fid, dep, service_key(l));
+        let better = |cur: DateTime<Utc>| if dep { l.at > cur } else { l.at < cur };
+        match keep.get(&k) {
+            Some((at, _)) if !better(*at) => {}
+            _ => {
+                keep.insert(k, (l.at, i));
+            }
+        }
+    }
+    let winners: std::collections::HashSet<usize> = keep.values().map(|(_, i)| *i).collect();
+    for (i, (l, fid)) in lines.iter().zip(assigned.iter_mut()).enumerate() {
+        if fid.is_some() && l.is_cost() && !winners.contains(&i) {
+            // Mismo recibo que el ganador (p. ej. dos líneas iguales en uno)
+            // no es un reintento: se queda.
+            let same_receipt = keep.values().any(|(_, w)| lines[*w].receipt_id == l.receipt_id && service_key(&lines[*w]) == service_key(l));
+            if !same_receipt {
+                *fid = None;
+            }
+        }
+    }
+}
+
+/// Precio por kg de las cargas de GSX (ponderado por kilos).
+fn price_per_kg<'a>(uplifts: impl Iterator<Item = &'a GsxLine>) -> Option<f64> {
+    let (usd, kg) = uplifts.fold((0.0, 0.0), |(u, k), l| (u + l.usd, k + l.uplift_kg.unwrap_or(0.0)));
+    (kg > 0.0).then(|| usd / kg)
+}
+
+/// Lo que GSX facturó a cada vuelo, a partir de las líneas asignadas. El
+/// precio del combustible: el de las cargas de ESE vuelo; si no hubo, el de
+/// la última carga en su aeropuerto de salida (hasta 120 días antes).
+fn gsx_costs_by_flight(
+    lines: &[GsxLine],
+    assigned: &[Option<i64>],
+    flights: &[FlightLogEntry],
+) -> HashMap<i64, GsxCosts> {
+    let mut out: HashMap<i64, GsxCosts> = HashMap::new();
+    for (l, fid) in lines.iter().zip(assigned) {
+        let Some(fid) = fid else { continue };
+        let c = out.entry(*fid).or_default();
+        if !l.is_cost() {
+            continue;
+        }
+        c.lines += 1;
+        let slot = match (l.kind, l.side) {
+            (GsxKind::Catering, _) => &mut c.catering,
+            (_, Side::Dep) => &mut c.handling_dep,
+            (_, Side::Arr) => &mut c.handling_arr,
+        };
+        *slot = Some(slot.unwrap_or(0.0) + l.usd);
+    }
+    for f in flights {
+        let own = price_per_kg(
+            lines
+                .iter()
+                .zip(assigned)
+                .filter(|(l, a)| **a == Some(f.id) && !l.is_cost())
+                .map(|(l, _)| l),
+        );
+        let price = own.or_else(|| {
+            let origin = f.origin_icao.as_deref()?.to_ascii_uppercase();
+            let start = parse_dt(&f.started_at)?;
+            lines
+                .iter()
+                .filter(|l| !l.is_cost() && l.airport == origin && l.at <= start && start - l.at <= Duration::days(120))
+                .max_by_key(|l| l.at)
+                .and_then(|l| price_per_kg(std::iter::once(l)))
+        });
+        if let Some(p) = price {
+            out.entry(f.id).or_default().fuel_price_kg = Some(p);
+        }
+    }
+    out
 }
 
 // ─────────────────────── Política de gestión (ecosistema) ────────────────────
@@ -1025,6 +1335,9 @@ struct Pnl {
     gsx_matched: bool,
     /// (v8.3) Carga transportada (kg) en vuelos de carga; 0 en los de pasaje.
     cargo_kg: f64,
+    /// (24/10) Combustible quemado (kg) y precio por kg con que se pagó.
+    fuel_kg: f64,
+    fuel_price_kg: f64,
 }
 
 /// Carga útil típica de un carguero por tamaño (kg) — cuando el vuelo no
@@ -1087,8 +1400,15 @@ fn distance_nm(e: &FlightLogEntry, size: Size) -> f64 {
     300.0
 }
 
+/// (24/10) Semilla de los estimados de un vuelo: su hora de salida, igual en
+/// todas las PCs (antes era el `id`, que es local: el mismo vuelo bajado de la
+/// nube a otra PC daba otros pasajeros y otro dinero).
+fn flight_seed(e: &FlightLogEntry) -> i64 {
+    e.started_at.bytes().fold(0i64, |h, b| h.wrapping_mul(31).wrapping_add(b as i64))
+}
+
 /// Pasajeros: el real si se registró, o estimado por capacidad × load factor.
-/// El load factor se siembra con el `id` del vuelo para variar de forma
+/// El load factor se siembra con el vuelo (`flight_seed`) para variar de forma
 /// determinista (mismo vuelo → mismo estimado) sin ser idéntico en todos.
 fn estimate_pax(e: &FlightLogEntry, seats: u32, lowcost: bool) -> i64 {
     if let Some(p) = e.passengers {
@@ -1097,19 +1417,30 @@ fn estimate_pax(e: &FlightLogEntry, seats: u32, lowcost: bool) -> i64 {
         }
     }
     let base = if lowcost { 0.90 } else { 0.82 };
-    let jitter = ((e.id.rem_euclid(13)) as f64 - 6.0) / 100.0; // ±0.06
+    let jitter = ((flight_seed(e).rem_euclid(13)) as f64 - 6.0) / 100.0; // ±0.06
     let lf = (base + jitter).clamp(0.60, 0.98);
     ((seats as f64) * lf).round() as i64
 }
 
-/// Combustible del vuelo (USD): GSX real si casó, o estimado por kg quemados.
-fn fuel_cost(e: &FlightLogEntry, gsx: &GsxCosts, size: Size, d: f64) -> f64 {
+/// (24/10) Combustible del vuelo: lo QUEMADO (real o estimado por distancia)
+/// × el precio por kg de GSX en su aeropuerto de salida (o la referencia).
+/// Las cargas de GSX no son gasto del vuelo: antes, si había recibo, el vuelo
+/// pagaba sólo lo cargado (a veces 15 USD con 3 t quemadas).
+/// Devuelve (USD, kg, USD/kg).
+fn fuel_cost(e: &FlightLogEntry, gsx: &GsxCosts, size: Size, d: f64) -> (f64, f64, f64) {
     let fuel_kg = e
         .fuel_used_kg
         .map(|k| k as f64)
         .filter(|k| *k > 0.0)
         .unwrap_or_else(|| d * burn_per_nm(size));
-    gsx.fuel.unwrap_or(fuel_kg * FUEL_USD_PER_KG)
+    let price = gsx.fuel_price_kg.unwrap_or(FUEL_USD_PER_KG);
+    (fuel_kg * price, fuel_kg, price)
+}
+
+/// (24/10) Handling: lo que GSX facturó en cada lado (salida/llegada) o la
+/// mitad del estimado en el lado que no tuvo recibo.
+fn handling_cost(gsx: &GsxCosts, estimate: f64) -> f64 {
+    gsx.handling_dep.unwrap_or(estimate / 2.0) + gsx.handling_arr.unwrap_or(estimate / 2.0)
 }
 
 /// Precio del Jet A-1 cuando no hay recibo GSX (~0.80 USD/kg).
@@ -1153,21 +1484,22 @@ fn compute_cargo_pnl(
         .map(|k| k as f64)
         .filter(|k| *k > 0.0)
         .unwrap_or_else(|| {
-            let lf = (0.78 + ((e.id.rem_euclid(11)) as f64 - 5.0) / 100.0).clamp(0.55, 0.95);
+            let lf = (0.78 + ((flight_seed(e).rem_euclid(11)) as f64 - 5.0) / 100.0).clamp(0.55, 0.95);
             freighter_payload(size) * lf
         });
     // Tarifa de flete por kg para todo el trayecto (sube con la distancia).
     let revenue_tickets = payload * (0.80 + 0.0006 * d);
     let revenue_ancillary = payload * 0.05; // express/prioridad/seguro
 
-    let cost_fuel = fuel_cost(e, gsx, size, d);
-    let cost_catering = 0.0; // no hay catering en carga
+    let (cost_fuel, fuel_kg, fuel_price_kg) = fuel_cost(e, gsx, size, d);
+    // No hay catering en carga (salvo que GSX lo haya facturado).
+    let cost_catering = gsx.catering.unwrap_or(0.0);
     let handling_est = match size {
         Size::Wide => 2500.0,
         Size::Narrow => 900.0,
         Size::Regional => 500.0,
     };
-    let cost_handling = gsx.handling.unwrap_or(handling_est);
+    let cost_handling = handling_cost(gsx, handling_est);
     let cost_maintenance = block_hours(e, d) * maint_rate(size) * policy.maintenance_mult();
     let cost_fees = landing_fee(size) + d * 1.2 + payload * 0.012; // landing+nav+aduana
 
@@ -1188,6 +1520,8 @@ fn compute_cargo_pnl(
         net: revenue - costs,
         gsx_matched: gsx.matched(),
         cargo_kg: payload,
+        fuel_kg,
+        fuel_price_kg,
     }
 }
 
@@ -1226,7 +1560,7 @@ fn compute_pnl(e: &FlightLogEntry, res: &Resolved, gsx: &GsxCosts, policy: &Airl
     let revenue_ancillary = base_ancillary + svc_rev;
 
     // ── Costes ──
-    let cost_fuel = fuel_cost(e, gsx, size, d);
+    let (cost_fuel, fuel_kg, fuel_price_kg) = fuel_cost(e, gsx, size, d);
     let cat_est = if res.lowcost { paxf * 2.0 } else { paxf * (4.0 + 0.0015 * d) };
     let cost_catering = gsx.catering.unwrap_or(cat_est) + svc_cost;
     let handling_est = match size {
@@ -1234,7 +1568,7 @@ fn compute_pnl(e: &FlightLogEntry, res: &Resolved, gsx: &GsxCosts, policy: &Airl
         Size::Narrow => 480.0,
         Size::Regional => 280.0,
     };
-    let cost_handling = gsx.handling.unwrap_or(handling_est);
+    let cost_handling = handling_cost(gsx, handling_est);
     let cost_maintenance = block_hours(e, d) * maint_rate(size) * policy.maintenance_mult();
     let cost_fees = landing_fee(size) + d * 1.2 + paxf * 22.0; // landing + nav + tasas pax
 
@@ -1254,6 +1588,8 @@ fn compute_pnl(e: &FlightLogEntry, res: &Resolved, gsx: &GsxCosts, policy: &Airl
         net: revenue - costs,
         gsx_matched: gsx.matched(),
         cargo_kg: 0.0,
+        fuel_kg,
+        fuel_price_kg,
     }
 }
 
@@ -1678,8 +2014,13 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         tracing::warn!(target: "economy", "traslados automáticos fallaron: {e:#}");
     }
     let ferries = crate::ferry::active(pool).await.unwrap_or_default();
-    let receipts = scan_receipts();
+    let gsx_lines = all_gsx_lines(pool).await;
     let flights = flight_log::list_entries(pool).await?;
+    // (24/10) Cada línea de GSX → como mucho UN vuelo (completado), sin los
+    // servicios repetidos de intentos abortados.
+    let mut gsx_assigned = assign_lines(&gsx_lines, &flights);
+    drop_repeats(&gsx_lines, &mut gsx_assigned);
+    let mut gsx_costs = gsx_costs_by_flight(&gsx_lines, &gsx_assigned, &flights);
     let policies = load_policies(pool).await?;
     let learned = learn_airline_icaos(&flights);
     // Coste de servicios de mantenimiento por matrícula → se imputa a su
@@ -1708,6 +2049,30 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
     sqlx::query("DELETE FROM airline_economy")
         .execute(&mut *tx)
         .await?;
+    // (24/10) Líneas de GSX con su vuelo (o sin vuelo): trazabilidad de cada
+    // cobro y base de la tarjeta del aeropuerto.
+    sqlx::query("DELETE FROM gsx_charge").execute(&mut *tx).await?;
+    for (l, fid) in gsx_lines.iter().zip(&gsx_assigned) {
+        sqlx::query(
+            "INSERT OR REPLACE INTO gsx_charge
+                (receipt_id, line, kind, service, side, airport, registration, at, amount_usd, uplift_kg, is_cost, flight_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(&l.receipt_id)
+        .bind(l.line as i64)
+        .bind(l.kind.id())
+        .bind(&l.service)
+        .bind(if l.side == Side::Dep { "dep" } else { "arr" })
+        .bind(&l.airport)
+        .bind(&l.reg)
+        .bind(l.at.to_rfc3339())
+        .bind(l.usd)
+        .bind(l.uplift_kg)
+        .bind(l.is_cost() as i64)
+        .bind(fid)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     for f in &flights {
         let Some(mut res) = resolve_airline(f, &learned) else {
@@ -1728,7 +2093,7 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
                 reg_to_airline.entry(reg).or_insert_with(|| res.key.clone());
             }
         }
-        let gsx = gsx_for_flight(&receipts, f);
+        let gsx = gsx_costs.remove(&f.id).unwrap_or_default();
         // Pasajeros y carga del OFP de SimBrief (registrados en el vuelo);
         // sólo se estiman si faltan.
         let pnl = compute_pnl(f, &res, &gsx, &policy, is_cargo_flight(f, res.cargo));
@@ -1737,8 +2102,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
             r#"INSERT OR REPLACE INTO flight_pnl
                 (flight_id, airline_key, pax, revenue_tickets, revenue_ancillary,
                  cost_fuel, cost_catering, cost_handling, cost_maintenance,
-                 cost_fees, net, gsx_matched, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+                 cost_fees, net, gsx_matched, created_at, fuel_kg, fuel_price_kg)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
         )
         .bind(f.id)
         .bind(&res.key)
@@ -1753,6 +2118,8 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
         .bind(pnl.net)
         .bind(pnl.gsx_matched as i64)
         .bind(&now)
+        .bind(pnl.fuel_kg)
+        .bind(pnl.fuel_price_kg)
         .execute(&mut *tx)
         .await?;
 
@@ -2561,6 +2928,217 @@ mod gsx_receipt_tests {
         let j = r#"{"title":"FUEL DELIVERY RECEIPT","subtotal":"C$21.00 ~$ 14.80","total":"C$22.05 ~$ 15.54"}"#;
         assert_eq!(parse_total_json(j), Some(15.54));
         assert_eq!(parse_total_json("{}"), None);
+    }
+
+    /// Recibo real de CYWG (13/10): desembarque del vuelo que llega + embarque
+    /// y pushback del que sale + jetway, con impuestos.
+    const TURNAROUND: &str = r#"{"receiptId":"GSX-20261013T034021Z-CYWG","items":[
+        {"description":"Passenger deboarding","qty":"x","unitPrice":"x","amount":"C$879.70 ~$ 617.55"},
+        {"description":"Passenger boarding","qty":"x","unitPrice":"x","amount":"C$2,282.82 ~$ 1,602.54"},
+        {"description":"Pushback service\n(82 t MTOW)","qty":"x","unitPrice":"x","amount":"C$1,170.81 ~$ 821.91"},
+        {"description":"Jetway connection fee","qty":"x","unitPrice":"x","amount":"C$142.45 ~$ 100.00"},
+        {"description":"Jetway operation time","qty":"x","unitPrice":"x","amount":"C$84.16 ~$ 59.08"}],
+        "subtotal":"C$4,559.94 ~$ 3,201.08","total":"C$4,787.94 ~$ 3,361.14"}"#;
+
+    #[test]
+    fn receipt_lines_split_by_side_with_their_taxes() {
+        let lines = parse_receipt_lines(TURNAROUND, GsxKind::Handling);
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0].side, Side::Arr, "desembarque = vuelo que llega");
+        assert!(lines[1..].iter().all(|l| l.side == Side::Dep), "embarque/pushback/jetway = el que sale");
+        assert_eq!(lines[2].service, "Pushback service (82 t MTOW)");
+        // Con impuestos repartidos, las líneas suman el total del recibo.
+        let sum: f64 = lines.iter().map(|l| l.usd).sum();
+        assert!((sum - 3361.14).abs() < 0.06, "suma {sum}");
+        // Sólo llegada: el jetway va con la llegada.
+        let arr = r#"{"items":[{"description":"Passenger deboarding","amount":"$ 1,066.50"},
+            {"description":"Jetway connection fee","amount":"$ 100.00"}],"subtotal":"$ 1,166.50","total":"$ 1,166.50"}"#;
+        assert!(parse_receipt_lines(arr, GsxKind::Handling).iter().all(|l| l.side == Side::Arr));
+        // Líneas de 0 USD no cuentan.
+        let zero = r#"{"items":[{"description":"Jetway connection fee","amount":"C$0.00 ~$ 0.00"}],"total":"C$0.00 ~$ 0.00"}"#;
+        assert!(parse_receipt_lines(zero, GsxKind::Handling).is_empty());
+    }
+
+    #[test]
+    fn fuel_uplift_gives_a_price_and_defuel_is_a_service() {
+        let up = r#"{"items":[{"description":"Jet-A1 fuel","qty":"3 gal 20 lb 9 kg","amount":"C$21.00 ~$ 14.80"}],
+            "subtotal":"C$21.00 ~$ 14.80","total":"C$22.05 ~$ 15.54"}"#;
+        let l = parse_receipt_lines(up, GsxKind::Fuel);
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].uplift_kg, Some(9.0));
+        assert!((l[0].usd - 15.54).abs() < 0.01);
+        let de = r#"{"items":[{"description":"Jet-A1 fuel (defueling)","qty":"603 gal 4,043 lb 1,834 kg","amount":"€970.53 ~$ 1,090.69"}],
+            "subtotal":"€970.53 ~$ 1,090.69","total":"€1,218.01 ~$ 1,368.82"}"#;
+        let l = parse_receipt_lines(de, GsxKind::Fuel);
+        assert_eq!(l[0].uplift_kg, None, "desabastecer es un servicio cobrado");
+        assert_eq!(l[0].side, Side::Dep);
+        assert!((l[0].usd - 1368.82).abs() < 0.01);
+    }
+
+    fn flight(id: i64, from: &str, to: &str, start: &str, end: &str) -> FlightLogEntry {
+        FlightLogEntry {
+            id,
+            aircraft_registration: Some("C-GORP".into()),
+            origin_icao: Some(from.into()),
+            destination_icao: Some(to.into()),
+            started_at: start.into(),
+            ended_at: Some(end.into()),
+            ..Default::default()
+        }
+    }
+
+    fn line(i: usize, kind: GsxKind, side: Side, airport: &str, at: &str, usd: f64, kg: Option<f64>) -> GsxLine {
+        GsxLine {
+            receipt_id: "R".into(),
+            line: i,
+            kind,
+            service: format!("s{i}"),
+            side,
+            airport: airport.into(),
+            reg: "CGORP".into(),
+            at: parse_dt(at).unwrap(),
+            usd,
+            uplift_kg: kg,
+        }
+    }
+
+    #[test]
+    fn each_line_goes_to_one_flight_only() {
+        // Llega a CYWG 02:38, sale de CYWG 03:29; el recibo se cierra 03:40.
+        let flights = [
+            flight(45, "CYYC", "CYWG", "2026-10-13T00:41:27Z", "2026-10-13T02:38:36Z"),
+            flight(46, "CYWG", "CYYC", "2026-10-13T03:29:05Z", "2026-10-13T05:32:19Z"),
+        ];
+        let at = "2026-10-13T03:40:21Z";
+        let lines = [
+            line(0, GsxKind::Handling, Side::Arr, "CYWG", at, 617.55, None),
+            line(1, GsxKind::Handling, Side::Dep, "CYWG", at, 1602.54, None),
+            line(2, GsxKind::Handling, Side::Dep, "CYWG", at, 821.91, None),
+        ];
+        let a = assign_lines(&lines, &flights);
+        assert_eq!(a, vec![Some(45), Some(46), Some(46)]);
+        let costs = gsx_costs_by_flight(&lines, &a, &flights);
+        assert_eq!(costs[&45].handling_arr, Some(617.55));
+        assert_eq!(costs[&45].handling_dep, None);
+        assert!((costs[&46].handling_dep.unwrap() - 2424.45).abs() < 0.01);
+        // Ningún dinero se cuenta dos veces.
+        let total_charged: f64 = costs.values().map(|c| c.handling_arr.unwrap_or(0.0) + c.handling_dep.unwrap_or(0.0)).sum();
+        assert!((total_charged - (617.55 + 1602.54 + 821.91)).abs() < 0.01);
+    }
+
+    #[test]
+    fn repeated_services_count_once() {
+        // #32 real: catering 15:05, 15:46, 16:59 y embarque 15:11, 17:36 antes
+        // de salir a las 17:23 → cuentan los últimos.
+        let flights = [flight(32, "CYYC", "KLAS", "2026-10-09T17:23:33Z", "2026-10-09T20:14:39Z")];
+        let mut lines = vec![
+            line(0, GsxKind::Catering, Side::Dep, "CYYC", "2026-10-09T15:05:39Z", 328.86, None),
+            line(1, GsxKind::Handling, Side::Dep, "CYYC", "2026-10-09T15:11:54Z", 1459.78, None),
+            line(2, GsxKind::Catering, Side::Dep, "CYYC", "2026-10-09T15:46:46Z", 328.86, None),
+            line(3, GsxKind::Catering, Side::Dep, "CYYC", "2026-10-09T16:59:02Z", 328.86, None),
+            line(4, GsxKind::Handling, Side::Dep, "CYYC", "2026-10-09T17:36:05Z", 1732.0, None),
+        ];
+        for (i, l) in lines.iter_mut().enumerate() {
+            l.receipt_id = format!("R{i}");
+            if l.kind == GsxKind::Handling {
+                l.service = "Passenger boarding".into();
+            }
+        }
+        let mut a = assign_lines(&lines, &flights);
+        assert!(a.iter().all(|x| *x == Some(32)));
+        drop_repeats(&lines, &mut a);
+        assert_eq!(a, vec![None, None, None, Some(32), Some(32)]);
+        let c = &gsx_costs_by_flight(&lines, &a, &flights)[&32];
+        assert_eq!(c.catering, Some(328.86));
+        assert_eq!(c.handling_dep, Some(1732.0));
+    }
+
+    #[test]
+    fn lines_without_a_flight_are_not_charged() {
+        // Vuelo incompleto/borrado: sus servicios no caen en otro vuelo.
+        let flights = [flight(1, "CYYC", "CYEG", "2026-10-23T03:42:52Z", "2026-10-23T04:33:30Z")];
+        let lines = [
+            line(0, GsxKind::Catering, Side::Dep, "EFHK", "2026-10-23T19:08:03Z", 761.85, None),
+            line(1, GsxKind::Handling, Side::Dep, "CYYC", "2026-10-23T16:33:04Z", 50.0, None),
+        ];
+        assert_eq!(assign_lines(&lines, &flights), vec![None, None]);
+    }
+
+    #[test]
+    fn fuel_is_burned_kg_times_the_local_gsx_price() {
+        let mut f = flight(7, "CYYZ", "CYYC", "2026-10-17T03:00:00Z", "2026-10-17T07:00:00Z");
+        f.fuel_used_kg = Some(9000);
+        // Carga de GSX en CYYZ ese día: 9 kg por 15.54 USD → 1.7267 USD/kg.
+        let lines = [line(0, GsxKind::Fuel, Side::Dep, "CYYZ", "2026-10-17T02:19:33Z", 15.54, Some(9.0))];
+        let a = assign_lines(&lines, std::slice::from_ref(&f));
+        assert_eq!(a, vec![Some(7)]);
+        let costs = gsx_costs_by_flight(&lines, &a, std::slice::from_ref(&f));
+        let c = &costs[&7];
+        assert!(!c.matched(), "una carga de combustible no es un cobro");
+        let (usd, kg, price) = fuel_cost(&f, c, Size::Narrow, 1500.0);
+        assert_eq!(kg, 9000.0);
+        assert!((price - 15.54 / 9.0).abs() < 1e-9);
+        assert!((usd - 9000.0 * 15.54 / 9.0).abs() < 0.01, "paga lo quemado, no los 15 USD cargados");
+        // Sin recibo: precio de referencia.
+        let (usd, _, price) = fuel_cost(&f, &GsxCosts::default(), Size::Narrow, 1500.0);
+        assert_eq!(price, FUEL_USD_PER_KG);
+        assert!((usd - 9000.0 * FUEL_USD_PER_KG).abs() < 0.01);
+    }
+
+    /// Contra una COPIA de la base real y los recibos reales de GSX:
+    /// `ECON_DB=<copia> cargo test --lib gsx_real_copy -- --ignored --nocapture`.
+    /// Migra la copia, recalcula y compara el P&L de cada vuelo antes/después.
+    #[tokio::test]
+    #[ignore]
+    async fn gsx_real_copy() {
+        let path = std::env::var("ECON_DB").expect("ECON_DB");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{path}"))
+            .await
+            .unwrap();
+        let old: HashMap<i64, (f64, f64, f64, f64)> =
+            sqlx::query_as::<_, (i64, f64, f64, f64, f64)>("SELECT flight_id, cost_fuel, cost_catering, cost_handling, net FROM flight_pnl")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(id, a, b, c, d)| (id, (a, b, c, d)))
+                .collect();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        recompute(&pool).await.unwrap();
+        type Row = (i64, String, f64, f64, f64, f64, Option<f64>, Option<f64>);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT p.flight_id, COALESCE(f.origin_icao,'?') || '→' || COALESCE(f.destination_icao,'?') || ' ' || COALESCE(f.aircraft_registration,''),
+                    p.cost_fuel, p.cost_catering, p.cost_handling, p.net, p.fuel_kg, p.fuel_price_kg
+             FROM flight_pnl p JOIN flight_log f ON f.id = p.flight_id ORDER BY f.started_at DESC LIMIT 14",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for (id, route, fuel, cat, hand, net, kg, price) in rows {
+            let o = old.get(&id).copied().unwrap_or_default();
+            let lines: Vec<(String, String, f64)> =
+                sqlx::query_as("SELECT side, service, amount_usd FROM gsx_charge WHERE flight_id = ?1 AND is_cost = 1 ORDER BY at")
+                    .bind(id)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            eprintln!(
+                "#{id} {route}\n   antes: fuel {:.0} catering {:.0} handling {:.0} neto {:.0}\n   ahora: fuel {fuel:.0} ({:.0} kg × {:.3}) catering {cat:.0} handling {hand:.0} neto {net:.0}",
+                o.0, o.1, o.2, o.3, kg.unwrap_or(0.0), price.unwrap_or(0.0)
+            );
+            for (side, svc, usd) in lines {
+                eprintln!("     GSX {side} {svc}: {usd:.2}");
+            }
+        }
+        let (n, charged, free): (i64, i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), SUM(flight_id IS NOT NULL AND is_cost = 1), SUM(flight_id IS NULL AND is_cost = 1) FROM gsx_charge",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        eprintln!("líneas GSX: {n} · cobradas a un vuelo: {charged} · sin vuelo (no se cobran): {free}");
     }
 
     #[test]

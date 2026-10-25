@@ -47,7 +47,10 @@ pub async fn techlog_action(
     let mut r = techlog::action(&state.db, request)
         .await
         .map_err(|e| e.to_string())?;
-    r.message = crate::tl_i18n::sentence(&r.message);
+    // (24/10) En cola, `message` es un código (`sim_closed`…) que traduce el front.
+    if !r.queued {
+        r.message = crate::tl_i18n::sentence(&r.message);
+    }
     // (23/10) No depender sólo del aviso en vivo de TechLog (si cambió de
     // avión para la orden, su evento puede no llegar): la campana y los
     // paneles se refrescan ya.

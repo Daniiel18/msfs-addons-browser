@@ -55,6 +55,8 @@ export interface PreflightCheck {
    *  checks de escenario faltante/desactivado/update). Cuando está, el
    *  modal ofrece un check para omitir este punto. */
   bypassIcao?: string;
+  /** (24/10) Hora (ISO) de una cuenta atrás tras el título (traslado en curso). */
+  countdownTo?: string;
 }
 
 export interface PreflightRoute {
@@ -123,13 +125,6 @@ function fmtDayClock(iso: string): string {
   return isNaN(d.getTime())
     ? ""
     : d.toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-}
-
-function fmtClock(iso: string): string {
-  const d = new Date(iso);
-  return isNaN(d.getTime())
-    ? ""
-    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export interface PreflightMaintenance {
@@ -312,7 +307,8 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         titleKey: toOrigin
           ? "preflight.check.ferry_enroute"
           : "preflight.check.ferry_enroute_other",
-        titleArgs: { reg, to: ferry.toIcao, orig, time: fmtClock(ferry.arrivesAt) },
+        titleArgs: { reg, to: ferry.toIcao, orig },
+        countdownTo: ferry.arrivesAt,
         detailKey: "preflight.check.ferry_enroute_detail",
         detailArgs: { cost: fmtFerryCost(ferry.costTotal) },
         action: { kind: "ferry-cancel", id: ferry.id, toIcao: ferry.toIcao },
@@ -335,7 +331,7 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         titleArgs: { reg, at: loc.icao, orig },
         detailKey: q ? "preflight.check.ferry_needed_detail" : "preflight.check.ferry_no_quote",
         detailArgs: q
-          ? { duration: fmtFerryDuration(q.blockMinutes), cost: fmtFerryCost(q.costTotal) }
+          ? { duration: fmtFerryDuration(q.arriveMinutes ?? q.blockMinutes), cost: fmtFerryCost(q.costTotal) }
           : undefined,
         action: q
           ? {
@@ -344,7 +340,7 @@ export function computePreflight(input: PreflightInput): PreflightResult {
               toIcao: orig,
               model: fl.model,
               cost: fmtFerryCost(q.costTotal),
-              duration: fmtFerryDuration(q.blockMinutes),
+              duration: fmtFerryDuration(q.arriveMinutes ?? q.blockMinutes),
             }
           : undefined,
         actionKey: q ? "preflight.action.ferry" : undefined,

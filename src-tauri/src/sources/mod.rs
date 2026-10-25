@@ -124,6 +124,13 @@ pub trait Source: Send + Sync {
         Err(SourceError::NotImplemented)
     }
 
+    /// (25/10) Sólo las tarjetas del listado (nombre, desarrollador,
+    /// versión), sin abrir cada ficha: lo que necesita el escáner de updates
+    /// para las fuentes que se leen enteras en vez de buscar lo instalado.
+    async fn listing(&self, _page: usize) -> Result<BrowsePage, SourceError> {
+        Err(SourceError::NotImplemented)
+    }
+
     fn descriptor(&self) -> SourceDescriptor {
         SourceDescriptor {
             id: self.id().to_string(),
