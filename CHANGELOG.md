@@ -5,6 +5,12 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.4.1]
+
+### Fixed
+- If flightsim.to didn't load when SimFleet checked your account for updates, the hidden window used for that check stayed open until you closed SimFleet.
+- Small code cleanups from a full review of 8.4.0 (no other visible changes).
+
 ## [8.4.0]
 
 ### Added
