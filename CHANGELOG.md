@@ -5,6 +5,30 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [8.4.0]
+
+### Added
+- **Airport card with tabs:** Summary · Runways · Gates. Runways show length, width, surface and lighting (from OurAirports, downloaded once and refreshed monthly); Gates list the GSX gates, parkings and helipads. Click a runway or gate to zoom the map in on it with satellite imagery, then "Back to routes". Real airport photos (no logos, maps or diagrams), with a satellite view when there's none, and photos preloaded so the card opens instantly.
+- **FlightBook airline filter on the map:** with an airline selected, the airport card only counts your flights with that airline (departures, arrivals, passengers, money spent, best landing, top gate, aircraft parked) and the airports you never flew with it are dimmed and can't be clicked.
+- **GSX gates by airline:** gates assigned to an airline in the GSX profile show its logo. Without a filter you get one chip per airline (plus "Unassigned"); with the FlightBook filter you see that airline's gates and the free ones, or — when the profile assigns none — the gates you actually used with it. Same chips on the Scenery map, which also filters the pins.
+- **Visual Tech Log in the Hangar:** an aircraft drawing with where each fault is, engine cards with EGT gauge and section cut-away, wheels and brakes, and a systems grid with the same actions as before. The "SimFleet Tech Log" box in the FlightBook opens it. Own drawings for each family (narrowbody, 737, widebody, quad, regional, turboprop).
+- **Interactive Hangar dashboards:** tap an aircraft type, airline, destination or region (the radar's countries and dots) to open a detail card with KPIs, breakdowns and recent flights, with shortcuts to Finances and to the airport on the map.
+- **AeroHub filters** (All · Planes · Helicopters · Sceneries · Utilities) and **"What's new" in the catalogs:** Home and Pre-flight now also list what's new on AeroHub and Simplaza since your last visit.
+- **flightsim.to updates from your account:** if you're signed in to flightsim.to, SimFleet reads your downloads list (at startup and every 6 hours) and shows the updates of what you have installed, GSX profiles included.
+- **Pause and resume downloads**, also after closing SimFleet (torrents, direct downloads and those that go through the browser). Redesigned Downloads panel with thumbnails, "In progress" and a collapsible history.
+
+### Changed
+- **Landing clips are now the last 30 seconds before touchdown and up to 10 seconds after**, instead of the whole approach. The approach is still recorded and then trimmed to the exact frame with Windows' own encoder (no quality loss you can see); if trimming ever fails, the full recording is kept.
+- **The clip list no longer sits next to your videos:** it moved to SimFleet's data folder (your existing clips and favorites move over automatically), and the recording in progress is kept in a hidden folder until it becomes a clip.
+- **Redesigned bell:** a side panel like Downloads, with cards grouped by Pending, Updates, Fleet & flights and Suggestions; addon updates show the first 3 and "See all N updates". At startup a small bubble under the bell replaces the panel opening by itself.
+
+### Fixed
+- "See on the map" from the Hangar only moved the camera and didn't show the airport.
+- Filtering by an airline whose routes cross the antimeridian (e.g. Seattle–Tokyo) zoomed out to a world view centred on Africa.
+- VaultDrop links that expired or failed showed a blank page; now SimFleet tells you what the host said.
+- The flightsim.to tab went blank while a window or menu was open on top of it; it now keeps showing the page behind.
+- In the clip list, clips without a landing rate were listed before the best landings.
+
 ## [8.3.3]
 
 ### Added
