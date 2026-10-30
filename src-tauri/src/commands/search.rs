@@ -15,15 +15,21 @@ pub async fn list_sources(
 pub async fn search(
     query: String,
     source_id: String,
+    kind: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<Addon>, String> {
-    cmd_log!("search", "query={:?} source={}", query, source_id);
+    cmd_log!("search", "query={:?} source={} kind={:?}", query, source_id, kind);
     let _t = CmdTimer::start("search");
     let source = state
         .source(&source_id)
         .ok_or_else(|| format!("unknown source: {}", source_id))?;
 
-    let addons = source.search(&query).await.map_err(|e| {
+    // (26/10) Filtro por tipo (aerohub); las demás fuentes lo ignoran.
+    let res = match kind.as_deref().filter(|k| !k.is_empty()) {
+        Some(k) => source.search_kind(&query, k).await,
+        None => source.search(&query).await,
+    };
+    let addons = res.map_err(|e| {
         tracing::error!(
             "search('{}', source={}) error: {e}",
             query,
@@ -91,15 +97,20 @@ pub async fn catalog_addon(
 pub async fn browse_source(
     source_id: String,
     page: usize,
+    kind: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<BrowsePage, String> {
-    cmd_log!("browse_source", "source={} page={}", source_id, page);
+    cmd_log!("browse_source", "source={} page={} kind={:?}", source_id, page, kind);
     let _t = CmdTimer::start("browse_source");
     let source = state
         .source(&source_id)
         .ok_or_else(|| format!("unknown source: {}", source_id))?;
 
-    let result = source.browse(page.max(1)).await.map_err(|e| {
+    let res = match kind.as_deref().filter(|k| !k.is_empty()) {
+        Some(k) => source.browse_kind(page.max(1), k).await,
+        None => source.browse(page.max(1)).await,
+    };
+    let result = res.map_err(|e| {
         tracing::error!("browse_source({}, page={}) error: {e}", source_id, page);
         e.to_string()
     })?;

@@ -1425,9 +1425,9 @@ pub mod repo {
             INSERT INTO download_jobs (
                 id, addon_id, addon_title, source, method_kind, method_name,
                 url, phase, bytes_total, bytes_done, speed_bps, eta_seconds,
-                message, error, install_path, created_at, updated_at
+                message, error, install_path, created_at, updated_at, resume, image_url
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now')
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'), ?17, ?18
             )
             ON CONFLICT(id) DO UPDATE SET
                 addon_id     = excluded.addon_id,
@@ -1444,6 +1444,8 @@ pub mod repo {
                 message      = excluded.message,
                 error        = excluded.error,
                 install_path = excluded.install_path,
+                resume       = excluded.resume,
+                image_url    = excluded.image_url,
                 updated_at   = datetime('now')
             "#,
         )
@@ -1463,6 +1465,8 @@ pub mod repo {
         .bind(&job.error)
         .bind(&job.install_path)
         .bind(&job.created_at)
+        .bind(&job.resume)
+        .bind(&job.image_url)
         .execute(pool)
         .await?;
         Ok(())
@@ -1487,7 +1491,7 @@ pub mod repo {
             r#"
             SELECT id, addon_id, addon_title, source, method_kind, method_name,
                    url, phase, bytes_total, bytes_done, speed_bps, eta_seconds,
-                   message, error, install_path, created_at
+                   message, error, install_path, created_at, resume, image_url
             FROM download_jobs
             ORDER BY created_at ASC
             "#,
@@ -1500,7 +1504,7 @@ pub mod repo {
                 tracing::warn!("download_jobs: phase desconocida '{}' en id={}", r.phase, r.id);
                 continue;
             };
-            out.push(DownloadJob {
+            let mut job = DownloadJob {
                 id: r.id,
                 addon_id: r.addon_id,
                 addon_title: r.addon_title,
@@ -1517,9 +1521,27 @@ pub mod repo {
                 error: r.error,
                 install_path: r.install_path,
                 created_at: r.created_at,
-            });
+                image_url: r.image_url,
+                pausable: false,
+                resumable: false,
+                resume: r.resume,
+            };
+            job.refresh_flags();
+            out.push(job);
         }
         Ok(out)
+    }
+
+    /// (25/10) Imagen del addon en el catálogo (para su fila en Descargas).
+    pub async fn addon_image(pool: &SqlitePool, addon_id: &str) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>("SELECT image_url FROM addons WHERE id = ?1")
+            .bind(addon_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .filter(|u| !u.is_empty())
     }
 
     #[derive(sqlx::FromRow)]
@@ -1540,6 +1562,8 @@ pub mod repo {
         error: Option<String>,
         install_path: Option<String>,
         created_at: String,
+        resume: Option<String>,
+        image_url: Option<String>,
     }
 
     fn phase_to_str(p: &crate::download::DownloadPhase) -> &'static str {

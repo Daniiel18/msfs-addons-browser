@@ -72,6 +72,7 @@ import { useAircraftPhoto } from "./FlightBookView";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
 import { FerryCountdown } from "./FerryCountdown";
+import { HangarInsightModal, type InsightTarget } from "./HangarInsightModal";
 
 /**
  * (v6 #2a) Vista "Hangar & Fleet Analytics" — rediseño maestro/detalle.
@@ -329,6 +330,14 @@ export function HangarView() {
             data={data}
             clips={clips}
             onReloadClips={reloadClips}
+            onSelectAircraft={(key) => {
+              // (26/10) Desde una ficha: su página de la flota, sin búsqueda.
+              const i = data.aircraft.findIndex((a) => a.key === key);
+              if (i < 0) return;
+              setSearch("");
+              setPage(Math.floor(i / PER_PAGE));
+              setSelectedKey(key);
+            }}
           />
         )}
       </div>
@@ -367,11 +376,17 @@ function FleetOverview({
   data,
   clips,
   onReloadClips,
+  onSelectAircraft,
 }: {
   data: HangarAnalytics;
   clips: LandingClip[];
   onReloadClips: () => void;
+  /** (26/10) Abre la ficha de un avión (desde la ficha de un panel). */
+  onSelectAircraft: (key: string) => void;
 }) {
+  // (26/10) Etapa 8: tocar un tipo, una aerolínea, un destino o un país abre
+  // su ficha (cifras, desglose y últimos vuelos).
+  const [insight, setInsight] = useState<InsightTarget | null>(null);
   // (v6.1 #27) Top 10 de los mejores aterrizajes de TODA la flota: clips reales
   // ordenados por FPM más fino; si no hay clips, los sintéticos del backend.
   const topClips = useMemo(
@@ -384,36 +399,61 @@ function FleetOverview({
   // Regiones más voladas: derivadas de TODOS los vuelos (store) por destino,
   // agrupando el ICAO por su zona OACI (mismo criterio que los badges).
   const entries = useFlightLogStore((s) => s.entries);
-  const topRegions = useMemo<HangarCount[]>(() => {
-    const counts = new Map<string, number>();
+  // (26/10) Con los destinos de cada país (para su ficha) y su continente.
+  const topRegions = useMemo(() => {
+    const byLabel = new Map<string, { count: number; icaos: Set<string>; code: string; continent: string }>();
     for (const e of entries) {
-      const icao = e.destinationIcao ?? null;
+      const icao = e.destinationIcao?.toUpperCase() ?? null;
       if (!icao) continue;
-      const label = airportRegion(icao).label;
-      counts.set(label, (counts.get(label) ?? 0) + 1);
+      const r = airportRegion(icao);
+      const g = byLabel.get(r.label) ?? { count: 0, icaos: new Set<string>(), code: r.code, continent: r.continent };
+      g.count += 1;
+      g.icaos.add(icao);
+      byLabel.set(r.label, g);
     }
-    return [...counts.entries()]
-      .map(([label, count]) => ({ label, code: null, count }))
+    return [...byLabel.entries()]
+      .map(([label, g]) => ({ label, ...g }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
   }, [entries]);
+  const regionTotal = topRegions.reduce((s, r) => s + r.count, 0);
 
-  const aircraftData = data.topAircraftTypes.map((a) => ({
+  const aircraftData = data.topAircraftTypes.map((a: HangarCount) => ({
     name: cleanAtcType(a.label) ?? a.label,
     size: a.count,
+    ikey: a.key ?? null,
   }));
   const airlineData = data.topAirlines.map((a) => ({
     name: a.label,
     size: a.count,
     img: airlineLogoUrl(a.code, a.label),
     code: a.code,
+    ikey: a.key ?? null,
   }));
   const destData = data.topDestinations.map((d) => ({
     name: d.icao,
     size: d.visits,
     img: flagUrl(d.icao),
+    code: d.icao,
   }));
-  const regionData = topRegions.map((r) => ({ label: r.label, count: r.count }));
+  const regionData = topRegions.map((r) => ({
+    label: r.label,
+    count: r.count,
+    airports: r.icaos.size,
+    share: regionTotal ? Math.round((r.count / regionTotal) * 100) : 0,
+    continent: r.continent,
+  }));
+  const openRegion = (label: string) => {
+    const r = topRegions.find((x) => x.label === label);
+    if (!r) return;
+    const anyIcao = [...r.icaos][0];
+    setInsight({
+      kind: "region",
+      filter: { kind: "airports", icaos: [...r.icaos] },
+      title: label,
+      img: anyIcao ? flagUrl(anyIcao) : null,
+    });
+  };
 
   return (
     <section className="rounded-2xl border border-sf-border bg-sf-surface p-4">
@@ -426,27 +466,57 @@ function FleetOverview({
           icon={<Plane className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.aircraft")}
           data={aircraftData}
+          hint={t("hangar.overview.tap_hint")}
+          onSelect={(item) =>
+            item.ikey &&
+            setInsight({ kind: "type", filter: { kind: "type", key: item.ikey }, title: item.name })
+          }
         />
         <TreemapCard
           icon={<Building2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.airlines")}
           data={airlineData}
-          hint={t("hangar.overview.airlines_hint")}
+          hint={t("hangar.overview.tap_hint")}
           onSelect={(item) =>
-            useAppStore.getState().openEconomy(item.code ?? item.name)
+            item.ikey
+              ? setInsight({
+                  kind: "airline",
+                  filter: { kind: "airline", key: item.ikey },
+                  title: item.name,
+                  code: item.code,
+                })
+              : useAppStore.getState().openEconomy(item.code ?? item.name)
           }
         />
         <TreemapCard
           icon={<MapPin className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.destinations")}
           data={destData}
+          hint={t("hangar.overview.tap_hint")}
+          onSelect={(item) =>
+            setInsight({
+              kind: "destination",
+              filter: { kind: "airports", icaos: [item.name] },
+              title: item.name,
+              code: item.name,
+              img: flagUrl(item.name),
+            })
+          }
         />
         <RadarCard
           icon={<Globe2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.regions")}
           data={regionData}
+          hint={t("hangar.overview.tap_hint")}
+          onSelect={openRegion}
         />
       </div>
+      <HangarInsightModal
+        target={insight}
+        onClose={() => setInsight(null)}
+        onTarget={setInsight}
+        onSelectAircraft={onSelectAircraft}
+      />
 
       {/* (v6.1 #27) Top 10 mejores aterrizajes de toda la flota. */}
       <div className="mt-2">
@@ -517,12 +587,14 @@ function flagUrl(icao: string): string | null {
  * el contenedor). Logo/bandera GRANDE y CENTRADO, escalado al tamaño de la
  * celda (responsive), con el nombre debajo, también centrado.
  */
+type TreeItem = { name: string; code: string | null; ikey: string | null };
+
 function TreeLabel(props: {
   x?: number; y?: number; width?: number; height?: number; index?: number;
-  name?: string; img?: string | null; code?: string | null;
-  onSelect?: (item: { name: string; code: string | null }) => void;
+  name?: string; img?: string | null; code?: string | null; ikey?: string | null;
+  onSelect?: (item: TreeItem) => void;
 }) {
-  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", img, code, onSelect } = props;
+  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", img, code, ikey, onSelect } = props;
   const c = TREE_COLORS[index % TREE_COLORS.length];
   const cx = x + width / 2;
   const cy = y + height / 2;
@@ -536,8 +608,9 @@ function TreeLabel(props: {
   const clickable = !!onSelect && !!name;
   return (
     <g
-      onClick={clickable ? () => onSelect!({ name, code: code ?? null }) : undefined}
+      onClick={clickable ? () => onSelect!({ name, code: code ?? null, ikey: ikey ?? null }) : undefined}
       style={clickable ? { cursor: "pointer" } : undefined}
+      className={clickable ? "transition-opacity hover:opacity-85" : undefined}
     >
       {/* Cuadrada: el "gap" entre celdas lo da el stroke; sin rx. */}
       <rect x={x} y={y} width={width} height={height} fill={c} stroke="#0b1220" strokeWidth={2.5} />
@@ -560,13 +633,25 @@ function TreeLabel(props: {
   );
 }
 
-function TreeTip({ active, payload }: { active?: boolean; payload?: Array<{ payload: { name: string; size: number } }> }) {
+function TreeTip({
+  active,
+  payload,
+  total,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: { name: string; size: number } }>;
+  total?: number;
+}) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
   return (
     <div className="rounded-lg border border-sf-border bg-sf-bg/95 px-2.5 py-1.5 text-xs shadow-xl">
       <div className="font-semibold text-sf-text">{p.name}</div>
-      <div className="text-sf-muted">{p.size} {t("hangar.flights_short")}</div>
+      <div className="text-sf-muted">
+        {p.size} {t("hangar.flights_short")}
+        {total ? ` · ${Math.round((p.size / total) * 100)}%` : ""}
+      </div>
+      <div className="mt-0.5 text-[10px] text-brand-300">{t("hangar.overview.tap_detail")}</div>
     </div>
   );
 }
@@ -576,12 +661,13 @@ function TreemapCard({
 }: {
   icon: React.ReactNode;
   title: string;
-  data: Array<{ name: string; size: number; code?: string | null }>;
-  /** Pista bajo el título (ej. "clic para ver finanzas"). */
+  data: Array<{ name: string; size: number; code?: string | null; ikey?: string | null }>;
+  /** Pista bajo el título (ej. "toca para ver detalle"). */
   hint?: string;
   /** Si se pasa, cada celda es clicable y dispara esto con su item. */
-  onSelect?: (item: { name: string; code: string | null }) => void;
+  onSelect?: (item: TreeItem) => void;
 }) {
+  const total = data.reduce((s, d) => s + d.size, 0);
   return (
     <CardShell icon={icon} title={title} empty={data.length === 0} hint={hint}>
       <div className="h-52 w-full overflow-hidden rounded-lg">
@@ -593,7 +679,7 @@ function TreemapCard({
             isAnimationActive={false}
             content={<TreeLabel onSelect={onSelect} />}
           >
-            <Tooltip content={<TreeTip />} />
+            <Tooltip content={<TreeTip total={total} />} />
           </Treemap>
         </ResponsiveContainer>
       </div>
@@ -601,23 +687,116 @@ function TreemapCard({
   );
 }
 
-function RadarCard({
-  icon, title, data,
-}: {
-  icon: React.ReactNode; title: string; data: Array<{ label: string; count: number }>;
+type RegionDatum = { label: string; count: number; airports: number; share: number; continent: string };
+
+/** (26/10) Etiqueta del radar: el país, clicable. */
+function RadarTick(props: {
+  x?: number;
+  y?: number;
+  textAnchor?: "start" | "middle" | "end" | "inherit";
+  payload?: { value: string };
+  onSelect?: (label: string) => void;
 }) {
+  const { x = 0, y = 0, textAnchor = "middle", payload, onSelect } = props;
+  const label = payload?.value ?? "";
   return (
-    <CardShell icon={icon} title={title} empty={data.length < 3}>
-      <div className="h-52 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <RadarChart data={data} outerRadius="70%">
-            <PolarGrid stroke="#334155" />
-            <PolarAngleAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-            <PolarRadiusAxis tick={{ fill: "#64748b", fontSize: 9 }} stroke="#334155" angle={45} />
-            <Radar dataKey="count" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.45} isAnimationActive={false} />
-          </RadarChart>
-        </ResponsiveContainer>
+    <text
+      x={x}
+      y={y}
+      dy={4}
+      textAnchor={textAnchor}
+      fill="#cbd5e1"
+      fontSize={11}
+      className="cursor-pointer hover:fill-brand-300 hover:underline"
+      onClick={() => onSelect?.(label)}
+    >
+      {label}
+    </text>
+  );
+}
+
+function RadarTip({ active, payload }: { active?: boolean; payload?: Array<{ payload: RegionDatum }> }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  return (
+    <div className="rounded-lg border border-sf-border bg-sf-bg/95 px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-semibold text-sf-text">{p.label}</div>
+      <div className="text-sf-muted">
+        {p.count} {t("hangar.flights_short")} · {p.share}%
       </div>
+      <div className="text-sf-muted">{t("hangar.overview.region_airports", { n: String(p.airports) })}</div>
+      <div className="mt-0.5 text-[10px] text-brand-300">{t("hangar.overview.tap_detail")}</div>
+    </div>
+  );
+}
+
+function RadarCard({
+  icon, title, data, hint, onSelect,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  data: RegionDatum[];
+  hint?: string;
+  /** (26/10) Tocar un país (etiqueta o punto) abre su ficha. */
+  onSelect: (label: string) => void;
+}) {
+  // El radar necesita 3 ejes; con 1 o 2 países, una lista con barras.
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <CardShell icon={icon} title={title} empty={data.length === 0} hint={hint}>
+      {data.length < 3 ? (
+        <ul className="flex h-52 flex-col justify-center gap-2">
+          {data.map((d) => (
+            <li key={d.label}>
+              <button
+                onClick={() => onSelect(d.label)}
+                className="w-full rounded-lg px-2 py-1.5 text-left hover:bg-sf-raised/60"
+              >
+                <div className="flex items-baseline justify-between gap-2 text-xs">
+                  <span className="text-sf-text">{d.label}</span>
+                  <span className="tabular-nums text-sf-muted">
+                    {d.count} {t("hangar.flights_short")} · {d.share}%
+                  </span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-sf-raised">
+                  <div className="h-full rounded-full bg-sky-400/80" style={{ width: `${(d.count / max) * 100}%` }} />
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="h-52 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <RadarChart data={data} outerRadius="70%">
+              <PolarGrid stroke="#334155" />
+              <PolarAngleAxis dataKey="label" tick={<RadarTick onSelect={onSelect} />} />
+              <PolarRadiusAxis tick={{ fill: "#64748b", fontSize: 9 }} stroke="#334155" angle={45} />
+              <Radar
+                dataKey="count"
+                stroke="#38bdf8"
+                fill="#38bdf8"
+                fillOpacity={0.45}
+                isAnimationActive={false}
+                dot={(p: { cx?: number; cy?: number; payload?: RegionDatum; index?: number }) => (
+                  <circle
+                    key={p.index}
+                    cx={p.cx}
+                    cy={p.cy}
+                    r={4}
+                    fill="#38bdf8"
+                    stroke="#0b1220"
+                    strokeWidth={1}
+                    className="cursor-pointer hover:fill-sky-200"
+                    onClick={() => p.payload && onSelect(p.payload.label)}
+                  />
+                )}
+              />
+              <Tooltip content={<RadarTip />} />
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </CardShell>
   );
 }
@@ -895,7 +1074,7 @@ function AircraftDetail({
         {tab === "performance" && <PerformanceTab ac={ac} tl={tl} />}
         {tab === "maintenance" &&
           (tl ? (
-            <TechLogPanel data={tl} onReload={() => void techlog.reload()} loading={techlog.loading} />
+            <TechLogPanel data={tl} onReload={() => void techlog.reload()} loading={techlog.loading} model={ac.model} />
           ) : (
             <TechLogPending loading={techlog.loading} />
           ))}

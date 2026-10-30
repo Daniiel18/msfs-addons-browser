@@ -43,6 +43,8 @@ import { FindSearch } from "./FindSearch";
 import { expandVendorQuery } from "../lib/vendorSynonyms";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { TypeChip } from "./TypeChip";
+import { openInFlightsimTab } from "../lib/flightsimTab";
 
 /** (v4.29.0) Píldoras estilo MSFS Marketplace — 5 buckets limpios.
  *  STRICT NO-AIRPORTS: cualquier paquete clasificado como SCENERY
@@ -107,7 +109,7 @@ export function AddonsView() {
   const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
   const openFlightsimUpdate = (u: FlightsimUpdate) => {
     ackFlightsimUpdate(u.folderName); // limpia el badge + avanza baseline
-    void api.openLiveryBrowser(u.link); // abre la página del addon en el embebido
+    openInFlightsimTab(u.link); // (26/10) su página en la pestaña flightsim.to de Explorar
   };
   const scanning = useCommunityStore((s) => s.scanning);
   const rescan = useCommunityStore((s) => s.rescan);
@@ -1310,40 +1312,6 @@ function ViewModeButton({
   );
 }
 
-function TypeChip({
-  active,
-  onClick,
-  icon,
-  label,
-  count,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  count: number;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
-        active
-          ? "border-brand-500 bg-brand-500/15 text-brand-100"
-          : "border-sf-border bg-sf-surface text-sf-text/90 hover:border-sf-border hover:bg-sf-raised"
-      }`}
-    >
-      {icon}
-      {label}
-      <span
-        className={`ml-0.5 rounded-full px-1.5 text-[10px] font-medium ${
-          active ? "bg-brand-500/30 text-brand-100" : "bg-sf-raised text-sf-muted"
-        }`}
-      >
-        {count}
-      </span>
-    </button>
-  );
-}
 
 function EmptyState({
   hasAny,

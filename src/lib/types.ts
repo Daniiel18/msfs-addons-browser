@@ -57,6 +57,15 @@ export type DownloadPhase =
   | "cancelled"
   | "error";
 
+/** (26/10) Lectura de la cuenta de flightsim.to ("My Downloads"). */
+export interface FstoAccountStatus {
+  /** `null`: todavía no se leyó nunca. */
+  loggedIn: boolean | null;
+  checkedAt: string | null;
+  /** Descargas de la cuenta con versión nueva (instaladas o no). */
+  updates: number;
+}
+
 export interface DownloadJob {
   id: string;
   addonId: string;
@@ -74,6 +83,14 @@ export interface DownloadJob {
   error: string | null;
   installPath: string | null;
   createdAt: string;
+  /** (25/10) Imagen del addon en su catálogo (fila del panel). */
+  imageUrl: string | null;
+  /** (25/10) Se puede pausar ahora mismo (torrent, descarga directa o la
+   *  del navegador de la ventana de hoster). */
+  pausable: boolean;
+  /** (25/10) Sigue desde lo ya bajado, también tras reiniciar o tras un
+   *  fallo (torrents y descargas directas de SimFleet). */
+  resumable: boolean;
 }
 
 export interface CommunityInfo {
@@ -182,6 +199,44 @@ export interface HangarCount {
   label: string;
   code: string | null;
   count: number;
+  /** (26/10) Clave de agrupación para pedir su ficha (`hangarInsight`). */
+  key?: string | null;
+}
+
+/** (26/10) Qué vuelos entran en una ficha del Hangar. */
+export interface HangarInsightFilter {
+  kind: "type" | "airline" | "airports";
+  key?: string | null;
+  icaos?: string[];
+}
+
+/** (26/10) Ficha de un tipo de avión, aerolínea, destino o país. */
+export interface HangarInsight {
+  flights: number;
+  totalNm: number;
+  totalTimeS: number;
+  passengers: number;
+  avgFpm: number | null;
+  bestFpm: number | null;
+  bestFlightId: number | null;
+  firstAt: string | null;
+  lastAt: string | null;
+  airlines: HangarCount[];
+  types: HangarCount[];
+  destinations: HangarCount[];
+  origins: HangarCount[];
+  aircraft: { key: string; registration: string | null; model: string | null; flights: number }[];
+  recent: {
+    id: number;
+    startedAt: string;
+    origin: string | null;
+    destination: string | null;
+    label: string | null;
+    registration: string | null;
+    model: string | null;
+    fpm: number | null;
+    distanceNm: number | null;
+  }[];
 }
 
 /** (v6 #2a) Bundle de analítica del Hangar. */
@@ -299,6 +354,9 @@ export interface AirportCardData {
   name: string | null;
   municipality: string | null;
   isoCountry: string | null;
+  /** (26/10) Para el foco del mapa y la foto satélite de respaldo. */
+  latitude: number | null;
+  longitude: number | null;
   departures: number;
   arrivals: number;
   paxBoarded: number;
@@ -317,6 +375,21 @@ export interface AirportCardData {
   topRouteCount: number;
   lastVisitAt: string | null;
   lastVisitLabel: string | null;
+}
+
+/** (26/10) Una pista (o helipuerto) de un aeropuerto (OurAirports). */
+export interface AirportRunway {
+  /** "08/26", "H1"… */
+  ident: string;
+  lengthFt: number | null;
+  lengthM: number | null;
+  widthM: number | null;
+  surface: string | null;
+  lighted: boolean;
+  helipad: boolean;
+  /** Cabeceras [lat, lon]. */
+  le: [number, number] | null;
+  he: [number, number] | null;
 }
 
 /** (v4.10.0) Un punto del plan de ruta (navlog de SimBrief). */
@@ -1450,6 +1523,19 @@ export interface TechLogPart {
   /** "Ok" | "Degraded" | "Failed" */
   status: string;
   repairs: number;
+  /** (26/10) Bajo el umbral de "gastada" del catálogo. */
+  worn: boolean;
+}
+
+/** (26/10) Contadores del avión (vista de estado: motores y APU). */
+export interface TechLogStats {
+  blockHours: number;
+  landings: number;
+  apuHours: number;
+  apuStarts: number;
+  engHours: number[];
+  engCycles: number[];
+  engStarts: number[];
 }
 
 export interface TechLogConsumable {
@@ -1497,7 +1583,11 @@ export interface TechLogAircraft {
   egtMarginC: number[];
   dispatch: { status: "GO" | "GO_MEL" | "NO_GO" | string; reasons: string[] };
   defects: TechLogDefect[];
+  /** Sólo las gastadas, degradadas o falladas. */
   parts: TechLogPart[];
+  /** (26/10) Todas las piezas (vista de estado). */
+  allParts?: TechLogPart[];
+  stats?: TechLogStats;
   /** (20/10) `avgRemainingPct` = vida media restante de todas las piezas. */
   condition: { good: number; low: number; failed: number; avgRemainingPct: number };
   consumables: TechLogConsumable[];
@@ -1621,6 +1711,9 @@ export interface GsxParking {
   lat: number;
   lon: number;
   kind: GsxParkingKind;
+  /** (26/10) `airlinecodes` del perfil tal cual (ICAO, IATA o handling);
+   *  vacío = sirve a cualquier aerolínea. Ver `lib/gsxAirlines.ts`. */
+  airlines: string[];
 }
 
 /** (19/10) Gates y parkings del perfil GSX instalado de un aeropuerto. */
@@ -1653,6 +1746,9 @@ export interface GsxProfileUpdate {
   hasUpdate: boolean;
   latestVersion: string | null;
   link: string;
+  /** (26/10) Título e imagen en flightsim.to (de la cuenta), si los hay. */
+  title?: string | null;
+  thumbnail?: string | null;
 }
 
 /** (v7) Progreso de un logro. Espejo de `achievements::AchievementProgress`.

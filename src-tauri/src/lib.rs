@@ -25,6 +25,7 @@ pub mod flight_log;
 pub mod i18n;
 pub mod flight_report;
 pub mod flightsim_track;
+pub mod fsto_account;
 pub mod livery_meta;
 pub mod gsx;
 pub mod gsx_update;
@@ -35,6 +36,8 @@ pub mod gsx_menu;
 pub mod gsx_parking;
 pub mod install;
 pub mod landing_recorder;
+// (8.4.0) Recorte del clip de aterrizaje con el transcodificador de Windows.
+pub mod clip_trim;
 pub mod logger;
 // Puente LVar opcional vía el módulo WASM de MobiFlight (brake temps).
 // El archivo tiene `#![cfg(target_os = "windows")]`, así que en otros
@@ -45,6 +48,7 @@ pub mod package_ops;
 pub mod parser;
 pub mod perf_config;
 pub mod planespotters;
+pub mod runways;
 pub mod pmdg_install;
 pub mod pmdg_liveries;
 pub mod scoring;
@@ -213,6 +217,9 @@ pub fn run() {
             opensky::spawn_loop(state.db.clone(), state.http.clone());
             app.manage(state);
             techlog::spawn_watchers(app.handle().clone(), techlog_pool.clone());
+            // (26/10) Actualizaciones de la cuenta de flightsim.to (al abrir y
+            // cada 6 h).
+            fsto_account::spawn_loop(app.handle().clone(), techlog_pool.clone());
             // (21/10) Recalcula una vez los vuelos ya puntuados si cambió la
             // rúbrica (lecturas por avión, fases por altitud, reglas nuevas).
             {
@@ -291,6 +298,8 @@ pub fn run() {
             commands::search::list_sources,
             commands::search::browse_source,
             commands::search::catalog_addon,
+            commands::livery::fsto_account_status,
+            commands::livery::fsto_account_refresh,
             commands::addons::list_installed,
             commands::downloads::list_downloads,
             commands::downloads::start_download,
@@ -312,6 +321,7 @@ pub fn run() {
             commands::flightsim_embed::fsto_embed_show,
             commands::flightsim_embed::fsto_embed_bounds,
             commands::flightsim_embed::fsto_embed_hide,
+            commands::flightsim_embed::fsto_embed_snapshot,
             commands::flightsim_embed::fsto_embed_nav,
             commands::techlog::techlog_status,
             commands::techlog::techlog_aircraft,
@@ -348,6 +358,7 @@ pub fn run() {
             commands::airports::lookup_airports,
             commands::airports::airport_card,
             commands::airports::airport_photo,
+            commands::airports::airport_runways,
             commands::community::scan_community,
             commands::community::get_installed_sims,
             commands::community::community_targets,
@@ -400,6 +411,7 @@ pub fn run() {
             commands::stats::health_prune_tracked,
             commands::flight_log::list_flight_log,
             commands::flight_log::hangar_analytics,
+            commands::flight_log::hangar_insight,
             commands::flight_log::pilot_profile,
             commands::flight_log::list_achievements,
             commands::economy::airline_economy,
@@ -669,12 +681,9 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         let _ = std::fs::create_dir_all(&temp_dir);
         std::env::set_var("TMP", &temp_dir);
         std::env::set_var("TEMP", &temp_dir);
-        // (v7 fix) Purga de descargas del navegador embebido que hayan quedado
-        // de una sesión anterior (descarga cancelada / no instalable / cierre
-        // sin instalar). Sólo nuestras carpetas — se recrean en la próxima
-        // descarga. Evita que se acumulen temporales huérfanos en disco.
-        let _ = std::fs::remove_dir_all(temp_dir.join("simfleet-mirror-dl"));
-        let _ = std::fs::remove_dir_all(temp_dir.join("simfleet-livery-dl"));
+        // (v7 fix) La purga de descargas del navegador embebido que hayan
+        // quedado de una sesión anterior se hace al restaurar las descargas
+        // (25/10: respeta lo ya bajado de las que siguen pendientes).
     }
 
     // (v7) uBlock Origin Lite para el navegador de descargas (best-effort).
@@ -788,6 +797,10 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         Ok(_) => tracing::debug!("downloads: sin jobs persistidos para restaurar"),
         Err(e) => tracing::warn!("downloads: restore_persisted falló: {e:#}"),
     }
+    // (v7 fix · 25/10) Temporales huérfanos de una sesión anterior (descarga
+    // cancelada / no instalable / cierre sin instalar), salvo lo ya bajado
+    // de las descargas que siguen (en pausa o reanudándose).
+    downloads.purge_temp(&app_data_dir.join("temp")).await;
 
     // (v1.1.1) Cleanup de "vuelos fantasma" — los creaba el watcher
     // en versiones viejas cuando MSFS reportaba el avión en world
@@ -843,6 +856,10 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
                 airports::ensure_dataset_with_app(&bg_pool, &bg_http, Some(&bg_app)).await
             {
                 tracing::warn!("airports: background sync failed: {e:#}");
+            }
+            // (26/10) Pistas para la tarjeta de aeropuerto del FlightBook.
+            if let Err(e) = runways::ensure_dataset(&bg_pool, &bg_http).await {
+                tracing::warn!("runways: background sync failed: {e:#}");
             }
         });
     }

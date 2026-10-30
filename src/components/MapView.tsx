@@ -21,6 +21,7 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { api } from "../lib/tauri";
 import { MapAirportCard } from "./MapAirportCard";
 import { t } from "../lib/i18n";
+import { gsxSearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
 
 // (v4.28.0) Persistencia del FILTRO GSX y del texto de search del
 // sidebar — el usuario reportó: "el filtrado de gsx y no gsx se
@@ -417,11 +418,14 @@ export function MapView() {
   // su nombre. A ese zoom entra el satélite para reconocer la plataforma.
   const [gsxParkings, setGsxParkings] = useState<GsxAirportParkings | null>(null);
   const [pickedParking, setPickedParking] = useState<string | null>(null);
+  // (26/10) Gates del chip de aerolínea de la tarjeta (`null` = todos).
+  const [gsxVisible, setGsxVisible] = useState<Set<string> | null>(null);
   const focusedIcao = focusedPkg?.icao?.toUpperCase() ?? null;
   const focusedHasGsx = !!focusedIcao && gsxInstalledIcaos.has(focusedIcao);
   useEffect(() => {
     setGsxParkings(null);
     setPickedParking(null);
+    setGsxVisible(null);
     if (!focusedIcao || !focusedHasGsx) return;
     let cancelled = false;
     api
@@ -559,6 +563,18 @@ export function MapView() {
     });
   }, [gsxParkings]);
 
+  // (26/10) Chip de aerolínea de la tarjeta: sólo sus pines (y etiquetas).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const filter: maplibregl.FilterSpecification | null = gsxVisible
+      ? ["in", ["get", "name"], ["literal", [...gsxVisible]]]
+      : null;
+    for (const id of ["gsx-parking-point", "gsx-parking-label"]) {
+      if (map.getLayer(id)) map.setFilter(id, filter);
+    }
+  }, [gsxVisible, gsxParkings, styleEpoch]);
+
   // Gate elegido (lista de la tarjeta o click en el pin): resaltar y centrar.
   useEffect(() => {
     const map = mapRef.current;
@@ -651,6 +667,7 @@ export function MapView() {
               gsxParkings={gsxParkings}
               pickedParking={pickedParking}
               onPickParking={setPickedParking}
+              onGsxVisibleChange={setGsxVisible}
             />
           )}
         </AnimatePresence>
@@ -815,15 +832,11 @@ function Sidebar({
                             e.preventDefault();
                             e.stopPropagation();
                             // (v6.2.58) Click → marcar como manejado (limpia el
-                            // badge + avanza el baseline) y abrir la BÚSQUEDA de
-                            // GSX del ICAO en el embebido (todos los perfiles),
-                            // para que el usuario elija cuál re-descargar.
+                            // badge). (26/10) Abre el perfil exacto que marcó tu
+                            // cuenta de flightsim.to (o la búsqueda del ICAO) en
+                            // la pestaña flightsim.to de Explorar.
                             gsxAckUpdate(p.icao!);
-                            void api.openLiveryBrowser(
-                              `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(
-                                p.icao!,
-                              )}`,
-                            );
+                            openInFlightsimTab(gsxUpdate.link || gsxSearchUrl(p.icao!));
                           }}
                           className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
                           title={t("map.gsx_update_tooltip", {
@@ -845,10 +858,8 @@ function Sidebar({
                             // (v2.1.1) URL canónica de búsqueda GSX en
                             // flightsim.to — el `?q=ICAO` filtra dentro
                             // de la subcategoría gsx-pro.
-                            const url = `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(
-                              p.icao!,
-                            )}`;
-                            void api.openLiveryBrowser(url);
+                            // (26/10) En la pestaña flightsim.to de Explorar.
+                            openInFlightsimTab(gsxSearchUrl(p.icao!));
                           }}
                           className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
                           title={t("map.gsx_missing_tooltip", { icao: p.icao! })}

@@ -634,51 +634,48 @@ pub(crate) fn handle_flightsim_download(
             if !direct {
                 url_jobs.lock().unwrap().insert(url.to_string(), id.clone());
             }
+            // (25/10) La directa guarda cómo retomarla: se puede pausar y sigue
+            // desde lo ya bajado, también tras reiniciar SimFleet.
+            let spec = direct.then(|| ResumeSpec::Flightsim {
+                url: url.to_string(),
+                target: target.to_string_lossy().into_owned(),
+                src_url: flightsim_source_page(webview, last_file_page),
+            });
             if let Some(state) = app_emit.try_state::<crate::AppState>() {
                 let downloads = state.downloads.clone();
                 let (title, u, job) = (fname.clone(), url.to_string(), id.clone());
+                let spec_json = spec.as_ref().and_then(|s| serde_json::to_string(s).ok());
                 tauri::async_runtime::spawn(async move {
                     downloads
-                        .register_external(job, title, "flightsim.to".into(), "flightsim.to".into(), u)
+                        .register_external(job.clone(), title, "flightsim.to".into(), "flightsim.to".into(), u)
                         .await;
+                    if spec_json.is_some() {
+                        downloads.set_resume(&job, spec_json).await;
+                    }
                 });
             }
             let _ = app_emit.emit("embedded-download://started", fname.clone());
-            if direct {
-                let src_url = flightsim_source_page(webview, last_file_page);
-                let (app, u) = (app_emit.clone(), url.to_string());
-                let retry = webview.label().to_string();
-                tracing::info!(target: "livery", "descarga por SimFleet (directa): {} → {}", u, target.display());
-                tauri::async_runtime::spawn(async move {
-                    let res = fetch_direct_to_file(u.clone(), target.clone(), app.clone(), DirectSink::Job { id: id.clone() }).await;
-                    match res {
-                        Ok(_) => finish_flightsim_file(&app, &target, src_url.as_deref(), Some(&id), true),
-                        Err(e) => {
-                            let _ = std::fs::remove_file(&target);
-                            let cancelled = external_cancels().lock().unwrap().remove(&id);
-                            if cancelled || e == CANCELLED {
-                                external_job(&app, &id, HosterStatus::Cancelled);
-                            } else if e.starts_with(AUTH_FALLBACK) {
-                                // Pide la sesión: se reintenta en la ventana (si sigue abierta).
-                                tracing::warn!(target: "livery", "el CDN pidió la sesión ({e}) → reintento en la ventana");
-                                flightsim_webview_only().lock().unwrap().insert(u.clone());
-                                external_job(&app, &id, HosterStatus::Failed(crate::tr!("livery.downloadFailed")));
-                                if let (Some(w), Ok(parsed)) = (app.get_webview(&retry), u.parse::<tauri::Url>()) {
-                                    let _ = w.navigate(parsed);
-                                }
-                            } else {
-                                tracing::warn!(target: "livery", "descarga directa falló: {e}");
-                                external_job(&app, &id, HosterStatus::Failed(crate::tr!("livery.downloadFailed")));
-                            }
-                        }
-                    }
-                });
+            if let Some(spec) = spec {
+                tracing::info!(target: "livery", "descarga por SimFleet (directa): {} → {}", url, target.display());
+                run_direct(app_emit.clone(), id, spec, Some(webview.label().to_string()));
                 return false;
             }
             *destination = target;
         }
         DownloadEvent::Finished { url, path, success } => {
             tracing::info!(target: "livery", "descarga terminada ok={} url={} path={:?}", success, url, path);
+            // (25/10) Pausada por el usuario: WebView2 la "interrumpe" y wry
+            // avisa como si fallara; al reanudar llega el final de verdad.
+            if !success {
+                let paused = url_jobs
+                    .lock()
+                    .unwrap()
+                    .get(url.as_str())
+                    .is_some_and(|id| webview_paused().lock().unwrap().contains(id));
+                if paused {
+                    return true;
+                }
+            }
             let job = url_jobs.lock().unwrap().remove(url.as_str());
             let cancelled = job
                 .as_deref()
@@ -818,6 +815,17 @@ pub(crate) fn install_external_job_progress(
                 let Some(id) = url_jobs.lock().unwrap().get(&uri).cloned() else {
                     return Ok(());
                 };
+                // (25/10) Pausable desde el panel mientras viva.
+                track_webview_op(&app, &id, &op);
+                let app_state = app.clone();
+                let id_state = id.clone();
+                let on_state = webview2_com::StateChangedEventHandler::create(Box::new(move |sender, _| {
+                    let Some(op) = sender else { return Ok(()) };
+                    webview_op_state_changed(&app_state, &id_state, &op);
+                    Ok(())
+                }));
+                let mut tok_state: i64 = 0;
+                let _ = op.add_StateChanged(&on_state, &mut tok_state);
                 let app = app.clone();
                 let mut last_bytes: i64 = 0;
                 let mut last_t = Instant::now();
@@ -995,6 +1003,19 @@ pub(crate) fn open_hoster_download(
                 return false;
             }
             tracing::info!(target: "hoster", "webview navega → {}", us);
+            // (25/10) La página de error del CDN de VaultDrop mandó su texto
+            // (ver on_page_load): se enseña en la ventana y en Descargas.
+            if us.contains("msg.simfleet.invalid") {
+                let said = url
+                    .query_pairs()
+                    .find(|(k, _)| k == "t")
+                    .map(|(_, v)| v.into_owned())
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| crate::tr!("livery.hostNoText"));
+                tracing::warn!(target: "hoster", "VaultDrop no entregó el archivo: {said}");
+                show_hoster_failure(&app_cancel, &label_cancel, &crate::tr!("livery.hostSaid", msg = said));
+                return false;
+            }
             // (v8.3) Navegar a OTRO dominio desde la página del hoster suele ser
             // el enlace de descarga, que el servidor tarda en mandar (VaultDrop
             // 5–15 s) → aviso "la descarga está por empezar" en la página
@@ -1020,6 +1041,15 @@ pub(crate) fn open_hoster_download(
             );
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 *page_host_pl.lock().unwrap() = payload.url().host_str().map(str::to_string);
+                // (25/10) El enlace final de VaultDrop cargó una página en vez
+                // de bajar el archivo (límite, enlace caducado o ya usado): su
+                // texto vuelve por una navegación centinela.
+                if is_vaultdrop_cdn(payload.url()) {
+                    let _ = w.eval(
+                        "location.href='https://msg.simfleet.invalid/?t='+encodeURIComponent(\
+                         ((document.body&&document.body.innerText)||'').trim().slice(0,300));",
+                    );
+                }
             }
             // (v8.3) Multi-parte: "parte X de N" para la pista del driver
             // (VaultDrop pide un clic del usuario en cada parte).
@@ -1135,8 +1165,16 @@ pub(crate) fn open_hoster_download(
                         let resumes2 = resumes_dl.clone();
                         let app2 = app_emit.clone();
                         let label2 = label_close.clone();
+                        // (25/10) Pausada por el usuario: no es un fallo.
+                        let job_id = label_close.strip_prefix("hoster-dl-").unwrap_or(&label_close).to_string();
+                        if webview_paused().lock().unwrap().contains(&job_id) {
+                            return true;
+                        }
                         tauri::async_runtime::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(2500)).await;
+                            if webview_paused().lock().unwrap().contains(&job_id) {
+                                return;
+                            }
                             if resumes2.load(Ordering::SeqCst) > seen {
                                 tracing::info!(target: "hoster", "descarga interrumpida y reanudada");
                                 return;
@@ -1454,6 +1492,10 @@ fn install_download_job_progress(
                 let op = args.DownloadOperation()?;
                 let app = app.clone();
                 let label = label.clone();
+                // (25/10) Pausable desde el panel de Descargas mientras viva.
+                let job_id = label.strip_prefix("hoster-dl-").unwrap_or(&label).to_string();
+                track_webview_op(&app, &job_id, &op);
+                let app_state = app.clone();
                 let part = if total > 1 {
                     let i = *idx.lock().unwrap();
                     Some(crate::tr!("livery.partOf", i = i + 1, total = total))
@@ -1495,6 +1537,7 @@ fn install_download_job_progress(
                 let mut attempts: u32 = 0;
                 let on_state = StateChangedEventHandler::create(Box::new(move |sender, _| {
                     let Some(op) = sender else { return Ok(()) };
+                    webview_op_state_changed(&app_state, &job_id, &op);
                     let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
                     op.State(&mut state)?;
                     if state != COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
@@ -1756,6 +1799,306 @@ fn pick_download_name(suggested: Option<&str>, url: &tauri::Url) -> String {
 const AUTH_FALLBACK: &str = "AUTH:";
 /// Error de una descarga directa que el usuario canceló.
 const CANCELLED: &str = "cancelado";
+/// (25/10) Error de `fetch_direct_to_file` cuando el usuario la pausó: lo ya
+/// bajado se queda para seguir desde ahí.
+const PAUSED: &str = "pausado";
+
+/// (25/10) Descargas directas de SimFleet en pausa: su bucle de bytes para
+/// sin borrar lo ya bajado.
+fn direct_pauses() -> &'static Mutex<HashSet<String>> {
+    static P: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+/// (25/10) Descargas directas con su tarea viva: no se lanza otra sobre el
+/// mismo archivo hasta que ésta acabe (pausar y reanudar enseguida).
+fn direct_running() -> &'static Mutex<HashSet<String>> {
+    static R: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+struct RunGuard(String);
+
+impl RunGuard {
+    fn new(id: &str) -> Self {
+        direct_running().lock().unwrap().insert(id.to_string());
+        Self(id.to_string())
+    }
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        direct_running().lock().unwrap().remove(&self.0);
+    }
+}
+
+/// (25/10) Cómo retomar una descarga directa de SimFleet: se guarda con su
+/// job (`download_jobs.resume`) para reanudarla tras una pausa, un fallo o un
+/// reinicio, desde lo ya bajado.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum ResumeSpec {
+    /// Archivo de flightsim.to (web embebida o ventana de liveries).
+    Flightsim { url: String, target: String, src_url: Option<String> },
+    /// Un archivo de hoster con enlace directo (R2 presignado).
+    HosterFile { url: String, target: String, label: String, password: Option<String> },
+}
+
+impl ResumeSpec {
+    fn target(&self) -> &str {
+        match self {
+            ResumeSpec::Flightsim { target, .. } | ResumeSpec::HosterFile { target, .. } => target,
+        }
+    }
+}
+
+/// (25/10) Archivo parcial de una descarga directa (para no purgarlo).
+pub(crate) fn resume_target(spec_json: &str) -> Option<PathBuf> {
+    serde_json::from_str::<ResumeSpec>(spec_json).ok().map(|s| PathBuf::from(s.target()))
+}
+
+/// Guarda en el job `id` cómo retomar su descarga.
+fn remember_resume(app: &tauri::AppHandle, id: &str, spec: &ResumeSpec) {
+    let Some(state) = app.try_state::<crate::AppState>() else { return };
+    let downloads = state.downloads.clone();
+    let (id, json) = (id.to_string(), serde_json::to_string(spec).ok());
+    tauri::async_runtime::spawn(async move {
+        downloads.set_resume(&id, json).await;
+    });
+}
+
+/// (25/10) Pausa la descarga directa del job `id` (corta en el siguiente
+/// bloque de bytes; lo bajado se queda).
+pub(crate) fn pause_direct(id: &str) {
+    direct_pauses().lock().unwrap().insert(id.to_string());
+}
+
+/// (25/10) Reanuda (o reintenta) la descarga directa del job `id` desde lo
+/// ya bajado. `false` si no se entiende cómo retomarla.
+pub(crate) fn resume_direct(app: &tauri::AppHandle, id: &str, spec_json: &str) -> bool {
+    let Ok(spec) = serde_json::from_str::<ResumeSpec>(spec_json) else { return false };
+    direct_pauses().lock().unwrap().remove(id);
+    external_cancels().lock().unwrap().remove(id);
+    run_direct(app.clone(), id.to_string(), spec, None);
+    true
+}
+
+/// (25/10) La descarga directa del job `id` ya no se va a retomar (cancelada
+/// o quitada de la lista estando en pausa): fuera lo bajado.
+pub(crate) fn forget_direct(id: &str, spec_json: &str) {
+    direct_pauses().lock().unwrap().remove(id);
+    if let Ok(spec) = serde_json::from_str::<ResumeSpec>(spec_json) {
+        if !direct_running().lock().unwrap().contains(id) {
+            let _ = std::fs::remove_file(spec.target());
+        }
+    }
+}
+
+/// (25/10) Baja (o sigue bajando) una descarga directa de SimFleet y, al
+/// terminar, la manda a instalar como su flujo original. `retry_label`: la
+/// web de flightsim.to desde la que salió, por si el CDN pide la sesión.
+fn run_direct(app: tauri::AppHandle, id: String, spec: ResumeSpec, retry_label: Option<String>) {
+    tauri::async_runtime::spawn(async move {
+        // La tarea anterior sobre el mismo archivo (recién pausada) acaba ya.
+        for _ in 0..150 {
+            if !direct_running().lock().unwrap().contains(&id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        // Tras reiniciar, el estado de la app puede no estar listo todavía.
+        for _ in 0..75 {
+            if app.try_state::<crate::AppState>().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let target = PathBuf::from(spec.target());
+        let url = match &spec {
+            ResumeSpec::Flightsim { url, .. } | ResumeSpec::HosterFile { url, .. } => url.clone(),
+        };
+        let res = fetch_direct_to_file(url.clone(), target.clone(), app.clone(), DirectSink::Job { id: id.clone() }).await;
+        let cancelled = |e: &str| external_cancels().lock().unwrap().remove(&id) || e == CANCELLED;
+        match (spec, res) {
+            (_, Err(e)) if e == PAUSED => {}
+            (ResumeSpec::Flightsim { src_url, .. }, Ok(_)) => {
+                finish_flightsim_file(&app, &target, src_url.as_deref(), Some(&id), true)
+            }
+            (ResumeSpec::HosterFile { label, password, .. }, Ok(server_name)) => {
+                let path = match server_name {
+                    Some(name) => rename_to_server_name(&target, &name),
+                    None => target.clone(),
+                };
+                let fixed = fix_archive_extension(&path);
+                hoster_job(&app, &label, HosterStatus::Downloaded);
+                let _ = app.emit(
+                    "embedded-download://finished",
+                    serde_json::json!({ "path": fixed.to_string_lossy(), "window": label, "password": password }),
+                );
+            }
+            (_, Err(e)) if cancelled(&e) => {
+                let _ = std::fs::remove_file(&target);
+                external_job(&app, &id, HosterStatus::Cancelled);
+            }
+            (ResumeSpec::Flightsim { .. }, Err(e)) if e.starts_with(AUTH_FALLBACK) => {
+                // Pide la sesión: se reintenta en la ventana (si sigue abierta).
+                tracing::warn!(target: "livery", "el CDN pidió la sesión ({e}) → reintento en la ventana");
+                let _ = std::fs::remove_file(&target);
+                flightsim_webview_only().lock().unwrap().insert(url.clone());
+                external_job(&app, &id, HosterStatus::Failed(crate::tr!("livery.downloadFailed")));
+                if let (Some(w), Ok(parsed)) = (retry_label.and_then(|l| app.get_webview(&l)), url.parse::<tauri::Url>()) {
+                    let _ = w.navigate(parsed);
+                }
+            }
+            (_, Err(e)) => {
+                // Lo bajado se queda: "Reintentar" sigue desde ahí.
+                tracing::warn!(target: "livery", "descarga directa falló: {e}");
+                let msg = match e.strip_prefix(PAGE_ERROR) {
+                    Some(said) => crate::tr!("livery.hostSaid", msg = said),
+                    None => crate::tr!("livery.downloadFailedRetry"),
+                };
+                external_job(&app, &id, HosterStatus::Failed(msg));
+            }
+        }
+    });
+}
+
+// (25/10) Descargas del NAVEGADOR (WebView2) en curso, por job: se pueden
+// pausar y reanudar desde el panel mientras SimFleet siga abierto. Viven en
+// el hilo de UI, como sus eventos.
+#[cfg(target_os = "windows")]
+thread_local! {
+    static WEBVIEW_OPS: std::cell::RefCell<HashMap<String, webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// (25/10) Descargas del navegador pausadas por el usuario: su "falló" (la
+/// interrupción) no es un fallo.
+fn webview_paused() -> &'static Mutex<HashSet<String>> {
+    static P: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+fn set_job_pausable(app: &tauri::AppHandle, id: &str, pausable: bool) {
+    let Some(state) = app.try_state::<crate::AppState>() else { return };
+    let downloads = state.downloads.clone();
+    let id = id.to_string();
+    tauri::async_runtime::spawn(async move {
+        downloads.set_pausable(&id, pausable).await;
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn track_webview_op(
+    app: &tauri::AppHandle,
+    id: &str,
+    op: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+) {
+    WEBVIEW_OPS.with(|m| m.borrow_mut().insert(id.to_string(), op.clone()));
+    set_job_pausable(app, id, true);
+}
+
+/// La operación terminó (o se canceló / falló sin remedio): deja de ser
+/// pausable. Una pausa del usuario la mantiene.
+#[cfg(target_os = "windows")]
+fn webview_op_state_changed(
+    app: &tauri::AppHandle,
+    id: &str,
+    op: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON, COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,
+        COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+        COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
+    };
+    let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
+    // SAFETY: llamado desde su evento COM, en el hilo de UI.
+    unsafe {
+        let _ = op.State(&mut state);
+        let gone = if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+            true
+        } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+            let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON::default();
+            let _ = op.InterruptReason(&mut reason);
+            reason != COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED
+                && !webview_paused().lock().unwrap().contains(id)
+                && {
+                    let mut can = windows_core::BOOL::default();
+                    let _ = op.CanResume(&mut can);
+                    !can.as_bool()
+                }
+        } else {
+            false
+        };
+        if gone {
+            WEBVIEW_OPS.with(|m| m.borrow_mut().remove(id));
+            webview_paused().lock().unwrap().remove(id);
+            set_job_pausable(app, id, false);
+        }
+    }
+}
+
+/// (25/10) Pausa o reanuda la descarga del navegador del job `id`. `false`
+/// si no hay una viva (ya acabó, o se perdió al reiniciar SimFleet).
+pub(crate) async fn set_webview_download_paused(app: &tauri::AppHandle, id: &str, pause: bool) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let key = id.to_string();
+        if pause {
+            webview_paused().lock().unwrap().insert(key.clone());
+        }
+        let posted = app.run_on_main_thread(move || {
+            let ok = WEBVIEW_OPS.with(|m| {
+                m.borrow().get(&key).is_some_and(|op| {
+                    // SAFETY: COM de WebView2 en el hilo de UI.
+                    unsafe { if pause { op.Pause() } else { op.Resume() } }.is_ok()
+                })
+            });
+            let _ = tx.send(ok);
+        });
+        let ok = posted.is_ok() && rx.await.unwrap_or(false);
+        if !pause || !ok {
+            webview_paused().lock().unwrap().remove(id);
+        }
+        ok
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, id, pause);
+        false
+    }
+}
+
+/// (25/10) Prefijo del error de `fetch_direct_to_file` cuando el servidor
+/// respondió con una página en vez del archivo; le sigue el texto de la página.
+const PAGE_ERROR: &str = "PAGE:";
+
+/// (25/10) Texto visible de una página de error (sin scripts ni estilos), en
+/// una línea y como mucho 300 caracteres.
+fn page_text(html: &str) -> String {
+    let doc = scraper::Html::parse_document(html);
+    let body = scraper::Selector::parse("body").unwrap();
+    let skip = scraper::Selector::parse("script, style, noscript").unwrap();
+    let hidden: HashSet<_> = doc.select(&skip).flat_map(|e| e.descendants().map(|n| n.id())).collect();
+    let text: String = doc
+        .select(&body)
+        .next()
+        .map(|b| {
+            b.descendants()
+                .filter(|n| !hidden.contains(&n.id()))
+                .filter_map(|n| n.value().as_text().map(|t| t.to_string()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = line.chars().take(300).collect();
+    if out.is_empty() {
+        out = crate::tr!("livery.hostNoText");
+    }
+    out
+}
 
 /// (v7) Corrige la extensión de un archivo descargado según sus BYTES MÁGICOS
 /// (la firma del contenido), no según la URL. Los hosters sirven el archivo
@@ -1942,6 +2285,20 @@ impl DirectCtx {
         use_server_name: bool,
     ) {
         let ctx = self.clone();
+        // (25/10) Un solo archivo: pausable y reanudable (también tras
+        // reiniciar). Las multi-parte siguen sin pausa.
+        if use_server_name {
+            remember_resume(
+                &ctx.app,
+                ctx.label.strip_prefix("hoster-dl-").unwrap_or(&ctx.label),
+                &ResumeSpec::HosterFile {
+                    url: url.clone(),
+                    target: target.to_string_lossy().into_owned(),
+                    label: ctx.label.clone(),
+                    password: ctx.password.clone(),
+                },
+            );
+        }
         tauri::async_runtime::spawn(async move {
             let result = fetch_direct_to_file(
                 url.clone(),
@@ -1951,6 +2308,8 @@ impl DirectCtx {
             )
             .await;
             match result {
+                // Pausada desde Descargas: lo bajado se queda; la reanuda run_direct.
+                Err(e) if e == PAUSED => {}
                 Ok(server_name) => {
                     let target = match server_name.filter(|_| use_server_name) {
                         Some(name) => rename_to_server_name(&target, &name),
@@ -1976,6 +2335,14 @@ impl DirectCtx {
                         let _ = w.navigate(u);
                     }
                 }
+                // (25/10) El servidor mandó una página (límite, enlace caducado…)
+                // en vez del archivo: se enseña lo que dice.
+                Err(e) if e.starts_with(PAGE_ERROR) => {
+                    let said = e[PAGE_ERROR.len()..].to_string();
+                    tracing::warn!(target: "hoster", "el hoster respondió con una página, no con el archivo: {said}");
+                    let _ = std::fs::remove_file(&target);
+                    show_hoster_failure(&ctx.app, &ctx.label, &crate::tr!("livery.hostSaid", msg = said));
+                }
                 Err(e) => {
                     tracing::error!(target: "hoster", "descarga directa falló: {e}");
                     show_hoster_failure(&ctx.app, &ctx.label, &crate::tr!("livery.downloadFailedConn"));
@@ -1983,6 +2350,13 @@ impl DirectCtx {
             }
         });
     }
+}
+
+/// (25/10) Enlace final de VaultDrop (`cdn.vaultdrop.workers.dev/dl/<token>`).
+/// Sólo lo entrega a su navegador (410 a cualquier otro) y es de un solo uso,
+/// así que lo baja siempre la ventana.
+fn is_vaultdrop_cdn(url: &tauri::Url) -> bool {
+    url.host_str().is_some_and(|h| h.ends_with("vaultdrop.workers.dev")) && url.path().starts_with("/dl/")
 }
 
 /// (v8.3) Nombre de archivo de un `Content-Disposition`
@@ -2154,11 +2528,24 @@ enum DirectSink {
 }
 
 impl DirectSink {
-    fn cancelled(&self, app: &tauri::AppHandle) -> bool {
+    /// Id del job de Descargas.
+    fn id(&self) -> &str {
         match self {
+            DirectSink::Hoster { win_label, .. } => win_label.strip_prefix("hoster-dl-").unwrap_or(win_label),
+            DirectSink::Job { id } => id,
+        }
+    }
+
+    /// (25/10) ¿Hay que parar? `PAUSED` (se queda lo bajado) o `CANCELLED`.
+    fn stop(&self, app: &tauri::AppHandle) -> Option<&'static str> {
+        if direct_pauses().lock().unwrap().contains(self.id()) {
+            return Some(PAUSED);
+        }
+        let cancelled = match self {
             DirectSink::Hoster { win_label, .. } => app.get_webview_window(win_label).is_none(),
             DirectSink::Job { id } => external_cancels().lock().unwrap().contains(id),
-        }
+        };
+        cancelled.then_some(CANCELLED)
     }
 
     fn overlay(&self, app: &tauri::AppHandle, pct: f64, bps: f64, eta: &str) {
@@ -2200,6 +2587,8 @@ async fn fetch_direct_to_file(
     // paso chequea si el usuario cerró la ventana. Clave para NO colgarse cuando
     // el CDN acepta la conexión pero deja de mandar bytes (socket vivo, sin EOF).
     const STALL_SECS: u64 = 25;
+    // (25/10) Mientras dure, no se lanza otra descarga sobre este archivo.
+    let _running = RunGuard::new(sink.id());
 
     let client = reqwest::Client::builder()
         .user_agent(CHROME_UA)
@@ -2211,8 +2600,8 @@ async fn fetch_direct_to_file(
     let mut server_name: Option<String> = None;
     for attempt in 1..=MAX_ATTEMPTS {
         // Cancelado (ventana cerrada / botón del panel) antes de (re)empezar.
-        if sink.cancelled(&app) {
-            return Err(CANCELLED.into());
+        if let Some(why) = sink.stop(&app) {
+            return Err(why.into());
         }
         // Reanuda desde lo ya bajado (si quedó algo de un intento previo).
         let have = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
@@ -2235,10 +2624,18 @@ async fn fetch_direct_to_file(
             }
         };
         let status = resp.status();
+        tracing::info!(
+            target: "hoster",
+            "descarga directa: HTTP {} · {} · {} bytes (intento {attempt})",
+            status,
+            resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|h| h.to_str().ok()).unwrap_or("-"),
+            resp.content_length().map_or("?".to_string(), |l| l.to_string())
+        );
         if !status.is_success() {
             // (v8.3) Rechazo de entrada, sin nada bajado: puede que el enlace
             // necesite las cookies del navegador → el llamador lo pasa al WebView.
-            if matches!(status.as_u16(), 401 | 403) && attempt == 1 && have == 0 {
+            // (25/10) 410 de entrada: el CDN sólo sirve a su navegador.
+            if matches!(status.as_u16(), 401 | 403 | 410) && attempt == 1 && have == 0 {
                 return Err(format!("{AUTH_FALLBACK}{status}"));
             }
             // 403/410 → el enlace presignado expiró (no sirve reintentarlo).
@@ -2256,10 +2653,25 @@ async fn fetch_direct_to_file(
                 .and_then(|h| h.to_str().ok())
                 .and_then(content_disposition_filename);
         }
+        // (25/10) Una página en vez del archivo (límite, enlace caducado…):
+        // se devuelve su texto para enseñárselo al usuario.
+        let is_html = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/html"));
+        if is_html && have == 0 {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("{PAGE_ERROR}{}", page_text(&body)));
+        }
         let resuming = status.as_u16() == 206;
         let base = if resuming { have } else { 0 };
         let total = resp.content_length().map(|l| base + l).unwrap_or(0);
 
+        // (25/10) La carpeta pudo desaparecer entre una pausa y su reanudación.
+        if let Some(parent) = target.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
         let file = if resuming && have > 0 {
             tokio::fs::OpenOptions::new().append(true).open(&target).await
         } else {
@@ -2278,8 +2690,8 @@ async fn fetch_direct_to_file(
             // un stall (reintenta/reanuda) o el usuario canceló (ventana cerrada).
             let chunk = match tokio::time::timeout(Duration::from_secs(STALL_SECS), stream.next()).await {
                 Err(_) => {
-                    if sink.cancelled(&app) {
-                        return Err(CANCELLED.into());
+                    if let Some(why) = sink.stop(&app) {
+                        return Err(why.into());
                     }
                     last_err = format!("sin datos {STALL_SECS}s (stall)");
                     mid_fail = true;
@@ -2301,8 +2713,8 @@ async fn fetch_direct_to_file(
             let dt = now.duration_since(last_t).as_secs_f64();
             if dt >= 0.3 {
                 // ¿El usuario canceló? → abortar limpio.
-                if sink.cancelled(&app) {
-                    return Err(CANCELLED.into());
+                if let Some(why) = sink.stop(&app) {
+                    return Err(why.into());
                 }
                 let bps = (downloaded - last_bytes) as f64 / dt;
                 last_bytes = downloaded;
@@ -2389,6 +2801,33 @@ pub async fn flightsim_ack_update(
 ) -> Result<(), String> {
     crate::flightsim_track::ack_update(&state.db, &state.http, &folder_name).await;
     Ok(())
+}
+
+/// (26/10) Estado de la lectura de la cuenta de flightsim.to (sin red).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FstoAccountStatus {
+    /// `None`: todavía no se leyó nunca.
+    pub logged_in: Option<bool>,
+    pub checked_at: Option<String>,
+    pub updates: usize,
+}
+
+#[tauri::command]
+pub async fn fsto_account_status(state: tauri::State<'_, crate::AppState>) -> Result<FstoAccountStatus, String> {
+    let c = crate::fsto_account::cached(&state.db).await;
+    Ok(FstoAccountStatus {
+        logged_in: c.as_ref().map(|s| s.logged_in),
+        checked_at: c.as_ref().and_then(|s| s.checked_at.clone()),
+        updates: c.map_or(0, |s| s.items.len()),
+    })
+}
+
+/// (26/10) Vuelve a leer la cuenta ahora (p. ej. tras iniciar sesión).
+#[tauri::command]
+pub async fn fsto_account_refresh(app: tauri::AppHandle, state: tauri::State<'_, crate::AppState>) -> Result<FstoAccountStatus, String> {
+    let s = crate::fsto_account::refresh(&app, &state.db).await?;
+    Ok(FstoAccountStatus { logged_in: Some(s.logged_in), checked_at: s.checked_at, updates: s.items.len() })
 }
 
 /// (v6.2.74) Compatibilidad 2020/2024 de una descarga del embebido (por su path
@@ -2545,6 +2984,25 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod download_name_tests {
     use super::*;
+
+    /// (25/10) Sólo el enlace final de VaultDrop (para leer su página de error).
+    #[test]
+    fn the_vaultdrop_cdn_link_is_recognised() {
+        let cdn: tauri::Url = "https://cdn.vaultdrop.workers.dev/dl/VYmIr192iOuwUcDL57sePP".parse().unwrap();
+        let share: tauri::Url = "https://vaultdrop.st/s/wtyj4gBsrl".parse().unwrap();
+        let other: tauri::Url = "https://cdn.vaultdrop.workers.dev/assets/app.js".parse().unwrap();
+        assert!(is_vaultdrop_cdn(&cdn));
+        assert!(!is_vaultdrop_cdn(&share) && !is_vaultdrop_cdn(&other));
+    }
+
+    /// (25/10) De una página de error queda sólo su texto visible.
+    #[test]
+    fn an_error_page_is_read_as_its_visible_text() {
+        let html = r#"<html><head><style>.a{color:red}</style><script>var x=1;</script></head>
+            <body><h1>Download limit reached</h1><p>Try again   in 2 hours.</p><noscript>enable js</noscript></body></html>"#;
+        assert_eq!(page_text(html), "Download limit reached Try again in 2 hours.");
+        assert_eq!(page_text("<html><body><script>1</script></body></html>"), crate::tr!("livery.hostNoText"));
+    }
 
     #[test]
     fn server_suggested_name_wins_when_it_has_a_known_extension() {

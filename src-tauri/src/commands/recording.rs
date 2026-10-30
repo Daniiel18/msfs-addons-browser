@@ -15,6 +15,15 @@ fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir())
 }
 
+/// (8.4.0) Datos de SimFleet — los mismos que usa el grabador automático
+/// (`lib.rs`): ahí vive el índice de clips. Antes de leerlo se le pasan los
+/// manifiestos viejos que hubiera junto a los vídeos.
+fn clips_index(app: &tauri::AppHandle, cfg: &RecordingConfig) -> PathBuf {
+    let data = crate::resolve_portable_data_dir().unwrap_or_else(|_| app_data_dir(app));
+    landing_recorder::migrate_legacy_manifests(&data, &landing_recorder::clip_dirs(&cfg.output_path));
+    data
+}
+
 /// Config actual de grabación (con defaults heredados de LandingToast).
 #[tauri::command]
 pub async fn recording_config(
@@ -174,7 +183,7 @@ pub async fn recording_test_clip(
         duration_s: dur,
         is_test: true,
     };
-    landing_recorder::add_clip(&output_dir, clip.clone(), cfg.max_clips)
+    landing_recorder::add_clip(&clips_index(&app, &cfg), clip.clone(), cfg.max_clips)
         .map_err(|e| e.to_string())?;
     Ok(clip)
 }
@@ -186,21 +195,15 @@ pub async fn list_landing_clips(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<LandingClip>, String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    // (v8.3.2) También los grabados en la carpeta de respaldo (Vídeos) cuando
-    // la configurada no estaba disponible.
-    let mut clips: Vec<LandingClip> = Vec::new();
-    for dir in landing_recorder::clip_dirs(&cfg.output_path) {
-        for c in landing_recorder::load_clips(&dir) {
-            if !clips.iter().any(|x| x.id == c.id) {
-                clips.push(c);
-            }
-        }
-    }
+    // (8.4.0) Un solo índice con rutas absolutas: entran los de la carpeta
+    // configurada y los de la de respaldo (Vídeos) por igual.
+    let mut clips = landing_recorder::load_clips(&clips_index(&app, &cfg));
     // Mejores (FPM más fino) primero; los de prueba/sin FPM al final.
+    // (8.4.0) Los dos casos mixtos estaban al revés: los sin FPM salían primero.
     clips.sort_by(|a, b| match (b.fpm, a.fpm) {
         (Some(x), Some(y)) => x.cmp(&y),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
         (None, None) => b.recorded_at.cmp(&a.recorded_at),
     });
     Ok(clips)
@@ -214,11 +217,7 @@ pub async fn set_landing_favorite(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    let dirs = landing_recorder::clip_dirs(&cfg.output_path);
-    let Some(dir) = landing_recorder::clip_dir_of(&dirs, &id) else {
-        return Ok(());
-    };
-    landing_recorder::set_favorite(&dir, &id, favorite).map_err(|e| e.to_string())
+    landing_recorder::set_favorite(&clips_index(&app, &cfg), &id, favorite).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -228,9 +227,5 @@ pub async fn delete_landing_clip(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    let dirs = landing_recorder::clip_dirs(&cfg.output_path);
-    let Some(dir) = landing_recorder::clip_dir_of(&dirs, &id) else {
-        return Ok(());
-    };
-    landing_recorder::delete_clip(&dir, &id).map_err(|e| e.to_string())
+    landing_recorder::delete_clip(&clips_index(&app, &cfg), &id).map_err(|e| e.to_string())
 }

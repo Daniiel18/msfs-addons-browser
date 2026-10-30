@@ -11,6 +11,8 @@
 //!   `updatedAt` (ISO-8601) y `link` (`https://flightsim.to/addon/<id>/<slug>`).
 
 use serde::Deserialize;
+use std::collections::HashMap;
+
 use sqlx::SqlitePool;
 
 /// User-Agent de navegador — la API responde 403 a UAs por defecto de reqwest.
@@ -226,6 +228,19 @@ pub async fn record_tracked(
 /// al baseline. Devuelve una entrada por carpeta rastreada (el front filtra por
 /// `has_update` y por carpetas realmente instaladas).
 pub async fn check_updates(db: &SqlitePool, http: &reqwest::Client) -> Vec<FlightsimUpdate> {
+    // (26/10) Con sesión en flightsim.to manda la cuenta ("My Downloads"):
+    // lo que ella marca con versión nueva (y no se ignoró) es update.
+    let account: Option<HashMap<String, crate::fsto_account::AccountItem>> =
+        match crate::fsto_account::logged_in(db).await {
+            Some(state) => Some(
+                crate::fsto_account::active_items(db, &state)
+                    .await
+                    .into_iter()
+                    .map(|i| (i.file_id.to_string(), i))
+                    .collect(),
+            ),
+            None => None,
+        };
     let rows: Vec<(
         String,
         String,
@@ -259,13 +274,18 @@ pub async fn check_updates(db: &SqlitePool, http: &reqwest::Client) -> Vec<Fligh
         let latest_updated = meta.as_ref().and_then(|m| m.updated_at.clone());
         let latest_link = meta.as_ref().and_then(|m| m.link.clone());
         // Update genuino: el catálogo avanzó su `updatedAt` respecto al baseline.
-        let has_update = match (
-            parse_iso(known_updated.as_deref()),
-            parse_iso(latest_updated.as_deref()),
-        ) {
-            (Some(base), Some(cur)) => cur > base,
-            _ => false,
+        let has_update = match &account {
+            Some(acct) => acct.contains_key(&file_id),
+            None => match (
+                parse_iso(known_updated.as_deref()),
+                parse_iso(latest_updated.as_deref()),
+            ) {
+                (Some(base), Some(cur)) => cur > base,
+                _ => false,
+            },
         };
+        let latest_version = latest_version
+            .or_else(|| account.as_ref().and_then(|a| a.get(&file_id)).and_then(|i| i.latest_version.clone()));
         let link = latest_link
             .or(link)
             .unwrap_or_else(|| format!("https://flightsim.to/addon/{file_id}"));
@@ -306,6 +326,10 @@ pub async fn ack_update(db: &SqlitePool, http: &reqwest::Client, folder_name: &s
             .ok()
             .flatten();
     let Some(file_id) = file_id else { return };
+    // (26/10) Y en la cuenta de flightsim.to, hasta la próxima versión.
+    if let Ok(id) = file_id.parse::<i64>() {
+        crate::fsto_account::dismiss(db, &[id]).await;
+    }
     if let Some(meta) = fetch_detail(http, &file_id).await {
         let _ = sqlx::query(
             "UPDATE flightsim_tracked_files \

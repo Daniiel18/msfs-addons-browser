@@ -139,7 +139,11 @@ windows-core = "=0.61.2"
 # Hello) y Win32_Security (LogonUserW) para el bloqueo de inicio (win_lock.rs).
 # + Win32_System_Registry: carpeta de instalación de Fenix/PMDG TechLog
 # (desinstalador de Windows) para la sincronía (techlog.rs).
-windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_Storage_FileSystem", "Foundation", "Security_Credentials", "Security_Credentials_UI", "Win32_System_WinRT", "Win32_Security", "Win32_System_Registry"] }
+# (25/10) + Win32_System_Com_StructuredStorage: stream en memoria para la foto
+# de flightsim.to (CapturePreview); wry ya la compila en esta misma versión.
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Storage_FileSystem", "Foundation", "Security_Credentials", "Security_Credentials_UI", "Win32_System_WinRT", "Win32_Security", "Win32_System_Registry", "Media_MediaProperties", "Media_Transcoding", "Storage", "Storage_FileProperties", "Storage_Streams"] }
+# (8.4.0) Media_*/Storage_*: recorte del clip de aterrizaje con el
+# MediaTranscoder de Windows (ver `clip_trim.rs`) — sin crates nuevos.
 # (v6.2.17) Motor de grabación de "Best Landings": Windows Graphics Capture +
 # encoder H.264 por HARDWARE (Media Foundation) — el mismo stack que usa
 # ScreenRecorderLib (LandingToast). Reemplaza a windows-record 0.1, cuyo replay

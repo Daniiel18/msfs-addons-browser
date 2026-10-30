@@ -2,13 +2,16 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { create } from "zustand";
-import { ArrowRight, Download, EyeOff, Map as MapIcon, Plane, Sparkles, User, X } from "lucide-react";
-import type { AvailableUpdate, CommunityPackage } from "../lib/types";
+import { ArrowRight, Download, EyeOff, Info, Map as MapIcon, Plane, Sparkles, User, X } from "lucide-react";
+import type { AvailableUpdate, CommunityPackage, FstoAccountStatus } from "../lib/types";
+import { api } from "../lib/tauri";
 import { useAppStore } from "../stores/useAppStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useFlightsimUpdateStore, useInstalledFlightsimUpdates } from "../stores/useFlightsimUpdateStore";
 import { t } from "../lib/i18n";
 import { useFstoEmbedStore } from "./FlightsimEmbed";
+import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { openInFlightsimTab } from "../lib/flightsimTab";
 
 /** (25/10) Abre/cierra el modal de updates pendientes (aviso y tarjeta de
  *  Inicio). */
@@ -39,6 +42,7 @@ interface CardItem {
   sourceName: string;
   icao: string;
   imageUrl: string | null;
+  /** Vacío si no se sabe la versión instalada (perfiles GSX). */
   from: string;
   to: string;
   openTooltip: string;
@@ -52,7 +56,9 @@ interface CardItem {
 export function usePendingUpdatesCount(): number {
   const catalog = useCommunityStore((s) => s.updates.length);
   const fsto = useInstalledFlightsimUpdates().length;
-  return catalog + fsto;
+  // (26/10) Y los perfiles GSX instalados con versión nueva en flightsim.to.
+  const gsx = useGsxLocalStore((s) => s.updates.size);
+  return catalog + fsto + gsx;
 }
 
 /**
@@ -77,8 +83,17 @@ export function PendingUpdatesModal() {
   const openFlightsimTab = useAppStore((s) => s.openFlightsimTab);
   const fstoUpdates = useInstalledFlightsimUpdates();
   const ackFsto = useFlightsimUpdateStore((s) => s.ackUpdate);
-  const total = updates.length + fstoUpdates.length;
+  const gsxUpdates = useGsxLocalStore((s) => s.updates);
+  const ackGsx = useGsxLocalStore((s) => s.ackUpdate);
+  const total = updates.length + fstoUpdates.length + gsxUpdates.size;
   const close = () => setOpen(false);
+  // (26/10) ¿Hay sesión en flightsim.to? Sin ella no se ven las
+  // actualizaciones de tu cuenta (GSX y lo bajado de ahí).
+  const [account, setAccount] = useState<FstoAccountStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    if (open) void api.fstoAccountStatus().then(setAccount).catch(() => {});
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -145,6 +160,38 @@ export function PendingUpdatesModal() {
       },
       onIgnore: () => ackFsto(u.folderName),
     })),
+    // (26/10) Perfiles GSX instalados con versión nueva en flightsim.to (de
+    // tu cuenta): su página en la pestaña flightsim.to; el mapa, en su
+    // escenario si lo tienes.
+    ...[...gsxUpdates.values()].map((g) => {
+      const scenery = packages.find(
+        (p) => (p.icao ?? "").toUpperCase() === g.icao && (p.contentType ?? "").toUpperCase() === "SCENERY",
+      );
+      return {
+        key: `gsx:${g.icao}`,
+        title: g.title || t("updates.modal.gsx_title", { icao: g.icao }),
+        developer: "",
+        sourceName: t("updates.modal.gsx_source"),
+        icao: g.icao,
+        imageUrl: g.thumbnail ?? null,
+        from: "",
+        to: g.latestVersion ?? "",
+        openTooltip: t("updates.modal.go_fsto_tooltip"),
+        onOpen: () => {
+          close();
+          ackGsx(g.icao);
+          openInFlightsimTab(g.link);
+        },
+        onMap: scenery
+          ? () => {
+              close();
+              setView("map");
+              setFocused(scenery.folderName);
+            }
+          : undefined,
+        onIgnore: () => ackGsx(g.icao),
+      };
+    }),
   ].sort((a, b) => a.title.localeCompare(b.title));
 
   return createPortal(
@@ -184,6 +231,36 @@ export function PendingUpdatesModal() {
                 <X className="h-4 w-4" />
               </button>
             </header>
+
+            {account?.loggedIn === false && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-sky-500/20 bg-sky-500/10 px-5 py-2.5 text-xs text-sky-100">
+                <Info className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+                <span className="min-w-0 flex-1">{t("updates.modal.fsto_login")}</span>
+                <button
+                  onClick={() => {
+                    close();
+                    openFlightsimTab();
+                  }}
+                  className="rounded-md bg-sky-500/20 px-2 py-1 font-semibold text-sky-100 ring-1 ring-sky-500/40 hover:bg-sky-500/30"
+                >
+                  {t("updates.modal.fsto_open")}
+                </button>
+                <button
+                  disabled={checking}
+                  onClick={() => {
+                    setChecking(true);
+                    void api
+                      .fstoAccountRefresh()
+                      .then(setAccount)
+                      .catch(() => {})
+                      .finally(() => setChecking(false));
+                  }}
+                  className="rounded-md px-2 py-1 text-sky-200 hover:bg-sky-500/15 disabled:opacity-50"
+                >
+                  {checking ? t("updates.modal.fsto_checking") : t("updates.modal.fsto_recheck")}
+                </button>
+              </div>
+            )}
 
             <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-1 gap-4 overflow-y-auto p-5 sm:grid-cols-2 lg:grid-cols-3">
               {items.map((item) => (
@@ -258,7 +335,11 @@ function UpdateCard({ item: u }: { item: CardItem }) {
           </div>
           <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-amber-950 shadow-lg shadow-amber-500/30">
             <Sparkles className="h-3 w-3" />
-            {t("result.update.label", { from: u.from, to: u.to })}
+            {u.from
+              ? t("result.update.label", { from: u.from, to: u.to })
+              : u.to
+                ? t("updates.modal.update_to", { to: u.to })
+                : t("updates.modal.update_new")}
           </span>
         </div>
       </button>

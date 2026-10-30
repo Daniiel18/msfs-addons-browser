@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  Addon,
   CommunityInfo,
   DownloadJob,
   DownloadMethod,
@@ -95,6 +96,14 @@ interface DownloadsState {
   pause: (id: string) => Promise<void>;
   resume: (id: string) => Promise<void>;
   clear: (id: string) => Promise<void>;
+  /** (25/10) Reintenta una descarga que falló o se cortó: sigue desde lo ya
+   *  bajado si se puede; si no, la vuelve a pedir por el mismo enlace. */
+  retry: (job: DownloadJob) => Promise<void>;
+  /** (25/10) El addon de un job con todos sus enlaces (para «Otro enlace»).
+   *  `null` si ya no está en su catálogo. */
+  addonOf: (job: DownloadJob) => Promise<Addon | null>;
+  /** (25/10) Vuelve a pedir el addon de `job` por `method` y quita el job viejo. */
+  startWith: (job: DownloadJob, addon: Addon, method: DownloadMethod) => Promise<void>;
 
   /** Refresca la lista persistente desde el backend. */
   refreshInstalled: () => Promise<void>;
@@ -293,6 +302,43 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
 
   async clear(id) {
     await api.clearDownload(id);
+  },
+
+  async retry(job) {
+    if (job.resumable) {
+      await api.resumeDownload(job.id);
+      return;
+    }
+    const addon = await get().addonOf(job);
+    const methods = addon?.downloadMethods ?? [];
+    const method =
+      methods.find((m) => m.name === job.methodName && m.url === job.url) ??
+      methods.find((m) => m.name === job.methodName) ??
+      methods[0];
+    if (!addon || !method) {
+      useToastStore.getState().push({ kind: "error", title: t("downloads.retry_failed"), message: job.addonTitle });
+      return;
+    }
+    await get().startWith(job, addon, method);
+  },
+
+  async addonOf(job) {
+    if (!job.addonId) return null;
+    const found = await api.catalogAddon(job.addonId).catch(() => [] as Addon[]);
+    return found.find((a) => a.id === job.addonId) ?? null;
+  },
+
+  async startWith(job, addon, method) {
+    await get().start({
+      addonId: addon.id,
+      addonTitle: job.addonTitle || addon.name,
+      source: addon.source,
+      method,
+      addonSimulator: addon.simulator,
+      allMethods: addon.downloadMethods,
+      notes: addon.notes,
+    });
+    await get().clear(job.id);
   },
 
   async refreshInstalled() {

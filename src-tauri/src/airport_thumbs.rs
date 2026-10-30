@@ -163,7 +163,42 @@ pub(crate) async fn fetch_airport_photo(
     name: &str,
     px: u32,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    fetch_sized(http, icao, name, "airport", Some(px)).await
+    if let Some(bytes) = fetch_sized(http, icao, name, "airport", Some(px)).await? {
+        return Ok(Some(bytes));
+    }
+    // (26/10) El ICAO suele ser una desambiguación ("KMSP") y el nombre de
+    // OurAirports no siempre es el título del artículo ("… / Wold–Chamberlain
+    // Field"): se busca el artículo con ficha de aeropuerto que cita el ICAO.
+    match search_airport_article(http, icao).await? {
+        Some(title) => fetch_sized(http, &title, "", "airport", Some(px)).await,
+        None => Ok(None),
+    }
+}
+
+/// Título del artículo de Wikipedia (con «Infobox airport») que cita `icao`.
+async fn search_airport_article(http: &reqwest::Client, icao: &str) -> anyhow::Result<Option<String>> {
+    if icao.len() != 4 || !icao.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Ok(None);
+    }
+    let query = format!("\"{icao}\" hastemplate:\"Infobox airport\"");
+    let resp = http
+        .get("https://en.wikipedia.org/w/api.php")
+        .query(&[
+            ("action", "query"),
+            ("list", "search"),
+            ("srsearch", query.as_str()),
+            ("srlimit", "1"),
+            ("srprop", ""),
+            ("format", "json"),
+        ])
+        .timeout(std::time::Duration::from_secs(12))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: serde_json::Value = resp.json().await?;
+    Ok(body.pointer("/query/search/0/title").and_then(|v| v.as_str()).map(String::from))
 }
 
 async fn fetch_sized(
@@ -228,9 +263,27 @@ async fn fetch_sized(
         if !looks_right {
             continue;
         }
+        // Con `thumb_px` (tarjeta del FlightBook): miniatura ".../320px-Foto.jpg"
+        // y sólo FOTOS. (26/10) Si la principal del artículo es un logo, un
+        // mapa o un diagrama, se busca la primera foto real del artículo.
+        let thumb = match thumb_px {
+            Some(_) => match body.pointer("/thumbnail/source").and_then(|v| v.as_str()).filter(|u| looks_like_photo(u)) {
+                Some(u) => Some(u.to_string()),
+                None if kind == "airport" => {
+                    let title = body
+                        .pointer("/titles/canonical")
+                        .or_else(|| body.get("title"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(term)
+                        .replace(' ', "_");
+                    article_photo(http, &title).await?
+                }
+                None => None,
+            },
+            None => None,
+        };
         let img_url = match thumb_px {
-            // Miniatura de Wikimedia ".../320px-Foto.jpg": se pide al ancho que toca.
-            Some(px) => body.pointer("/thumbnail/source").and_then(|v| v.as_str()).map(|u| resize_thumb(u, px)),
+            Some(px) => thumb.as_deref().map(|u| resize_thumb(u, px)),
             None => body
                 .pointer("/originalimage/source")
                 .or_else(|| body.pointer("/thumbnail/source"))
@@ -244,9 +297,9 @@ async fn fetch_sized(
         let mut img = get(img_url.clone()).await?;
         // Original más pequeña que el ancho pedido: Wikimedia no agranda;
         // vale la miniatura tal cual.
-        if !img.status().is_success() && thumb_px.is_some() {
-            if let Some(orig) = body.pointer("/thumbnail/source").and_then(|v| v.as_str()).filter(|u| *u != img_url) {
-                img = get(orig.to_string()).await?;
+        if !img.status().is_success() {
+            if let Some(orig) = thumb.filter(|u| *u != img_url) {
+                img = get(orig).await?;
             }
         }
         if !img.status().is_success() {
@@ -280,6 +333,53 @@ fn resize_thumb(url: &str, px: u32) -> String {
         },
         None => url.to_string(),
     }
+}
+
+/// (26/10) ¿El archivo de Wikimedia parece una FOTO? Sólo JPEG (los logos,
+/// mapas y diagramas suelen ser SVG o PNG) y sin palabras que delaten un
+/// logo, un mapa, un plano, un cartel o una bandera.
+fn looks_like_photo(url: &str) -> bool {
+    // Wikimedia añade "?utm_source=…" a las miniaturas.
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    let file = url.rsplit('/').next().unwrap_or(url);
+    let file = urlencoding::decode(file).map(|c| c.into_owned()).unwrap_or_else(|_| file.to_string()).to_lowercase();
+    if !(file.ends_with(".jpg") || file.ends_with(".jpeg")) || file.contains(".svg") {
+        return false;
+    }
+    const WORDS: [&str; 22] = [
+        "map", "maps", "mapa", "karte", "carte", "plan", "plano", "chart", "sign", "signs", "icon", "seal", "flag",
+        "logo", "diagram", "layout", "location", "locator", "emblem", "schema", "symbol", "screenshot",
+    ];
+    const PARTS: [&str; 8] = ["logo", "diagram", "locationmap", "locator", "layout", "emblem", "topograph", "coat_of_arms"];
+    if PARTS.iter().any(|p| file.contains(p)) {
+        return false;
+    }
+    !file
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| WORDS.contains(&w) || (w.len() > 4 && w.ends_with("map")))
+}
+
+/// (26/10) Primera foto del artículo (galería de la REST API `media-list`),
+/// en el orden en que aparecen.
+async fn article_photo(http: &reqwest::Client, title: &str) -> anyhow::Result<Option<String>> {
+    let url = format!("https://en.wikipedia.org/api/rest_v1/page/media-list/{}", urlencoding::encode(title));
+    let resp = http
+        .get(&url)
+        .header("accept", "application/json")
+        .timeout(std::time::Duration::from_secs(12))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let items = body.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    Ok(items
+        .iter()
+        .filter(|i| i.get("type").and_then(|v| v.as_str()) == Some("image"))
+        .filter_map(|i| i.pointer("/srcset/0/src").and_then(|v| v.as_str()))
+        .map(|src| if src.starts_with("//") { format!("https:{src}") } else { src.to_string() })
+        .find(|src| looks_like_photo(src)))
 }
 
 /// (v5.0.0 N6) Imagen de marketing desde flightsim.to: busca el addon,
@@ -440,5 +540,19 @@ mod tests {
         );
         let plain = "https://upload.wikimedia.org/wikipedia/commons/a/ab/JFK_Airport.jpg";
         assert_eq!(resize_thumb(plain, 640), plain, "sin tamaño en el nombre: tal cual");
+    }
+
+    #[test]
+    fn only_real_photos_go_on_the_airport_card() {
+        let t = |f: &str| format!("https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/{f}/320px-{f}");
+        assert!(looks_like_photo(&t("JFK_Airport_Terminal_4.jpg")));
+        assert!(looks_like_photo(&format!("{}?utm_source=en.wikipedia.org", t("JFK_Aerial_Nov_14_2018.jpg"))));
+        assert!(looks_like_photo(&t("Plane_landing_at_SBGR.jpeg")), "«plane» no es «plan»");
+        assert!(!looks_like_photo(&t("Calgary_International_Airport_logo.jpg")));
+        assert!(!looks_like_photo(&t("YYC_airport_map.jpg")));
+        assert!(!looks_like_photo(&t("CYYCLocationMap.jpg")));
+        assert!(!looks_like_photo(&t("KJFK_Airport_Diagram.jpg")));
+        assert!(!looks_like_photo(&format!("{}.png", t("Airport_icon.svg"))));
+        assert!(!looks_like_photo(&t("Terminal%20sign.jpg")));
     }
 }

@@ -10,10 +10,12 @@
 //! crasheaba el sim). Con este motor el encoder **drena directo a disco**:
 //! RAM plana a cualquier fps y calidad alta configurable.
 //!
-//! Semántica nueva: al armar (aproximación) se graba EN DISCO de forma
-//! continua a un archivo temporal; al touchdown (+~12 s de rollout) el
-//! archivo se finaliza y se renombra como clip → el clip cubre TODA la
-//! aproximación final + el aterrizaje. Sin buffer en RAM que recortar.
+//! Semántica: al armar (aproximación) se graba EN DISCO de forma continua a
+//! un temporal (en una subcarpeta oculta); 10 s después del toque se finaliza y
+//! (8.4.0) se recorta a [toque − 30 s, toque + 10 s] con el transcodificador
+//! de Windows (`clip_trim`) → el clip son sólo los últimos 30 s de la
+//! aproximación + el rollout. El índice de clips vive en los datos de
+//! SimFleet, no junto a los vídeos.
 //!
 //! El objetivo de captura es una **ventana por título** (substring): MSFS para
 //! los aterrizajes reales, y la ventana de la propia app ("SimFleet") para la
@@ -26,8 +28,15 @@ use std::path::{Path, PathBuf};
 
 use sqlx::SqlitePool;
 
-/// Nombre del manifiesto de clips dentro de la carpeta de salida.
-const MANIFEST: &str = "simfleet_landings.json";
+/// (8.4.0) Índice de clips, en los datos de SimFleet. Hasta 8.3.3 era
+/// `simfleet_landings.json` junto a los vídeos, a mano de cualquiera.
+const INDEX: &str = "landing_clips.json";
+/// Manifiesto viejo (≤ 8.3.3) en la carpeta de vídeos: se migra al índice.
+const LEGACY_MANIFEST: &str = "simfleet_landings.json";
+/// (8.4.0) El clip son los últimos 30 s antes de tocar pista…
+const PRE_TOUCHDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+/// …y como mucho 10 s después.
+const POST_TOUCHDOWN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Substring del título de la ventana de MSFS (cubre 2020 y 2024).
 pub const MSFS_WINDOW: &str = "Microsoft Flight Simulator";
@@ -45,7 +54,7 @@ mod capture_engine {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread::JoinHandle;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime};
 
     use anyhow::anyhow;
     use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
@@ -78,6 +87,9 @@ mod capture_engine {
         /// las dimensiones reales de la ventana del sim).
         encoder: Mutex<Option<VideoEncoder>>,
         first_frame: AtomicBool,
+        /// (8.4.0) Hora del primer frame = segundo 0 del vídeo (el encoder
+        /// cuenta los tiempos desde ahí). Con ella se recorta al guardar.
+        first_frame_at: Mutex<Option<SystemTime>>,
         /// Señal de "finaliza el contenedor y para" — la procesa el handler
         /// en el siguiente frame (el encoder vive en su hilo).
         finish: AtomicBool,
@@ -167,6 +179,7 @@ mod capture_engine {
                     }
                 };
                 *guard = Some(enc);
+                *sh.first_frame_at.lock().unwrap() = Some(SystemTime::now());
                 sh.first_frame.store(true, Ordering::Release);
                 tracing::info!(
                     target: "rec",
@@ -276,6 +289,10 @@ mod capture_engine {
                 std::fs::create_dir_all(dir).map_err(|e| {
                     anyhow!("{}", crate::tr!("recorder.folderFailed", path = dir.display(), e = e))
                 })?;
+                // (8.4.0) La grabación en curso no es un clip: su carpeta, oculta.
+                if dir.file_name().is_some_and(|n| n == super::REC_TEMP_DIR) {
+                    super::set_hidden(dir, true);
+                }
             }
             let _ = std::fs::remove_file(&temp_path);
             let (done_tx, done_rx) = mpsc::channel();
@@ -286,6 +303,7 @@ mod capture_engine {
                 audio_fmt: Mutex::new(None),
                 encoder: Mutex::new(None),
                 first_frame: AtomicBool::new(false),
+                first_frame_at: Mutex::new(None),
                 finish: AtomicBool::new(false),
                 done_tx: Mutex::new(Some(done_tx)),
                 audio_off: AtomicBool::new(false),
@@ -414,8 +432,15 @@ mod capture_engine {
             }
         }
 
-        /// Finaliza el contenedor y mueve el temporal a `final_path`.
-        pub fn finish_and_save(mut self, final_path: &Path) -> anyhow::Result<()> {
+        /// Finaliza el contenedor y deja el clip en `final_path`. (8.4.0) Con
+        /// `keep` = (desde, hasta) en hora real, sólo ese tramo (recortado);
+        /// devuelve entonces su duración. Sin `keep` o si el recorte falla,
+        /// la grabación completa (`None`).
+        pub fn finish_and_save(
+            mut self,
+            final_path: &Path,
+            keep: Option<(SystemTime, SystemTime)>,
+        ) -> anyhow::Result<Option<f64>> {
             self.shared.finish.store(true, Ordering::Relaxed);
             // El handler finaliza en el siguiente frame; si no llegan frames
             // (ventana minimizada / cerrada), caemos al plan B tras timeout.
@@ -450,12 +475,39 @@ mod capture_engine {
             // Margen para que Media Foundation suelte el archivo.
             std::thread::sleep(Duration::from_millis(300));
             let tmp = &self.shared.temp_path;
+            let t0 = *self.shared.first_frame_at.lock().unwrap();
+            if let (Some((from, to)), Some(t0)) = (keep, t0) {
+                // Segundos desde el inicio del vídeo (negativo = antes).
+                let at = |t: SystemTime| match t.duration_since(t0) {
+                    Ok(d) => d.as_secs_f64(),
+                    Err(e) => -e.duration().as_secs_f64(),
+                };
+                let started = Instant::now();
+                match crate::clip_trim::trim(tmp, final_path, at(from), at(to)) {
+                    Ok(Some(dur)) => {
+                        tracing::info!(
+                            target: "rec",
+                            "clip recortado a {dur:.1}s ({:.1}..{:.1}s de la grabación) en {:.1}s",
+                            at(from).max(0.0),
+                            at(to),
+                            started.elapsed().as_secs_f64()
+                        );
+                        super::remove_temp(tmp);
+                        return Ok(Some(dur));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(target: "rec", "no se pudo recortar ({e:#}) — guardo la grabación completa");
+                        let _ = std::fs::remove_file(final_path);
+                    }
+                }
+            }
             if std::fs::rename(tmp, final_path).is_err() {
                 std::fs::copy(tmp, final_path)
                     .map_err(|e| anyhow!("{}", crate::tr!("recorder.clipMoveFailed", e = e)))?;
-                let _ = std::fs::remove_file(tmp);
             }
-            Ok(())
+            super::remove_temp(tmp);
+            Ok(None)
         }
 
         /// Descarta la grabación (sin clip) y borra el temporal.
@@ -470,7 +522,7 @@ mod capture_engine {
             }
             drop(self.shared.encoder.lock().unwrap().take());
             std::thread::sleep(Duration::from_millis(200));
-            let _ = std::fs::remove_file(&self.shared.temp_path);
+            super::remove_temp(&self.shared.temp_path);
         }
     }
 
@@ -711,12 +763,27 @@ mod capture_engine {
                 &target,
                 30,
                 8_000_000,
-                dir.join("simfleet-rec-probe.part.mp4"),
+                super::super::temp_path(&dir, "simfleet-rec-probe.part.mp4"),
                 audio,
             )
             .expect("start");
             eprintln!("audio_fmt={:?} window={:?}", s.shared.audio_fmt.lock().unwrap(), s.window.map(|w| w.title()));
-            for i in 0..8 {
+            // (8.4.0) REC_SECS=n graba n s; REC_KEEP=a,b guarda sólo [a, b] s
+            // (hora real desde el arranque) → prueba el recorte de punta a punta.
+            let secs: u64 = std::env::var("REC_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+            let started = SystemTime::now();
+            let keep = std::env::var("REC_KEEP").ok().and_then(|v| {
+                let (a, b) = v.split_once(',')?;
+                let at = |x: &str| x.trim().parse::<f64>().ok().map(|s| started + Duration::from_secs_f64(s));
+                Some((at(a)?, at(b)?))
+            });
+            for i in 0..secs {
+                if i == 2 {
+                    use std::os::windows::fs::MetadataExt;
+                    let dir = s.shared.temp_path.parent().unwrap().to_path_buf();
+                    let attrs = std::fs::metadata(&dir).map(|m| m.file_attributes());
+                    eprintln!("carpeta del temporal oculta: {:?}", attrs.map(|a| a & 0x2 != 0));
+                }
                 std::thread::sleep(Duration::from_secs(1));
                 s.watchdog();
                 let finished = s.control.as_ref().map(|c| c.is_finished()).unwrap_or(true);
@@ -727,7 +794,7 @@ mod capture_engine {
                     }
                 }
             }
-            let r = s.finish_and_save(&out);
+            let r = s.finish_and_save(&out, keep);
             eprintln!("result={r:?} size={:?}", std::fs::metadata(&out).map(|m| m.len()));
         }
     }
@@ -741,6 +808,52 @@ fn encoder_sample_rate(device_rate: u32) -> u32 {
     } else {
         48_000
     }
+}
+
+/// (8.4.0) Subcarpeta OCULTA de la carpeta de clips donde se graba: la
+/// grabación en curso no se ve (ni se toca) como un clip, y al estar en el
+/// mismo disco mover el resultado es instantáneo. Se oculta la carpeta y no
+/// el archivo porque WinRT no abre archivos ocultos para recortarlos.
+const REC_TEMP_DIR: &str = ".simfleet-rec";
+
+fn temp_path(output_dir: &Path, name: &str) -> PathBuf {
+    output_dir.join(REC_TEMP_DIR).join(name)
+}
+
+/// Borra la grabación temporal y, si queda vacía, su subcarpeta oculta.
+fn remove_temp(tmp: &Path) {
+    let _ = std::fs::remove_file(tmp);
+    if let Some(dir) = tmp.parent().filter(|d| d.file_name().is_some_and(|n| n == REC_TEMP_DIR)) {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// (8.4.0) Marca o desmarca un archivo o carpeta como oculto. Mejor
+/// esfuerzo — si falla, sólo se ve.
+fn set_hidden(path: &Path, hidden: bool) {
+    #[cfg(windows)]
+    {
+        use windows::core::HSTRING;
+        use windows::Win32::Storage::FileSystem::{
+            GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN,
+            FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES,
+        };
+        let p = HSTRING::from(path);
+        let attrs = unsafe { GetFileAttributesW(&p) };
+        if attrs == INVALID_FILE_ATTRIBUTES {
+            return;
+        }
+        let new = if hidden {
+            attrs | FILE_ATTRIBUTE_HIDDEN.0
+        } else {
+            attrs & !FILE_ATTRIBUTE_HIDDEN.0
+        };
+        if new != attrs {
+            let _ = unsafe { SetFileAttributesW(&p, FILE_FLAGS_AND_ATTRIBUTES(new)) };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (path, hidden);
 }
 
 /// (v8.3.2) Remuestreo lineal de PCM16 estéreo intercalado, con estado entre
@@ -934,13 +1047,6 @@ pub fn clip_dirs(configured: &str) -> Vec<PathBuf> {
         }
     }
     dirs
-}
-
-/// Carpeta (de `dirs`) cuyo manifiesto tiene el clip `id`.
-pub fn clip_dir_of(dirs: &[PathBuf], id: &str) -> Option<PathBuf> {
-    dirs.iter()
-        .find(|d| load_clips(d).iter().any(|c| c.id == id))
-        .cloned()
 }
 
 fn landingtoast_config() -> Option<serde_json::Value> {
@@ -1204,7 +1310,11 @@ pub fn record_window_clip(
             "micrófono aún no soportado por el motor nuevo — se graba solo el audio del sistema"
         );
     }
-    let temp = out.with_extension("part.mp4");
+    let name = out.with_extension("part.mp4");
+    let temp = temp_path(
+        out.parent().unwrap_or(Path::new(".")),
+        &name.file_name().unwrap_or_default().to_string_lossy(),
+    );
     let session = capture_engine::CaptureSession::start(
         target_title,
         fps,
@@ -1215,7 +1325,7 @@ pub fn record_window_clip(
 
     std::thread::sleep(Duration::from_secs(duration_s.clamp(2, 600) as u64));
 
-    session.finish_and_save(out)?;
+    session.finish_and_save(out, None)?;
 
     if !out.is_file() {
         anyhow::bail!("{}", crate::tr!("recorder.noOutputFile"));
@@ -1237,7 +1347,8 @@ pub fn record_window_clip(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Librería de clips (manifiesto JSON en la carpeta de salida)
+// Librería de clips — (8.4.0) índice JSON en los datos de SimFleet (`data`),
+// con rutas absolutas: sirve para clips de cualquier carpeta.
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1258,30 +1369,71 @@ pub struct LandingClip {
     pub is_test: bool,
 }
 
-fn manifest_path(output_dir: &Path) -> PathBuf {
-    output_dir.join(MANIFEST)
+fn read_clips(path: &Path) -> Option<Vec<LandingClip>> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-pub fn load_clips(output_dir: &Path) -> Vec<LandingClip> {
-    let Ok(text) = std::fs::read_to_string(manifest_path(output_dir)) else {
-        return Vec::new();
-    };
-    let mut clips: Vec<LandingClip> = serde_json::from_str(&text).unwrap_or_default();
+/// Clips del índice que aún existen en disco.
+pub fn load_clips(data: &Path) -> Vec<LandingClip> {
+    let mut clips = read_clips(&data.join(INDEX)).unwrap_or_default();
     clips.retain(|c| Path::new(&c.path).is_file());
     clips
 }
 
-fn save_clips(output_dir: &Path, clips: &[LandingClip]) -> anyhow::Result<()> {
-    std::fs::create_dir_all(output_dir)?;
-    std::fs::write(manifest_path(output_dir), serde_json::to_string_pretty(clips)?)?;
+fn save_clips(data: &Path, clips: &[LandingClip]) -> anyhow::Result<()> {
+    std::fs::create_dir_all(data)?;
+    // Escritura atómica: un corte a medias no deja el índice roto.
+    let tmp = data.join(format!("{INDEX}.tmp"));
+    std::fs::write(&tmp, serde_json::to_string_pretty(clips)?)?;
+    std::fs::rename(&tmp, data.join(INDEX))?;
     Ok(())
 }
 
-pub fn add_clip(output_dir: &Path, clip: LandingClip, max_clips: i64) -> anyhow::Result<()> {
-    let mut clips = load_clips(output_dir);
+/// (8.4.0) Pasa al índice los manifiestos viejos (`simfleet_landings.json`)
+/// de `dirs` y los borra de ahí. Un clip que ya estaba conserva su favorito
+/// si en cualquiera de los dos lo era. Si el índice no se puede guardar no se
+/// borra nada. Devuelve cuántos clips nuevos entraron.
+pub fn migrate_legacy_manifests(data: &Path, dirs: &[PathBuf]) -> usize {
+    let found: Vec<(PathBuf, Vec<LandingClip>)> = dirs
+        .iter()
+        .map(|d| d.join(LEGACY_MANIFEST))
+        .filter(|p| p.is_file())
+        // Uno ilegible se deja donde está (no hay nada que rescatar a ciegas).
+        .filter_map(|p| read_clips(&p).map(|c| (p, c)))
+        .collect();
+    if found.is_empty() {
+        return 0;
+    }
+    let mut clips = read_clips(&data.join(INDEX)).unwrap_or_default();
+    let mut added = 0;
+    for (_, old) in &found {
+        for c in old {
+            match clips.iter_mut().find(|x| x.id == c.id) {
+                Some(x) => x.favorite |= c.favorite,
+                None => {
+                    clips.push(c.clone());
+                    added += 1;
+                }
+            }
+        }
+    }
+    clips.retain(|c| Path::new(&c.path).is_file());
+    if let Err(e) = save_clips(data, &clips) {
+        tracing::warn!(target: "rec", "no se pudo migrar el índice de clips: {e:#}");
+        return 0;
+    }
+    for (p, _) in found {
+        let _ = std::fs::remove_file(&p);
+        tracing::info!(target: "rec", "índice de clips migrado desde {}", p.display());
+    }
+    added
+}
+
+pub fn add_clip(data: &Path, clip: LandingClip, max_clips: i64) -> anyhow::Result<()> {
+    let mut clips = load_clips(data);
     clips.push(clip);
     apply_retention(&mut clips, max_clips);
-    save_clips(output_dir, &clips)
+    save_clips(data, &clips)
 }
 
 /// Conserva favoritos + clips de prueba; del resto, los de mejor FPM hasta
@@ -1320,26 +1472,26 @@ fn apply_retention(clips: &mut Vec<LandingClip>, max_clips: i64) {
     });
 }
 
-pub fn set_favorite(output_dir: &Path, id: &str, favorite: bool) -> anyhow::Result<()> {
-    let mut clips = load_clips(output_dir);
+pub fn set_favorite(data: &Path, id: &str, favorite: bool) -> anyhow::Result<()> {
+    let mut clips = load_clips(data);
     if let Some(c) = clips.iter_mut().find(|c| c.id == id) {
         c.favorite = favorite;
     }
-    save_clips(output_dir, &clips)
+    save_clips(data, &clips)
 }
 
-pub fn delete_clip(output_dir: &Path, id: &str) -> anyhow::Result<()> {
-    let mut clips = load_clips(output_dir);
+pub fn delete_clip(data: &Path, id: &str) -> anyhow::Result<()> {
+    let mut clips = load_clips(data);
     if let Some(pos) = clips.iter().position(|c| c.id == id) {
         let _ = std::fs::remove_file(&clips[pos].path);
         clips.remove(pos);
     }
-    save_clips(output_dir, &clips)
+    save_clips(data, &clips)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn update_clip_meta(
-    out_dir: &Path,
+    data: &Path,
     id: &str,
     fpm: Option<i64>,
     grade: Option<String>,
@@ -1348,7 +1500,7 @@ fn update_clip_meta(
     model: Option<String>,
     reg: Option<String>,
 ) -> anyhow::Result<()> {
-    let mut clips = load_clips(out_dir);
+    let mut clips = load_clips(data);
     if let Some(c) = clips.iter_mut().find(|c| c.id == id) {
         if c.fpm.is_none() {
             c.fpm = fpm;
@@ -1369,7 +1521,7 @@ fn update_clip_meta(
             c.registration = reg;
         }
     }
-    save_clips(out_dir, &clips)
+    save_clips(data, &clips)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1390,7 +1542,10 @@ enum RecCmd {
     },
     Save {
         path: String,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+        /// (8.4.0) Tramo a conservar (hora real); el resto se recorta.
+        keep: Option<(std::time::SystemTime, std::time::SystemTime)>,
+        /// Duración del clip si se recortó.
+        reply: tokio::sync::oneshot::Sender<Result<Option<f64>, String>>,
     },
     Stop,
 }
@@ -1442,7 +1597,7 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>, app: tauri::AppHandle)
                     tracing::warn!(target: "rec", "ya hay una grabación activa; no se arma la captura");
                     continue;
                 }
-                let base = Path::new(&output_path).join("simfleet_buffer.mp4");
+                let base = temp_path(Path::new(&output_path), "simfleet_buffer.mp4");
                 match capture_engine::CaptureSession::start(
                     MSFS_WINDOW,
                     fps,
@@ -1461,18 +1616,18 @@ fn recorder_thread(rx: std::sync::mpsc::Receiver<RecCmd>, app: tauri::AppHandle)
                     }
                 }
             }
-            RecCmd::Save { path, reply } => {
+            RecCmd::Save { path, keep, reply } => {
                 let res = match session.take() {
                     Some(s) => {
                         let reported = s.reported;
                         let r = s
-                            .finish_and_save(Path::new(&path))
+                            .finish_and_save(Path::new(&path), keep)
                             .map_err(|e| format!("{e:#}"));
                         release_recording();
                         // (v7.4.2) Antes se logueaba "clip guardado" SIEMPRE,
                         // también cuando el guardado fallaba.
                         match &r {
-                            Ok(()) => tracing::info!(target: "rec", "clip guardado: {path}"),
+                            Ok(_) => tracing::info!(target: "rec", "clip guardado: {path}"),
                             // (v8.3.2) Si el watchdog ya avisó del motivo, no repetir.
                             Err(e) if !reported => notify(&app, "error", e.clone()),
                             Err(_) => {}
@@ -1535,17 +1690,29 @@ async fn controller_loop(
     // el Stop llegaba PRIMERO → el Save encontraba el recorder apagado y el
     // clip se perdía. Mientras haya un guardado pendiente NO se desarma.
     let mut save_pending_until: Option<std::time::Instant> = None;
-    const SAVE_GRACE: Duration = Duration::from_secs(16);
+    // (8.4.0) El Save sale a los POST_TOUCHDOWN (10 s) del toque.
+    const SAVE_GRACE: Duration = Duration::from_secs(14);
     // (v8.3.2) Carpeta donde se armó la grabación (la configurada o la de
     // respaldo): el clip se guarda AHÍ. Y si no hubo carpeta posible, no se
     // reintenta (ni se re-avisa) cada segundo hasta tocar tierra.
     let mut armed_dir: Option<PathBuf> = None;
     let mut arm_blocked = false;
+    // (8.4.0) Armados miramos el estado 4 veces por segundo (el watcher lo
+    // refresca a ~4 Hz): la hora del toque — base del recorte — sale así con
+    // ±0,25 s en vez de ±1 s. Los ajustes se siguen leyendo una vez por segundo.
+    let mut cfg = load_config(&pool, &data_dir).await;
+    let mut cfg_at = std::time::Instant::now();
+    // Clips de versiones viejas: su manifiesto pasa al índice (una vez).
+    migrate_legacy_manifests(&data_dir, &clip_dirs(&cfg.output_path));
 
     loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let tick = if armed { Duration::from_millis(250) } else { Duration::from_secs(1) };
+        tokio::time::sleep(tick).await;
 
-        let cfg = load_config(&pool, &data_dir).await;
+        if cfg_at.elapsed() >= Duration::from_secs(1) {
+            cfg = load_config(&pool, &data_dir).await;
+            cfg_at = std::time::Instant::now();
+        }
 
         let status = match app.try_state::<crate::simconnect_watcher::SharedState>() {
             Some(s) => s.lock().await.status.clone(),
@@ -1666,14 +1833,15 @@ async fn controller_loop(
             // Guardar el clip si el replay buffer está armado.
             if armed && !saved {
                 saved = true;
-                // El Save real corre ~12s después (rollout) — protegemos el
-                // buffer de cualquier Stop hasta que termine (SAVE_GRACE).
+                // (8.4.0) Hora del toque: el clip es [toque − 30 s, toque + 10 s].
+                let touchdown = std::time::SystemTime::now();
+                // El Save real corre a los 10 s (rollout) — protegemos la
+                // grabación de cualquier Stop hasta que salga (SAVE_GRACE).
                 save_pending_until = Some(std::time::Instant::now() + SAVE_GRACE);
-                // (v6.2.18) Duración REAL del clip: desde que se armó (inicio
-                // de la grabación a disco) + ~12s de rollout. Antes se escribía
-                // el `clip_seconds` configurado, que ya no recorta nada.
+                // Duración si no se pudiera recortar: toda la grabación
+                // (desde que se armó) + el rollout.
                 let duration_s = armed_at
-                    .map(|t| t.elapsed().as_secs() as i64 + 12)
+                    .map(|t| (t.elapsed() + POST_TOUCHDOWN).as_secs() as i64)
                     .unwrap_or(60);
                 let out_dir = armed_dir
                     .clone()
@@ -1681,7 +1849,9 @@ async fn controller_loop(
                 schedule_save(
                     &pool,
                     &tx,
+                    &data_dir,
                     &out_dir,
+                    touchdown,
                     duration_s,
                     cfg.max_clips,
                     status.destination_icao.clone(),
@@ -1713,8 +1883,11 @@ async fn controller_loop(
 fn schedule_save(
     pool: &SqlitePool,
     tx: &std::sync::mpsc::Sender<RecCmd>,
+    data_dir: &Path,
     out_dir: &Path,
-    // Duración estimada del clip (armado→touchdown + rollout) para el manifest.
+    touchdown: std::time::SystemTime,
+    // Duración de la grabación entera (armado→touchdown + rollout): la que
+    // queda si el recorte falla.
     clip_seconds: i64,
     max_clips: i64,
     dest_icao: Option<String>,
@@ -1724,11 +1897,11 @@ fn schedule_save(
     use std::time::Duration;
     let pool = pool.clone();
     let tx = tx.clone();
+    let data_dir = data_dir.to_path_buf();
     let out_dir = out_dir.to_path_buf();
     tokio::spawn(async move {
-        // ~12s para que el rollout completo entre en el buffer antes de
-        // guardar (antes se cortaba muy temprano el vídeo).
-        tokio::time::sleep(Duration::from_secs(12)).await;
+        // (8.4.0) 10 s de rollout tras el toque y se corta: el clip acaba ahí.
+        tokio::time::sleep(POST_TOUCHDOWN).await;
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -1738,11 +1911,15 @@ fn schedule_save(
             .to_string_lossy()
             .into_owned();
         let (rtx, rrx) = tokio::sync::oneshot::channel();
-        if tx.send(RecCmd::Save { path: path.clone(), reply: rtx }).is_err() {
+        let keep = Some((
+            touchdown.checked_sub(PRE_TOUCHDOWN).unwrap_or(touchdown),
+            touchdown + POST_TOUCHDOWN,
+        ));
+        if tx.send(RecCmd::Save { path: path.clone(), keep, reply: rtx }).is_err() {
             return;
         }
         match rrx.await {
-            Ok(Ok(())) => {
+            Ok(Ok(trimmed)) => {
                 let recorded_at = sqlx::query_as::<_, (String,)>("SELECT datetime('now')")
                     .fetch_one(&pool)
                     .await
@@ -1759,17 +1936,18 @@ fn schedule_save(
                     model: aircraft_icao,
                     registration: None,
                     favorite: false,
-                    duration_s: clip_seconds,
+                    duration_s: trimmed.map_or(clip_seconds, |d| d.round() as i64),
                     is_test: false,
                 };
                 let id = clip.id.clone();
-                if let Err(e) = add_clip(&out_dir, clip, max_clips) {
+                migrate_legacy_manifests(&data_dir, std::slice::from_ref(&out_dir));
+                if let Err(e) = add_clip(&data_dir, clip, max_clips) {
                     tracing::warn!(target: "rec", "add_clip falló: {e:#}");
                 }
                 tracing::info!(target: "rec", "Best Landing guardado ({id})");
                 // Enriquecer con metadata del flight_log ya finalizado (~20s).
                 tokio::time::sleep(Duration::from_secs(20)).await;
-                enrich_clip_from_flightlog(&pool, &out_dir, &id).await;
+                enrich_clip_from_flightlog(&pool, &data_dir, &id).await;
             }
             Ok(Err(e)) => tracing::warn!(target: "rec", "save_replay falló: {e}"),
             Err(_) => tracing::warn!(target: "rec", "recorder no respondió al guardar"),
@@ -1778,7 +1956,7 @@ fn schedule_save(
 }
 
 #[cfg(windows)]
-async fn enrich_clip_from_flightlog(pool: &SqlitePool, out_dir: &Path, id: &str) {
+async fn enrich_clip_from_flightlog(pool: &SqlitePool, data_dir: &Path, id: &str) {
     let row = sqlx::query_as::<
         _,
         (
@@ -1803,7 +1981,7 @@ async fn enrich_clip_from_flightlog(pool: &SqlitePool, out_dir: &Path, id: &str)
     };
     let grade = fpm.map(|f| crate::flight_log::landing_grade(f).to_string());
     let model = model.or(atc);
-    let _ = update_clip_meta(out_dir, id, fpm, grade, dico, dname, model, reg);
+    let _ = update_clip_meta(data_dir, id, fpm, grade, dico, dname, model, reg);
 }
 
 #[cfg(not(windows))]
@@ -1888,6 +2066,92 @@ mod tests {
         assert!(notice.is_some());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn clip(id: &str, path: &Path, favorite: bool) -> LandingClip {
+        LandingClip {
+            id: id.into(),
+            path: path.to_string_lossy().into_owned(),
+            recorded_at: "2026-10-26 12:00:00".into(),
+            fpm: Some(-150),
+            grade: None,
+            airport_icao: Some("KATL".into()),
+            airport_name: None,
+            model: None,
+            registration: None,
+            favorite,
+            duration_s: 40,
+            is_test: false,
+        }
+    }
+
+    #[test]
+    fn legacy_manifests_move_to_the_index_keeping_favorites() {
+        let base = std::env::temp_dir().join(format!("simfleet-rec-idx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (data, videos, backup) = (base.join("data"), base.join("videos"), base.join("backup"));
+        for d in [&data, &videos, &backup] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, b, gone) = (videos.join("a.mp4"), backup.join("b.mp4"), videos.join("gone.mp4"));
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        // El índice ya tenía "a" SIN favorito; el manifiesto viejo lo tiene CON.
+        save_clips(&data, &[clip("a", &a, false)]).unwrap();
+        let legacy = |dir: &Path, clips: &[LandingClip]| {
+            std::fs::write(dir.join(LEGACY_MANIFEST), serde_json::to_string(clips).unwrap()).unwrap()
+        };
+        legacy(&videos, &[clip("a", &a, true), clip("gone", &gone, false)]);
+        legacy(&backup, &[clip("b", &b, false)]);
+
+        let added = migrate_legacy_manifests(&data, &[videos.clone(), backup.clone()]);
+        // "b" es nuevo; "gone" ya no existe en disco y no entra.
+        assert_eq!(added, 2);
+        let clips = load_clips(&data);
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().find(|c| c.id == "a").unwrap().favorite);
+        assert!(clips.iter().any(|c| c.id == "b"));
+        // Los manifiestos viejos ya no están junto a los vídeos.
+        assert!(!videos.join(LEGACY_MANIFEST).exists());
+        assert!(!backup.join(LEGACY_MANIFEST).exists());
+        // Una segunda pasada no hace nada.
+        assert_eq!(migrate_legacy_manifests(&data, &[videos.clone()]), 0);
+
+        // Favorito y borrado sobre el índice central.
+        set_favorite(&data, "b", true).unwrap();
+        assert!(load_clips(&data).iter().find(|c| c.id == "b").unwrap().favorite);
+        delete_clip(&data, "a").unwrap();
+        assert!(!a.exists());
+        assert_eq!(load_clips(&data).len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unreadable_legacy_manifest_is_left_alone() {
+        let base = std::env::temp_dir().join(format!("simfleet-rec-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (data, videos) = (base.join("data"), base.join("videos"));
+        std::fs::create_dir_all(&videos).unwrap();
+        std::fs::write(videos.join(LEGACY_MANIFEST), b"{ no es json").unwrap();
+        assert_eq!(migrate_legacy_manifests(&data, &[videos.clone()]), 0);
+        assert!(videos.join(LEGACY_MANIFEST).exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hidden_flag_round_trips() {
+        let f = std::env::temp_dir().join(format!("simfleet-rec-hidden-{}.mp4", std::process::id()));
+        std::fs::write(&f, b"x").unwrap();
+        let hidden = |p: &Path| {
+            use std::os::windows::fs::MetadataExt;
+            std::fs::metadata(p).unwrap().file_attributes() & 0x2 != 0
+        };
+        set_hidden(&f, true);
+        assert!(hidden(&f));
+        set_hidden(&f, false);
+        assert!(!hidden(&f));
+        std::fs::remove_file(&f).unwrap();
     }
 
     #[cfg(windows)]

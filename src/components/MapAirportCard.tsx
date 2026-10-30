@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
@@ -16,9 +16,12 @@ import type {
   CommunityPackage,
   DownloadMethod,
   GsxAirportParkings,
+  GsxParking,
   GsxParkingKind,
 } from "../lib/types";
 import { GSX_KIND_COLORS } from "../lib/gsxKinds";
+import { airlineChips, gateAirlines, gateKey } from "../lib/gsxAirlines";
+import { AirlineLogo } from "./AirlineLogo";
 import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
@@ -52,6 +55,7 @@ export function MapAirportCard({
   gsxParkings,
   pickedParking,
   onPickParking,
+  onGsxVisibleChange,
 }: {
   pkg: CommunityPackage;
   update: AvailableUpdate | null;
@@ -60,6 +64,8 @@ export function MapAirportCard({
   gsxParkings: GsxAirportParkings | null;
   pickedParking: string | null;
   onPickParking: (name: string | null) => void;
+  /** (26/10) Gates del chip de aerolínea elegido (`null` = todos) → pines. */
+  onGsxVisibleChange?: (names: Set<string> | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<"none" | "uninstalling" | "repairing">("none");
@@ -299,6 +305,7 @@ export function MapAirportCard({
             data={gsxParkings}
             picked={pickedParking}
             onPick={onPickParking}
+            onVisibleChange={onGsxVisibleChange}
           />
         )}
 
@@ -403,6 +410,9 @@ export function MapAirportCard({
 
 // ----------------------------------------------------------------------------
 // (19/10) Lista de gates/parkings del perfil GSX
+// (26/10) Por aerolínea: sin filtro, chips con las aerolíneas del perfil
+// (`airlinecodes`); con el filtro de aerolínea del FlightBook, sus gates y los
+// libres, o —si el perfil no le asigna ninguno— los que usaste con ella.
 // ----------------------------------------------------------------------------
 
 const GSX_KIND_ORDER: GsxParkingKind[] = [
@@ -415,25 +425,152 @@ const GSX_KIND_ORDER: GsxParkingKind[] = [
   "other",
 ];
 
-function GsxParkingList({
+/** (26/10) Filtro de aerolínea del FlightBook aplicado a los gates. */
+export interface GsxListAirline {
+  /** `canonicalAirlineKey`, la misma clave que la lista de vuelos. */
+  key: string;
+  icao: string | null;
+  name: string;
+  /** Gates que usaste con ella en este aeropuerto (de tus vuelos). */
+  used: { name: string; count: number }[];
+}
+
+interface GsxSection {
+  id: "all" | "mine" | "used" | "free";
+  title: string | null;
+  parkings: GsxParking[];
+  /** Gates de tus vuelos que el perfil no tiene (no se pueden enfocar). */
+  missing: { name: string; count: number }[];
+}
+
+/** Valor del chip «Sin asignar». */
+const FREE_CHIP = "__free";
+
+/**
+ * (26/10) Qué gates enseña la lista: secciones, aviso y los visibles. `chip`
+ * sólo cuenta sin filtro de aerolínea (`null` = todas).
+ */
+export function gsxSections(
+  data: GsxAirportParkings,
+  airline: GsxListAirline | null,
+  chip: string | null,
+): { sections: GsxSection[]; notice: string | null; visible: GsxParking[] } {
+  const all = data.parkings;
+  const keysOf = new Map(all.map((p) => [p.name, gateAirlines(p).map((a) => a.key)]));
+  const free = all.filter((p) => keysOf.get(p.name)!.length === 0);
+  const hasCodes = free.length < all.length;
+  let sections: GsxSection[];
+  let notice: string | null = null;
+  if (airline) {
+    const mine = all.filter((p) => keysOf.get(p.name)!.includes(airline.key));
+    if (mine.length > 0) {
+      sections = [
+        { id: "mine", title: t("map.gsx.airline_gates", { name: airline.name }), parkings: mine, missing: [] },
+        { id: "free", title: t("map.gsx.unassigned_title"), parkings: free, missing: [] },
+      ];
+    } else {
+      const byKey = new Map(all.map((p) => [gateKey(p.name), p]));
+      const used: GsxParking[] = [];
+      const missing: { name: string; count: number }[] = [];
+      for (const u of airline.used) {
+        const p = byKey.get(gateKey(u.name));
+        if (p) used.push(p);
+        else missing.push(u);
+      }
+      const usedNames = new Set(used.map((p) => p.name));
+      notice = hasCodes
+        ? t("map.gsx.no_airline_gates", { name: airline.name })
+        : t("map.gsx.no_codes");
+      sections = [
+        { id: "used", title: t("map.gsx.used_with", { name: airline.name }), parkings: used, missing },
+        {
+          id: "free",
+          title: hasCodes ? t("map.gsx.unassigned_title") : t("map.gsx.all_title"),
+          parkings: free.filter((p) => !usedNames.has(p.name)),
+          missing: [],
+        },
+      ];
+    }
+  } else if (chip === FREE_CHIP) {
+    sections = [{ id: "free", title: null, parkings: free, missing: [] }];
+  } else if (chip) {
+    sections = [
+      { id: "all", title: null, parkings: all.filter((p) => keysOf.get(p.name)!.includes(chip)), missing: [] },
+    ];
+  } else {
+    sections = [{ id: "all", title: null, parkings: all, missing: [] }];
+  }
+  sections = sections.filter((s) => s.parkings.length > 0 || s.missing.length > 0);
+  const seen = new Set<string>();
+  const visible = sections.flatMap((s) => s.parkings).filter((p) => !seen.has(p.name) && !!seen.add(p.name));
+  return { sections, notice, visible };
+}
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function byKind(parkings: GsxParking[], q: string) {
+  const groups = new Map<GsxParkingKind, string[]>();
+  for (const p of parkings) {
+    if (q && !p.name.toLowerCase().includes(q)) continue;
+    const list = groups.get(p.kind) ?? [];
+    list.push(p.name);
+    groups.set(p.kind, list);
+  }
+  return GSX_KIND_ORDER.filter((k) => groups.has(k)).map((k) => ({
+    kind: k,
+    names: groups.get(k)!.sort(collator.compare),
+  }));
+}
+
+export function GsxParkingList({
   data,
   picked,
   onPick,
+  airline = null,
+  onVisibleChange,
 }: {
   data: GsxAirportParkings;
   picked: string | null;
   onPick: (name: string | null) => void;
+  /** (26/10) Filtro de aerolínea del FlightBook. */
+  airline?: GsxListAirline | null;
+  /** (26/10) Scenery map: nombres visibles con el chip elegido (`null` = todos). */
+  onVisibleChange?: (names: Set<string> | null) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [chip, setChip] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const pickedParking = picked ? data.parkings.find((p) => p.name === picked) : undefined;
+  useEffect(() => setChip(null), [data]);
+  const chips = useMemo(() => (airline ? [] : airlineChips(data.parkings)), [data, airline]);
+  const { sections, notice, visible } = useMemo(
+    () => gsxSections(data, airline, airline ? null : chip),
+    [data, airline, chip],
+  );
+  const freeCount = useMemo(
+    () => data.parkings.filter((p) => gateAirlines(p).length === 0).length,
+    [data],
+  );
+  // Veces que usaste cada gate con la aerolínea filtrada (marca ×n).
+  const usedCount = useMemo(
+    () => new Map((airline?.used ?? []).map((u) => [gateKey(u.name), u.count])),
+    [airline],
+  );
+  const filtered = !!airline || chip !== null;
+  const visibleKey = filtered ? visible.map((p) => p.name).join("|") : "";
+  useEffect(() => {
+    onVisibleChange?.(filtered ? new Set(visible.map((p) => p.name)) : null);
+    // `visibleKey` resume `visible`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleKey, filtered]);
   // (19/10) Al elegir un gate (en la lista o con click en su pin del mapa):
-  // si la búsqueda lo oculta la limpiamos y desplazamos la lista hasta él.
+  // si la búsqueda o el chip lo ocultan se quitan, y la lista baja hasta él.
   useEffect(() => {
     if (!picked) return;
     if (query.trim() && !picked.toLowerCase().includes(query.trim().toLowerCase())) {
       setQuery("");
     }
+    if (chip !== null && !visible.some((p) => p.name === picked)) setChip(null);
     requestAnimationFrame(() =>
       listRef.current
         ?.querySelector(`[data-gsx-name="${CSS.escape(picked)}"]`)
@@ -441,31 +578,58 @@ function GsxParkingList({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picked]);
-  const groups = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const byKind = new Map<GsxParkingKind, string[]>();
-    for (const p of data.parkings) {
-      if (q && !p.name.toLowerCase().includes(q)) continue;
-      const list = byKind.get(p.kind) ?? [];
-      list.push(p.name);
-      byKind.set(p.kind, list);
-    }
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-    return GSX_KIND_ORDER.filter((k) => byKind.has(k)).map((k) => ({
-      kind: k,
-      names: byKind.get(k)!.sort(collator.compare),
-    }));
-  }, [data, query]);
+  const q = query.trim().toLowerCase();
+  const rendered = sections
+    .map((s) => ({ ...s, groups: byKind(s.parkings, q) }))
+    .filter((s) => s.groups.length > 0 || (s.missing.length > 0 && !q));
   return (
     <div className="px-4 pb-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-sf-text">
-          {t("map.gsx.title", { n: data.parkings.length })}
+          {t("map.gsx.title", { n: filtered ? visible.length : data.parkings.length })}
         </span>
         <span className="truncate text-[10px] text-sf-muted" title={data.fileName}>
           {data.fileName}
         </span>
       </div>
+      {chips.length > 0 && (
+        <div
+          onWheel={(e) => {
+            if (e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY;
+          }}
+          className="mb-2 flex gap-1 overflow-x-auto pb-1 [scrollbar-width:thin]"
+        >
+          <AirlineChip active={chip === null} onClick={() => setChip(null)}>
+            {t("map.gsx.all_chip")} <span className="text-sf-muted">{data.parkings.length}</span>
+          </AirlineChip>
+          {chips.map((c) => (
+            <AirlineChip
+              key={c.key}
+              active={chip === c.key}
+              title={c.name}
+              onClick={() => setChip(chip === c.key ? null : c.key)}
+            >
+              <AirlineLogo icao={c.icao} name={c.name} size={14} />
+              <span className="font-mono font-semibold">{c.icao}</span>
+              <span className="text-sf-muted">{c.count}</span>
+            </AirlineChip>
+          ))}
+          {freeCount > 0 && (
+            <AirlineChip
+              active={chip === FREE_CHIP}
+              title={t("map.gsx.unassigned_hint")}
+              onClick={() => setChip(chip === FREE_CHIP ? null : FREE_CHIP)}
+            >
+              {t("map.gsx.unassigned_chip")} <span className="text-sf-muted">{freeCount}</span>
+            </AirlineChip>
+          )}
+        </div>
+      )}
+      {notice && (
+        <p className="mb-2 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-amber-200 ring-1 ring-amber-500/25">
+          {notice}
+        </p>
+      )}
       {pickedParking && (
         <div className="mb-2 flex items-center gap-2.5 rounded-lg border border-brand-500/40 bg-brand-500/10 px-2.5 py-2">
           <span
@@ -480,6 +644,16 @@ function GsxParkingList({
               {t(`map.gsx.one.${pickedParking.kind}`)} · {pickedParking.lat.toFixed(5)},{" "}
               {pickedParking.lon.toFixed(5)}
             </div>
+            {gateAirlines(pickedParking).length > 0 && (
+              <div className="mt-1 flex flex-wrap items-center gap-1">
+                {gateAirlines(pickedParking).map((a) => (
+                  <span key={a.key} title={a.name} className="inline-flex items-center gap-1 text-[10px] text-sf-text/80">
+                    <AirlineLogo icao={a.icao} name={a.name} size={12} />
+                    {a.icao}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <button
             onClick={() => onPick(null)}
@@ -491,7 +665,7 @@ function GsxParkingList({
           </button>
         </div>
       )}
-      {data.parkings.length > 12 && (
+      {visible.length > 12 && (
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -499,38 +673,104 @@ function GsxParkingList({
           className="mb-2 w-full rounded-md border border-sf-border bg-sf-surface px-2 py-1 text-xs text-sf-text placeholder:text-sf-muted focus:border-brand-500/60 focus:outline-none"
         />
       )}
-      <div ref={listRef} className="max-h-56 space-y-2 overflow-y-auto pr-1">
-        {groups.map((g) => (
-          <div key={g.kind}>
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sf-muted">
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ backgroundColor: GSX_KIND_COLORS[g.kind] }}
-              />
-              {t(`map.gsx.kind.${g.kind}`)} · {g.names.length}
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {g.names.map((n) => (
-                <button
-                  key={n}
-                  data-gsx-name={n}
-                  onClick={() => onPick(n)}
-                  className={`rounded px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
-                    picked === n
-                      ? "bg-brand-500 text-slate-950"
-                      : "bg-sf-raised text-sf-text hover:bg-brand-500/20"
-                  }`}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
+      <div ref={listRef} className="max-h-56 space-y-3 overflow-y-auto pr-1">
+        {rendered.map((s) => (
+          <div key={s.id} className="space-y-2">
+            {s.title && (
+              <div className="flex items-center gap-1.5 border-b border-sf-border/60 pb-1 text-[11px] font-semibold text-brand-200">
+                {s.id === "mine" || s.id === "used" ? (
+                  <AirlineLogo icao={airline?.icao} name={airline?.name} size={13} />
+                ) : null}
+                <span className="truncate">{s.title}</span>
+                <span className="text-sf-muted">· {s.parkings.length + s.missing.length}</span>
+              </div>
+            )}
+            {s.groups.map((g) => (
+              <div key={g.kind}>
+                <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-sf-muted">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: GSX_KIND_COLORS[g.kind] }}
+                  />
+                  {t(`map.gsx.kind.${g.kind}`)} · {g.names.length}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {g.names.map((n) => {
+                    const times = usedCount.get(gateKey(n));
+                    return (
+                      <button
+                        key={n}
+                        data-gsx-name={n}
+                        onClick={() => onPick(n)}
+                        title={
+                          times === 1
+                            ? t("map.gsx.used_once")
+                            : times
+                              ? t("map.gsx.used_times", { n: String(times) })
+                              : undefined
+                        }
+                        className={`rounded px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
+                          picked === n
+                            ? "bg-brand-500 text-slate-950"
+                            : times
+                              ? "bg-brand-500/20 text-brand-100 ring-1 ring-brand-500/40 hover:bg-brand-500/30"
+                              : "bg-sf-raised text-sf-text hover:bg-brand-500/20"
+                        }`}
+                      >
+                        {n}
+                        {times ? <span className="ml-1 opacity-70">×{times}</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            {!q && s.missing.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {s.missing.map((m) => (
+                  <span
+                    key={m.name}
+                    title={t("map.gsx.not_in_profile")}
+                    className="cursor-default rounded px-1.5 py-0.5 font-mono text-[11px] text-sf-muted border border-dashed border-sf-border"
+                  >
+                    {m.name}
+                    <span className="ml-1 opacity-70">×{m.count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         ))}
-        {groups.length === 0 && (
+        {rendered.length === 0 && (
           <p className="py-2 text-center text-[11px] text-sf-muted">{t("map.gsx.no_match")}</p>
         )}
       </div>
     </div>
+  );
+}
+
+function AirlineChip({
+  active,
+  title,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  title?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+        active
+          ? "border-brand-500/50 bg-brand-500/15 text-brand-100"
+          : "border-sf-border/60 bg-sf-surface text-sf-text/90 hover:border-slate-500/60 hover:bg-sf-raised"
+      }`}
+    >
+      {children}
+    </button>
   );
 }

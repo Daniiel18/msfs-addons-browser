@@ -24,6 +24,27 @@ use crate::sources::{DownloadKind, DownloadMethod};
 /// escrituras en una descarga de 6 minutos vs ~720 sin throttle).
 const PERSIST_PROGRESS_THROTTLE_SECS: u64 = 3;
 
+/// (25/10) Borra lo que hay en `dir` salvo los archivos de `keep` (y las
+/// carpetas que los contienen, de las que sólo se borra lo demás).
+fn purge_except(dir: &std::path::Path, keep: &[PathBuf]) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if keep.iter().any(|k| k == &path) {
+            continue;
+        }
+        if keep.iter().any(|k| k.starts_with(&path)) {
+            purge_except(&path, keep);
+            continue;
+        }
+        let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+    }
+}
+
+/// (25/10) Días que se queda el historial de descargas (terminadas,
+/// canceladas o con error).
+const HISTORY_DAYS: i64 = 7;
+
 /// Tauri event name the manager emits on every job state change.
 pub const EVENT_JOB_UPDATE: &str = "download://update";
 
@@ -132,6 +153,8 @@ impl DownloadManager {
                 .insert(id.clone(), addon_simulator);
         }
 
+        let kind_is_torrent = matches!(method.kind, DownloadKind::Torrent);
+        let addon_id_img = addon_id.clone();
         let kind_str = match method.kind {
             DownloadKind::Torrent => "torrent",
             DownloadKind::Mirror => "mirror",
@@ -156,6 +179,10 @@ impl DownloadManager {
             error: None,
             install_path: None,
             created_at: now,
+            image_url: repo::addon_image(&self.inner.db, &addon_id_img).await,
+            pausable: false,
+            resumable: kind_is_torrent,
+            resume: None,
         };
 
         self.set_job(job.clone()).await;
@@ -240,6 +267,10 @@ impl DownloadManager {
         // (v8.3) Descarga de la web de flightsim.to: la corta su manejador de
         // progreso en cuanto ve la petición.
         crate::commands::livery::request_external_cancel(id);
+        // (25/10) Directa en pausa (sin tarea viva): fuera lo bajado.
+        if let Some(spec) = self.inner.jobs.read().await.get(id).and_then(|j| j.resume.clone()) {
+            crate::commands::livery::forget_direct(id, &spec);
+        }
         Ok(())
     }
 
@@ -249,37 +280,118 @@ impl DownloadManager {
     /// only shown in the downloading state, but racing a phase change
     /// shouldn't surface a scary error).
     pub async fn pause(&self, id: &str) -> anyhow::Result<()> {
-        // Engine errors are informative but not fatal — log and keep
-        // the UI state honest (e.g. if the handle vanished between
-        // the user's click and our read, just drop back to cancelled).
-        if let Err(e) = self.inner.torrent_engine.pause(id).await {
-            tracing::warn!("pause({id}) failed: {e:#}");
+        let Some(job) = self.inner.jobs.read().await.get(id).cloned() else { return Ok(()) };
+        if job.phase != DownloadPhase::Downloading {
             return Ok(());
         }
-        self.update(id, |j| {
-            if j.phase == DownloadPhase::Downloading {
-                j.phase = DownloadPhase::Paused;
-                j.message = Some(crate::tr!("manager.paused"));
+        // (25/10) Torrent (librqbit), descarga directa de SimFleet (corta el
+        // bucle de bytes; lo bajado se queda) o la del navegador de la
+        // ventana de hoster (WebView2 la pausa de verdad).
+        let paused = if job.method_kind == "torrent" {
+            // Engine errors are informative but not fatal — log and keep
+            // the UI state honest.
+            match self.inner.torrent_engine.pause(id).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!("pause({id}) failed: {e:#}");
+                    false
+                }
             }
-        })
-        .await;
+        } else if job.resume.is_some() {
+            crate::commands::livery::pause_direct(id);
+            true
+        } else {
+            crate::commands::livery::set_webview_download_paused(&self.inner.app, id, true).await
+        };
+        if paused {
+            self.update(id, |j| {
+                if j.phase == DownloadPhase::Downloading {
+                    j.phase = DownloadPhase::Paused;
+                    j.speed_bps = 0;
+                    j.eta_seconds = None;
+                    j.message = Some(crate::tr!("manager.paused"));
+                }
+            })
+            .await;
+        }
         Ok(())
     }
 
-    /// Resume a previously-paused torrent. Mirrors [`Self::pause`].
+    /// Resume a paused download. (25/10) Also retries a direct download that
+    /// failed, from what was already downloaded.
     pub async fn resume(&self, id: &str) -> anyhow::Result<()> {
-        if let Err(e) = self.inner.torrent_engine.unpause(id).await {
-            tracing::warn!("resume({id}) failed: {e:#}");
-            return Ok(());
-        }
-        self.update(id, |j| {
-            if j.phase == DownloadPhase::Paused {
+        let Some(job) = self.inner.jobs.read().await.get(id).cloned() else { return Ok(()) };
+        let resumed = if job.method_kind == "torrent" {
+            if job.phase != DownloadPhase::Paused {
+                return Ok(());
+            }
+            if let Err(e) = self.inner.torrent_engine.unpause(id).await {
+                // Sin torrent vivo (pausado antes de reiniciar SimFleet): se
+                // relanza; librqbit sigue desde los archivos parciales.
+                tracing::info!("resume({id}): sin torrent vivo ({e:#}) → lo relanzo");
+                self.spawn_torrent(&job);
+            }
+            true
+        } else if let Some(spec) = job.resume.clone() {
+            if !matches!(job.phase, DownloadPhase::Paused | DownloadPhase::Error) {
+                return Ok(());
+            }
+            crate::commands::livery::resume_direct(&self.inner.app, id, &spec)
+        } else {
+            job.phase == DownloadPhase::Paused
+                && crate::commands::livery::set_webview_download_paused(&self.inner.app, id, false).await
+        };
+        if resumed {
+            self.update(id, |j| {
                 j.phase = DownloadPhase::Downloading;
                 j.message = None;
-            }
-        })
-        .await;
+                j.error = None;
+            })
+            .await;
+        }
         Ok(())
+    }
+
+    /// (25/10) Purga de arranque de las carpetas temporales de descargas
+    /// (`simfleet-mirror-dl`, `simfleet-livery-dl`) sin tocar los archivos
+    /// parciales de las que siguen pendientes.
+    pub async fn purge_temp(&self, temp_dir: &std::path::Path) {
+        let keep: Vec<PathBuf> = self
+            .inner
+            .jobs
+            .read()
+            .await
+            .values()
+            .filter(|j| !matches!(j.phase, DownloadPhase::Completed | DownloadPhase::Cancelled | DownloadPhase::Error)
+                || j.resume.is_some() && j.phase == DownloadPhase::Error)
+            .filter_map(|j| j.resume.as_deref().and_then(crate::commands::livery::resume_target))
+            .collect();
+        for dir in ["simfleet-mirror-dl", "simfleet-livery-dl"] {
+            purge_except(&temp_dir.join(dir), &keep);
+        }
+    }
+
+    /// (25/10) Guarda cómo retomar la descarga directa `id` (JSON de
+    /// `livery::ResumeSpec`): pausable, reanudable y sigue tras reiniciar.
+    pub async fn set_resume(&self, id: &str, spec: Option<String>) {
+        self.update_with(id, true, |j| j.resume = spec).await;
+    }
+
+    /// (25/10) La descarga del navegador de `id` se puede (o ya no) pausar.
+    pub async fn set_pausable(&self, id: &str, pausable: bool) {
+        self.update(id, |j| j.pausable = pausable).await;
+    }
+
+    fn spawn_torrent(&self, job: &DownloadJob) {
+        let this = self.clone();
+        let job_id = job.id.clone();
+        let torrent_url = job.url.clone();
+        tauri::async_runtime::spawn(async move {
+            let cancel = CancellationToken::new();
+            this.inner.cancels.write().await.insert(job_id.clone(), cancel.clone());
+            this.run_torrent(&job_id, torrent_url, cancel).await;
+            this.inner.cancels.write().await.remove(&job_id);
+        });
     }
 
     pub async fn clear(&self, id: &str) {
@@ -288,6 +400,10 @@ impl DownloadManager {
             map.remove(id)
         };
         if let Some(mut job) = removed {
+            // (25/10) Una directa que no terminó: fuera lo bajado.
+            if let Some(spec) = job.resume.as_deref().filter(|_| job.phase != DownloadPhase::Completed) {
+                crate::commands::livery::forget_direct(id, spec);
+            }
             // Emit one last update with a synthetic "removed" marker so
             // the UI reconciliation logic can drop the row.
             job.phase = DownloadPhase::Cancelled;
@@ -331,10 +447,32 @@ impl DownloadManager {
     ///   memoria como historial visible; no se acciona nada.
     pub async fn restore_persisted(&self) -> anyhow::Result<usize> {
         let jobs = repo::list_download_jobs(&self.inner.db).await?;
+        // (25/10) El historial (terminadas, canceladas, con error) se queda una
+        // semana; lo más viejo se borra.
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(HISTORY_DAYS);
+        let (jobs, old): (Vec<_>, Vec<_>) = jobs.into_iter().partition(|j| {
+            let terminal = matches!(
+                j.phase,
+                DownloadPhase::Completed | DownloadPhase::Cancelled | DownloadPhase::Error
+            );
+            let at = chrono::DateTime::parse_from_rfc3339(&j.created_at).map(|d| d.with_timezone(&chrono::Utc));
+            !terminal || at.map_or(true, |d| d >= cutoff)
+        });
+        for j in &old {
+            let _ = repo::delete_download_job(&self.inner.db, &j.id).await;
+        }
         let count = jobs.len();
-        tracing::info!("downloads: restaurando {} job(s) persistido(s)", count);
+        tracing::info!(
+            "downloads: restaurando {} job(s) persistido(s) ({} del historial de más de {HISTORY_DAYS} días borrado(s))",
+            count,
+            old.len()
+        );
 
-        for job in jobs {
+        for mut job in jobs {
+            // (25/10) Jobs de antes de guardar la imagen: la del catálogo.
+            if job.image_url.is_none() && !job.addon_id.is_empty() {
+                job.image_url = repo::addon_image(&self.inner.db, &job.addon_id).await;
+            }
             // Cargar en memoria + emitir para que el frontend
             // muestre la entrada inmediatamente al abrir el panel.
             {
@@ -348,6 +486,29 @@ impl DownloadManager {
                 DownloadPhase::Completed | DownloadPhase::Cancelled | DownloadPhase::Error
             );
             if is_terminal {
+                continue;
+            }
+
+            // (25/10) Pausada antes de cerrar: sigue en pausa (Reanudar la relanza).
+            if job.phase == DownloadPhase::Paused && job.resumable {
+                tracing::info!("downloads: {} sigue en pausa ({})", job.id, job.method_kind);
+                continue;
+            }
+            // (25/10) Descarga directa de SimFleet: sigue desde lo ya bajado.
+            if let Some(spec) = job.resume.clone() {
+                tracing::info!("downloads: reanudo la descarga directa {} (bytes_done={})", job.id, job.bytes_done);
+                self.update(&job.id, |j| {
+                    j.phase = DownloadPhase::Downloading;
+                    j.message = None;
+                })
+                .await;
+                if !crate::commands::livery::resume_direct(&self.inner.app, &job.id, &spec) {
+                    self.update(&job.id, |j| {
+                        j.phase = DownloadPhase::Error;
+                        j.error = Some(crate::tr!("manager.interruptedRestart"));
+                    })
+                    .await;
+                }
                 continue;
             }
 
@@ -381,9 +542,11 @@ impl DownloadManager {
                         "downloads: job {} ({}) estaba en phase={:?} pero no es resumible — marcado Error",
                         job.id, job.method_kind, job.phase
                     );
+                    // (25/10) La del navegador de la ventana no se puede seguir
+                    // (su enlace era de un solo uso): "Reintentar".
                     self.update(&job.id, |j| {
                         j.phase = DownloadPhase::Error;
-                        j.error = Some(crate::tr!("manager.crashedDuringOpen"));
+                        j.error = Some(crate::tr!("manager.interruptedRestart"));
                     })
                     .await;
                 }
@@ -424,6 +587,12 @@ impl DownloadManager {
                         Some(p) => crate::tr!("manager.partWaiting", part = p),
                         None => crate::tr!("manager.waitingInWindow"),
                     });
+                }
+                // (25/10) Un aviso de bytes que llega justo tras pausar no la
+                // despausa.
+                HosterStatus::Progress { done, total, .. } if j.phase == DownloadPhase::Paused => {
+                    j.bytes_done = done;
+                    j.bytes_total = total;
                 }
                 HosterStatus::Progress { done, total, bps, part } => {
                     j.phase = DownloadPhase::Downloading;
@@ -503,11 +672,23 @@ impl DownloadManager {
             error: None,
             install_path: None,
             created_at: chrono::Utc::now().to_rfc3339(),
+            image_url: None,
+            pausable: false,
+            resumable: false,
+            resume: None,
         };
         self.set_job(job).await;
     }
 
     async fn update<F>(&self, id: &str, mutate: F)
+    where
+        F: FnOnce(&mut DownloadJob),
+    {
+        self.update_with(id, false, mutate).await;
+    }
+
+    /// `update` que además persiste sin throttle si `force`.
+    async fn update_with<F>(&self, id: &str, force: bool, mutate: F)
     where
         F: FnOnce(&mut DownloadJob),
     {
@@ -520,6 +701,7 @@ impl DownloadManager {
                 Some(j) => {
                     let prev = j.phase;
                     mutate(j);
+                    j.refresh_flags();
                     let changed = j.phase != prev;
                     (Some(j.clone()), changed)
                 }
@@ -527,7 +709,7 @@ impl DownloadManager {
             }
         };
         if let Some(job) = snapshot {
-            self.persist(&job, phase_changed).await;
+            self.persist(&job, phase_changed || force).await;
             let _ = self.inner.app.emit(EVENT_JOB_UPDATE, &job);
         }
     }
@@ -1027,5 +1209,31 @@ impl DownloadManager {
     async fn snapshot(&self, id: &str) -> Option<DownloadJob> {
         let map = self.inner.jobs.read().await;
         map.get(id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (25/10) La purga de arranque respeta lo ya bajado de una descarga
+    /// pendiente y su carpeta, y borra todo lo demás.
+    #[test]
+    fn the_startup_purge_keeps_pending_partial_files() {
+        let base = std::env::temp_dir().join(format!("simfleet-purge-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let job_dir = base.join("hoster-dl-abc");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        std::fs::create_dir_all(base.join("hoster-dl-old")).unwrap();
+        let keep = job_dir.join("pmdg-aircraft-77f.rar");
+        std::fs::write(&keep, b"partial").unwrap();
+        std::fs::write(job_dir.join("leftover.tmp"), b"x").unwrap();
+        std::fs::write(base.join("hoster-dl-old").join("a.zip"), b"x").unwrap();
+        std::fs::write(base.join("loose.zip"), b"x").unwrap();
+        purge_except(&base, std::slice::from_ref(&keep));
+        assert!(keep.exists());
+        assert!(!job_dir.join("leftover.tmp").exists());
+        assert!(!base.join("hoster-dl-old").exists() && !base.join("loose.zip").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -124,6 +124,17 @@ pub trait Source: Send + Sync {
         Err(SourceError::NotImplemented)
     }
 
+    /// (26/10) Catálogo filtrado por tipo (`plane`, `helicopter`, `scenery`,
+    /// `utility` en aerohub). Las fuentes sin filtros lo ignoran.
+    async fn browse_kind(&self, page: usize, _kind: &str) -> Result<BrowsePage, SourceError> {
+        self.browse(page).await
+    }
+
+    /// (26/10) Búsqueda filtrada por tipo (ver `browse_kind`).
+    async fn search_kind(&self, query: &str, _kind: &str) -> Result<Vec<Addon>, SourceError> {
+        self.search(query).await
+    }
+
     /// (25/10) Sólo las tarjetas del listado (nombre, desarrollador,
     /// versión), sin abrir cada ficha: lo que necesita el escáner de updates
     /// para las fuentes que se leen enteras en vez de buscar lo instalado.

@@ -122,9 +122,9 @@ export function RecordingSettings() {
             </p>
           </Field>
 
-          {/* (v6.2.18) Los controles «Duración» e «Ilimitado» se retiraron:
-              el motor nuevo graba a disco TODA la aproximación final (no hay
-              buffer que recortar) y el clip cubre hasta el rollout. */}
+          {/* (v6.2.18) Los controles «Duración» e «Ilimitado» se retiraron.
+              (8.4.0) La duración es fija: se graba toda la aproximación y al
+              guardar se recorta a 30 s antes del toque + 10 s después. */}
 
           {/* Carpeta */}
           <Field label={t("rec.folder")}>

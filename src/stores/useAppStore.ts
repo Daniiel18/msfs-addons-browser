@@ -7,6 +7,10 @@ import { useCommunityStore } from "./useCommunityStore";
  *  campanita y el modal de updates las releen al momento. */
 const catalogSeen = () => void useCommunityStore.getState().reloadUpdates();
 
+/** (26/10) El filtro por tipo sólo existe en AeroHub. */
+export const kindFor = (source: string, kind: string | null) =>
+  source === "aerohub" && kind ? kind : null;
+
 type Status = "idle" | "loading" | "success" | "error";
 
 /** Vista activa en `App`. Dashboard (default home, totales) /
@@ -57,6 +61,11 @@ interface AppState {
 
   setSources: (s: SourceDescriptor[]) => void;
   setActiveSource: (id: string) => void;
+  /** (26/10) Filtro por tipo del catálogo de AeroHub (`plane`,
+   *  `helicopter`, `scenery`, `utility`); `null` = todo. */
+  browseKind: string | null;
+  /** Cambia el filtro y recarga la página 1 (o repite la búsqueda). */
+  setBrowseKind: (kind: string | null) => Promise<void>;
   setQuery: (q: string) => void;
   setResults: (r: Addon[]) => void;
   setStatus: (s: Status) => void;
@@ -80,6 +89,9 @@ interface AppState {
   /** (25/10) Lleva a la tarjeta de un addon con update pendiente, sea del
    *  catálogo que sea (modal de updates y campanita). */
   openCatalogAddon: (u: AvailableUpdate) => Promise<void>;
+  /** (26/10) Enseña en Explorar la tarjeta de un addon que ya tenemos
+   *  entero (novedades del radar), sin volver a buscarlo. */
+  showAddon: (addon: Addon) => void;
   /** (25/10) Sube con cada búsqueda pedida desde fuera de Explorar
    *  (campanita, modal de updates, paleta): Explorar sale de la pestaña
    *  flightsim.to, cuya web embebida taparía el resultado. */
@@ -123,6 +135,11 @@ interface AppState {
   hangarFocusRequest: string | null;
   requestHangarFocus: (registration: string) => void;
   clearHangarFocusRequest: () => void;
+  /** (26/10) Petición de abrir la tarjeta de un aeropuerto en el mapa del
+   *  FlightBook (fichas del Hangar). RoutesMapView la consume. */
+  airportCardRequest: { icao: string; name: string | null } | null;
+  requestAirportCard: (icao: string, name: string | null) => void;
+  clearAirportCardRequest: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -141,10 +158,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   catalogCache: {},
 
   setSources: (sources) => set({ sources }),
+  browseKind: null,
+
+  async setBrowseKind(kind) {
+    set({ browseKind: kind });
+    const { query, activeSourceId } = get();
+    if (!query.trim()) {
+      await get().loadBrowsePage(1);
+      return;
+    }
+    set({ status: "loading", error: null, results: [] });
+    try {
+      const r = await api.search(query.trim(), activeSourceId, kindFor(activeSourceId, kind));
+      if (get().browseKind !== kind) return;
+      set({ results: r, status: "success" });
+      catalogSeen();
+    } catch (e) {
+      set({ error: String(e), status: "error" });
+    }
+  },
+
   setActiveSource: (activeSourceId) => {
     const cached = get().catalogCache[activeSourceId];
     set({
       activeSourceId,
+      // (26/10) El filtro por tipo es de cada visita al catálogo.
+      browseKind: null,
       query: "",
       // Si tenemos pre-cargado el catálogo de esta fuente, lo
       // mostramos al instante sin HTTP. Si no, queda vacío y
@@ -228,6 +267,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ view: "hangar", hangarFocusRequest: registration }),
   clearHangarFocusRequest: () => set({ hangarFocusRequest: null }),
 
+  airportCardRequest: null,
+  requestAirportCard: (icao, name) => set({ view: "flightbook", airportCardRequest: { icao, name } }),
+  clearAirportCardRequest: () => set({ airportCardRequest: null }),
+
   searchRequest: 0,
   fstoTabRequest: 0,
   openFlightsimTab: () => set({ view: "search", fstoTabRequest: get().fstoTabRequest + 1 }),
@@ -236,6 +279,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const targetSource = sourceId ?? get().activeSourceId;
     set({
       searchRequest: get().searchRequest + 1,
+      browseKind: null,
       view: "search",
       activeSourceId: targetSource,
       query,
@@ -253,9 +297,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  showAddon(addon) {
+    set({
+      searchRequest: get().searchRequest + 1,
+      browseKind: null,
+      view: "search",
+      activeSourceId: addon.source,
+      query: addon.name,
+      status: "success",
+      error: null,
+      results: [addon],
+      browseMode: "search",
+    });
+  },
+
   async openCatalogAddon(u) {
     set({
       searchRequest: get().searchRequest + 1,
+      browseKind: null,
       view: "search",
       activeSourceId: u.source,
       query: u.title,
@@ -277,10 +336,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async loadBrowsePage(page) {
     const targetSource = get().activeSourceId;
+    // (26/10) Con filtro por tipo (AeroHub) siempre se pide: la caché es
+    // la del catálogo entero.
+    const kind = kindFor(targetSource, get().browseKind);
     // Si pedimos la página 1 y la tenemos pre-cargada, sirvela del
     // cache — no hagamos HTTP. Esto evita el "se quedó cargando"
     // al cambiar de SA→Simplaza→SA.
-    if (page === 1) {
+    if (page === 1 && !kind) {
       const cached = get().catalogCache[targetSource];
       if (cached) {
         set({
@@ -301,7 +363,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       browsePage: page,
     });
     try {
-      const res = await api.browseSource(targetSource, page);
+      const res = await api.browseSource(targetSource, page, kind);
+      // El usuario cambió de filtro o de catálogo mientras cargaba.
+      if (get().activeSourceId !== targetSource || kindFor(targetSource, get().browseKind) !== kind) return;
       set({
         results: res.addons,
         status: "success",
@@ -311,7 +375,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       catalogSeen();
       // Actualizamos cache en página 1 — los resultados pueden haber
       // cambiado entre el preload y ahora.
-      if (page === 1) {
+      if (page === 1 && !kind) {
         set((s) => ({
           catalogCache: {
             ...s.catalogCache,

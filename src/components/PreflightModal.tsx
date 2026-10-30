@@ -21,6 +21,8 @@ import { usePreflight } from "../lib/usePreflight";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAiracUpdateStore } from "../stores/useAiracUpdateStore";
 import { useNewSceneryStore } from "../stores/useNewSceneryStore";
+import type { Addon } from "../lib/types";
+import { gsxSearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
 import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
@@ -49,6 +51,8 @@ export function PreflightModal({ onClose }: Props) {
   const setEnabled = useCommunityStore((s) => s.setEnabled);
   const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
   const triggerSearch = useAppStore((s) => s.triggerSearch);
+  const showAddon = useAppStore((s) => s.showAddon);
+  const sources = useAppStore((s) => s.sources);
   const pushToast = useToastStore((s) => s.push);
   const setBypass = usePreflightStore((s) => s.setBypass);
 
@@ -152,14 +156,17 @@ export function PreflightModal({ onClose }: Props) {
     } else if (action.kind === "gsx" || action.kind === "gsx-update") {
       // (v6.2.58) Si es un update real, márcalo como manejado (avanza el
       // baseline para que el badge no reaparezca).
+      const link =
+        action.kind === "gsx-update"
+          ? useGsxLocalStore.getState().updates.get(action.icao.toUpperCase())?.link
+          : undefined;
       if (action.kind === "gsx-update") {
         useGsxLocalStore.getState().ackUpdate(action.icao);
       }
-      // (v6.2.57) Abre la BÚSQUEDA de GSX del ICAO en el embebido (todos los
-      // perfiles disponibles), no un perfil concreto — el usuario elige.
-      void api.openLiveryBrowser(
-        `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(action.icao)}`,
-      );
+      // (26/10) El perfil exacto que marcó tu cuenta de flightsim.to (o la
+      // búsqueda de GSX del ICAO), en la pestaña flightsim.to de Explorar.
+      onClose();
+      openInFlightsimTab(link || gsxSearchUrl(action.icao));
     } else if (action.kind === "enable") {
       setBusyId(check.id);
       try {
@@ -189,10 +196,12 @@ export function PreflightModal({ onClose }: Props) {
     });
   };
 
-  const openScenery = (icao: string | null, title: string) => {
+  // (26/10) Directo a la tarjeta de la novedad, sea del catálogo que sea.
+  const openNovelty = (a: Addon) => {
     onClose();
-    void triggerSearch(icao && icao.length === 4 ? icao : title, "sceneryaddons");
+    showAddon(a);
   };
+  const sourceName = (id: string) => sources.find((s) => s.id === id)?.name ?? id;
 
   return (
     <AnimatePresence>
@@ -415,13 +424,13 @@ export function PreflightModal({ onClose }: Props) {
 
               {fresh.length > 0 && (
                 <ul className="space-y-2">
-                  {fresh.slice(0, 8).map((a) => (
+                  {fresh.slice(0, 12).map((a) => (
                     <li
                       key={a.id}
                       className="group flex items-center gap-3 overflow-hidden rounded-xl border border-sf-border bg-sf-surface pr-2 transition-colors hover:border-fuchsia-500/30"
                     >
                       <button
-                        onClick={() => openScenery(a.icao, a.title)}
+                        onClick={() => openNovelty(a)}
                         className="flex min-w-0 flex-1 items-center gap-3 py-2 pl-2.5 text-left"
                       >
                         {a.imageUrl ? (
@@ -441,6 +450,9 @@ export function PreflightModal({ onClose }: Props) {
                             {a.title}
                           </p>
                           <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-sf-muted">
+                            <span className="shrink-0 rounded bg-fuchsia-500/10 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-200/90">
+                              {sourceName(a.source)}
+                            </span>
                             {a.icao && (
                               <span className="rounded bg-sf-raised px-1 py-0.5 font-mono text-sf-muted">
                                 {a.icao}
@@ -471,6 +483,9 @@ export function PreflightModal({ onClose }: Props) {
                       </button>
                     </li>
                   ))}
+                  {fresh.length > 12 && (
+                    <li className="px-1 text-[11px] text-sf-muted">{t("preflight.radar.more", { n: String(fresh.length - 12) })}</li>
+                  )}
                 </ul>
               )}
             </div>

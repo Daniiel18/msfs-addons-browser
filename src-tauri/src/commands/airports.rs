@@ -3,12 +3,16 @@ use crate::AppState;
 use tauri::Manager;
 
 /// (24/10) Tarjeta de aeropuerto del FlightBook (clic en el mapa).
+/// (26/10) `flight_ids`: los vuelos de la aerolínea filtrada en el FlightBook
+/// (el filtro se resuelve en el frontend, con la misma clave que la lista).
 #[tauri::command]
 pub async fn airport_card(
     icao: String,
+    flight_ids: Option<Vec<i64>>,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::airport_card::AirportCard, String> {
-    crate::airport_card::card(&state.db, &icao)
+    let only: Option<std::collections::HashSet<i64>> = flight_ids.map(|v| v.into_iter().collect());
+    crate::airport_card::card(&state.db, &icao, only.as_ref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -28,10 +32,41 @@ pub async fn airport_photo(
     } else {
         app.path().app_local_data_dir().map_err(|e| e.to_string())?
     };
-    let dir = base.join("airport-photos");
+    // (26/10) v2: fotos filtradas (sin logos, mapas ni diagramas). La caché
+    // vieja pudo guardar alguno de esos; se borra una vez.
+    let old = base.join("airport-photos");
+    if old.is_dir() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    let dir = base.join("airport-photos-v2");
+    // Sólo el ICAO suele caer en una página de desambiguación ("KJFK"): sin
+    // nombre (la precarga del mapa) se toma el de la base de aeropuertos.
+    let name = match name.filter(|n| !n.trim().is_empty()) {
+        Some(n) => Some(n),
+        None => airports::lookup_airports(&state.db, std::slice::from_ref(&icao))
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next())
+            .map(|a| a.name),
+    };
     crate::airport_card::photo(&state.http, &dir, &icao, name.as_deref())
         .await
         .map(|p| p.map(|p| p.to_string_lossy().into_owned()))
+        .map_err(|e| e.to_string())
+}
+
+/// (26/10) Pistas y helipuertos del aeropuerto (OurAirports). Si el listado
+/// aún no se bajó (primer arranque), se baja ahora.
+#[tauri::command]
+pub async fn airport_runways(
+    icao: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::runways::Runway>, String> {
+    if let Err(e) = crate::runways::ensure_dataset(&state.db, &state.http).await {
+        tracing::warn!("runways: {e:#}");
+    }
+    crate::runways::of_airport(&state.db, &icao)
+        .await
         .map_err(|e| e.to_string())
 }
 

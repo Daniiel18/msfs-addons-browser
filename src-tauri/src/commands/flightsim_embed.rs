@@ -144,6 +144,83 @@ pub fn fsto_embed_bounds(app: tauri::AppHandle, bounds: EmbedBounds) {
     }
 }
 
+/// (25/10) Foto PNG (data URL) de flightsim.to tal como se ve ahora. Mientras
+/// un panel o modal de SimFleet tapa el hueco, el webview nativo se oculta
+/// (quedaría por encima) y el hueco enseña esta foto: la página no
+/// "desaparece". `None` si no hay webview o la captura falla.
+#[tauri::command]
+pub async fn fsto_embed_snapshot(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use base64::Engine;
+        let Some(wv) = app.get_webview(EMBED_LABEL) else { return Ok(None) };
+        type Tx = Arc<Mutex<Option<tokio::sync::oneshot::Sender<Option<Vec<u8>>>>>>;
+        fn send(tx: &Tx, v: Option<Vec<u8>>) {
+            if let Some(t) = tx.lock().unwrap().take() {
+                let _ = t.send(v);
+            }
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<u8>>>();
+        let tx: Tx = Arc::new(Mutex::new(Some(tx)));
+        let _ = wv.with_webview(move |w| {
+            use webview2_com::CapturePreviewCompletedHandler;
+            use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+            use windows::Win32::Foundation::HGLOBAL;
+            use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+            use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET};
+            // SAFETY: COM de WebView2 en el hilo de UI (mismo patrón que
+            // `livery::install_web_guards`); el stream vive en este hilo.
+            unsafe {
+                let Ok(core) = w.controller().CoreWebView2() else {
+                    send(&tx, None);
+                    return;
+                };
+                let Ok(stream) = CreateStreamOnHGlobal(HGLOBAL::default(), true) else {
+                    send(&tx, None);
+                    return;
+                };
+                let stream_cb = stream.clone();
+                let tx_cb = tx.clone();
+                let handler = CapturePreviewCompletedHandler::create(Box::new(move |hr| {
+                    if hr.is_err() {
+                        send(&tx_cb, None);
+                        return Ok(());
+                    }
+                    let mut stat = STATSTG::default();
+                    let read = stream_cb.Stat(&mut stat, STATFLAG_NONAME).ok().and_then(|_| {
+                        let len = stat.cbSize as usize;
+                        let mut buf = vec![0u8; len];
+                        let mut got = 0u32;
+                        stream_cb.Seek(0, STREAM_SEEK_SET, None).ok()?;
+                        stream_cb.Read(buf.as_mut_ptr().cast(), len as u32, Some(&mut got)).ok().ok()?;
+                        buf.truncate(got as usize);
+                        (!buf.is_empty()).then_some(buf)
+                    });
+                    send(&tx_cb, read);
+                    Ok(())
+                }));
+                if core
+                    .CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, &stream, &handler)
+                    .is_err()
+                {
+                    send(&tx, None);
+                }
+            }
+        });
+        let png = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten();
+        Ok(png.map(|b| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b))))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Ok(None)
+    }
+}
+
 /// Oculta el webview (fuera de Explore o con un panel de SimFleet abierto).
 #[tauri::command]
 pub fn fsto_embed_hide(app: tauri::AppHandle) {

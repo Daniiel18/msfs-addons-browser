@@ -6,6 +6,7 @@ import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 // (donde el bundle del plugin no está disponible al ejecutarse en un
 // navegador puro).
 import type {
+  FstoAccountStatus,
   Addon,
   AddonLink,
   AddonNodePosition,
@@ -14,6 +15,7 @@ import type {
   AddonOnMap,
   AirportBrief,
   AirportCardData,
+  AirportRunway,
   RouteFix,
   AppSettings,
   AvailableUpdate,
@@ -56,6 +58,7 @@ import type {
   GsxInstallReport,
   GsxProfile,
   TechLogAircraft,
+  TechLogPart,
   TechLogAppStatus,
   TechLogActionRequest,
   TechLogActionResult,
@@ -66,6 +69,7 @@ import type {
   TechLogPendingOrder,
   TechLogSource,
   GsxAirportParkings,
+  GsxParking,
   GsxProfileUpdate,
   FlightsimUpdate,
   FlightsimMeta,
@@ -77,6 +81,8 @@ import type {
   CrossLinkPkg,
   CrossLinkResult,
   HangarAnalytics,
+  HangarInsight,
+  HangarInsightFilter,
   PilotProfile,
   RecordingConfig,
   EngineStatus,
@@ -187,9 +193,11 @@ interface Api {
     percent: number | null;
     raw: string | null;
   }>;
-  search: (query: string, sourceId: string) => Promise<Addon[]>;
+  /** `kind`: (26/10) filtro por tipo de aerohub (`plane`, `helicopter`,
+   *  `scenery`, `utility`); las demás fuentes lo ignoran. */
+  search: (query: string, sourceId: string, kind?: string | null) => Promise<Addon[]>;
   /** Lista paginada del catálogo (sin query). Page 1-based. */
-  browseSource: (sourceId: string, page: number) => Promise<BrowsePage>;
+  browseSource: (sourceId: string, page: number, kind?: string | null) => Promise<BrowsePage>;
   /** (25/10) Un addon concreto del catálogo (modal de updates/campanita):
    *  sólo ese, con sus enlaces; si su fuente ya no lo lista, lo encontrado. */
   catalogAddon: (addonId: string) => Promise<Addon[]>;
@@ -297,6 +305,13 @@ interface Api {
   ) => Promise<void>;
   fstoEmbedBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>;
   fstoEmbedHide: () => Promise<void>;
+  /** (26/10) Lectura de la cuenta de flightsim.to (sin red). */
+  fstoAccountStatus: () => Promise<FstoAccountStatus>;
+  /** (26/10) Vuelve a leer la cuenta de flightsim.to ahora. */
+  fstoAccountRefresh: () => Promise<FstoAccountStatus>;
+  /** (25/10) Foto (data URL) de flightsim.to tal como se ve, para enseñarla
+   *  mientras un panel o modal tapa el hueco. `null` si no se pudo. */
+  fstoEmbedSnapshot: () => Promise<string | null>;
   fstoEmbedNav: (action: string) => Promise<void>;
   /** (v6.2.56) Copia una app/instalador descargado a la carpeta elegida
    *  (nunca a Community). Devuelve la ruta final. */
@@ -461,9 +476,12 @@ interface Api {
   /** (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. */
   lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
   /** (24/10) Tarjeta de aeropuerto del FlightBook. */
-  airportCard: (icao: string) => Promise<AirportCardData>;
+  /** (26/10) `flightIds`: sólo esos vuelos (filtro de aerolínea). */
+  airportCard: (icao: string, flightIds?: number[] | null) => Promise<AirportCardData>;
   /** (24/10) Foto del aeropuerto (ruta local en caché) o null. */
   airportPhoto: (icao: string, name: string | null) => Promise<string | null>;
+  /** (26/10) Pistas y helipuertos del aeropuerto (OurAirports). */
+  airportRunways: (icao: string) => Promise<AirportRunway[]>;
   /** (v4.12.0) Ruta planificada (navlog SimBrief) pegada a un vuelo. */
   flightRouteFixes: (flightId: number) => Promise<RouteFix[]>;
 
@@ -726,6 +744,8 @@ interface Api {
   ) => Promise<AirlineKpis>;
   /** (v6 #2a) Analítica del Hangar — top aviones, aeropuertos, salud FPM. */
   hangarAnalytics: () => Promise<HangarAnalytics>;
+  /** (26/10) Ficha de un tipo de avión, aerolínea o destinos del Hangar. */
+  hangarInsight: (filter: HangarInsightFilter) => Promise<HangarInsight>;
   /** (v6.1) Economía por aerolínea — valor base, ingresos vs costes, saldo.
    *  Recalcula consumiendo los vuelos actuales (+ recibos GSX). Sin pantalla
    *  aún; el contrato queda listo para cuando se construya la UI. */
@@ -800,9 +820,9 @@ const realApi: Api = {
     invoke<{ hasCredentials: boolean; loggedIn: boolean }>("skybound_status"),
   gsxRemoteStatus: () =>
     invoke("gsx_remote_status"),
-  search: (query, sourceId) => invoke<Addon[]>("search", { query, sourceId }),
-  browseSource: (sourceId, page) =>
-    invoke<BrowsePage>("browse_source", { sourceId, page }),
+  search: (query, sourceId, kind) => invoke<Addon[]>("search", { query, sourceId, kind: kind ?? null }),
+  browseSource: (sourceId, page, kind) =>
+    invoke<BrowsePage>("browse_source", { sourceId, page, kind: kind ?? null }),
   catalogAddon: (addonId) => invoke<Addon[]>("catalog_addon", { addonId }),
   // `tauri-plugin-opener` reemplaza al viejo `plugin-shell` para
   // abrir paths y URLs. Diferencia clave: `openPath` invoca al
@@ -897,6 +917,9 @@ const realApi: Api = {
     invoke<void>("fsto_embed_show", { bounds, url: url ?? null }),
   fstoEmbedBounds: (bounds) => invoke<void>("fsto_embed_bounds", { bounds }),
   fstoEmbedHide: () => invoke<void>("fsto_embed_hide"),
+  fstoAccountStatus: () => invoke<FstoAccountStatus>("fsto_account_status"),
+  fstoAccountRefresh: () => invoke<FstoAccountStatus>("fsto_account_refresh"),
+  fstoEmbedSnapshot: () => invoke<string | null>("fsto_embed_snapshot"),
   fstoEmbedNav: (action) => invoke<void>("fsto_embed_nav", { action }),
   saveInstallerTo: (src, destFolder) =>
     invoke<string>("save_installer_to", { src, destFolder }),
@@ -1006,9 +1029,11 @@ const realApi: Api = {
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
   lookupAirports: (icaos: string[]) =>
     invoke<AirportBrief[]>("lookup_airports", { icaos }),
-  airportCard: (icao: string) => invoke<AirportCardData>("airport_card", { icao }),
+  airportCard: (icao: string, flightIds?: number[] | null) =>
+    invoke<AirportCardData>("airport_card", { icao, flightIds: flightIds ?? null }),
   airportPhoto: (icao: string, name: string | null) =>
     invoke<string | null>("airport_photo", { icao, name }),
+  airportRunways: (icao: string) => invoke<AirportRunway[]>("airport_runways", { icao }),
   flightRouteFixes: (flightId: number) =>
     invoke<RouteFix[]>("flight_route_fixes", { flightId }),
 
@@ -1157,6 +1182,7 @@ const realApi: Api = {
   airlineKpis: (airlineIcao, airlineName) =>
     invoke<AirlineKpis>("airline_kpis", { airlineIcao, airlineName }),
   hangarAnalytics: () => invoke<HangarAnalytics>("hangar_analytics"),
+  hangarInsight: (filter) => invoke<HangarInsight>("hangar_insight", { filter }),
   airlineEconomy: () => invoke<AirlineLedger[]>("airline_economy"),
   airlineBalanceHistory: (key) =>
     invoke<BalancePoint[]>("airline_balance_history", { key }),
@@ -1446,6 +1472,9 @@ const demoApi: Api = {
       error: null,
       installPath: null,
       createdAt: new Date().toISOString(),
+      imageUrl: null,
+      pausable: method.kind === "torrent",
+      resumable: method.kind === "torrent",
     };
     demoEmit(base);
     await sleep(100);
@@ -1501,6 +1530,9 @@ const demoApi: Api = {
         error: null,
         installPath: null,
         createdAt: "",
+        imageUrl: null,
+        pausable: false,
+        resumable: false,
       }),
     );
   },
@@ -1605,8 +1637,15 @@ const demoApi: Api = {
   async mxAction() {
     return { ok: true, message: "Demo: en la app real esto lo registra SimFleet." };
   },
-  async mxFlight() {
-    return null;
+  async mxFlight(flightId: number) {
+    // (26/10) Demo: registro del Tech Log de SimFleet de un vuelo.
+    return {
+      source: "simfleet", appName: "SimFleet Tech Log", flightId, status: "Completed", score: 88, scoreNotes: [],
+      summary: "Normal flight. Usual wear.",
+      events: [{ phase: "Landing", kind: "landing", severity: "Caution", text: "Firm landing: -412 fpm" }],
+      wear: [{ item: "Brakes", amount: 1.2, unit: "%" }, { item: "Tyres", amount: 0.8, unit: "%" }],
+      dispatchViolation: false,
+    } as TechLogFlight;
   },
   async mxGetWearRates() {
     return [3, 2] as [number, number];
@@ -1663,8 +1702,26 @@ const demoApi: Api = {
   async techlogFlight() {
     return null;
   },
-  async gsxAirportParkings() {
-    return null;
+  async gsxAirportParkings(icao: string) {
+    // (26/10) Demo: unos gates con `airlinecodes` (ICAO, IATA y handling).
+    const at = (i: number): [number, number] => [51.1315 + i * 0.0006, -114.0106 + i * 0.0004];
+    const gate = (name: string, i: number, airlines: string[], kind: GsxParking["kind"] = "gate") => {
+      const [lat, lon] = at(i);
+      return { name, lat, lon, kind, airlines };
+    };
+    return {
+      icao,
+      fileName: "cyyc-demo.ini",
+      parkings: [
+        gate("A1", 0, ["ACA", "MENZ", "SWISSPORT"]),
+        gate("A2", 1, ["ACA", "SWISSPORT"]),
+        gate("A3", 2, ["WS"]),
+        gate("B1", 3, []),
+        gate("B2", 4, []),
+        gate("Gate 40", 5, []),
+        gate("Cargo 1", 6, ["FDX", "UPS"], "cargo"),
+      ],
+    } as GsxAirportParkings;
   },
   async gsxCheckProfileUpdates() {
     return [];
@@ -1695,6 +1752,15 @@ const demoApi: Api = {
   async fstoEmbedShow() {},
   async fstoEmbedBounds() {},
   async fstoEmbedHide() {},
+  async fstoAccountStatus() {
+    return { loggedIn: null, checkedAt: null, updates: 0 };
+  },
+  async fstoAccountRefresh() {
+    return { loggedIn: null, checkedAt: null, updates: 0 };
+  },
+  async fstoEmbedSnapshot() {
+    return null;
+  },
   async fstoEmbedNav() {},
   async openLiveryBrowser(_url) {
     return;
@@ -1956,6 +2022,8 @@ const demoApi: Api = {
       name: "Calgary International Airport",
       municipality: "Calgary",
       isoCountry: "CA",
+      latitude: 51.1315,
+      longitude: -114.0106,
       departures: 18,
       arrivals: 17,
       paxBoarded: 1702,
@@ -1983,6 +2051,12 @@ const demoApi: Api = {
   },
   async airportPhoto() {
     return null;
+  },
+  async airportRunways() {
+    return [
+      { ident: "17L/35R", lengthFt: 14000, lengthM: 4267, widthM: 61, surface: "CON", lighted: true, helipad: false, le: [51.1521, -113.9993], he: [51.1137, -113.9993] },
+      { ident: "08/26", lengthFt: 6200, lengthM: 1890, widthM: 61, surface: "ASP", lighted: true, helipad: false, le: [51.1101, -114.0372], he: [51.1137, -114.0110] },
+    ] as AirportRunway[];
   },
   async flightRouteFixes() {
     await sleep(20);
@@ -2365,6 +2439,23 @@ const demoApi: Api = {
       totalBlockSeconds: 0,
       avgLandingFpm: null,
     };
+  },
+  async hangarInsight(_filter: HangarInsightFilter) {
+    // (26/10) Demo: una ficha de ejemplo.
+    await sleep(60);
+    return {
+      flights: 12, totalNm: 8420, totalTimeS: 86400 + 3600 * 7, passengers: 1820, avgFpm: -214, bestFpm: -86,
+      bestFlightId: 1, firstAt: "2026-07-02T10:00:00Z", lastAt: "2026-10-22T23:42:00Z",
+      airlines: [{ label: "Delta Air Lines", code: "DAL", count: 9, key: "DAL" }, { label: "American Airlines", code: "AAL", count: 3, key: "AAL" }],
+      types: [{ label: "Airbus A320-200", code: null, count: 9, key: "A320" }, { label: "Boeing 777-300ER", code: null, count: 3, key: "B77W" }],
+      destinations: [{ label: "John F. Kennedy International Airport", code: "KJFK", count: 5, key: "KJFK" }, { label: "Seattle-Tacoma International Airport", code: "KSEA", count: 4, key: "KSEA" }],
+      origins: [{ label: "Hartsfield-Jackson Atlanta International Airport", code: "KATL", count: 7, key: "KATL" }],
+      aircraft: [{ key: "reg:N321US", registration: "N321US", model: "Airbus A320-200", flights: 9 }],
+      recent: [
+        { id: 1, startedAt: "2026-10-22T23:42:00Z", origin: "KATL", destination: "KJFK", label: "DAL2201", registration: "N321US", model: "Airbus A320-200", fpm: -86, distanceNm: 662 },
+        { id: 2, startedAt: "2026-10-20T10:12:00Z", origin: "KJFK", destination: "KSEA", label: "DAL939", registration: "N321US", model: "Airbus A320-200", fpm: -241, distanceNm: 2093 },
+      ],
+    } as HangarInsight;
   },
   async hangarAnalytics() {
     const mkLanding = (
@@ -3084,6 +3175,53 @@ const demoCabin: TechLogCabin = {
   },
 };
 
+/** (26/10) Demo: todas las piezas del avión de ejemplo (vista de estado). */
+function demoAllParts(): TechLogPart[] {
+  let id = 200;
+  const part = (key: string, name: string, ata: number, system: string, pct: number, position: string | null = null, status = "Ok", kind = "life"): TechLogPart => ({
+    id: id++, key, name, position, ata, system, kind, remainingPct: pct, status, repairs: 0, worn: pct < 25,
+  });
+  const out: TechLogPart[] = [
+    { id: 101, key: "BRAKE", name: "Brake 3", position: "3", ata: 32, system: "Brakes", kind: "wear", remainingPct: 8.4, status: "Ok", repairs: 0, worn: true },
+    { id: 102, key: "ELAC", name: "ELAC 2", position: "2", ata: 27, system: "Flight controls", kind: "life", remainingPct: 12.1, status: "Degraded", repairs: 1, worn: true },
+    { id: 103, key: "PACK_REG", name: "Pack 1 flow control", position: "1", ata: 21, system: "Air conditioning", kind: "life", remainingPct: 21.7, status: "Ok", repairs: 0, worn: true },
+  ];
+  for (const e of [1, 2]) {
+    const w = e === 1 ? 0 : 6;
+    out.push(
+      part("ENG_FAN", `Engine ${e} fan blades`, 72, "Engine", 81 - w, String(e)),
+      part("ENG_HPC", `Engine ${e} compressor (HPC)`, 72, "Engine", 66 - w, String(e)),
+      part("ENG_COMBUSTOR", `Engine ${e} combustor`, 72, "Engine", 58 - w, String(e)),
+      part("ENG_NGV", `Engine ${e} nozzle guide vanes`, 72, "Engine", e === 2 ? 19 : 47, String(e)),
+      part("ENG_HPT", `Engine ${e} HP turbine blades`, 72, "Engine", 44 - w, String(e)),
+      part("ENG_LPT", `Engine ${e} LP turbine`, 72, "Engine", 73 - w, String(e)),
+      part("STARTER", `Engine ${e} air starter`, 80, "Engine", 62, String(e)),
+      part("OIL_COOLER", `Engine ${e} fuel/oil heat exchanger`, 79, "Engine", 88, String(e)),
+    );
+  }
+  for (const [p, v] of [["1", 52], ["2", 61], ["3", 39], ["4", 58]] as const) {
+    out.push(part("TYRE_MAIN", `Main tyre ${p}`, 32, "Wheels", v, p, "Ok", "wear"));
+    if (p !== "3") out.push(part("BRAKE", `Brake ${p}`, 32, "Brakes", v + 20, p, "Ok", "wear"));
+  }
+  out.push(part("TYRE_NOSE", "Nose tyre 1", 32, "Wheels", 70, "1", "Ok", "wear"), part("TYRE_NOSE", "Nose tyre 2", 32, "Wheels", 66, "2", "Ok", "wear"));
+  const sys: [number, string, string[]][] = [
+    [21, "Air conditioning", ["Pack 2 flow control", "Cabin pressure controller 1", "Cabin pressure controller 2", "Trim air valve"]],
+    [22, "Auto flight", ["FMGC 1", "FMGC 2", "FCU"]],
+    [24, "Electrical", ["IDG 1", "IDG 2", "Battery 1", "Battery 2", "TR 1", "TR 2"]],
+    [27, "Flight controls", ["ELAC 1", "SEC 1", "SEC 2", "Flap actuator", "Slat actuator"]],
+    [28, "Fuel", ["Fuel pump L1", "Fuel pump L2", "Fuel pump R1", "Fuel pump R2"]],
+    [29, "Hydraulics", ["Green EDP", "Yellow EDP", "Blue electric pump", "PTU"]],
+    [34, "Navigation", ["ADIRU 1", "ADIRU 2", "ADIRU 3", "Weather radar"]],
+    [36, "Bleed air", ["Bleed valve 1", "Bleed valve 2", "Precooler 1", "Precooler 2"]],
+    [49, "APU", ["APU generator", "APU starter"]],
+    [52, "Doors", ["Door 1L", "Door 1R", "Door 4L", "Door 4R", "Cargo door FWD"]],
+  ];
+  for (const [ata, system, names] of sys) {
+    names.forEach((n, i) => out.push(part(`D${ata}_${i}`, n, ata, system, 40 + ((ata * 7 + i * 13) % 55))));
+  }
+  return out;
+}
+
 function demoTechLogAircraft(): TechLogAircraft {
   return {
     source: "fenix", appName: "Fenix TechLog", tabletUrl: "http://localhost:7733/",
@@ -3096,10 +3234,15 @@ function demoTechLogAircraft(): TechLogAircraft {
       { id: 9, ata: 30, title: "Wing anti-ice valve 2 sluggish", detail: null, category: "B", status: "Deferred", melId: "30-11-01", position: "2", raisedUtc: "2026-10-16T10:12:00Z", deferredUntil: "2026-10-21", latestDeferral: null, canDefer: false, failure: "F_ICE_WING_VALVE_2", placard: "WING A.ICE 2", restrictions: "No flight into known icing" },
     ],
     parts: [
-      { id: 101, key: "BRAKE", name: "Brake 3", position: "3", ata: 32, system: "Brakes", kind: "wear", remainingPct: 8.4, status: "Ok", repairs: 0 },
-      { id: 102, key: "ELAC", name: "ELAC 2", position: "2", ata: 27, system: "Flight controls", kind: "life", remainingPct: 12.1, status: "Degraded", repairs: 1 },
-      { id: 103, key: "PACK_REG", name: "Pack 1 flow control", position: "1", ata: 21, system: "Air conditioning", kind: "life", remainingPct: 21.7, status: "Ok", repairs: 0 },
+      { id: 101, key: "BRAKE", name: "Brake 3", position: "3", ata: 32, system: "Brakes", kind: "wear", remainingPct: 8.4, status: "Ok", repairs: 0, worn: true },
+      { id: 102, key: "ELAC", name: "ELAC 2", position: "2", ata: 27, system: "Flight controls", kind: "life", remainingPct: 12.1, status: "Degraded", repairs: 1, worn: true },
+      { id: 103, key: "PACK_REG", name: "Pack 1 flow control", position: "1", ata: 21, system: "Air conditioning", kind: "life", remainingPct: 21.7, status: "Ok", repairs: 0, worn: true },
     ],
+    allParts: demoAllParts(),
+    stats: {
+      blockHours: 1389.2, landings: 702, apuHours: 811.4, apuStarts: 965,
+      engHours: [1243.6, 1188.1], engCycles: [702, 671], engStarts: [731, 699],
+    },
     condition: { good: 302, low: 7, failed: 0, avgRemainingPct: 71.4 },
     consumables: [
       { key: "ENG_OIL", position: "1", name: "Engine 1 oil", unit: "qt", level: 13.2, capacity: 20, minDispatch: 12, low: 7, fills: false, status: "ok", serviceKind: "ENG_OIL:1", serviceLabel: "Fill", followsSim: true },

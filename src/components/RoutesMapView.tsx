@@ -7,6 +7,7 @@ import {
   Pause,
   Play,
   PlayCircle,
+  Undo2,
   X,
 } from "lucide-react";
 
@@ -15,10 +16,11 @@ const tracingLog = (msg: string) =>
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
+import { useAppStore } from "../stores/useAppStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { greatCircleLine } from "../lib/greatCircle";
-import { canonicalAirlineKey } from "../lib/airlineCodes";
+import { canonicalAirlineKey, icaoToName } from "../lib/airlineCodes";
 import { t } from "../lib/i18n";
 import type { RouteFix } from "../lib/types";
 import {
@@ -28,7 +30,12 @@ import {
 import { api } from "../lib/tauri";
 import type { FlightTrackPoint } from "../lib/types";
 import { buildTerminatorPolygon } from "../lib/terminator";
-import { AirportCard } from "./AirportCard";
+import {
+  AirportCard,
+  prefetchAirportPhotos,
+  type AirportCardAirline,
+  type AirportFocus,
+} from "./AirportCard";
 
 /** (v4.18.1 → v4.21.0) Bandas del terminator día/noche. Cada banda es el
  *  polígono donde el sol está por debajo de `altitudeDeg`; al apilarlas
@@ -122,6 +129,44 @@ interface MapCamera {
   zoom: number;
   pitch: number;
   bearing: number;
+}
+
+/**
+ * (26/10) Encuadre de unos puntos `[lng, lat]` que cruza el antimeridiano por
+ * el lado corto: una ruta KSEA→RJTT ya no hace que el encuadre abarque el
+ * mundo entero (centrado en África). Prueba también con las longitudes
+ * negativas desplazadas +360° y se queda con el más estrecho.
+ */
+function boundsAcrossAntimeridian(points: [number, number][]): maplibregl.LngLatBounds | null {
+  if (points.length === 0) return null;
+  const box = (shift: boolean) => {
+    let w = Infinity;
+    let e = -Infinity;
+    let s = Infinity;
+    let n = -Infinity;
+    for (const [lng0, lat] of points) {
+      const lng = shift && lng0 < 0 ? lng0 + 360 : lng0;
+      w = Math.min(w, lng);
+      e = Math.max(e, lng);
+      s = Math.min(s, lat);
+      n = Math.max(n, lat);
+    }
+    return { w, e, s, n };
+  };
+  const plain = box(false);
+  const shifted = box(true);
+  const b = shifted.e - shifted.w < plain.e - plain.w ? shifted : plain;
+  return new maplibregl.LngLatBounds([b.w, b.s], [b.e, b.n]);
+}
+
+/**
+ * (26/10) Cuánto correr a la izquierda lo que se enfoca para que no quede
+ * detrás de la tarjeta de aeropuerto (≈332 px a la derecha): al centro de lo
+ * que queda visible. En un mapa muy estrecho la tarjeta lo tapa casi todo y
+ * no se corre.
+ */
+function cardShift(map: maplibregl.Map): number {
+  return map.getContainer().clientWidth > 420 ? 166 : 0;
 }
 
 function readMapCamera(): MapCamera | null {
@@ -249,8 +294,23 @@ export function RoutesMapView({
   const [mapReady, setMapReady] = useState(false);
   // (24/10) Aeropuertos del mapa: nombre + ICAO al pasar el ratón; tarjeta
   // con sus datos al hacer clic.
-  const [airportHover, setAirportHover] = useState<{ x: number; y: number; icao: string; name: string | null } | null>(null);
+  // (26/10) `dim`: con filtro de aerolínea, aeropuerto donde no volaste con ella.
+  const [airportHover, setAirportHover] = useState<{
+    x: number;
+    y: number;
+    icao: string;
+    name: string | null;
+    dim?: boolean;
+  } | null>(null);
   const [airportCard, setAirportCard] = useState<{ icao: string; name: string | null } | null>(null);
+  // (26/10) Lo que la tarjeta enfoca en el satélite (pista, gate, helipuerto
+  // o el aeropuerto) y la cámara a la que vuelve «Volver a las rutas».
+  // Mientras hay foco no se guarda la cámara: al volver al FlightBook el mapa
+  // abre en las rutas, no pegado a un gate.
+  const [focus, setFocus] = useState<AirportFocus | null>(null);
+  const [focusing, setFocusing] = useState(false);
+  const returnCamRef = useRef<MapCamera | null>(null);
+  const focusingRef = useRef(false);
 
   const simbriefFlights = useSimBriefStore((s) => s.flights);
   // (19/10) El plan del RIVAL (Crew VS) no está en `flights` (sólo los míos).
@@ -431,7 +491,9 @@ export function RoutesMapView({
     }
     // Persiste la cámara en cada movimiento del usuario (pan/zoom/
     // rotate). moveend cubre drag, scroll-zoom y easeTo programático.
-    map.on("moveend", () => saveMapCamera(map));
+    map.on("moveend", () => {
+      if (!focusingRef.current) saveMapCamera(map);
+    });
     // (v3.5.0) NavigationControl removido — el usuario reportó que
     // los cuadritos del zoom interferían visualmente con la card de
     // detalle del FlightBook. Zoom via scroll-wheel + pan via drag
@@ -479,21 +541,27 @@ export function RoutesMapView({
       });
       // Endpoints — círculos en origen/destino.
       map.addSource("rt-endpoints", { type: "geojson", data: empty });
+      // (26/10) Con filtro de aerolínea, los aeropuertos donde no volaste con
+      // ella (`dim`) van en gris, más pequeños y por debajo de los demás.
       map.addLayer({
         id: "rt-endpoints-circle",
         type: "circle",
         source: "rt-endpoints",
+        layout: { "circle-sort-key": ["case", ["==", ["get", "dim"], true], 0, 1] },
         paint: {
-          "circle-radius": 4,
+          "circle-radius": ["case", ["==", ["get", "dim"], true], 3, 4],
           "circle-color": [
             "case",
+            ["==", ["get", "dim"], true],
+            "#64748b",
             ["==", ["get", "kind"], "real"],
             "#34d399",
             "#7dd3fc",
           ],
           "circle-stroke-width": 1.5,
           "circle-stroke-color": "#0f172a",
-          "circle-opacity": 0.95,
+          "circle-opacity": ["case", ["==", ["get", "dim"], true], 0.55, 0.95],
+          "circle-stroke-opacity": ["case", ["==", ["get", "dim"], true], 0.55, 1],
         },
       });
       // (24/10) Aeropuertos clicables: un aro al pasar el ratón y un área
@@ -516,21 +584,24 @@ export function RoutesMapView({
         source: "rt-endpoints",
         paint: { "circle-radius": 11, "circle-color": "#000000", "circle-opacity": 0 },
       });
+      // Si bajo el ratón hay varios, gana uno que se pueda abrir.
       const airportOf = (e: maplibregl.MapLayerMouseEvent) => {
-        const p = e.features?.[0]?.properties;
+        const fs = e.features ?? [];
+        const p = (fs.find((f) => f.properties?.dim !== true) ?? fs[0])?.properties;
         const icao = typeof p?.icao === "string" ? p.icao : "";
         const name = typeof p?.name === "string" && p.name ? p.name : null;
-        return icao ? { icao, name } : null;
+        return icao ? { icao, name, dim: p?.dim === true } : null;
       };
       // Vuelos sin nombre de aeropuerto guardado: se busca en la base.
       const airportNames = new Map<string, string | null>();
       map.on("mousemove", "rt-endpoints-hit", (e) => {
         const a = airportOf(e);
         if (!a) return;
-        map.getCanvas().style.cursor = "pointer";
-        map.setFilter("rt-endpoints-hover", ["==", ["get", "icao"], a.icao]);
+        // (26/10) Uno atenuado no se abre: sólo dice por qué.
+        map.getCanvas().style.cursor = a.dim ? "not-allowed" : "pointer";
+        map.setFilter("rt-endpoints-hover", ["==", ["get", "icao"], a.dim ? "" : a.icao]);
         const name = a.name ?? airportNames.get(a.icao) ?? null;
-        setAirportHover({ x: e.point.x, y: e.point.y, icao: a.icao, name });
+        setAirportHover({ x: e.point.x, y: e.point.y, icao: a.icao, name, dim: a.dim });
         if (!name && !airportNames.has(a.icao)) {
           airportNames.set(a.icao, null);
           void api
@@ -550,7 +621,7 @@ export function RoutesMapView({
       });
       map.on("click", "rt-endpoints-hit", (e) => {
         const a = airportOf(e);
-        if (a) setAirportCard(a);
+        if (a && !a.dim) setAirportCard({ icao: a.icao, name: a.name });
       });
       // Track real — ámbar (modo detalle). Encima de todo para que
       // se vea bien sobre el globo satelital.
@@ -760,6 +831,55 @@ export function RoutesMapView({
         });
       }
 
+      // (26/10) Foco de la tarjeta de aeropuerto, encima de todo: la pista
+      // resaltada (línea entre cabeceras, con sus números) o una marca con
+      // nombre en el gate, parking o helipuerto.
+      map.addSource("rt-focus", { type: "geojson", data: empty });
+      map.addLayer({
+        id: "rt-focus-line-glow",
+        type: "line",
+        source: "rt-focus",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round" },
+        paint: { "line-color": "#fde047", "line-width": 16, "line-opacity": 0.3 },
+      });
+      map.addLayer({
+        id: "rt-focus-line",
+        type: "line",
+        source: "rt-focus",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round" },
+        paint: { "line-color": "#fde047", "line-width": 3 },
+      });
+      map.addLayer({
+        id: "rt-focus-pin",
+        type: "circle",
+        source: "rt-focus",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": ["case", ["get", "end"], 4, 7],
+          "circle-color": ["get", "color"],
+          "circle-stroke-width": 2.5,
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+      map.addLayer({
+        id: "rt-focus-label",
+        type: "symbol",
+        source: "rt-focus",
+        filter: ["==", ["geometry-type"], "Point"],
+        layout: {
+          "text-field": ["get", "label"],
+          "text-font": ["Open Sans Semibold"],
+          "text-size": 13,
+          "text-offset": [0, 1.2],
+          "text-anchor": "top",
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: { "text-color": "#ffffff", "text-halo-color": "#0f172a", "text-halo-width": 1.6 },
+      });
+
       setMapReady(true);
     };
 
@@ -833,6 +953,125 @@ export function RoutesMapView({
       window.removeEventListener("focus", refresh);
     };
   }, [mapReady]);
+
+  // (26/10) Foco de la tarjeta de aeropuerto. Al primer foco se guarda la
+  // cámara (la de las rutas) y se suelta el seguimiento del avión.
+  const focusOnMap = useCallback((f: AirportFocus | null) => {
+    const map = mapRef.current;
+    if (f && map && !focusingRef.current) {
+      const c = map.getCenter();
+      returnCamRef.current = {
+        lng: c.lng,
+        lat: c.lat,
+        zoom: map.getZoom(),
+        pitch: map.getPitch(),
+        bearing: map.getBearing(),
+      };
+      focusingRef.current = true;
+      setFocusing(true);
+      setFollowAircraft(false);
+      setFollowRival(false);
+    }
+    setFocus(f);
+  }, []);
+
+  const backToRoutes = useCallback(() => {
+    const map = mapRef.current;
+    const cam = returnCamRef.current;
+    returnCamRef.current = null;
+    setFocus(null);
+    setFocusing(false);
+    if (!map || !cam) {
+      focusingRef.current = false;
+      return;
+    }
+    map.once("moveend", () => {
+      focusingRef.current = false;
+    });
+    map.flyTo({
+      center: [cam.lng, cam.lat],
+      zoom: cam.zoom,
+      pitch: cam.pitch,
+      bearing: cam.bearing,
+      duration: 1500,
+    });
+  }, []);
+
+  // Pinta el foco y lleva la cámara hasta él. La tarjeta tapa ~340 px a la
+  // derecha: el encuadre se corre para que el foco quede en lo visible.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const ll = (p: [number, number]): [number, number] => [p[1], p[0]];
+    const point = (at: [number, number], label: string, color: string, end = false): GeoJSON.Feature => ({
+      type: "Feature",
+      properties: { label, color, end },
+      geometry: { type: "Point", coordinates: ll(at) },
+    });
+    const features: GeoJSON.Feature[] = [];
+    if (focus?.kind === "runway") {
+      features.push(
+        {
+          type: "Feature",
+          properties: {},
+          geometry: { type: "LineString", coordinates: [ll(focus.from), ll(focus.to)] },
+        },
+        point(focus.from, focus.ends[0], "#fde047", true),
+        point(focus.to, focus.ends[1], "#fde047", true),
+      );
+    } else if (focus) {
+      features.push(point(focus.at, focus.label, focus.kind === "spot" ? focus.color : "#34d399"));
+    }
+    (map.getSource("rt-focus") as GeoJSONSource | undefined)?.setData({
+      type: "FeatureCollection",
+      features,
+    });
+    if (!focus) return;
+    const shift = cardShift(map);
+    if (focus.kind === "runway") {
+      const bounds = new maplibregl.LngLatBounds(ll(focus.from), ll(focus.from)).extend(ll(focus.to));
+      const w = map.getContainer().clientWidth;
+      map.fitBounds(bounds, {
+        padding: { top: 90, bottom: 60, left: 40, right: Math.min(40 + shift * 2, Math.max(40, w - 160)) },
+        maxZoom: 16,
+        duration: 1800,
+      });
+    } else {
+      map.flyTo({
+        center: ll(focus.at),
+        zoom: focus.kind === "airport" ? 13.5 : 17.5,
+        pitch: 0,
+        bearing: 0,
+        offset: [-shift, 0],
+        duration: 1800,
+      });
+    }
+  }, [focus, mapReady]);
+
+  // De cerca no tiene sentido la sombra de la noche sobre el satélite.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    for (const band of TERMINATOR_BANDS) {
+      const id = `${band.source}-fill`;
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", focusing ? "none" : "visible");
+    }
+  }, [focusing, mapReady]);
+
+  // Otro vuelo seleccionado: su encuadre manda y el foco se suelta sin volar.
+  useEffect(() => {
+    returnCamRef.current = null;
+    focusingRef.current = false;
+    setFocus(null);
+    setFocusing(false);
+  }, [selectedFlightId]);
+
+  // Otra tarjeta: la marca del aeropuerto anterior se quita (la vuelta a las
+  // rutas sigue disponible).
+  const cardIcao = airportCard?.icao ?? null;
+  useEffect(() => {
+    setFocus((f) => (f && f.icao !== cardIcao ? null : f));
+  }, [cardIcao]);
 
   // Cuando cambia el vuelo seleccionado, fetcheamos su track real.
   // (v1.1.2) Limpiamos trackPoints INMEDIATAMENTE para evitar mostrar
@@ -1263,6 +1502,35 @@ export function RoutesMapView({
     [flightLogEntries, showSimconnectLines, detailMode, selectedAirline],
   );
 
+  // (26/10) Con filtro de aerolínea: sus vuelos (la tarjeta de aeropuerto
+  // cuenta sólo esos) y los aeropuertos donde volaste con ella (el resto se
+  // atenúa y no abre tarjeta). Misma clave canónica que la lista de vuelos.
+  const airlineScope = useMemo(() => {
+    if (!selectedAirline) return null;
+    const key = canonicalAirlineKey(selectedAirline.icao, selectedAirline.name);
+    const flights = flightLogEntries.filter(
+      (e) =>
+        (e.endedAt !== null || e.landingFpm != null) &&
+        canonicalAirlineKey(e.airlineIcao, e.aircraftAirline) === key,
+    );
+    const icaos = new Set<string>();
+    for (const e of flights) {
+      if (e.originIcao) icaos.add(e.originIcao.toUpperCase());
+      if (e.destinationIcao) icaos.add(e.destinationIcao.toUpperCase());
+    }
+    const airline: AirportCardAirline = {
+      key,
+      icao: selectedAirline.icao,
+      // El nombre limpio ("Delta Air Lines", no "DAL (N374DA)").
+      name: icaoToName(selectedAirline.icao) ?? selectedAirline.name,
+      flightIds: flights.map((e) => e.id),
+      registrations: [
+        ...new Set(flights.map((e) => e.aircraftRegistration).filter((r): r is string => !!r)),
+      ],
+    };
+    return { airline, icaos };
+  }, [selectedAirline, flightLogEntries]);
+
   // Marcadores en origen + destino de cada vuelo. Punto pequeño
   // verde (vuelos reales) o cyan (planes). En modo detalle sólo
   // mostramos los endpoints del vuelo seleccionado.
@@ -1303,17 +1571,31 @@ export function RoutesMapView({
       return { type: "FeatureCollection", features };
     }
     if (showSimconnectLines) {
+      const dim = (icao: string | null) =>
+        !!airlineScope && !(icao && airlineScope.icaos.has(icao.toUpperCase()));
       for (const e of flightLogEntries) {
         if (e.endedAt === null) continue;
         if (e.destinationLat === null || e.destinationLon === null) continue;
         features.push({
           type: "Feature",
-          properties: { kind: "real", role: "origin", icao: e.originIcao, name: e.originName },
+          properties: {
+            kind: "real",
+            role: "origin",
+            icao: e.originIcao,
+            name: e.originName,
+            dim: dim(e.originIcao),
+          },
           geometry: { type: "Point", coordinates: [e.originLon, e.originLat] },
         });
         features.push({
           type: "Feature",
-          properties: { kind: "real", role: "dest", icao: e.destinationIcao, name: e.destinationName },
+          properties: {
+            kind: "real",
+            role: "dest",
+            icao: e.destinationIcao,
+            name: e.destinationName,
+            dim: dim(e.destinationIcao),
+          },
           geometry: {
             type: "Point",
             coordinates: [e.destinationLon, e.destinationLat],
@@ -1327,7 +1609,78 @@ export function RoutesMapView({
     showSimconnectLines,
     detailMode,
     selectedFlightId,
+    airlineScope,
   ]);
+
+  // (26/10) Al cambiar el filtro de aerolínea con una tarjeta abierta: se
+  // queda (y se recalcula) si volaste ahí con la nueva; si no, se cierra. Un
+  // foco activo se suelta: el mapa se reencuadra en las rutas filtradas (o,
+  // sin filtro, vuelve a la cámara de antes del foco).
+  const cardIcaoRef = useRef<string | null>(null);
+  cardIcaoRef.current = airportCard?.icao ?? null;
+  const airlineKey = selectedAirline ? `${selectedAirline.icao ?? ""}|${selectedAirline.name}` : "";
+  const prevAirlineKeyRef = useRef(airlineKey);
+  useEffect(() => {
+    if (prevAirlineKeyRef.current === airlineKey) return;
+    prevAirlineKeyRef.current = airlineKey;
+    if (focusingRef.current) {
+      if (airlineKey) {
+        returnCamRef.current = null;
+        focusingRef.current = false;
+        setFocus(null);
+        setFocusing(false);
+      } else {
+        backToRoutes();
+      }
+    }
+    const icao = cardIcaoRef.current;
+    if (icao && airlineScope && !airlineScope.icaos.has(icao.toUpperCase())) {
+      setAirportCard(null);
+    }
+  }, [airlineKey, airlineScope, backToRoutes]);
+
+  // (26/10) Fichas del Hangar → "Ver en el mapa": abre la tarjeta del
+  // aeropuerto y lo ENFOCA (satélite de cerca, con su marca y "Volver a las
+  // rutas"), como la mira de la tarjeta. Antes sólo centraba la región y, con
+  // un vuelo seleccionado, el aeropuerto ni se pintaba.
+  const airportCardRequest = useAppStore((s) => s.airportCardRequest);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!airportCardRequest || !map || !mapReady) return;
+    useAppStore.getState().clearAirportCardRequest();
+    const icao = airportCardRequest.icao.toUpperCase();
+    const e = flightLogEntries.find(
+      (x) => x.originIcao?.toUpperCase() === icao || x.destinationIcao?.toUpperCase() === icao,
+    );
+    const isOrigin = e?.originIcao?.toUpperCase() === icao;
+    const lon = e ? (isOrigin ? e.originLon : e.destinationLon) : null;
+    const lat = e ? (isOrigin ? e.originLat : e.destinationLat) : null;
+    setAirportCard({
+      icao,
+      name: airportCardRequest.name ?? (e ? (isOrigin ? e.originName : e.destinationName) : null) ?? null,
+    });
+    if (lon != null && lat != null) {
+      focusOnMap({ kind: "airport", icao, id: `apt:${icao}`, label: icao, at: [lat, lon] });
+    }
+  }, [airportCardRequest, mapReady, flightLogEntries, focusOnMap]);
+
+  // (26/10) Precarga las fotos de los aeropuertos del mapa (de dos en dos,
+  // un momento después de que el mapa esté listo): la tarjeta abre con la
+  // foto ya decodificada.
+  useEffect(() => {
+    if (!mapReady) return;
+    const id = window.setTimeout(() => {
+      prefetchAirportPhotos(
+        endpointsGeojson.features
+          .map((f) => ({
+            icao: typeof f.properties?.icao === "string" ? f.properties.icao : "",
+            name: typeof f.properties?.name === "string" && f.properties.name ? f.properties.name : null,
+          }))
+          .filter((a) => a.icao),
+      );
+    }, 1500);
+    return () => window.clearTimeout(id);
+  }, [mapReady, endpointsGeojson]);
 
   // (v1.1.3) Update de data — puro `setData` sobre los sources que
   // ya fueron inicializados en el `on("load")` callback. Cero
@@ -1763,15 +2116,12 @@ export function RoutesMapView({
     // Sólo re-fit si hay un filtro ACTIVO. Si selectedAirline = null,
     // dejamos la vista actual.
     if (!selectedAirline) return;
-    const bounds = new maplibregl.LngLatBounds();
-    for (const feat of flightLogGeojson.features) {
-      for (const segment of feat.geometry.coordinates) {
-        for (const [lng, lat] of segment) {
-          bounds.extend([lng, lat]);
-        }
-      }
-    }
-    if (!bounds.isEmpty()) {
+    // (26/10) Con una pista o un gate enfocado, la cámara es de la tarjeta.
+    if (focusingRef.current) return;
+    const bounds = boundsAcrossAntimeridian(
+      flightLogGeojson.features.flatMap((f) => f.geometry.coordinates.flat() as [number, number][]),
+    );
+    if (bounds) {
       map.fitBounds(bounds, {
         padding: 80,
         maxZoom: 7,
@@ -1795,10 +2145,18 @@ export function RoutesMapView({
       {airportHover && (
         <div
           className="pointer-events-none absolute z-10 whitespace-nowrap rounded-lg border border-sf-border bg-sf-surface/95 px-2.5 py-1 text-xs text-sf-text shadow-lg"
-          style={{ left: airportHover.x + 14, top: airportHover.y - 34 }}
+          style={{ left: airportHover.x + 14, top: airportHover.y - (airportHover.dim ? 50 : 34) }}
         >
           {airportHover.name && <>{airportHover.name} · </>}
-          <span className="font-mono text-emerald-300">{airportHover.icao}</span>
+          <span className={`font-mono ${airportHover.dim ? "text-sf-muted" : "text-emerald-300"}`}>
+            {airportHover.icao}
+          </span>
+          {/* (26/10) Fuera del filtro de aerolínea: no abre tarjeta. */}
+          {airportHover.dim && selectedAirline && (
+            <div className="text-[11px] text-sf-muted">
+              {t("fb.map.not_flown_with", { name: airlineScope?.airline.name ?? selectedAirline.name })}
+            </div>
+          )}
         </div>
       )}
       {/* (24/10) Tarjeta del aeropuerto, dentro del mapa. */}
@@ -1807,8 +2165,25 @@ export function RoutesMapView({
           key={airportCard.icao}
           icao={airportCard.icao}
           name={airportCard.name}
-          onClose={() => setAirportCard(null)}
+          airline={airlineScope?.airline ?? null}
+          focusedId={focus?.id ?? null}
+          onFocus={focusOnMap}
+          onClose={() => {
+            if (focusing) backToRoutes();
+            setAirportCard(null);
+          }}
         />
+      )}
+      {/* (26/10) Vuelta a la vista de rutas tras enfocar una pista o un gate. */}
+      {focusing && (
+        <button
+          onClick={backToRoutes}
+          className="absolute left-1/2 top-3 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-brand-500/40 bg-sf-surface/95 px-3.5 py-1.5 text-xs font-medium text-sf-text shadow-lg backdrop-blur hover:border-brand-400 hover:bg-sf-raised"
+        >
+          <Undo2 className="h-3.5 w-3.5 text-brand-300" />
+          {t("fb.map.back_to_routes")}
+          {focus && <span className="font-mono text-sf-muted">· {focus.label}</span>}
+        </button>
       )}
       {/* Leyenda flotante. En modo globo muestra los conteos; en
           modo detalle, sólo el badge ámbar del track real.

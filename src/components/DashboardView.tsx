@@ -79,6 +79,13 @@ const NEXT_OFP_MAX_AGE_MS = 36 * 60 * 60 * 1000;
  *   5. Datos de Community: desglose por tipo, top desarrolladores, más
  *      pesados, añadidos recientemente y centro de salud.
  */
+/** (26/10) Cuántas novedades del radar hay por catálogo, en orden de aparición. */
+function freshBySource(fresh: { source: string }[]): [string, number][] {
+  const m = new Map<string, number>();
+  for (const a of fresh) m.set(a.source, (m.get(a.source) ?? 0) + 1);
+  return [...m.entries()];
+}
+
 export function DashboardView() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [health, setHealth] = useState<AddonHealth | null>(null);
@@ -119,6 +126,8 @@ export function DashboardView() {
   const simVersion = useSettingsStore((s) => s.settings.simVersion);
   const logEntries = useFlightLogStore((s) => s.entries);
   const freshScenery = useNewSceneryStore((s) => s.fresh);
+  const catalogSources = useAppStore((s) => s.sources);
+  const sourceLabel = (id: string) => catalogSources.find((c) => c.id === id)?.name ?? id;
   const radarCheck = useNewSceneryStore((s) => s.check);
   const radarLastChecked = useNewSceneryStore((s) => s.lastCheckedAt);
   const openPreflight = usePreflightStore((s) => s.setOpen);
@@ -290,7 +299,10 @@ export function DashboardView() {
       icon: <Package className="h-4 w-4" />,
       tone: "brand",
       title: t("home.notices.fresh"),
-      desc: t("preflight.cta.fresh", { n: String(freshScenery.length) }),
+      // (26/10) Desglose por catálogo: "3 en AeroHub · 2 en Simplaza".
+      desc: freshBySource(freshScenery)
+        .map(([src, n]) => t("home.notices.fresh_in", { n: String(n), source: sourceLabel(src) }))
+        .join(" · "),
       onClick: () => openPreflight(true),
     });
   }

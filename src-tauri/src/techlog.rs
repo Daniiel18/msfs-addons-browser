@@ -630,6 +630,39 @@ pub struct TlPart {
     /// "Ok" | "Degraded" | "Failed"
     pub status: String,
     pub repairs: i64,
+    /// (26/10) Bajo el umbral de "gastada" del catálogo.
+    pub worn: bool,
+}
+
+/// (26/10) Contadores del avión para la vista de estado (motores y APU).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TlStats {
+    pub block_hours: f64,
+    pub landings: f64,
+    pub apu_hours: f64,
+    pub apu_starts: f64,
+    pub eng_hours: Vec<f64>,
+    pub eng_cycles: Vec<f64>,
+    pub eng_starts: Vec<f64>,
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+impl TlStats {
+    pub fn new(block: f64, landings: f64, apu_h: f64, apu_s: f64, eh: &[f64], ec: &[f64], es: &[f64]) -> Self {
+        TlStats {
+            block_hours: round1(block),
+            landings: landings.round(),
+            apu_hours: round1(apu_h),
+            apu_starts: apu_s.round(),
+            eng_hours: eh.iter().map(|v| round1(*v)).collect(),
+            eng_cycles: ec.iter().map(|v| v.round()).collect(),
+            eng_starts: es.iter().map(|v| v.round()).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -716,6 +749,10 @@ pub struct TechLogAircraft {
     pub defects: Vec<TlDefect>,
     /// Sólo las piezas gastadas (bajo el umbral "worn"), degradadas o falladas.
     pub parts: Vec<TlPart>,
+    /// (26/10) Todas las piezas (vista de estado: motores, ruedas, sistemas).
+    pub all_parts: Vec<TlPart>,
+    /// (26/10) Horas, ciclos y arranques por motor; APU, bloque, aterrizajes.
+    pub stats: TlStats,
     pub condition: TlCondition,
     pub consumables: Vec<TlConsumable>,
     pub checks: Vec<TlCheck>,
@@ -944,7 +981,7 @@ async fn aircraft_from_db(
         .await?;
     let worn_below = cat.limits.common.worn_below_pct;
     let mut condition = TlCondition::default();
-    let mut parts = Vec::new();
+    let mut all_parts = Vec::new();
     for r in &part_rows {
         let key = opt_str(r, "key").unwrap_or_default();
         let Some(def) = cat.component(&key) else {
@@ -973,23 +1010,33 @@ async fn aircraft_from_db(
         }
         .clamp(0.0, 100.0);
         condition.count(&status, remaining < worn_below, remaining);
-        if status != "Ok" || remaining < worn_below {
-            let pos_label = position.clone().unwrap_or_default();
-            parts.push(TlPart {
-                id: r.try_get("id").unwrap_or(0),
-                key: key.clone(),
-                name: def.name.replace("{pos}", &pos_label).trim().to_string(),
-                position,
-                ata: def.ata,
-                system: def.system.clone().unwrap_or_default(),
-                kind,
-                remaining_pct: (remaining * 10.0).round() / 10.0,
-                status,
-                repairs: r.try_get("repairs").unwrap_or(0),
-            });
-        }
+        let pos_label = position.clone().unwrap_or_default();
+        all_parts.push(TlPart {
+            id: r.try_get("id").unwrap_or(0),
+            key: key.clone(),
+            name: def.name.replace("{pos}", &pos_label).trim().to_string(),
+            position,
+            ata: def.ata,
+            system: def.system.clone().unwrap_or_default(),
+            kind,
+            remaining_pct: (remaining * 10.0).round() / 10.0,
+            worn: remaining < worn_below,
+            status,
+            repairs: r.try_get("repairs").unwrap_or(0),
+        });
     }
-    parts.sort_by(|x, y| x.remaining_pct.total_cmp(&y.remaining_pct));
+    all_parts.sort_by(|x, y| x.remaining_pct.total_cmp(&y.remaining_pct));
+    let parts: Vec<TlPart> = all_parts.iter().filter(|p| p.status != "Ok" || p.worn).cloned().collect();
+    let c = &a.counters;
+    let stats = TlStats::new(
+        c.block_hours,
+        c.landings,
+        c.apu_hours,
+        c.apu_starts,
+        &c.eng_hours,
+        &c.eng_cycles,
+        &c.eng_starts,
+    );
 
     // Consumibles.
     let mut consumables = Vec::new();
@@ -1094,6 +1141,8 @@ async fn aircraft_from_db(
         dispatch: dispatch_of(&defects),
         defects,
         parts,
+        all_parts,
+        stats,
         condition,
         consumables,
         checks,
@@ -1194,28 +1243,44 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
         })
         .collect();
     let mut condition = TlCondition::default();
-    let mut parts: Vec<TlPart> = Vec::new();
+    let mut all_parts: Vec<TlPart> = Vec::new();
     for c in arr(&comps) {
         let status = s(&c, "status").unwrap_or_else(|| "Ok".into());
         let remaining = f(&c, "remainingPct");
         let worn = c.get("worn").and_then(|x| x.as_bool()).unwrap_or(false);
         condition.count(&status, worn, remaining);
-        if status != "Ok" || worn {
-            parts.push(TlPart {
-                id: c.get("id").and_then(|x| x.as_i64()).unwrap_or(0),
-                key: s(&c, "key").unwrap_or_default(),
-                name: s(&c, "name").unwrap_or_default(),
-                position: s(&c, "position"),
-                ata: c.get("ata").and_then(|x| x.as_i64()).unwrap_or(0),
-                system: s(&c, "system").unwrap_or_default(),
-                kind: s(&c, "kind").unwrap_or_else(|| "Life".into()).to_lowercase(),
-                remaining_pct: (remaining * 10.0).round() / 10.0,
-                status,
-                repairs: c.get("repairs").and_then(|x| x.as_i64()).unwrap_or(0),
-            });
-        }
+        all_parts.push(TlPart {
+            id: c.get("id").and_then(|x| x.as_i64()).unwrap_or(0),
+            key: s(&c, "key").unwrap_or_default(),
+            name: s(&c, "name").unwrap_or_default(),
+            position: s(&c, "position"),
+            ata: c.get("ata").and_then(|x| x.as_i64()).unwrap_or(0),
+            system: s(&c, "system").unwrap_or_default(),
+            kind: s(&c, "kind").unwrap_or_else(|| "Life".into()).to_lowercase(),
+            remaining_pct: (remaining * 10.0).round() / 10.0,
+            worn,
+            status,
+            repairs: c.get("repairs").and_then(|x| x.as_i64()).unwrap_or(0),
+        });
     }
-    parts.sort_by(|x, y| x.remaining_pct.total_cmp(&y.remaining_pct));
+    all_parts.sort_by(|x, y| x.remaining_pct.total_cmp(&y.remaining_pct));
+    let parts: Vec<TlPart> = all_parts.iter().filter(|p| p.status != "Ok" || p.worn).cloned().collect();
+    // Contadores: el airframe de la API trae los de la base (`counters`) o
+    // sueltos en él; lo que falte queda a 0.
+    let counters: Counters = af
+        .get("counters")
+        .and_then(|c| serde_json::from_value(c.clone()).ok())
+        .or_else(|| serde_json::from_value(af.clone()).ok())
+        .unwrap_or_default();
+    let stats = TlStats::new(
+        counters.block_hours,
+        counters.landings,
+        counters.apu_hours,
+        counters.apu_starts,
+        &counters.eng_hours,
+        &counters.eng_cycles,
+        &counters.eng_starts,
+    );
     let consumables = arr(&cons)
         .iter()
         .map(|c| {
@@ -1291,6 +1356,8 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
         dispatch,
         defects,
         parts,
+        all_parts,
+        stats,
         condition,
         consumables,
         checks,
@@ -1301,6 +1368,28 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
         },
         pending_work: s(state, "pendingWork").filter(|w| !w.trim().is_empty()),
     })
+}
+
+/// (26/10) Contadores de un avión desde la base de TechLog (solo lectura).
+async fn db_stats(source: TlSource, dir: &Path, reg_norm: &str) -> Option<TlStats> {
+    let db = db_path(source, dir)?;
+    let mut conn = open_snapshot(source, &db).await.ok()?;
+    let a = db_airframes(&mut conn)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|a| normalize_reg(&a.registration) == reg_norm);
+    conn.close().await.ok();
+    let c = a?.counters;
+    Some(TlStats::new(
+        c.block_hours,
+        c.landings,
+        c.apu_hours,
+        c.apu_starts,
+        &c.eng_hours,
+        &c.eng_cycles,
+        &c.eng_starts,
+    ))
 }
 
 /// Estado TechLog de una matrícula (en vivo si es el avión activo de un
@@ -1322,7 +1411,14 @@ pub async fn aircraft(registration: &str) -> Result<Option<TechLogAircraft>> {
                     .and_then(|a| s(a, "registration"))
                     .map(|r| normalize_reg(&r));
                 if active_reg.as_deref() == Some(reg.as_str()) {
-                    return aircraft_live(source, &state).await.map(Some);
+                    let mut a = aircraft_live(source, &state).await?;
+                    // (26/10) Sin contadores en la API: los de su base.
+                    if a.stats.eng_hours.is_empty() {
+                        if let Some(st) = db_stats(source, &dir, &reg).await {
+                            a.stats = st;
+                        }
+                    }
+                    return Ok(Some(a));
                 }
                 live_state = Some(state);
             }

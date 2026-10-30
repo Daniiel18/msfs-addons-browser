@@ -78,6 +78,23 @@ pub struct GsxParking {
     /// cubre helipuertos y pads de deshielo (GSX los nombra igual). El
     /// Scenery map lo usa para colorear los pines.
     pub kind: &'static str,
+    /// (26/10) Códigos de `airlinecodes` tal cual (ICAO "DAL", IATA "WS" y
+    /// también agentes de handling como "SWISSPORT"); el frontend decide
+    /// cuáles son aerolíneas. Vacío = el gate sirve a cualquiera.
+    pub airlines: Vec<String>,
+}
+
+/// (26/10) `airlinecodes = DAL,EDV RPA;SKW` → ["DAL", "EDV", "RPA", "SKW"]
+/// (en mayúsculas, sin repetidos y en su orden).
+pub fn parse_airline_codes(value: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for code in value.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let code = code.trim().to_ascii_uppercase();
+        if !code.is_empty() && !out.contains(&code) {
+            out.push(code);
+        }
+    }
+    out
 }
 
 /// (19/10) Clasifica un header de section del INI (`gate a 10`,
@@ -169,6 +186,8 @@ struct PositionCandidates {
     this_parking_pos: Option<(f64, f64)>,
     object_position: Option<(f64, f64)>,
     pushback_pos: Option<(f64, f64)>,
+    /// (26/10) No es una posición: los `airlinecodes` de la misma section.
+    airlines: Vec<String>,
 }
 
 impl PositionCandidates {
@@ -208,7 +227,8 @@ pub fn parse_ini(path: &Path) -> Vec<GsxParking> {
     ) {
         if let Some(s) = section.take() {
             if let Some(name) = format_section_header_to_name(&s) {
-                let pc = std::mem::take(pos);
+                let mut pc = std::mem::take(pos);
+                let airlines = std::mem::take(&mut pc.airlines);
                 if let Some(((lat, lon), field)) = pc.pick() {
                     parkings.push(GsxParking {
                         name,
@@ -216,6 +236,7 @@ pub fn parse_ini(path: &Path) -> Vec<GsxParking> {
                         lon,
                         source_field: field,
                         kind: parking_kind(&s),
+                        airlines,
                     });
                 }
             } else {
@@ -263,6 +284,7 @@ pub fn parse_ini(path: &Path) -> Vec<GsxParking> {
                     current_pos.pushback_pos = Some(p);
                 }
             }
+            "airlinecodes" => current_pos.airlines = parse_airline_codes(value),
             _ => {}
         }
     }
@@ -464,6 +486,26 @@ mod tests {
         assert_eq!(parking_kind("mil 4"), "military");
         assert_eq!(parking_kind("pad 1"), "pad");
         assert_eq!(parking_kind("something else"), "other");
+    }
+
+    #[test]
+    fn airline_codes_of_a_gate() {
+        assert_eq!(parse_airline_codes("DAL,EDV,RPA,SKW"), ["DAL", "EDV", "RPA", "SKW"]);
+        assert_eq!(parse_airline_codes("CCA  CSC tba;CES, CCA"), ["CCA", "CSC", "TBA", "CES"]);
+        assert!(parse_airline_codes("  ").is_empty());
+        let dir = std::env::temp_dir().join(format!("simfleet-gsx-airlines-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ini = dir.join("test.ini");
+        std::fs::write(
+            &ini,
+            "[gate a 1]\nairlinecodes = ACA,MENZ\nthis_parking_pos = 51.1 -114.0 0\n\
+             [gate a 2]\nairlinecodes =\nthis_parking_pos = 51.2 -114.1 0\n",
+        )
+        .unwrap();
+        let parsed = parse_ini(&ini);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(parsed[0].airlines, ["ACA", "MENZ"]);
+        assert!(parsed[1].airlines.is_empty(), "sin códigos: sirve a cualquiera");
     }
 
     #[test]

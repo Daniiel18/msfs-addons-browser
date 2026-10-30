@@ -31,6 +31,9 @@ pub struct AirportCard {
     pub name: Option<String>,
     pub municipality: Option<String>,
     pub iso_country: Option<String>,
+    /// (26/10) Para el foco del mapa y la foto satélite de respaldo.
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
     pub departures: i64,
     pub arrivals: i64,
     pub pax_boarded: i64,
@@ -159,27 +162,44 @@ fn tally(icao: &str, entries: &[FlightLogEntry], pax: &HashMap<i64, i64>, gsx: &
     card
 }
 
-/// La tarjeta de `icao` (vuelos completados del FlightBook).
-pub async fn card(pool: &SqlitePool, icao: &str) -> Result<AirportCard> {
+/// La tarjeta de `icao` (vuelos completados del FlightBook). (26/10) Con
+/// `only` (filtro de aerolínea del FlightBook) sólo cuentan esos vuelos: sus
+/// cobros de GSX, sus aterrizajes y los aviones aparcados que volaron con ella.
+pub async fn card(pool: &SqlitePool, icao: &str, only: Option<&HashSet<i64>>) -> Result<AirportCard> {
     let icao = icao.trim().to_ascii_uppercase();
-    let entries = crate::flight_log::list_entries(pool).await?;
+    let mut entries = crate::flight_log::list_entries(pool).await?;
+    if let Some(ids) = only {
+        entries.retain(|e| ids.contains(&e.id));
+    }
     let pax: HashMap<i64, i64> = sqlx::query_as::<_, (i64, Option<i64>)>("SELECT flight_id, pax FROM flight_pnl")
         .fetch_all(pool)
         .await?
         .into_iter()
         .map(|(id, p)| (id, p.unwrap_or(0)))
         .collect();
-    let gsx: Vec<(String, String, f64)> = sqlx::query_as(
-        "SELECT kind, service, amount_usd FROM gsx_charge WHERE airport = ?1 AND flight_id IS NOT NULL",
+    let gsx: Vec<(String, String, f64)> = sqlx::query_as::<_, (i64, String, String, f64)>(
+        "SELECT flight_id, kind, service, amount_usd FROM gsx_charge WHERE airport = ?1 AND flight_id IS NOT NULL",
     )
     .bind(&icao)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .filter(|(id, ..)| only.map_or(true, |ids| ids.contains(id)))
+    .map(|(_, kind, service, usd)| (kind, service, usd))
+    .collect();
     let mut card = tally(&icao, &entries, &pax, &gsx);
     if let Some(a) = crate::airports::lookup_airports(pool, std::slice::from_ref(&icao)).await?.into_iter().next() {
         card.name = Some(a.name);
         card.municipality = a.municipality;
         card.iso_country = a.iso_country;
+    }
+    if let Some((lat, lon)) = sqlx::query_as::<_, (f64, f64)>("SELECT latitude, longitude FROM airports WHERE icao = ?1")
+        .bind(&icao)
+        .fetch_optional(pool)
+        .await?
+    {
+        card.latitude = Some(lat);
+        card.longitude = Some(lon);
     }
     // Tus aviones aparcados ahí (con la matrícula tal como la escribes).
     let shown: HashMap<String, String> = entries
@@ -296,7 +316,7 @@ mod tests {
         let pool = SqlitePool::connect(&format!("sqlite:{path}")).await.unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         for i in icao.split(',') {
-            println!("{:#?}", card(&pool, i).await.unwrap());
+            println!("{:#?}", card(&pool, i, None).await.unwrap());
         }
     }
 
@@ -320,7 +340,12 @@ mod tests {
             let kb = p.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len() / 1024);
             println!("{icao}: {kb:?} KB");
         }
-        let _ = std::fs::remove_dir_all(&dir);
+        // PHOTO_KEEP=1 deja las fotos para mirarlas (se borra a mano).
+        if std::env::var("PHOTO_KEEP").is_ok() {
+            println!("fotos en {}", dir.display());
+        } else {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

@@ -43,6 +43,8 @@ pub struct GsxParkingDto {
     pub lat: f64,
     pub lon: f64,
     pub kind: &'static str,
+    /// (26/10) `airlinecodes` del perfil (vacío = cualquier aerolínea).
+    pub airlines: Vec<String>,
 }
 
 /// (19/10) Gates y parkings del perfil GSX instalado de un aeropuerto.
@@ -65,17 +67,31 @@ pub async fn gsx_airport_parkings(icao: String) -> Result<Option<GsxAirportParki
         let icao = icao.trim().to_uppercase();
         let dir = crate::gsx_parking::find_gsx_dir()?;
         let path = crate::gsx_parking::find_ini_for_airport(&dir, &icao)?;
-        let mut seen = std::collections::HashSet::new();
-        let parkings: Vec<GsxParkingDto> = crate::gsx_parking::parse_ini(&path)
-            .into_iter()
-            .filter(|p| seen.insert(p.name.to_uppercase()))
-            .map(|p| GsxParkingDto {
-                name: p.name,
-                lat: p.lat,
-                lon: p.lon,
-                kind: p.kind,
-            })
-            .collect();
+        // (26/10) De las repetidas sólo cuenta la posición de la primera,
+        // pero sus aerolíneas se suman.
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut parkings: Vec<GsxParkingDto> = Vec::new();
+        for p in crate::gsx_parking::parse_ini(&path) {
+            match index.get(&p.name.to_uppercase()) {
+                Some(&i) => {
+                    for a in p.airlines {
+                        if !parkings[i].airlines.contains(&a) {
+                            parkings[i].airlines.push(a);
+                        }
+                    }
+                }
+                None => {
+                    index.insert(p.name.to_uppercase(), parkings.len());
+                    parkings.push(GsxParkingDto {
+                        name: p.name,
+                        lat: p.lat,
+                        lon: p.lon,
+                        kind: p.kind,
+                        airlines: p.airlines,
+                    });
+                }
+            }
+        }
         let file_name = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -149,6 +165,10 @@ pub struct GsxProfileUpdate {
     pub has_update: bool,
     pub latest_version: Option<String>,
     pub link: String,
+    /// (26/10) Título e imagen del perfil en flightsim.to (de la cuenta),
+    /// para su tarjeta en el modal de actualizaciones.
+    pub title: Option<String>,
+    pub thumbnail: Option<String>,
 }
 
 /// ICAOs instalados con el mtime (epoch secs) del .ini MÁS RECIENTE de
@@ -256,6 +276,25 @@ pub async fn gsx_check_profile_updates(
     let installed = tokio::task::spawn_blocking(installed_profiles_mtimes)
         .await
         .map_err(|e| e.to_string())?;
+    // (26/10) Con sesión en flightsim.to manda la cuenta ("My Downloads": lo
+    // que descargaste y tiene versión nueva), sin red y al instante. La línea
+    // base de abajo sólo sembraba la PRIMERA vez que veía un perfil, así que
+    // nunca marcaba los que ya traían versiones nuevas.
+    if let Some(acct) = crate::fsto_account::logged_in(&state.db).await {
+        let items = crate::fsto_account::active_items(&state.db, &acct).await;
+        let pairs: Vec<(String, String)> = installed.iter().map(|(i, s, _)| (i.clone(), s.clone())).collect();
+        return Ok(crate::fsto_account::gsx_matches(&items, &pairs)
+            .into_iter()
+            .map(|(icao, item)| GsxProfileUpdate {
+                icao,
+                has_update: true,
+                latest_version: item.latest_version,
+                link: item.link,
+                title: Some(item.title),
+                thumbnail: item.thumbnail,
+            })
+            .collect());
+    }
     let mut out = Vec::with_capacity(installed.len());
     for (icao, stem, _mtime) in installed {
         let Some(prof) =
@@ -297,6 +336,8 @@ pub async fn gsx_check_profile_updates(
             has_update,
             latest_version: prof.version.clone(),
             link: prof.link.clone(),
+            title: None,
+            thumbnail: None,
         });
     }
     Ok(out)
@@ -324,6 +365,15 @@ pub async fn gsx_ack_update(
         .find(|(ic, _, _)| ic.eq_ignore_ascii_case(&icao_up))
         .map(|(_, stem, _)| stem)
         .unwrap_or_default();
+    // (26/10) Si lo marcó la cuenta de flightsim.to: ignorado ahí también
+    // (hasta la próxima versión).
+    if let Some(acct) = crate::fsto_account::logged_in(&state.db).await {
+        let ids: Vec<i64> = crate::fsto_account::gsx_matches(&acct.items, &[(icao_up.clone(), stem.clone())])
+            .into_iter()
+            .map(|(_, i)| i.file_id)
+            .collect();
+        crate::fsto_account::dismiss(&state.db, &ids).await;
+    }
     if let Some(prof) =
         resolve_specific_profile(&state.gsx, &state.db, &icao_up, &stem).await
     {

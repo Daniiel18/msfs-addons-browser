@@ -34,6 +34,18 @@ pub async fn hangar_analytics(
         .map_err(|e| e.to_string())
 }
 
+/// (26/10) Ficha de un tipo de avión, una aerolínea o unos destinos de los
+/// paneles del Hangar.
+#[tauri::command]
+pub async fn hangar_insight(
+    filter: flight_log::InsightFilter,
+    state: tauri::State<'_, AppState>,
+) -> Result<flight_log::HangarInsight, String> {
+    flight_log::hangar_insight(&state.db, &filter)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// (v6 #2a) Perfil del piloto + nivel/XP (identidad por correo, XP por puntos).
 #[tauri::command]
 pub async fn pilot_profile(

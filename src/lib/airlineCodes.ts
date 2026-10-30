@@ -540,6 +540,20 @@ const ICAO_TO_NAME: Record<string, string> = {
   DWI: "Arajet", // no está en OpenFlights
 };
 
+let IATA_TO_ICAO: Map<string, string> | null = null;
+
+/** (26/10) ICAO de una aerolínea por su IATA ("WS" → "WJA"). El mapa curado
+ *  gana a la base de OpenFlights (un IATA puede haber sido de varias). */
+export function iataToIcao(iata?: string | null): string | null {
+  if (!iata) return null;
+  if (!IATA_TO_ICAO) {
+    IATA_TO_ICAO = new Map();
+    for (const [icao, i] of Object.entries(OF_ICAO_TO_IATA)) IATA_TO_ICAO.set(i, icao);
+    for (const [icao, i] of Object.entries(ICAO_TO_IATA)) IATA_TO_ICAO.set(i, icao);
+  }
+  return IATA_TO_ICAO.get(iata.toUpperCase().trim()) ?? null;
+}
+
 /** Nombre legible de la aerolínea por ICAO; `null` si no está mapeada. */
 export function icaoToName(icao?: string | null): string | null {
   if (!icao) return null;

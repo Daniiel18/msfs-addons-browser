@@ -1535,6 +1535,9 @@ pub struct HangarCount {
     /// Código auxiliar para logo/ícono (ICAO de aerolínea), opcional.
     pub code: Option<String>,
     pub count: i64,
+    /// (26/10) Clave de agrupación (aerolínea canónica, modelo en mayúsculas)
+    /// para pedir su ficha con `hangar_insight`.
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2059,17 +2062,18 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
 
     let mut top_airlines: Vec<HangarCount> = airlines
         .into_iter()
-        .map(|(_, (label, code, count))| HangarCount { label, code, count })
+        .map(|(key, (label, code, count))| HangarCount { label, code, count, key: Some(key) })
         .collect();
     top_airlines.sort_by(|a, b| b.count.cmp(&a.count));
     top_airlines.truncate(8);
 
     let mut top_aircraft_types: Vec<HangarCount> = types
         .into_iter()
-        .map(|(_, (label, count))| HangarCount {
+        .map(|(key, (label, count))| HangarCount {
             label,
             code: None,
             count,
+            key: Some(key),
         })
         .collect();
     top_aircraft_types.sort_by(|a, b| b.count.cmp(&a.count));
@@ -2098,6 +2102,204 @@ pub async fn hangar_analytics(pool: &SqlitePool) -> anyhow::Result<HangarAnalyti
         top_aircraft_types,
         best_landings,
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// (26/10) Etapa 8 — Ficha de un elemento de los paneles del Hangar (un tipo
+// de avión, una aerolínea, un destino o un país): sus cifras, el desglose y
+// sus últimos vuelos, con la MISMA agrupación que `hangar_analytics`.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Qué vuelos entran en la ficha.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightFilter {
+    /// "type" | "airline" | "airports"
+    pub kind: String,
+    /// Clave de `HangarCount.key` (tipo o aerolínea).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Destinos (un aeropuerto, o los de un país).
+    #[serde(default)]
+    pub icaos: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightAircraft {
+    /// La misma clave que `HangarAircraft.key` (para abrir su ficha).
+    pub key: String,
+    pub registration: Option<String>,
+    pub model: Option<String>,
+    pub flights: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightFlight {
+    pub id: i64,
+    pub started_at: String,
+    pub origin: Option<String>,
+    pub destination: Option<String>,
+    pub label: Option<String>,
+    pub registration: Option<String>,
+    pub model: Option<String>,
+    pub fpm: Option<i64>,
+    pub distance_nm: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HangarInsight {
+    pub flights: i64,
+    pub total_nm: f64,
+    pub total_time_s: i64,
+    pub passengers: i64,
+    pub avg_fpm: Option<f64>,
+    pub best_fpm: Option<i64>,
+    pub best_flight_id: Option<i64>,
+    pub first_at: Option<String>,
+    pub last_at: Option<String>,
+    pub airlines: Vec<HangarCount>,
+    pub types: Vec<HangarCount>,
+    pub destinations: Vec<HangarCount>,
+    pub origins: Vec<HangarCount>,
+    pub aircraft: Vec<InsightAircraft>,
+    pub recent: Vec<InsightFlight>,
+}
+
+pub async fn hangar_insight(pool: &SqlitePool, filter: &InsightFilter) -> anyhow::Result<HangarInsight> {
+    use std::collections::HashMap;
+    let entries = list_entries(pool).await?;
+    let learned_airlines = crate::airline_economy::learn_airline_icaos(&entries);
+    let norm = |s: &Option<String>| -> Option<String> {
+        s.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string())
+    };
+    let icaos: std::collections::HashSet<String> = filter.icaos.iter().map(|i| i.trim().to_uppercase()).collect();
+    let want = filter.key.as_deref().map(|k| k.trim().to_uppercase());
+
+    let mut out = HangarInsight::default();
+    let (mut fpm_sum, mut fpm_n) = (0i64, 0i64);
+    // clave -> (label, code, vuelos)
+    let mut airlines: HashMap<String, (String, Option<String>, i64)> = HashMap::new();
+    let mut types: HashMap<String, (String, i64)> = HashMap::new();
+    let mut dests: HashMap<String, (String, i64)> = HashMap::new();
+    let mut origins: HashMap<String, (String, i64)> = HashMap::new();
+    let mut aircraft: HashMap<String, InsightAircraft> = HashMap::new();
+    let bump = |m: &mut HashMap<String, (String, i64)>, k: &str, label: String| {
+        m.entry(k.to_uppercase()).or_insert((label, 0)).1 += 1;
+    };
+
+    // Las entries vienen de la más reciente a la más antigua.
+    for e in &entries {
+        let reg = norm(&e.aircraft_registration);
+        let model = norm(&e.aircraft_model)
+            .or_else(|| norm(&e.aircraft_atc_type))
+            .or_else(|| norm(&e.aircraft_title))
+            .map(|m| normalize_model(&m));
+        let dest = norm(&e.destination_icao).map(|d| d.to_uppercase());
+        let canon = crate::airline_economy::canonical_airline(
+            e.airline_icao.as_deref(),
+            e.callsign.as_deref(),
+            e.aircraft_airline.as_deref(),
+            e.aircraft_title.as_deref(),
+            &learned_airlines,
+        );
+        let hit = match filter.kind.as_str() {
+            "type" => model.as_deref().map(str::to_uppercase) == want,
+            "airline" => canon.as_ref().map(|c| c.key.to_uppercase()) == want,
+            "airports" => dest.as_ref().is_some_and(|d| icaos.contains(d)),
+            _ => false,
+        };
+        if !hit {
+            continue;
+        }
+        out.flights += 1;
+        out.total_nm += e.distance_nm.unwrap_or(0.0);
+        out.total_time_s += e.flight_time_s.unwrap_or(0);
+        out.passengers += e.passengers.unwrap_or(0);
+        if out.last_at.is_none() {
+            out.last_at = Some(e.started_at.clone());
+        }
+        out.first_at = Some(e.started_at.clone());
+        // 0 = sin medir (vuelos importados); versiones viejas lo guardaron en
+        // positivo (como la tarjeta de aeropuerto: siempre −|fpm|).
+        let fpm = e.landing_fpm.filter(|f| *f != 0).map(|f| -f.abs());
+        if let Some(f) = fpm {
+            fpm_sum += f;
+            fpm_n += 1;
+            if out.best_fpm.map_or(true, |b| f > b) {
+                out.best_fpm = Some(f);
+                out.best_flight_id = Some(e.id);
+            }
+        }
+        if let Some(c) = &canon {
+            let ent = airlines.entry(c.key.clone()).or_insert((c.name.clone(), c.icao.clone(), 0));
+            ent.2 += 1;
+        }
+        if let Some(m) = &model {
+            bump(&mut types, m, m.clone());
+        }
+        if let Some(d) = &dest {
+            bump(&mut dests, d, norm(&e.destination_name).unwrap_or_else(|| d.clone()));
+        }
+        if let Some(o) = norm(&e.origin_icao) {
+            bump(&mut origins, &o, norm(&e.origin_name).unwrap_or_else(|| o.clone()));
+        }
+        let key = match (&reg, &model) {
+            (Some(r), _) => format!("reg:{}", r.to_uppercase()),
+            (None, Some(m)) => format!("mdl:{}", m.to_uppercase()),
+            _ => "unknown".to_string(),
+        };
+        aircraft
+            .entry(key.clone())
+            .or_insert(InsightAircraft { key, registration: reg.clone(), model: model.clone(), flights: 0 })
+            .flights += 1;
+        if out.recent.len() < 10 {
+            out.recent.push(InsightFlight {
+                id: e.id,
+                started_at: e.started_at.clone(),
+                origin: norm(&e.origin_icao),
+                destination: dest.clone(),
+                label: norm(&e.callsign).or_else(|| norm(&e.flight_number)),
+                registration: reg.clone(),
+                model: model.clone(),
+                fpm,
+                distance_nm: e.distance_nm,
+            });
+        }
+    }
+    out.total_nm = out.total_nm.round();
+    out.avg_fpm = (fpm_n > 0).then(|| (fpm_sum as f64 / fpm_n as f64).round());
+    let top = |m: HashMap<String, (String, i64)>, with_code: bool| -> Vec<HangarCount> {
+        let mut v: Vec<HangarCount> = m
+            .into_iter()
+            .map(|(k, (label, count))| HangarCount {
+                code: with_code.then(|| k.clone()),
+                label,
+                count,
+                key: Some(k),
+            })
+            .collect();
+        v.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
+        v.truncate(6);
+        v
+    };
+    let mut al: Vec<HangarCount> = airlines
+        .into_iter()
+        .map(|(k, (label, code, count))| HangarCount { label, code, count, key: Some(k) })
+        .collect();
+    al.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
+    al.truncate(6);
+    out.airlines = al;
+    out.types = top(types, false);
+    out.destinations = top(dests, true);
+    out.origins = top(origins, true);
+    let mut ac: Vec<InsightAircraft> = aircraft.into_values().collect();
+    ac.sort_by_key(|a| std::cmp::Reverse(a.flights));
+    ac.truncate(6);
+    out.aircraft = ac;
+    Ok(out)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2319,5 +2521,48 @@ mod tests {
     fn haversine_zero_for_same_point() {
         let d = haversine_nm(40.0, -73.0, 40.0, -73.0);
         assert!(d < 0.0001);
+    }
+}
+
+#[cfg(test)]
+mod insight_tests {
+    use super::*;
+
+    /// (26/10) La ficha de un destino: sólo sus vuelos; un fpm 0 (sin medir)
+    /// no cuenta y uno guardado en positivo se lee en negativo.
+    #[tokio::test]
+    async fn a_destination_insight_counts_only_its_flights() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for (at, dest, fpm, reg) in [
+            ("2026-10-10T10:00:00Z", "KJFK", 0, "N1"),
+            ("2026-10-11T10:00:00Z", "KJFK", 150, "N1"),
+            ("2026-10-12T10:00:00Z", "KBOS", -90, "N2"),
+        ] {
+            sqlx::query(
+                "INSERT INTO flight_log (started_at, ended_at, origin_lat, origin_lon, origin_icao, destination_icao,
+                    aircraft_registration, aircraft_model, airline_icao, landing_fpm, distance_nm)
+                 VALUES (?1, ?1, 0, 0, 'KATL', ?2, ?3, 'A320', 'DAL', ?4, 600)",
+            )
+            .bind(at)
+            .bind(dest)
+            .bind(reg)
+            .bind(fpm)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let filter = InsightFilter { kind: "airports".into(), key: None, icaos: vec!["kjfk".into()] };
+        let i = hangar_insight(&pool, &filter).await.unwrap();
+        assert_eq!(i.flights, 2);
+        assert_eq!((i.best_fpm, i.avg_fpm), (Some(-150), Some(-150.0)));
+        assert_eq!(i.total_nm, 1200.0);
+        assert_eq!(i.aircraft.len(), 1, "sólo N1 voló a KJFK");
+        assert_eq!(i.origins[0].code.as_deref(), Some("KATL"));
+        assert_eq!(i.recent[0].started_at, "2026-10-11T10:00:00Z", "el más reciente primero");
     }
 }

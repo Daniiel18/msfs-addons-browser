@@ -35,6 +35,14 @@ const DETAIL_TTL: Duration = Duration::from_secs(30 * 60);
 /// Páginas de resultados (24 cada una) que recorre una búsqueda.
 const SEARCH_MAX_PAGES: usize = 3;
 
+/// (26/10) Tipos de addon que filtra la web (`/browse?kind=`).
+const KINDS: &[&str] = &["plane", "helicopter", "scenery", "utility"];
+
+/// `kind` si es uno de los de la web; si no, sin filtro.
+fn valid_kind(kind: &str) -> Option<&'static str> {
+    KINDS.iter().copied().find(|k| k.eq_ignore_ascii_case(kind.trim()))
+}
+
 pub struct AerohubSource {
     client: reqwest::Client,
     details: Mutex<HashMap<String, (Instant, Detail)>>,
@@ -102,6 +110,38 @@ impl Source for AerohubSource {
     fn home_url(&self) -> &'static str { BASE }
 
     async fn search(&self, query: &str) -> Result<Vec<Addon>, SourceError> {
+        self.search_in(query, None).await
+    }
+
+    async fn search_kind(&self, query: &str, kind: &str) -> Result<Vec<Addon>, SourceError> {
+        self.search_in(query, valid_kind(kind)).await
+    }
+
+    async fn browse(&self, page: usize) -> Result<BrowsePage, SourceError> {
+        self.browse_in(page, None).await
+    }
+
+    async fn browse_kind(&self, page: usize, kind: &str) -> Result<BrowsePage, SourceError> {
+        self.browse_in(page, valid_kind(kind)).await
+    }
+
+    /// (25/10) Para las updates basta la tarjeta (trae la versión): una
+    /// petición por página en vez de 24 fichas.
+    async fn listing(&self, page: usize) -> Result<BrowsePage, SourceError> {
+        let html = self.fetch_html(&browse_url(page, None)).await?;
+        let (tiles, has_more) = parse_tiles(&html);
+        let addons = tiles
+            .into_iter()
+            .filter(|t| sim_matches(&t.sim))
+            .map(|t| to_addon(t, Detail::default()))
+            .collect();
+        Ok(BrowsePage { addons, page, has_more })
+    }
+}
+
+impl AerohubSource {
+    /// (26/10) Búsqueda, opcionalmente filtrada por tipo.
+    async fn search_in(&self, query: &str, kind: Option<&str>) -> Result<Vec<Addon>, SourceError> {
         let q = query.trim();
         if q.is_empty() {
             return Ok(vec![]);
@@ -109,6 +149,9 @@ impl Source for AerohubSource {
         let mut tiles = Vec::new();
         for page in 1..=SEARCH_MAX_PAGES {
             let mut url = format!("{}/browse?q={}", BASE, urlencoding::encode(q));
+            if let Some(k) = kind {
+                url.push_str(&format!("&kind={k}"));
+            }
             if page > 1 {
                 url.push_str(&format!("&p={page}"));
             }
@@ -126,8 +169,9 @@ impl Source for AerohubSource {
         Ok(addons)
     }
 
-    async fn browse(&self, page: usize) -> Result<BrowsePage, SourceError> {
-        let url = browse_url(page);
+    /// (26/10) Una página del catálogo, opcionalmente filtrada por tipo.
+    async fn browse_in(&self, page: usize, kind: Option<&str>) -> Result<BrowsePage, SourceError> {
+        let url = browse_url(page, kind);
         tracing::info!("aerohub: browsing {}", url);
         let html = self.fetch_html(&url).await?;
         let (tiles, has_more) = parse_tiles(&html);
@@ -135,26 +179,21 @@ impl Source for AerohubSource {
         let addons = self.with_details(tiles).await;
         Ok(BrowsePage { addons, page, has_more })
     }
-
-    /// (25/10) Para las updates basta la tarjeta (trae la versión): una
-    /// petición por página en vez de 24 fichas.
-    async fn listing(&self, page: usize) -> Result<BrowsePage, SourceError> {
-        let html = self.fetch_html(&browse_url(page)).await?;
-        let (tiles, has_more) = parse_tiles(&html);
-        let addons = tiles
-            .into_iter()
-            .filter(|t| sim_matches(&t.sim))
-            .map(|t| to_addon(t, Detail::default()))
-            .collect();
-        Ok(BrowsePage { addons, page, has_more })
-    }
 }
 
-fn browse_url(page: usize) -> String {
-    if page <= 1 {
+/// `/browse`, `/browse?kind=plane`, `/browse?kind=plane&p=2`…
+fn browse_url(page: usize, kind: Option<&str>) -> String {
+    let mut params = Vec::new();
+    if let Some(k) = kind {
+        params.push(format!("kind={k}"));
+    }
+    if page > 1 {
+        params.push(format!("p={page}"));
+    }
+    if params.is_empty() {
         format!("{}/browse", BASE)
     } else {
-        format!("{}/browse?p={}", BASE, page)
+        format!("{}/browse?{}", BASE, params.join("&"))
     }
 }
 
@@ -430,6 +469,17 @@ fn to_addon(t: Tile, d: Detail) -> Addon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (26/10) Filtros por tipo de la web: sólo los que existen.
+    #[test]
+    fn browse_urls_carry_the_kind_filter() {
+        assert_eq!(browse_url(1, None), "https://aerohub.st/browse");
+        assert_eq!(browse_url(2, None), "https://aerohub.st/browse?p=2");
+        assert_eq!(browse_url(1, Some("plane")), "https://aerohub.st/browse?kind=plane");
+        assert_eq!(browse_url(3, Some("scenery")), "https://aerohub.st/browse?kind=scenery&p=3");
+        assert_eq!(valid_kind("Helicopter"), Some("helicopter"));
+        assert_eq!(valid_kind("xplane"), None);
+    }
 
     fn link(label: &str, url: &str) -> (String, String) {
         (label.to_string(), url.to_string())

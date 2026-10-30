@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Armchair,
   CheckCircle2,
+  ChevronRight,
   ClipboardCheck,
   Clock,
   Droplets,
@@ -19,6 +20,7 @@ import type {
   FlightLogEntry,
   TechLogActionRequest,
   TechLogAircraft,
+  TechLogPart,
   TechLogCabin,
   TechLogCabinLights,
   TechLogReadings,
@@ -30,6 +32,8 @@ import { t } from "../lib/i18n";
 import { cn } from "../lib/cn";
 import { useTechLogStore } from "../stores/useTechLogStore";
 import { useToastStore } from "../stores/useToastStore";
+import { useAppStore } from "../stores/useAppStore";
+import { TechLogStatus } from "./TechLogStatus";
 
 /**
  * (19/10) Etapa 2 — Mantenimiento de TechLog dentro de SimFleet.
@@ -196,10 +200,13 @@ export function TechLogPanel({
   data,
   onReload,
   loading,
+  model,
 }: {
   data: TechLogAircraft;
   onReload: () => void;
   loading: boolean;
+  /** (26/10) Modelo o título del avión: elige la silueta de la vista de estado. */
+  model?: string | null;
 }) {
   const pushToast = useToastStore((s) => s.push);
   const epoch = useTechLogStore((s) => s.epoch);
@@ -306,6 +313,16 @@ export function TechLogPanel({
     </button>
   );
 
+  /** Reparar / reemplazar una pieza (lista y vista de estado, las mismas órdenes). */
+  const partActions = (p: TechLogPart) => (
+    <>
+      {p.kind !== "wear" && p.status !== "Failed" && (p.status !== "Ok" || p.worn) && (
+        <ActionBtn k={`pfix-${p.id}`} label={t("techlog.repair")} req={{ action: "partFix", ids: [p.id] }} what={p.name} />
+      )}
+      <ActionBtn k={`prep-${p.id}`} label={t("techlog.replace")} req={{ action: "partReplace", ids: [p.id] }} what={p.name} />
+    </>
+  );
+
   return (
     <div className="space-y-4">
       {/* Cabecera: app, conexión y despacho. */}
@@ -406,6 +423,9 @@ export function TechLogPanel({
         </Section>
       )}
 
+      {/* (26/10) Etapa 6: el avión, sus motores, ruedas y sistemas. */}
+      <TechLogStatus data={data} model={model} renderActions={partActions} />
+
       {/* Defectos abiertos y diferidos. */}
       <Section
         icon={<ShieldAlert className="h-4 w-4 text-rose-300" />}
@@ -500,12 +520,7 @@ export function TechLogPanel({
                   </div>
                   <span className="w-9 text-right text-[11px] tabular-nums text-sf-muted">{Math.round(p.remainingPct)}%</span>
                 </div>
-                <div className="flex shrink-0 gap-1">
-                  {p.kind !== "wear" && p.status !== "Failed" && (
-                    <ActionBtn k={`pfix-${p.id}`} label={t("techlog.repair")} req={{ action: "partFix", ids: [p.id] }} what={p.name} />
-                  )}
-                  <ActionBtn k={`prep-${p.id}`} label={t("techlog.replace")} req={{ action: "partReplace", ids: [p.id] }} what={p.name} />
-                </div>
+                <div className="flex shrink-0 gap-1">{partActions(p)}</div>
               </li>
             ))}
           </ul>
@@ -1000,8 +1015,21 @@ export function TechLogFlightCard({
   }
   const warnings = data.events.filter((e) => e.severity !== "Info");
   const score = data.score != null ? Math.round(data.score) : null;
+  // (26/10) Etapa 6: el recuadro lleva al Mantenimiento del avión en el Hangar.
+  const reg = flight.aircraftRegistration;
+  const open = reg ? () => useAppStore.getState().requestHangarFocus(reg) : undefined;
   return (
-    <div className="rounded-lg border border-sf-border bg-sf-surface px-3 py-2.5">
+    <div
+      role={open ? "button" : undefined}
+      tabIndex={open ? 0 : undefined}
+      onClick={open}
+      onKeyDown={(e) => open && (e.key === "Enter" || e.key === " ") && open()}
+      title={open ? t("techlog.flight.open_hangar") : undefined}
+      className={cn(
+        "rounded-lg border border-sf-border bg-sf-surface px-3 py-2.5",
+        open && "cursor-pointer transition-colors hover:border-brand-500/50 hover:bg-sf-raised/40",
+      )}
+    >
       <div className="flex items-center gap-2">
         <Wrench className="h-3.5 w-3.5 text-brand-300" />
         <span className="text-xs font-semibold text-sf-text">{data.appName}</span>
@@ -1022,6 +1050,12 @@ export function TechLogFlightCard({
           <span className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-rose-300">
             <ShieldAlert className="h-3 w-3" />
             {t("techlog.flight.violation")}
+          </span>
+        )}
+        {open && (
+          <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 text-[10px] text-brand-300">
+            {t("techlog.flight.open_hangar_short")}
+            <ChevronRight className="h-3 w-3" />
           </span>
         )}
       </div>

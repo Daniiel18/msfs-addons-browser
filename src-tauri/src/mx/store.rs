@@ -25,7 +25,7 @@ use super::recorder::{Effect, FlightEvent, FlightRecord, LandingRec, Target};
 use crate::airline_economy::normalize_reg;
 use crate::techlog::{
     TechLogAircraft, TechLogFlight, TlActionRequest, TlActionResult, TlCheck, TlCondition,
-    TlConsumable, TlDefect, TlDispatch, TlFlightEvent, TlFlightWear, TlPart, TlSource,
+    TlConsumable, TlDefect, TlDispatch, TlFlightEvent, TlFlightWear, TlPart, TlSource, TlStats,
 };
 
 /// Ventana de diferido por categoría MEL (días).
@@ -1665,27 +1665,37 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
     let comps = load_components(pool, &reg).await?;
     let worn_below = cat.limits.common.worn_below_pct;
     let mut condition = TlCondition::default();
-    let mut parts = Vec::new();
+    let mut all_parts = Vec::new();
     for c in &comps {
         let Some(def) = cat.component(&c.key) else { continue };
         let rem = remaining(c, def, &a, &r, now);
         condition.count(&c.status, rem < worn_below, rem);
-        if c.status != "Ok" || rem < worn_below {
-            parts.push(TlPart {
-                id: c.id,
-                key: c.key.clone(),
-                name: def.name_for(&c.pos),
-                position: (!c.pos.is_empty()).then(|| c.pos.clone()),
-                ata: def.ata,
-                system: def.system.clone(),
-                kind: def.kind().to_string(),
-                remaining_pct: (rem * 10.0).round() / 10.0,
-                status: c.status.clone(),
-                repairs: c.repairs,
-            });
-        }
+        all_parts.push(TlPart {
+            id: c.id,
+            key: c.key.clone(),
+            name: def.name_for(&c.pos),
+            position: (!c.pos.is_empty()).then(|| c.pos.clone()),
+            ata: def.ata,
+            system: def.system.clone(),
+            kind: def.kind().to_string(),
+            remaining_pct: (rem * 10.0).round() / 10.0,
+            worn: rem < worn_below,
+            status: c.status.clone(),
+            repairs: c.repairs,
+        });
     }
-    parts.sort_by(|x, y| x.remaining_pct.total_cmp(&y.remaining_pct));
+    all_parts.sort_by(|x, y| x.remaining_pct.total_cmp(&y.remaining_pct));
+    let parts: Vec<TlPart> = all_parts.iter().filter(|p| p.status != "Ok" || p.worn).cloned().collect();
+    let k = &a.counters;
+    let stats = TlStats::new(
+        k.block_hours,
+        k.landings,
+        k.apu_hours,
+        k.apu_starts,
+        &k.eng_hours,
+        &k.eng_cycles,
+        &k.eng_starts,
+    );
 
     let checks = check_states(pool, &a)
         .await?
@@ -1742,6 +1752,8 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
         dispatch,
         defects,
         parts,
+        all_parts,
+        stats,
         condition,
         consumables: consumable_views(&a),
         checks,

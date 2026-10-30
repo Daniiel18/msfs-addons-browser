@@ -1,23 +1,28 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Download,
   ExternalLink,
   Folder,
   FolderOpen,
+  Link2,
   Loader2,
+  Package,
   Pause,
   Play,
+  RotateCcw,
   Trash2,
   X,
   XCircle,
 } from "lucide-react";
 import type {
+  Addon,
   CommunityInfo,
   DownloadJob,
-  DownloadPhase,
+  DownloadMethod,
   InstalledAddon,
 } from "../lib/types";
 import { toJobsList, useDownloadsStore } from "../stores/useDownloadsStore";
@@ -110,11 +115,7 @@ export function DownloadsPanel({ open, onClose }: Props) {
                 jobs.length === 0 ? (
                   <ActiveEmptyState />
                 ) : (
-                  <ul className="space-y-2">
-                    {jobs.map((j) => (
-                      <JobRow key={j.id} job={j} />
-                    ))}
-                  </ul>
+                  <JobSections jobs={jobs} />
                 )
               ) : installed.length === 0 ? (
                 <InstalledEmptyState />
@@ -218,22 +219,109 @@ function CommunityBanner({ info }: { info: CommunityInfo | null }) {
   );
 }
 
+const isTerminal = (j: DownloadJob) =>
+  j.phase === "completed" || j.phase === "cancelled" || j.phase === "error";
+
+/** (25/10) «En curso» arriba y el «Historial» (7 días) plegable debajo. */
+function JobSections({ jobs }: { jobs: DownloadJob[] }) {
+  const clear = useDownloadsStore((s) => s.clear);
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const active = jobs.filter((j) => !isTerminal(j));
+  const history = jobs.filter(isTerminal);
+  return (
+    <div className="space-y-4">
+      {active.length > 0 && (
+        <section>
+          <SectionTitle>
+            {t("downloads.section.active")} <span className="text-sf-muted">({active.length})</span>
+          </SectionTitle>
+          <ul className="space-y-2">
+            <AnimatePresence initial={false}>
+              {active.map((j) => (
+                <JobRow key={j.id} job={j} />
+              ))}
+            </AnimatePresence>
+          </ul>
+        </section>
+      )}
+      {history.length > 0 && (
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <button
+              onClick={() => setHistoryOpen((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sf-muted hover:text-sf-text"
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${historyOpen ? "" : "-rotate-90"}`} />
+              {t("downloads.section.history")} <span>({history.length})</span>
+            </button>
+            <button
+              onClick={() => history.forEach((j) => void clear(j.id))}
+              className="rounded-md px-2 py-0.5 text-[11px] text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+            >
+              {t("downloads.clear_history")}
+            </button>
+          </div>
+          {historyOpen && (
+            <ul className="space-y-2">
+              <AnimatePresence initial={false}>
+                {history.map((j) => (
+                  <JobRow key={j.id} job={j} />
+                ))}
+              </AnimatePresence>
+            </ul>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-sf-text/80">{children}</h3>
+  );
+}
+
+/** (25/10) Miniatura del addon (la de su catálogo) o un icono. */
+function JobThumb({ job }: { job: DownloadJob }) {
+  const [failed, setFailed] = useState(false);
+  if (job.imageUrl && !failed) {
+    return (
+      <img
+        src={job.imageUrl}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+        className="h-12 w-16 shrink-0 rounded-lg object-cover ring-1 ring-sf-border"
+      />
+    );
+  }
+  return (
+    <div className="flex h-12 w-16 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-slate-800 to-slate-950 ring-1 ring-sf-border">
+      <Package className="h-5 w-5 text-slate-500" strokeWidth={1.5} />
+    </div>
+  );
+}
+
 function JobRow({ job }: { job: DownloadJob }) {
   const cancel = useDownloadsStore((s) => s.cancel);
   const pause = useDownloadsStore((s) => s.pause);
   const resume = useDownloadsStore((s) => s.resume);
   const clear = useDownloadsStore((s) => s.clear);
+  const retry = useDownloadsStore((s) => s.retry);
+  const [busy, setBusy] = useState(false);
 
-  const terminal =
-    job.phase === "completed" ||
-    job.phase === "cancelled" ||
-    job.phase === "error";
-
-  // Pause/resume only makes sense for torrent jobs that are actively
-  // downloading (or already paused). Mirror/direct jobs get nothing —
-  // the browser owns the download there, we'd just confuse the user.
-  const canPause = job.methodKind === "torrent" && job.phase === "downloading";
-  const canResume = job.methodKind === "torrent" && job.phase === "paused";
+  const terminal = isTerminal(job);
+  const failed = job.phase === "error" || job.phase === "cancelled";
+  const canPause = job.pausable && job.phase === "downloading";
+  const canResume = job.phase === "paused";
+  const canRetry = failed && (job.resumable || !!job.addonId);
+  const showBar = job.phase === "downloading" || job.phase === "paused" || job.phase === "installing";
+  const run = (f: () => Promise<void>) => {
+    setBusy(true);
+    void f().finally(() => setBusy(false));
+  };
 
   return (
     <motion.li
@@ -241,93 +329,189 @@ function JobRow({ job }: { job: DownloadJob }) {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: 20 }}
-      className="rounded-xl border border-sf-border bg-sf-surface p-3"
+      className={`rounded-xl border bg-sf-surface p-3 transition-colors ${
+        job.phase === "error"
+          ? "border-rose-500/30"
+          : job.phase === "paused"
+            ? "border-amber-500/30"
+            : "border-sf-border hover:border-sf-border/80"
+      }`}
     >
       <div className="flex items-start gap-3">
-        <PhaseIcon phase={job.phase} />
+        <div className="relative">
+          <JobThumb job={job} />
+          <span className="absolute -bottom-1 -right-1 rounded-full bg-sf-bg p-0.5">
+            <PhaseIcon phase={job.phase} />
+          </span>
+        </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-sf-text">
+          <div className="truncate text-sm font-medium text-sf-text" title={job.addonTitle}>
             {job.addonTitle}
           </div>
-          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-sf-muted">
-            <span className="uppercase tracking-wide">{job.source}</span>
-            <span>·</span>
-            <span>{job.methodName}</span>
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-sf-muted">
+            <span className="shrink-0 rounded bg-sf-raised px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-sf-text/80">
+              {job.source}
+            </span>
+            <span className="truncate">{job.methodName}</span>
           </div>
-          {(job.phase === "downloading" ||
-            job.phase === "paused" ||
-            job.phase === "installing") &&
-            job.bytesTotal > 0 && (
-              <>
-                <ProgressBar done={job.bytesDone} total={job.bytesTotal} />
-                <ProgressDetails job={job} />
-              </>
-            )}
-          {job.message && (
+          {showBar && <ProgressBar job={job} />}
+          {showBar && <ProgressDetails job={job} />}
+          {job.message && !showBar && (
             <p className="mt-1.5 text-xs text-sf-muted">{translateJobMessage(job.message)}</p>
           )}
-          {job.error && (
-            <p className="mt-1.5 text-xs text-red-300/90">{job.error}</p>
-          )}
-          {job.phase === "completed" && job.installPath && (
-            <button
-              onClick={() => api.openLocalPath(job.installPath!)}
-              className="mt-2 inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
-            >
-              <FolderOpen className="h-3 w-3" />
-              {t("downloads.open_installed_folder")}
-            </button>
-          )}
-          {job.phase === "completed" && job.methodKind !== "torrent" && (
-            <button
-              onClick={() => api.openExternal(job.url)}
-              className="mt-2 inline-flex items-center gap-1 text-[11px] text-brand-300 hover:text-brand-200"
-            >
-              <ExternalLink className="h-3 w-3" />
-              {t("downloads.reopen_link")}
-            </button>
+          {job.error && <p className="mt-1.5 text-xs leading-snug text-rose-300/90">{job.error}</p>}
+          {(canRetry || !!job.addonId && failed || job.phase === "completed") && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {canRetry && (
+                <button
+                  disabled={busy}
+                  onClick={() => run(() => retry(job))}
+                  className="inline-flex items-center gap-1 rounded-md bg-brand-500/15 px-2 py-1 text-[11px] font-semibold text-brand-200 ring-1 ring-brand-500/30 hover:bg-brand-500/25 disabled:opacity-50"
+                >
+                  {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                  {t("downloads.retry")}
+                </button>
+              )}
+              {failed && !!job.addonId && <OtherLinkMenu job={job} />}
+              {job.phase === "completed" && job.installPath && (
+                <button
+                  onClick={() => api.openLocalPath(job.installPath!)}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-brand-300 hover:bg-sf-raised hover:text-brand-200"
+                >
+                  <FolderOpen className="h-3 w-3" />
+                  {t("downloads.open_installed_folder")}
+                </button>
+              )}
+              {job.phase === "completed" && job.methodKind !== "torrent" && /^https?:/.test(job.url) && (
+                <button
+                  onClick={() => api.openExternal(job.url)}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  {t("downloads.reopen_link")}
+                </button>
+              )}
+            </div>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {canPause && (
-            <button
-              onClick={() => pause(job.id)}
-              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-amber-300"
-              title={t("downloads.pause")}
-            >
+            <IconButton title={t("downloads.pause")} onClick={() => pause(job.id)} tone="amber">
               <Pause className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           )}
           {canResume && (
-            <button
-              onClick={() => resume(job.id)}
-              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-brand-300"
-              title={t("downloads.resume")}
-            >
+            <IconButton title={t("downloads.resume")} onClick={() => resume(job.id)} tone="brand">
               <Play className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           )}
           {!terminal && (
-            <button
-              onClick={() => cancel(job.id)}
-              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
-              title={t("common.cancel")}
-            >
+            <IconButton title={t("common.cancel")} onClick={() => cancel(job.id)}>
               <XCircle className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           )}
           {terminal && (
-            <button
-              onClick={() => clear(job.id)}
-              className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-red-300"
-              title={t("common.remove_from_list")}
-            >
+            <IconButton title={t("common.remove_from_list")} onClick={() => clear(job.id)} tone="rose">
               <Trash2 className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           )}
         </div>
       </div>
     </motion.li>
+  );
+}
+
+function IconButton({
+  title,
+  onClick,
+  tone,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  tone?: "amber" | "brand" | "rose";
+  children: React.ReactNode;
+}) {
+  const hover =
+    tone === "amber"
+      ? "hover:border-amber-500/40 hover:text-amber-300"
+      : tone === "brand"
+        ? "hover:border-brand-500/40 hover:text-brand-300"
+        : tone === "rose"
+          ? "hover:border-rose-500/40 hover:text-rose-300"
+          : "hover:border-sf-border hover:text-sf-text";
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={`rounded-lg border border-transparent p-1.5 text-sf-muted transition-colors hover:bg-sf-raised ${hover}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** (25/10) «Otro enlace»: los demás métodos del addon (ModsFire, torrent…). */
+function OtherLinkMenu({ job }: { job: DownloadJob }) {
+  const addonOf = useDownloadsStore((s) => s.addonOf);
+  const startWith = useDownloadsStore((s) => s.startWith);
+  const [open, setOpen] = useState(false);
+  const [addon, setAddon] = useState<Addon | null | undefined>(undefined);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+  const toggle = () => {
+    setOpen((v) => !v);
+    if (addon === undefined) void addonOf(job).then(setAddon);
+  };
+  const others: DownloadMethod[] = (addon?.downloadMethods ?? []).filter(
+    (m) => !(m.name === job.methodName && m.url === job.url),
+  );
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={toggle}
+        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-sf-muted ring-1 ring-sf-border hover:bg-sf-raised hover:text-sf-text"
+      >
+        <Link2 className="h-3 w-3" />
+        {t("downloads.other_link")}
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-10 mt-1 w-60 overflow-hidden rounded-lg border border-sf-border bg-sf-surface py-1 shadow-xl shadow-black/40">
+          {addon === undefined ? (
+            <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-sf-muted">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {t("downloads.other_link_loading")}
+            </div>
+          ) : others.length === 0 || !addon ? (
+            <div className="px-3 py-2 text-[11px] text-sf-muted">{t("downloads.other_link_none")}</div>
+          ) : (
+            others.map((m) => (
+              <button
+                key={`${m.name}-${m.url}`}
+                onClick={() => {
+                  setOpen(false);
+                  void startWith(job, addon, m);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-sf-text hover:bg-sf-raised"
+              >
+                <Download className="h-3 w-3 shrink-0 text-brand-300" />
+                <span className="truncate">{m.name}</span>
+                <span className="ml-auto shrink-0 text-[10px] uppercase text-sf-muted">{m.kind}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -409,8 +593,8 @@ function InstalledRow({ item }: { item: InstalledAddon }) {
   );
 }
 
-function PhaseIcon({ phase }: { phase: DownloadPhase }) {
-  const common = "mt-0.5 h-4 w-4 shrink-0";
+function PhaseIcon({ phase }: { phase: DownloadJob["phase"] }) {
+  const common = "h-3.5 w-3.5 shrink-0";
   switch (phase) {
     case "queued":
     case "resolving":
@@ -430,14 +614,19 @@ function PhaseIcon({ phase }: { phase: DownloadPhase }) {
   }
 }
 
-function ProgressBar({ done, total }: { done: number; total: number }) {
-  const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+function ProgressBar({ job }: { job: DownloadJob }) {
+  const total = job.bytesTotal;
+  const pct = total > 0 ? Math.min(100, (job.bytesDone / total) * 100) : 0;
+  const color = job.phase === "paused" ? "bg-amber-400" : "bg-gradient-to-r from-brand-500 to-brand-300";
   return (
-    <div className="mt-2 h-1 overflow-hidden rounded-full bg-sf-raised">
-      <div
-        className="h-full bg-brand-500 transition-[width] duration-200"
-        style={{ width: `${pct}%` }}
-      />
+    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sf-raised">
+      {total > 0 ? (
+        <div className={`h-full rounded-full ${color} transition-[width] duration-300`} style={{ width: `${pct}%` }} />
+      ) : (
+        // Sin tamaño todavía (esperando al servidor / instalando): barra
+        // indeterminada.
+        <div className={`h-full w-1/3 animate-pulse rounded-full ${color}`} />
+      )}
     </div>
   );
 }
@@ -448,17 +637,25 @@ function ProgressBar({ done, total }: { done: number; total: number }) {
  * side panel.
  */
 function ProgressDetails({ job }: { job: DownloadJob }) {
-  const pct = job.bytesTotal > 0 ? (job.bytesDone / job.bytesTotal) * 100 : 0;
-  const parts: string[] = [];
-  parts.push(`${formatBytes(job.bytesDone)} / ${formatBytes(job.bytesTotal)}`);
-  if (job.phase === "downloading") {
+  const hasTotal = job.bytesTotal > 0;
+  const pct = hasTotal ? `${((job.bytesDone / job.bytesTotal) * 100).toFixed(1)}%` : "";
+  let left: string;
+  if (job.phase === "paused") {
+    left = t("downloads.paused_at", { pct: pct || formatBytes(job.bytesDone) });
+  } else if (job.phase === "installing" || !hasTotal) {
+    left = job.message ? translateJobMessage(job.message) : t("downloads.waiting");
+  } else {
+    const parts = [`${formatBytes(job.bytesDone)} / ${formatBytes(job.bytesTotal)}`];
     if (job.speedBps > 0) parts.push(`${formatBytes(job.speedBps)}/s`);
     if (job.etaSeconds !== null && job.etaSeconds > 0) parts.push(t("downloads.eta_remaining", { time: formatDuration(job.etaSeconds) }));
+    // "Parte 1 de 2" y similares.
+    if (job.message) parts.push(translateJobMessage(job.message));
+    left = parts.join(" · ");
   }
   return (
-    <div className="mt-1 flex items-center justify-between text-[11px] text-sf-muted">
-      <span>{parts.join(" · ")}</span>
-      <span className="tabular-nums">{pct.toFixed(1)}%</span>
+    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-sf-muted">
+      <span className="truncate" title={job.resumable ? t("downloads.resumable_hint") : undefined}>{left}</span>
+      {job.phase === "downloading" && pct && <span className="shrink-0 tabular-nums text-sf-text/80">{pct}</span>}
     </div>
   );
 }

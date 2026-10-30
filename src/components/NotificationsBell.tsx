@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
+  BellRing,
   CheckCheck,
   Download,
   ExternalLink,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAppStore } from "../stores/useAppStore";
+import { useDownloadsStore } from "../stores/useDownloadsStore";
 import {
   useGsxUpdateStore,
   gsxUpdateVisible,
@@ -31,7 +33,9 @@ import {
 import { useLiveVsStore } from "../stores/useLiveVsStore";
 import { useFlightsimUpdateStore, useInstalledFlightsimUpdates } from "../stores/useFlightsimUpdateStore";
 import { useFstoEmbedStore } from "./FlightsimEmbed";
-import { updateOnMap } from "./PendingUpdatesModal";
+import { updateOnMap, usePendingUpdatesModal } from "./PendingUpdatesModal";
+import { openInFlightsimTab } from "../lib/flightsimTab";
+import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useGsxOfferStore } from "../stores/useGsxOfferStore";
 import { useMaintAlertsStore } from "../stores/useMaintAlertsStore";
 import { useFpsNoticesStore } from "../stores/useFpsNoticesStore";
@@ -44,25 +48,26 @@ import { installPendingNow, cancelPending } from "../lib/installQueue";
 import { usePreflight } from "../lib/usePreflight";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { PerformanceModal } from "./PerformanceModal";
-import type {
-  AvailableUpdate,
-  CommunityPackage,
-  UpdateInfo,
-} from "../lib/types";
+import type { CommunityPackage, UpdateInfo } from "../lib/types";
 import { api } from "../lib/tauri";
 import { t } from "../lib/i18n";
+import { cn } from "../lib/cn";
 
 const APP_UPDATE_DISMISSED_KEY = "msfs-addons-browser:updater:dismissed-version";
+/** Cuántas actualizaciones de addons se ven en la campanita (el resto, en el modal). */
+const ADDON_PREVIEW = 3;
 
 /**
- * Campana de **Notificaciones** del header. Antes mostraba sólo
- * actualizaciones de paquetes Community; ahora también incluye:
- *   · Nueva versión de la app disponible (top del listado).
- *   · Updates de paquetes (como antes).
+ * Campana de **Notificaciones** del header.
  *
- * El refresh es automático — el bootstrap del splash ya ejecutó la
- * pasada activa, y al ganar foco la ventana se refresca de nuevo.
- * Por eso aquí no hay botón "Refrescar" — todo es auto.
+ * (26/10) Etapa 7 — rediseño: panel lateral como Descargas, tarjetas neutras
+ * con su icono de color (o la imagen del addon) y grupos con cabecera:
+ * Pendiente · Actualizaciones · Flota y vuelos · Sugerencias. De los addons
+ * con versión nueva salen las 3 primeras y el resto en el modal de tarjetas.
+ * Al arrancar ya no se abre el panel: un globo junto a la campanita avisa.
+ *
+ * El refresh es automático — el bootstrap del splash ya ejecutó la pasada
+ * activa, y al ganar foco la ventana se refresca de nuevo.
  */
 export function NotificationsBell() {
   const updates = useCommunityStore((s) => s.updates);
@@ -75,9 +80,10 @@ export function NotificationsBell() {
   const openCatalogAddon = useAppStore((s) => s.openCatalogAddon);
   const openFlightsimTab = useAppStore((s) => s.openFlightsimTab);
   const requestCrewVs = useAppStore((s) => s.requestCrewVs);
+  const openUpdatesModal = usePendingUpdatesModal((s) => s.setOpen);
 
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [peek, setPeek] = useState(false);
 
   // (Rediseño F2) Otras pantallas (Inicio › Avisos) pueden abrir la campana.
   useEffect(() => {
@@ -85,12 +91,25 @@ export function NotificationsBell() {
     window.addEventListener("simfleet:notifications", onOpen);
     return () => window.removeEventListener("simfleet:notifications", onOpen);
   }, []);
+  // (26/10) Un solo panel lateral a la vez: Descargas cierra éste y viceversa.
+  const downloadsOpen = useDownloadsStore((s) => s.isPanelOpen);
+  useEffect(() => {
+    if (downloadsOpen) setOpen(false);
+  }, [downloadsOpen]);
+  useEffect(() => {
+    if (!open) return;
+    setPeek(false);
+    useDownloadsStore.getState().setPanelOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
   const [appUpdate, setAppUpdate] = useState<UpdateInfo | null>(null);
   const [appUpdateDismissed, setAppUpdateDismissed] = useState(false);
 
   // (v6.2.4) Update de GSX (FSDreamTeam) — el chequeo horario vive en App.tsx;
-  // aquí sólo leemos el resultado compartido. (v6.2.6) Persiste hasta actualizar
-  // (no descartable).
+  // aquí sólo leemos el resultado compartido. Persiste hasta actualizar.
   const gsxInfo = useGsxUpdateStore((s) => s.info);
   const gsxRequestInstall = useGsxUpdateStore((s) => s.requestInstall);
   const showGsx = gsxUpdateVisible(gsxInfo);
@@ -100,13 +119,10 @@ export function NotificationsBell() {
   const airacOpenUpdater = useAiracUpdateStore((s) => s.openUpdater);
   const showAirac = airacUpdateVisible(airacInfo);
 
-  // (v6.2.60) Updates de addons descargados de flightsim.to por el embebido.
-  // Clic → abre la página del addon (re-descargar) y avanza el baseline; la X
-  // sólo lo descarta (también avanza el baseline).
+  // (v6.2.60) Updates de addons descargados de flightsim.to.
   const ackFlightsimUpdate = useFlightsimUpdateStore((s) => s.ackUpdate);
 
-  // (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir → aviso en la campana;
-  // clic reabre el modal, X descarta.
+  // (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir.
   const gsxPendingOffers = useGsxOfferStore((s) => s.pending);
   const reopenGsxOffer = useGsxOfferStore((s) => s.reopen);
   const clearGsxOffer = useGsxOfferStore((s) => s.clearPending);
@@ -115,9 +131,8 @@ export function NotificationsBell() {
   const duelNotices = useLiveVsStore((s) => s.duelNotices);
   const dismissDuelNotice = useLiveVsStore((s) => s.dismissDuelNotice);
 
-  // (v6.2.19) Aviones próximos a mantenimiento (>=75% de desgaste). Clic abre
-  // el taller de esa matrícula en Finanzas; la X descarta (reaparece si el
-  // desgaste sigue subiendo).
+  // (v6.2.19) Aviones con mantenimiento pendiente. La X descarta (reaparece
+  // si el desgaste sigue subiendo).
   const maintStart = useMaintAlertsStore((s) => s.start);
   const maintAlertsAll = useMaintAlertsStore((s) => s.alerts);
   const maintDismissed = useMaintAlertsStore((s) => s.dismissed);
@@ -132,25 +147,19 @@ export function NotificationsBell() {
   });
 
   // (v6.2.20) Escenario recién instalado con "FPS Optimization" disponible.
-  // Clic abre el modal de rendimiento (igual que la tuerca del Link Map).
   const fpsStart = useFpsNoticesStore((s) => s.start);
   const fpsNotices = useFpsNoticesStore((s) => s.notices);
   const fpsDismiss = useFpsNoticesStore((s) => s.dismiss);
   const communityPackages = useCommunityStore((s) => s.packages);
   const flightsimUpdates = useInstalledFlightsimUpdates();
+  // (26/10) Perfiles GSX instalados con versión nueva (cuenta de flightsim.to).
+  const gsxProfileUpdatesMap = useGsxLocalStore((s) => s.updates);
+  const gsxProfileUpdates = Array.from(gsxProfileUpdatesMap.values());
+  const ackGsxProfile = useGsxLocalStore((s) => s.ackUpdate);
   const [perfPkg, setPerfPkg] = useState<CommunityPackage | null>(null);
   useEffect(() => {
     fpsStart();
   }, [fpsStart]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener("mousedown", handler);
-    return () => window.removeEventListener("mousedown", handler);
-  }, [open]);
 
   // Comprobamos updates de la app una vez al montar.
   useEffect(() => {
@@ -172,8 +181,7 @@ export function NotificationsBell() {
   }, []);
 
   const showAppUpdate = appUpdate !== null && !appUpdateDismissed;
-  // (v6.2.34) Pre-vuelo pendiente — persiste en la campanita hasta que
-  // el usuario resuelve o marca "usar por defecto" cada punto.
+  // (v6.2.34) Pre-vuelo pendiente — persiste hasta resolver cada punto.
   const preflightIssues = usePreflight().result.issues;
   const openPreflight = usePreflightStore((s) => s.setOpen);
   const showPreflight = preflightIssues > 0;
@@ -183,24 +191,76 @@ export function NotificationsBell() {
   const openPendingInstall = useInstallQueueStore((s) => s.openPending);
 
   const packageCount = updates.length;
-  const totalCount =
-    pendingInstalls.length +
-    packageCount +
-    (showAppUpdate ? 1 : 0) +
-    (showGsx ? 1 : 0) +
-    (showAirac ? 1 : 0) +
-    (showPreflight ? 1 : 0) +
-    duelNotices.length +
-    maintAlerts.length +
-    fpsNotices.length +
-    flightsimUpdates.length +
-    gsxPendingOffers.length;
+  const close = () => setOpen(false);
 
-  // Peek-on-first-launch: si hay notificaciones y no hemos peekado
-  // antes, abrimos brevemente para que el usuario las vea.
-  // (v6.2.37 B4) El aviso de pre-vuelo NO cuenta para el peek: es un
-  // recordatorio persistente (ya se ve en el badge y en el Dashboard),
-  // no debe forzar la apertura del panel.
+  // Actualizaciones de addons (catálogos, flightsim.to y perfiles GSX), en una
+  // sola lista: aquí las primeras, todas en el modal de tarjetas.
+  const addonItems: AddonItem[] = [
+    ...updates.map((u) => ({
+      key: `cat:${u.folderName}`,
+      title: u.title,
+      meta: [u.icao, u.source].filter(Boolean).join(" · "),
+      image: u.imageUrl,
+      from: u.installedVersion,
+      to: u.latestVersion,
+      tooltip: t("updates.modal.go_tooltip", { source: u.source }),
+      onOpen: () => {
+        void openCatalogAddon(u);
+        close();
+      },
+      onMap: updateOnMap(u, communityPackages)
+        ? () => {
+            setView("map");
+            setFocused(u.folderName);
+            close();
+          }
+        : undefined,
+      onDismiss: () => void dismissUpdate(u.folderName),
+    })),
+    ...flightsimUpdates.map((u) => ({
+      key: `fsto:${u.folderName}`,
+      title: u.title ?? u.folderName,
+      meta: "flightsim.to",
+      image: u.thumbnail ?? null,
+      from: u.currentVersion ?? "?",
+      to: u.latestVersion ?? "?",
+      tooltip: t("updates.modal.go_fsto_tooltip"),
+      onOpen: () => {
+        // (25/10) En la pestaña flightsim.to de Explorar, como los demás catálogos.
+        ackFlightsimUpdate(u.folderName);
+        useFstoEmbedStore.getState().openUrl(u.link);
+        openFlightsimTab();
+        close();
+      },
+      onDismiss: () => ackFlightsimUpdate(u.folderName),
+    })),
+    ...gsxProfileUpdates.map((g) => ({
+      key: `gsx:${g.icao}`,
+      title: g.title || t("updates.modal.gsx_title", { icao: g.icao }),
+      meta: `${g.icao} · ${t("updates.modal.gsx_source")}`,
+      image: g.thumbnail ?? null,
+      from: "",
+      to: g.latestVersion ?? "",
+      tooltip: t("updates.modal.go_fsto_tooltip"),
+      onOpen: () => {
+        ackGsxProfile(g.icao);
+        openInFlightsimTab(g.link);
+        close();
+      },
+      onDismiss: () => ackGsxProfile(g.icao),
+    })),
+  ];
+
+  const pendingCount = pendingInstalls.length + (showPreflight ? 1 : 0);
+  const updatesCount = (showAppUpdate ? 1 : 0) + (showGsx ? 1 : 0) + (showAirac ? 1 : 0) + addonItems.length;
+  const fleetCount = maintAlerts.length + duelNotices.length;
+  const suggestCount = fpsNotices.length + gsxPendingOffers.length;
+  const totalCount = pendingCount + updatesCount + fleetCount + suggestCount;
+
+  // Al arrancar, si hay avisos, un globo junto a la campanita (antes se abría
+  // el panel 4 s y tapaba lo que hubiera debajo). El pre-vuelo no cuenta: es
+  // un recordatorio persistente (ya se ve en el badge y en Inicio).
+  // (25/10) El cierre no se cancela: cerrar tras desmontar no hace nada.
   const peekCount = totalCount - (showPreflight ? 1 : 0);
   useEffect(() => {
     if (peekCount === 0) return;
@@ -208,28 +268,9 @@ export function NotificationsBell() {
     if (typeof window === "undefined") return;
     if (window.sessionStorage.getItem(PEEK_KEY)) return;
     window.sessionStorage.setItem(PEEK_KEY, "1");
-    setOpen(true);
-    const t = window.setTimeout(() => setOpen(false), 4000);
-    return () => window.clearTimeout(t);
+    setPeek(true);
+    window.setTimeout(() => setPeek(false), 6000);
   }, [peekCount]);
-
-  const focusOnMap = (folderName: string) => {
-    setView("map");
-    setFocused(folderName);
-    setOpen(false);
-  };
-
-  // (25/10) Directo a la tarjeta de ese addon en su catálogo (antes una
-  // búsqueda por palabra clave que podía traer muchos resultados).
-  const openInSearch = (u: AvailableUpdate) => {
-    void openCatalogAddon(u);
-    setOpen(false);
-  };
-
-  const handleUpdateAll = () => {
-    startUpdateAll();
-    setOpen(false);
-  };
 
   const dismissAppUpdate = () => {
     if (!appUpdate) return;
@@ -237,11 +278,376 @@ export function NotificationsBell() {
     setAppUpdateDismissed(true);
   };
 
+  const panel = (
+    <>
+      {/* Igual que Descargas: el velo y el panel como hermanos directos de
+          AnimatePresence (dentro de un Fragment no se desmontan bien). */}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            key="scrim"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={close}
+            className="fixed inset-x-0 bottom-0 top-11 z-[46] bg-slate-950/70"
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {open && (
+          <motion.aside
+            key="panel"
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", stiffness: 320, damping: 34 }}
+            data-sf-overlay
+            className="fixed bottom-0 right-0 top-11 z-[47] flex w-full max-w-md flex-col border-l border-sf-border bg-sf-bg shadow-2xl"
+          >
+            <header className="flex items-center justify-between gap-2 border-b border-sf-border px-5 py-4">
+              <div className="flex items-center gap-2">
+                <Bell className="h-4 w-4 text-brand-300" />
+                <h2 className="text-sm font-semibold text-sf-text">{t("notifications.title")}</h2>
+                {totalCount > 0 && (
+                  <span className="rounded-full bg-sf-raised px-1.5 py-0.5 text-[11px] tabular-nums text-sf-muted">
+                    {totalCount}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                <IconBtn
+                  title={t("notifications.recheck_tooltip")}
+                  onClick={() => {
+                    void api
+                      .checkForUpdate()
+                      .then((u) => {
+                        setAppUpdateDismissed(false);
+                        setAppUpdate(u);
+                      })
+                      .catch((e) => console.warn("re-check failed:", e));
+                  }}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </IconBtn>
+                {packageCount > 0 && (
+                  <IconBtn title={t("notifications.mark_all_seen")} onClick={() => dismissAll()}>
+                    <CheckCheck className="h-4 w-4" />
+                  </IconBtn>
+                )}
+                <IconBtn title={t("common.close")} onClick={close}>
+                  <X className="h-4 w-4" />
+                </IconBtn>
+              </div>
+            </header>
+
+            <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
+              {lastRefreshError && (
+                <div className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/30">
+                  {lastRefreshError}
+                </div>
+              )}
+              {totalCount === 0 && (
+                <div className="mt-16 flex flex-col items-center text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-sf-surface ring-1 ring-sf-border">
+                    <Bell className="h-5 w-5 text-sf-muted" />
+                  </div>
+                  <p className="mt-3 text-sm text-sf-text/90">{t("notifications.all_clear")}</p>
+                  <p className="mt-1 max-w-[280px] text-xs text-sf-muted">{t("notifications.empty")}</p>
+                </div>
+              )}
+
+              {/* Pendiente: instalaciones aparcadas y pre-vuelo. */}
+              {pendingCount > 0 && (
+                <Group title={t("notifications.group.pending")} count={pendingCount}>
+                  {pendingInstalls.map((b) => (
+                    <NoticeCard
+                      key={b.id}
+                      tone="amber"
+                      icon={<Package className="h-4 w-4" />}
+                      urgent
+                      title={t("installq.pending_title")}
+                      lines={[
+                        <span key="l" className="font-mono">{batchLabel(b)}</span>,
+                        t("installq.items", { n: String(batchItemCount(b)) }),
+                      ]}
+                      onOpen={() => {
+                        openPendingInstall(b.id);
+                        close();
+                      }}
+                      openTitle={t("installq.open_tooltip")}
+                      actions={
+                        <>
+                          <SecondaryBtn onClick={() => void cancelPending(b.id)}>{t("common.cancel")}</SecondaryBtn>
+                          <PrimaryBtn onClick={() => void installPendingNow(b.id)}>{t("installq.install")}</PrimaryBtn>
+                        </>
+                      }
+                    />
+                  ))}
+                  {showPreflight && (
+                    <NoticeCard
+                      tone="emerald"
+                      icon={<Rocket className="h-4 w-4" />}
+                      title={t("preflight.cta.title")}
+                      lines={[t("preflight.cta.issues", { n: String(preflightIssues) })]}
+                      onOpen={() => {
+                        openPreflight(true);
+                        close();
+                      }}
+                    />
+                  )}
+                </Group>
+              )}
+
+              {/* Actualizaciones. */}
+              {updatesCount > 0 && (
+                <Group title={t("notifications.group.updates")} count={updatesCount}>
+                  {showAppUpdate && appUpdate && (
+                    <NoticeCard
+                      tone="emerald"
+                      icon={<Sparkles className="h-4 w-4" />}
+                      title={t("notifications.new_app_version")}
+                      chip={<VersionChip from={appUpdate.currentVersion} to={appUpdate.latestVersion} />}
+                      onDismiss={dismissAppUpdate}
+                      actions={
+                        appUpdate.assetUrl ? (
+                          <PrimaryBtn onClick={() => api.openExternal(appUpdate.assetUrl!)}>
+                            <Download className="h-3 w-3" /> {t("notifications.download")}
+                          </PrimaryBtn>
+                        ) : (
+                          <SecondaryBtn onClick={() => api.openExternal(appUpdate.releaseUrl)}>
+                            <ExternalLink className="h-3 w-3" /> {t("notifications.view_release")}
+                          </SecondaryBtn>
+                        )
+                      }
+                    />
+                  )}
+                  {showGsx && gsxInfo && (
+                    <NoticeCard
+                      tone="cyan"
+                      icon={<Truck className="h-4 w-4" />}
+                      title={t("notifications.gsx_update")}
+                      chip={<VersionChip from={gsxInfo.installedVersion} to={gsxInfo.latestVersion} />}
+                      lines={gsxInfo.latestDate ? [gsxInfo.latestDate] : undefined}
+                      actions={
+                        <>
+                          <SecondaryBtn onClick={() => api.openExternal(gsxInfo.notesUrl)}>
+                            <ExternalLink className="h-3 w-3" /> {t("notifications.gsx_notes")}
+                          </SecondaryBtn>
+                          <PrimaryBtn
+                            onClick={() => {
+                              gsxRequestInstall();
+                              close();
+                            }}
+                          >
+                            <Download className="h-3 w-3" /> {t("notifications.gsx_update_now")}
+                          </PrimaryBtn>
+                        </>
+                      }
+                    />
+                  )}
+                  {showAirac && airacInfo && (
+                    <NoticeCard
+                      tone="indigo"
+                      icon={<Navigation className="h-4 w-4" />}
+                      title={t("notifications.airac_update")}
+                      chip={
+                        <VersionChip
+                          plain
+                          from={`${t("notifications.airac_cycle")} ${airacInfo.installedCycle}`}
+                          to={String(airacInfo.latestCycle)}
+                        />
+                      }
+                      lines={airacInfo.effectiveDate ? [airacInfo.effectiveDate] : undefined}
+                      actions={
+                        <PrimaryBtn
+                          onClick={() => {
+                            void airacOpenUpdater();
+                            close();
+                          }}
+                        >
+                          <Download className="h-3 w-3" /> {t("notifications.airac_update_now")}
+                        </PrimaryBtn>
+                      }
+                    />
+                  )}
+                  {addonItems.slice(0, ADDON_PREVIEW).map((a) => (
+                    <NoticeCard
+                      key={a.key}
+                      tone="amber"
+                      image={a.image}
+                      icon={<Download className="h-4 w-4" />}
+                      title={a.title}
+                      lines={[a.meta]}
+                      chip={<VersionChip from={a.from} to={a.to} />}
+                      onOpen={a.onOpen}
+                      openTitle={a.tooltip}
+                      onDismiss={a.onDismiss}
+                      extra={
+                        a.onMap && (
+                          <button
+                            onClick={a.onMap}
+                            title={t("common.view_on_map")}
+                            className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+                          >
+                            <MapIcon className="h-3.5 w-3.5" />
+                          </button>
+                        )
+                      }
+                    />
+                  ))}
+                  {addonItems.length > 0 && (
+                    <li className="flex items-center gap-2 pt-0.5">
+                      {addonItems.length > ADDON_PREVIEW && (
+                        <button
+                          onClick={() => {
+                            openUpdatesModal(true);
+                            close();
+                          }}
+                          className="flex-1 rounded-lg border border-sf-border bg-sf-surface px-3 py-2 text-xs font-medium text-sf-text hover:border-brand-500/40"
+                        >
+                          {t("notifications.see_all_updates", { n: String(addonItems.length) })}
+                        </button>
+                      )}
+                      {packageCount > 0 && (
+                        <button
+                          onClick={() => {
+                            startUpdateAll();
+                            close();
+                          }}
+                          title={t("notifications.update_all.hint")}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-brand-400"
+                        >
+                          <Sparkles className="h-3.5 w-3.5" />
+                          {t("notifications.update_all")} ({packageCount})
+                        </button>
+                      )}
+                    </li>
+                  )}
+                </Group>
+              )}
+
+              {/* Flota y vuelos: mantenimiento y Crew VS. */}
+              {fleetCount > 0 && (
+                <Group title={t("notifications.group.fleet")} count={fleetCount}>
+                  {maintAlerts.map((a) => {
+                    const due = a.severity === "due";
+                    return (
+                      <NoticeCard
+                        key={`${a.registration}|${a.component}`}
+                        tone={due ? "rose" : "amber"}
+                        urgent={due}
+                        icon={<Wrench className="h-4 w-4" />}
+                        title={
+                          due
+                            ? t(a.component === "techlog" ? "notifications.mx_nogo" : "notifications.maint_due")
+                            : t("notifications.maint_soon")
+                        }
+                        lines={[
+                          <span key="r" className="font-mono text-sf-text/90">
+                            {a.registration}
+                            {a.model ? ` · ${a.model}` : ""}
+                          </span>,
+                          `${a.label ?? `${t(`economy.comp.${a.component}`)} · ${Math.round(a.wearPct)}%`}${
+                            a.dueCount > 1
+                              ? ` · +${a.dueCount - 1} ${t(a.component === "techlog" ? "notifications.mx_more" : "notifications.maint_more")}`
+                              : ""
+                          }`,
+                        ]}
+                        onOpen={() => {
+                          // (19/10) Avisos del Tech Log → su mantenimiento en el Hangar.
+                          if (a.component === "techlog") useAppStore.getState().requestHangarFocus(a.registration);
+                          else openEconomy(a.airlineKey, a.registration);
+                          close();
+                        }}
+                        onDismiss={() => maintDismiss(a)}
+                      />
+                    );
+                  })}
+                  {duelNotices.map((d) => (
+                    <NoticeCard
+                      key={d.channel}
+                      tone="fuchsia"
+                      icon={<Swords className="h-4 w-4" />}
+                      title={t("notifications.vs_ready")}
+                      lines={[
+                        <span key="r" className="font-mono">
+                          {d.origin} → {d.dest}
+                        </span>,
+                        `${t("vs.you")} ${Math.round(d.selfFpm)} · ${d.rivalName} ${Math.round(d.rivalFpm)} fpm`,
+                      ]}
+                      onOpen={() => {
+                        // (v6.2.35) Abre DIRECTO el Crew VS de ese vuelo.
+                        requestCrewVs(d.origin, d.dest, d.at);
+                        dismissDuelNotice(d.channel);
+                        close();
+                      }}
+                      onDismiss={() => dismissDuelNotice(d.channel)}
+                    />
+                  ))}
+                </Group>
+              )}
+
+              {/* Sugerencias: FPS y perfiles GSX ofrecidos. */}
+              {suggestCount > 0 && (
+                <Group title={t("notifications.group.suggestions")} count={suggestCount}>
+                  {fpsNotices.map((n) => (
+                    <NoticeCard
+                      key={n.folderName}
+                      tone="emerald"
+                      icon={<Gauge className="h-4 w-4" />}
+                      title={n.reason === "updated" ? t("notifications.fps_after_update") : t("notifications.fps_available")}
+                      lines={[
+                        <span key="t" className="text-sf-text/90">{n.title}</span>,
+                        n.reason === "updated" ? t("notifications.fps_after_update_hint") : t("notifications.fps_hint"),
+                      ]}
+                      onOpen={() => {
+                        const pkg = communityPackages.find((p) => p.folderName === n.folderName);
+                        if (pkg) {
+                          setPerfPkg(pkg);
+                          close();
+                        } else {
+                          // Ya no está instalado — el aviso sobra.
+                          fpsDismiss(n.folderName);
+                        }
+                      }}
+                      onDismiss={() => fpsDismiss(n.folderName)}
+                    />
+                  ))}
+                  {gsxPendingOffers.map((o) => (
+                    <NoticeCard
+                      key={o.icao}
+                      tone="cyan"
+                      icon={<Truck className="h-4 w-4" />}
+                      title={t("gsxoffer.title", { icao: o.icao })}
+                      lines={[
+                        `${o.airportTitle}${o.profiles.length > 0 ? ` · ${t("gsxoffer.subtitle", { n: String(o.profiles.length) })}` : ""}`,
+                      ]}
+                      onOpen={() => {
+                        reopenGsxOffer(o.icao);
+                        close();
+                      }}
+                      onDismiss={() => clearGsxOffer(o.icao)}
+                    />
+                  ))}
+                </Group>
+              )}
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
+    </>
+  );
+
   return (
-    <div ref={wrapRef} className="relative">
+    <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="relative inline-flex h-8 w-8 items-center justify-center rounded-lg border border-sf-border bg-sf-surface text-sf-text/90 transition-colors hover:border-brand-500/40 hover:text-sf-text"
+        className={cn(
+          "relative inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-sf-surface text-sf-text/90 transition-colors hover:border-brand-500/40 hover:text-sf-text",
+          open ? "border-brand-500/50 text-sf-text" : "border-sf-border",
+        )}
         title={
           totalCount > 0
             ? t("notificationsBell.count_tooltip", { count: String(totalCount) })
@@ -256,563 +662,220 @@ export function NotificationsBell() {
         )}
       </button>
 
+      {/* (26/10) Globo al arrancar: cuántos avisos hay, sin abrir el panel. */}
       <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -4, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.98 }}
-            transition={{ duration: 0.12 }}
-            data-sf-overlay
-            className="absolute right-0 top-full z-30 mt-2 w-[420px] origin-top-right overflow-hidden rounded-xl border border-sf-border bg-sf-bg/95 shadow-xl ring-1 ring-sf-border backdrop-blur"
+        {peek && !open && (
+          <motion.button
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            onClick={() => setOpen(true)}
+            className="absolute right-0 top-full z-30 mt-2 flex w-64 items-center gap-3 rounded-xl border border-sf-border bg-sf-surface px-3 py-2.5 text-left shadow-xl ring-1 ring-slate-950/40 hover:border-brand-500/40"
           >
-            <header className="flex items-center justify-between gap-2 border-b border-sf-border px-4 py-3">
-              <div>
-                <h3 className="text-sm font-semibold text-sf-text">
-                  {t("notifications.title")}
-                </h3>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => {
-                    void api
-                      .checkForUpdate()
-                      .then((u) => {
-                        setAppUpdateDismissed(false);
-                        setAppUpdate(u);
-                      })
-                      .catch((e) => console.warn("re-check failed:", e));
-                  }}
-                  title={t("notifications.recheck_tooltip")}
-                  className="rounded-md border border-sf-border p-1.5 text-sf-text/90 hover:border-brand-500/40 hover:bg-sf-surface"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </button>
-                {packageCount > 0 && (
-                  <button
-                    onClick={() => dismissAll()}
-                    title={t("notifications.mark_all_seen")}
-                    className="rounded-md border border-sf-border p-1.5 text-sf-text/90 hover:border-brand-500/40 hover:bg-sf-surface"
-                  >
-                    <CheckCheck className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            </header>
-
-            {/* (v6.2.33 fix) Contenedor scrolleable: con muchas
-                notificaciones antes no se podía ver las de abajo sin ir
-                borrando las de arriba. */}
-            <div className="max-h-[min(65vh,560px)] overflow-y-auto">
-            {/* (Ajustes 19/10) Instalaciones pendientes: clic abre el modal;
-                "Instalar" instala sin modal; "Cancelar" la descarta. */}
-            {pendingInstalls.map((b) => (
-              <div
-                key={b.id}
-                className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-3"
-              >
-                <div className="flex items-start gap-3">
-                  <Package className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-                  <button
-                    onClick={() => {
-                      openPendingInstall(b.id);
-                      setOpen(false);
-                    }}
-                    title={t("installq.open_tooltip")}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="text-xs font-semibold text-amber-100">
-                      {t("installq.pending_title")}
-                    </div>
-                    <div className="mt-0.5 truncate font-mono text-[11px] text-amber-200/90">
-                      {batchLabel(b)}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-amber-200/70">
-                      {t("installq.items", { n: String(batchItemCount(b)) })}
-                    </div>
-                  </button>
-                </div>
-                <div className="mt-2 flex justify-end gap-2">
-                  <button
-                    onClick={() => void cancelPending(b.id)}
-                    className="rounded-md border border-amber-500/30 px-2.5 py-1 text-[11px] font-medium text-amber-100 hover:bg-amber-500/15"
-                  >
-                    {t("common.cancel")}
-                  </button>
-                  <button
-                    onClick={() => void installPendingNow(b.id)}
-                    className="rounded-md bg-brand-500 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:bg-brand-400"
-                  >
-                    {t("installq.install")}
-                  </button>
-                </div>
-              </div>
-            ))}
-            {/* (v6.2.34) Pre-vuelo pendiente — persiste hasta resolver. */}
-            {showPreflight && (
-              <button
-                onClick={() => {
-                  openPreflight(true);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-3 border-b border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-left hover:bg-emerald-500/15"
-              >
-                <Rocket className="h-4 w-4 shrink-0 text-emerald-300" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-emerald-100">
-                    {t("preflight.cta.title")}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-emerald-200/80">
-                    {t("preflight.cta.issues", { n: String(preflightIssues) })}
-                  </div>
-                </div>
-              </button>
-            )}
-            {/* App update — pinned al top, en verde para diferenciar
-                de los updates de paquetes (ámbar). */}
-            {showAppUpdate && appUpdate && (
-              <div className="border-b border-emerald-500/20 bg-emerald-500/10 px-4 py-3">
-                <div className="flex items-start gap-3">
-                  <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-emerald-100">
-                      {t("notifications.new_app_version")}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-emerald-200/80">
-                      {appUpdate.currentVersion} →{" "}
-                      <strong>{appUpdate.latestVersion}</strong>
-                    </div>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      {appUpdate.assetUrl ? (
-                        <button
-                          onClick={() => api.openExternal(appUpdate.assetUrl!)}
-                          className="inline-flex items-center gap-1 rounded-md bg-emerald-500/30 px-2.5 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-500/40"
-                        >
-                          <Download className="h-3 w-3" /> {t("notifications.download")}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => api.openExternal(appUpdate.releaseUrl)}
-                          className="inline-flex items-center gap-1 rounded-md bg-emerald-500/30 px-2.5 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-500/40"
-                        >
-                          <ExternalLink className="h-3 w-3" /> {t("notifications.view_release")}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    onClick={dismissAppUpdate}
-                    title={t("notifications.dismiss_app_update")}
-                    className="shrink-0 rounded-md p-1 text-emerald-200/70 hover:bg-emerald-500/20 hover:text-emerald-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* (v6.2.4) Update de GSX — en cyan, distinto de app (verde) y
-                paquetes (ámbar). Al actualizar abre el FSDT Installer. */}
-            {showGsx && gsxInfo && (
-              <div className="border-b border-cyan-500/20 bg-cyan-500/10 px-4 py-3">
-                <div className="flex items-start gap-3">
-                  <Truck className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-cyan-100">
-                      {t("notifications.gsx_update")}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-cyan-200/80">
-                      {gsxInfo.installedVersion} →{" "}
-                      <strong>{gsxInfo.latestVersion}</strong>
-                      {gsxInfo.latestDate ? ` · ${gsxInfo.latestDate}` : ""}
-                    </div>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <button
-                        onClick={() => {
-                          gsxRequestInstall();
-                          setOpen(false);
-                        }}
-                        className="inline-flex items-center gap-1 rounded-md bg-cyan-500/30 px-2.5 py-1 text-[11px] font-medium text-cyan-100 hover:bg-cyan-500/40"
-                      >
-                        <Download className="h-3 w-3" />{" "}
-                        {t("notifications.gsx_update_now")}
-                      </button>
-                      <button
-                        onClick={() => api.openExternal(gsxInfo.notesUrl)}
-                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-cyan-200/80 hover:bg-cyan-500/20 hover:text-cyan-100"
-                      >
-                        <ExternalLink className="h-3 w-3" />{" "}
-                        {t("notifications.gsx_notes")}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* (v6.2.8) Update de AIRAC — en índigo. Clic abre Navigraph Hub. */}
-            {showAirac && airacInfo && (
-              <div className="border-b border-indigo-500/20 bg-indigo-500/10 px-4 py-3">
-                <div className="flex items-start gap-3">
-                  <Navigation className="mt-0.5 h-4 w-4 shrink-0 text-indigo-300" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-indigo-100">
-                      {t("notifications.airac_update")}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-indigo-200/80">
-                      {t("notifications.airac_cycle")} {airacInfo.installedCycle}{" "}
-                      → <strong>{airacInfo.latestCycle}</strong>
-                      {airacInfo.effectiveDate
-                        ? ` · ${airacInfo.effectiveDate}`
-                        : ""}
-                    </div>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <button
-                        onClick={() => {
-                          void airacOpenUpdater();
-                          setOpen(false);
-                        }}
-                        className="inline-flex items-center gap-1 rounded-md bg-indigo-500/30 px-2.5 py-1 text-[11px] font-medium text-indigo-100 hover:bg-indigo-500/40"
-                      >
-                        <Download className="h-3 w-3" />{" "}
-                        {t("notifications.airac_update_now")}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* (v6.2.60) Updates de addons descargados de flightsim.to — en
-                sky/azul. Clic → abre la página del addon en el embebido para
-                re-descargar (y avanza el baseline); la X sólo lo descarta. */}
-            {flightsimUpdates.map((u) => (
-              <div
-                key={u.folderName}
-                className="border-b border-sky-500/20 bg-sky-500/10 px-4 py-3"
-              >
-                <div className="flex items-start gap-3">
-                  <Download className="mt-0.5 h-4 w-4 shrink-0 text-sky-300" />
-                  <button
-                    onClick={() => {
-                      // (25/10) En la pestaña flightsim.to de Explorar, como
-                      // los demás catálogos (antes, en otra ventana).
-                      ackFlightsimUpdate(u.folderName);
-                      useFstoEmbedStore.getState().openUrl(u.link);
-                      openFlightsimTab();
-                      setOpen(false);
-                    }}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="text-xs font-semibold text-sky-100">
-                      {t("notifications.fsto_update")}
-                    </div>
-                    <div className="mt-0.5 truncate text-[11px] text-sky-200/80">
-                      {u.title ?? u.folderName}
-                    </div>
-                    {(u.currentVersion || u.latestVersion) && (
-                      <div className="mt-1 inline-flex items-center gap-1 rounded bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-200 ring-1 ring-sky-500/30">
-                        v{u.currentVersion ?? "?"} → v{u.latestVersion ?? "?"}
-                      </div>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => ackFlightsimUpdate(u.folderName)}
-                    title={t("common.dismiss")}
-                    className="shrink-0 rounded-md p-1 text-sky-200/70 hover:bg-sky-500/20 hover:text-sky-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {/* (v6.2.69) Ofertas de perfiles GSX cerradas sin elegir — en cyan.
-                Clic reabre el modal con las opciones; la X descarta. */}
-            {gsxPendingOffers.map((o) => (
-              <div
-                key={o.icao}
-                className="border-b border-cyan-500/20 bg-cyan-500/10 px-4 py-3"
-              >
-                <div className="flex items-start gap-3">
-                  <Truck className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
-                  <button
-                    onClick={() => {
-                      reopenGsxOffer(o.icao);
-                      setOpen(false);
-                    }}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="text-xs font-semibold text-cyan-100">
-                      {t("gsxoffer.title", { icao: o.icao })}
-                    </div>
-                    <div className="mt-0.5 truncate text-[11px] text-cyan-200/80">
-                      {o.airportTitle}
-                      {o.profiles.length > 0
-                        ? ` · ${t("gsxoffer.subtitle", { n: String(o.profiles.length) })}`
-                        : ""}
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => clearGsxOffer(o.icao)}
-                    title={t("common.dismiss")}
-                    className="shrink-0 rounded-md p-1 text-cyan-200/70 hover:bg-cyan-500/20 hover:text-cyan-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {/* (v6.2.11) Crew VS listo — duelos completados (ambos aterrizaron).
-                Clic abre el FlightBook para revisarlo; la X lo descarta. */}
-            {duelNotices.map((d) => (
-              <div
-                key={d.channel}
-                className="border-b border-fuchsia-500/20 bg-fuchsia-500/10 px-4 py-3"
-              >
-                <div className="flex items-start gap-3">
-                  <Swords className="mt-0.5 h-4 w-4 shrink-0 text-fuchsia-300" />
-                  <button
-                    onClick={() => {
-                      // (v6.2.35) Abre DIRECTO el Crew VS de ese vuelo (no
-                      // sólo el FlightBook) y descarta el aviso.
-                      requestCrewVs(d.origin, d.dest, d.at);
-                      dismissDuelNotice(d.channel);
-                      setOpen(false);
-                    }}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="text-xs font-semibold text-fuchsia-100">
-                      {t("notifications.vs_ready")}
-                    </div>
-                    <div className="mt-0.5 font-mono text-[11px] text-fuchsia-200/80">
-                      {d.origin} → {d.dest}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-fuchsia-200/80">
-                      {t("vs.you")} {Math.round(d.selfFpm)} · {d.rivalName}{" "}
-                      {Math.round(d.rivalFpm)} fpm
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => dismissDuelNotice(d.channel)}
-                    title={t("notifications.dismiss_app_update")}
-                    className="shrink-0 rounded-md p-1 text-fuchsia-200/70 hover:bg-fuchsia-500/20 hover:text-fuchsia-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {/* (v6.2.19) Aviones próximos a mantenimiento. Clic → taller de la
-                matrícula en Finanzas. Ámbar = pronto (75-80), rojo = vencido. */}
-            {maintAlerts.map((a) => {
-              const due = a.severity === "due";
-              return (
-                <div
-                  key={`${a.registration}|${a.component}`}
-                  className={`border-b px-4 py-3 ${
-                    due
-                      ? "border-rose-500/20 bg-rose-500/10"
-                      : "border-amber-500/20 bg-amber-500/10"
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <Wrench
-                      className={`mt-0.5 h-4 w-4 shrink-0 ${
-                        due ? "text-rose-300" : "text-amber-300"
-                      }`}
-                    />
-                    <button
-                      onClick={() => {
-                        // (19/10) Avisos del Tech Log → su mantenimiento en el Hangar.
-                        if (a.component === "techlog") {
-                          useAppStore.getState().requestHangarFocus(a.registration);
-                          setOpen(false);
-                          return;
-                        }
-                        openEconomy(a.airlineKey, a.registration);
-                        setOpen(false);
-                      }}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <div
-                        className={`text-xs font-semibold ${
-                          due ? "text-rose-100" : "text-amber-100"
-                        }`}
-                      >
-                        {due
-                          ? t(a.component === "techlog" ? "notifications.mx_nogo" : "notifications.maint_due")
-                          : t("notifications.maint_soon")}
-                      </div>
-                      <div className="mt-0.5 font-mono text-[11px] text-sf-text/90">
-                        {a.registration}
-                        {a.model ? ` · ${a.model}` : ""}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-sf-muted">
-                        {a.label ?? `${t(`economy.comp.${a.component}`)} · ${Math.round(a.wearPct)}%`}
-                        {a.dueCount > 1
-                          ? ` · +${a.dueCount - 1} ${t(a.component === "techlog" ? "notifications.mx_more" : "notifications.maint_more")}`
-                          : ""}
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => maintDismiss(a)}
-                      title={t("notifications.dismiss_app_update")}
-                      className="shrink-0 rounded-md p-1 text-sf-muted hover:bg-slate-700/40 hover:text-sf-text"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* (v6.2.20) FPS Optimization disponible en escenario recién
-                instalado — clic abre el modal de rendimiento. */}
-            {fpsNotices.map((n) => (
-              <div
-                key={n.folderName}
-                className="border-b border-emerald-500/20 bg-emerald-500/10 px-4 py-3"
-              >
-                <div className="flex items-start gap-3">
-                  <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" />
-                  <button
-                    onClick={() => {
-                      const pkg = communityPackages.find(
-                        (p) => p.folderName === n.folderName,
-                      );
-                      if (pkg) {
-                        setPerfPkg(pkg);
-                        setOpen(false);
-                      } else {
-                        // Ya no está instalado — el aviso sobra.
-                        fpsDismiss(n.folderName);
-                      }
-                    }}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="text-xs font-semibold text-emerald-100">
-                      {n.reason === "updated"
-                        ? t("notifications.fps_after_update")
-                        : t("notifications.fps_available")}
-                    </div>
-                    <div className="mt-0.5 truncate text-[11px] text-emerald-200/80">
-                      {n.title}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-sf-muted">
-                      {n.reason === "updated"
-                        ? t("notifications.fps_after_update_hint")
-                        : t("notifications.fps_hint")}
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => fpsDismiss(n.folderName)}
-                    title={t("notifications.dismiss_app_update")}
-                    className="shrink-0 rounded-md p-1 text-emerald-200/70 hover:bg-emerald-500/20 hover:text-emerald-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {packageCount > 0 && (
-              <div className="border-b border-sf-border bg-amber-500/5 px-4 py-2">
-                <button
-                  onClick={handleUpdateAll}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-amber-500 px-3 py-2 text-xs font-bold uppercase tracking-wide text-amber-950 shadow-md shadow-amber-500/20 hover:bg-amber-400"
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  {t("notifications.update_all")} ({packageCount})
-                </button>
-                <p className="mt-1 text-center text-[11px] text-sf-muted">
-                  {t("notifications.update_all.hint")}
-                </p>
-              </div>
-            )}
-
-            <div>
-              {lastRefreshError && (
-                <div className="m-3 rounded bg-rose-500/15 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/30">
-                  {lastRefreshError}
-                </div>
-              )}
-              {totalCount === 0 ? (
-                <div className="px-4 py-8 text-center text-xs text-sf-muted">
-                  {t("notifications.empty")}
-                </div>
-              ) : packageCount === 0 ? null : (
-                <ul className="divide-y divide-sf-border">
-                  {updates.map((u) => (
-                    <li
-                      key={u.folderName}
-                      className="group flex items-stretch hover:bg-sf-surface"
-                    >
-                      <button
-                        onClick={() => openInSearch(u)}
-                        className="flex flex-1 items-start gap-3 px-4 py-3 text-left"
-                        title={t("updates.modal.go_tooltip", { source: u.source })}
-                      >
-                        <div className="mt-1 shrink-0">
-                          <Download className="h-4 w-4 text-amber-300" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-[11px] font-semibold text-brand-300">
-                              {u.icao}
-                            </span>
-                            <span className="rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
-                              {u.source}
-                            </span>
-                          </div>
-                          <div className="mt-1 truncate text-sm text-sf-text">
-                            {u.title}
-                          </div>
-                          <div className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-300 ring-1 ring-amber-500/30">
-                            v{u.installedVersion} → v{u.latestVersion}
-                          </div>
-                        </div>
-                      </button>
-                      <div className="flex flex-col items-center gap-1 px-2 py-3">
-                        {/* (25/10) Sólo escenarios: un avión no está en el mapa. */}
-                        {updateOnMap(u, communityPackages) && (
-                          <button
-                            onClick={() => focusOnMap(u.folderName)}
-                            title={t("common.view_on_map")}
-                            className="rounded-md border border-sf-border p-1 text-sf-muted hover:border-brand-500/40 hover:text-sf-text"
-                          >
-                            <MapIcon className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                        <button
-                          onClick={() => dismissUpdate(u.folderName)}
-                          title={t("common.dismiss")}
-                          className="rounded-md border border-sf-border p-1 text-sf-muted hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            </div>
-          </motion.div>
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/25">
+              <BellRing className="h-4 w-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-semibold text-sf-text">
+                {peekCount === 1 ? t("notifications.peek_one") : t("notifications.peek", { n: String(peekCount) })}
+              </span>
+              <span className="block text-[11px] text-sf-muted">{t("notifications.peek_open")}</span>
+            </span>
+          </motion.button>
         )}
       </AnimatePresence>
 
-      {/* (v6.2.21) Modal de rendimiento abierto desde un aviso de FPS — mismo
-          componente que la tuerca del Link Map, pero por PORTAL a <body>: el
-          header tiene backdrop-blur/transform y atrapaba el `fixed` del modal
-          (salía arriba, recortado e incerrable — reportado). */}
+      {/* El header tiene backdrop-blur/transform y atrapaba el `fixed`: el
+          panel (y el modal de rendimiento) van por portal a <body>. */}
+      {createPortal(panel, document.body)}
       {perfPkg &&
         createPortal(
           <PerformanceModal pkg={perfPkg} onClose={() => setPerfPkg(null)} />,
           document.body,
         )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Piezas del panel
+// ---------------------------------------------------------------------------
+
+interface AddonItem {
+  key: string;
+  title: string;
+  meta: string;
+  image: string | null;
+  from: string;
+  to: string;
+  tooltip: string;
+  onOpen: () => void;
+  onMap?: () => void;
+  onDismiss: () => void;
+}
+
+type Tone = "amber" | "emerald" | "cyan" | "indigo" | "fuchsia" | "rose";
+
+const TONES: Record<Tone, { tile: string; stripe: string }> = {
+  amber: { tile: "bg-amber-500/15 text-amber-300 ring-amber-500/25", stripe: "before:bg-amber-400" },
+  emerald: { tile: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/25", stripe: "before:bg-emerald-400" },
+  cyan: { tile: "bg-cyan-500/15 text-cyan-300 ring-cyan-500/25", stripe: "before:bg-cyan-400" },
+  indigo: { tile: "bg-indigo-500/15 text-indigo-300 ring-indigo-500/25", stripe: "before:bg-indigo-400" },
+  fuchsia: { tile: "bg-fuchsia-500/15 text-fuchsia-300 ring-fuchsia-500/25", stripe: "before:bg-fuchsia-400" },
+  rose: { tile: "bg-rose-500/15 text-rose-300 ring-rose-500/25", stripe: "before:bg-rose-400" },
+};
+
+function Group({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sf-text/80">
+        {title}
+        <span className="rounded bg-sf-raised px-1.5 py-px text-[10px] tabular-nums text-sf-muted">{count}</span>
+      </h3>
+      <ul className="space-y-2">{children}</ul>
+    </section>
+  );
+}
+
+/**
+ * Un aviso: icono en su cuadrito de color (o la imagen del addon), título,
+ * detalle, chip de versión y botones. Clic en el cuerpo = su acción principal.
+ */
+function NoticeCard({
+  tone,
+  icon,
+  image,
+  title,
+  lines,
+  chip,
+  actions,
+  extra,
+  onOpen,
+  openTitle,
+  onDismiss,
+  urgent,
+}: {
+  tone: Tone;
+  icon: ReactNode;
+  image?: string | null;
+  title: ReactNode;
+  lines?: ReactNode[];
+  chip?: ReactNode;
+  actions?: ReactNode;
+  extra?: ReactNode;
+  onOpen?: () => void;
+  openTitle?: string;
+  onDismiss?: () => void;
+  urgent?: boolean;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const body = (
+    <>
+      {image && !imgFailed ? (
+        <img
+          src={image}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setImgFailed(true)}
+          className="h-10 w-14 shrink-0 rounded-lg object-cover ring-1 ring-sf-border"
+        />
+      ) : (
+        <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ring-1", TONES[tone].tile)}>
+          {icon}
+        </span>
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-sf-text">{title}</span>
+        {lines?.map((l, i) => (
+          <span key={i} className="mt-0.5 block truncate text-[11px] text-sf-muted">
+            {l}
+          </span>
+        ))}
+        {chip && <span className="mt-1.5 block">{chip}</span>}
+      </span>
+    </>
+  );
+  return (
+    <li
+      className={cn(
+        "group relative overflow-hidden rounded-xl border border-sf-border bg-sf-surface p-3 transition-colors hover:border-slate-500/50",
+        urgent && "before:absolute before:inset-y-0 before:left-0 before:w-[3px]",
+        urgent && TONES[tone].stripe,
+      )}
+    >
+      <div className="flex items-start gap-3">
+        {onOpen ? (
+          <button onClick={onOpen} title={openTitle} className="flex min-w-0 flex-1 items-start gap-3 text-left">
+            {body}
+          </button>
+        ) : (
+          <div className="flex min-w-0 flex-1 items-start gap-3">{body}</div>
+        )}
+        {(extra || onDismiss) && (
+          <div className="flex shrink-0 items-center gap-0.5">
+            {extra}
+            {onDismiss && (
+              <button
+                onClick={onDismiss}
+                title={t("common.dismiss")}
+                className="rounded-md p-1 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {actions && <div className="mt-2.5 flex flex-wrap justify-end gap-1.5">{actions}</div>}
+    </li>
+  );
+}
+
+function VersionChip({ from, to, plain }: { from?: string | null; to?: string | null; plain?: boolean }) {
+  // `plain`: números que no son versiones (ciclo AIRAC).
+  const v = (s: string) => (!plain && /^\d/.test(s) ? `v${s}` : s);
+  if (!from && !to) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-sf-raised px-1.5 py-0.5 font-mono text-[10px] text-sf-muted">
+      {from && <span>{v(from)}</span>}
+      {from && to && <span>→</span>}
+      {to && <span className="font-semibold text-amber-300">{v(to)}</span>}
+    </span>
+  );
+}
+
+function PrimaryBtn({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:bg-brand-400"
+    >
+      {children}
+    </button>
+  );
+}
+
+function SecondaryBtn({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1 rounded-md border border-sf-border px-2.5 py-1 text-[11px] font-medium text-sf-text hover:border-brand-500/40 hover:bg-sf-raised"
+    >
+      {children}
+    </button>
+  );
+}
+
+function IconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="rounded-lg p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+    >
+      {children}
+    </button>
   );
 }

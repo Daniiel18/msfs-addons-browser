@@ -45,6 +45,9 @@ function takePendingUrl(): string | undefined {
 export function FlightsimEmbed() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [ready, setReady] = useState(false);
+  // (25/10) Foto de la página mientras un panel/modal tapa el hueco (el
+  // webview nativo se oculta, si no quedaría por encima): no "desaparece".
+  const [frozen, setFrozen] = useState<string | null>(null);
   // Se incrementa cuando el webview se cierra (botón "Cancelar" del overlay
   // de descarga) para volver a crearlo.
   const [epoch, setEpoch] = useState(0);
@@ -67,6 +70,8 @@ export function FlightsimEmbed() {
     let visible = false;
     let last = "";
     let raf = 0;
+    // Invalida las fotos que lleguen tarde (el hueco ya volvió a verse).
+    let freezeSeq = 0;
     const sync = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
@@ -77,7 +82,31 @@ export function FlightsimEmbed() {
           if (visible) {
             visible = false;
             useFstoEmbedStore.getState().setVisible(false);
-            void api.fstoEmbedHide();
+            // (25/10) Con un panel/modal encima: foto primero, luego se
+            // oculta (como mucho 0,4 s después aunque la foto tarde).
+            const seq = ++freezeSeq;
+            let hidden = false;
+            const hideNow = () => {
+              if (hidden || seq !== freezeSeq) return;
+              hidden = true;
+              void api.fstoEmbedHide();
+            };
+            const timer = window.setTimeout(hideNow, 400);
+            if (covered) {
+              api
+                .fstoEmbedSnapshot()
+                .then((url) => {
+                  if (alive && seq === freezeSeq && url) setFrozen(url);
+                })
+                .catch(() => {})
+                .finally(() => {
+                  window.clearTimeout(timer);
+                  hideNow();
+                });
+            } else {
+              window.clearTimeout(timer);
+              hideNow();
+            }
           }
           return;
         }
@@ -90,11 +119,17 @@ export function FlightsimEmbed() {
         const key = `${b.x},${b.y},${b.width},${b.height}`;
         if (!visible) {
           visible = true;
+          freezeSeq++;
           useFstoEmbedStore.getState().setVisible(true);
           last = key;
           api
             .fstoEmbedShow(b, takePendingUrl())
-            .then(() => alive && setReady(true))
+            .then(() => {
+              if (!alive) return;
+              setReady(true);
+              // La página real ya está encima: fuera la foto.
+              setFrozen(null);
+            })
             .catch(() => {
               visible = false;
               useFstoEmbedStore.getState().setVisible(false);
@@ -138,8 +173,11 @@ export function FlightsimEmbed() {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
       <div ref={hostRef} className="relative min-h-0 flex-1">
+        {frozen && (
+          <img src={frozen} alt="" draggable={false} className="pointer-events-none absolute inset-0 h-full w-full select-none" />
+        )}
         {isTauri ? (
-          !ready && (
+          !ready && !frozen && (
             <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-sf-muted">
               <Loader2 className="h-4 w-4 animate-spin" />
               {t("fsto.loading")}

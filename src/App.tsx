@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { FlaskConical, Search } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "./lib/tauri";
 import { setActiveLocale, t } from "./lib/i18n";
-import { useAppStore } from "./stores/useAppStore";
+import { kindFor, useAppStore } from "./stores/useAppStore";
 import { useDownloadsStore } from "./stores/useDownloadsStore";
 import { useCommunityStore } from "./stores/useCommunityStore";
 import { useSimBriefStore } from "./stores/useSimBriefStore";
@@ -64,6 +65,7 @@ import { ImportInventoryModal } from "./components/ImportInventoryModal";
 import { CrossLinkModal } from "./components/CrossLinkModal";
 import type { CrossLinkOffer } from "./lib/types";
 import { isTestEnv, lockDisabled } from "./lib/testEnv";
+import { AerohubKindChips } from "./components/AerohubKindChips";
 
 /**
  * Bootstrap centralizado: una sola tarea async awaita Promise.all
@@ -74,7 +76,7 @@ import { isTestEnv, lockDisabled } from "./lib/testEnv";
 export default function App() {
   const {
     sources, activeSourceId, query, results, status, error, view,
-    browsePage, browseHasMore, browseMode,
+    browsePage, browseHasMore, browseMode, browseKind,
     setSources, setActiveSource, setQuery, setResults, setStatus, setError,
     loadBrowsePage,
   } = useAppStore();
@@ -173,6 +175,18 @@ export default function App() {
   });
   // (25/10) Una búsqueda pedida desde fuera (campanita, modal de updates,
   // Ctrl+K) se ve aunque la última pestaña fuera flightsim.to.
+  // (26/10) Nueva lectura de la cuenta de flightsim.to: GSX (ámbar del mapa)
+  // y addons de flightsim.to se recalculan al momento.
+  useEffect(() => {
+    if (!isTauri) return;
+    const off = listen("fsto-account://updated", () => {
+      void useGsxLocalStore.getState().refreshUpdates();
+      void useFlightsimUpdateStore.getState().refreshUpdates();
+    });
+    return () => {
+      void off.then((f) => f());
+    };
+  }, []);
   const searchRequest = useAppStore((s) => s.searchRequest);
   useEffect(() => {
     if (searchRequest > 0) setFstoMode(false);
@@ -913,7 +927,7 @@ export default function App() {
     setStatus("loading");
     setError(null);
     try {
-      const r = await api.search(query.trim(), activeSourceId);
+      const r = await api.search(query.trim(), activeSourceId, kindFor(activeSourceId, browseKind));
       setResults(r);
       setStatus("success");
     } catch (e) {
@@ -1122,6 +1136,8 @@ export default function App() {
                         : t("search.placeholder.scenery")
                   }
                 />
+                {/* (26/10) Filtros por tipo de AeroHub. */}
+                {activeSourceId === "aerohub" && <AerohubKindChips />}
                 {activeSourceId === "sceneryaddons" && (
                   <div className="flex justify-center empty:hidden">
                     <GsxSearchSummary query={query} />

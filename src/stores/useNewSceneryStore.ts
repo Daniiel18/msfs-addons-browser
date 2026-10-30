@@ -3,7 +3,9 @@ import { api } from "../lib/tauri";
 import type { Addon } from "../lib/types";
 
 /**
- * (v6.2.26 / R3) Radar de escenarios NUEVOS del catálogo.
+ * (v6.2.26 / R3) Radar de escenarios NUEVOS del catálogo. (26/10) Y de lo
+ * nuevo en AeroHub y Simplaza (aviones, escenarios, utilidades…), cada
+ * catálogo con su propia marca de "visto".
  *
  * Al arrancar (y bajo demanda) navega la primera página de SceneryAddons
  * y compara las fechas de publicación con un marcador local: los addons
@@ -21,17 +23,32 @@ import type { Addon } from "../lib/types";
  */
 
 const SEEN_KEY = "simfleet.newscenery.seen_ms.v1";
-const DISMISS_KEY = "simfleet.newscenery.dismissed.v1";
 
-function loadSeen(): number | null {
-  const raw = localStorage.getItem(SEEN_KEY);
+/** (26/10) Catálogos que mira el radar, con su marca de "visto"
+ *  (SceneryAddons conserva la de siempre). */
+const RADAR_SOURCES: { id: string; seenKey: string }[] = [
+  { id: "sceneryaddons", seenKey: SEEN_KEY },
+  { id: "aerohub", seenKey: "simfleet.newcatalog.aerohub.seen_ms.v1" },
+  { id: "simplaza", seenKey: "simfleet.newcatalog.simplaza.seen_ms.v1" },
+];
+const DISMISS_KEY = "simfleet.newscenery.dismissed.v1";
+/** (26/10) La primera vez, AeroHub y Simplaza cuentan la última semana. */
+const FIRST_LOOK_MS = 7 * 24 * 3600 * 1000;
+
+function loadSeen(key: string): number | null {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(key);
+  } catch {
+    return null;
+  }
   if (!raw) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
-function saveSeen(ms: number) {
+function saveSeen(key: string, ms: number) {
   try {
-    localStorage.setItem(SEEN_KEY, String(ms));
+    localStorage.setItem(key, String(ms));
   } catch {
     /* ignore */
   }
@@ -70,15 +87,40 @@ function releasedMs(a: Addon): number | null {
 }
 
 interface NewSceneryState {
+  /** Lo nuevo de todos los catálogos, lo más reciente primero. */
   fresh: Addon[];
   loading: boolean;
   lastCheckedAt: number | null;
-  /** Navega el catálogo y recalcula `fresh` respetando la versión. */
+  /** Navega los catálogos y recalcula `fresh` respetando la versión. */
   check: (simVersion: string) => Promise<void>;
   /** Marca todo lo actual como visto → limpia `fresh`. */
   acknowledgeAll: () => void;
   /** Oculta un addon puntual del radar. */
   dismiss: (id: string) => void;
+}
+
+/** Lo nuevo de UN catálogo desde su marca de "visto" (la siembra la primera
+ *  vez, sin inundar). */
+async function freshIn(source: { id: string; seenKey: string }, simVersion: string, dismissed: Set<string>) {
+  const page = await api.browseSource(source.id, 1);
+  // (26/10) AeroHub y Simplaza ya llegan filtrados por el MSFS elegido (un
+  // addon de 2020 vale en 2024); SceneryAddons, como siempre, aquí.
+  const dated = page.addons
+    .filter((a) => source.id !== "sceneryaddons" || matchesSimVersion(a.simulator, simVersion))
+    .map((a) => ({ a, ms: releasedMs(a) }))
+    .filter((x): x is { a: Addon; ms: number } => x.ms !== null)
+    .sort((x, y) => y.ms - x.ms);
+  if (dated.length === 0) return [];
+  let seen = loadSeen(source.seenKey);
+  if (seen === null) {
+    // Primer arranque: SceneryAddons siembra el marcador en lo más nuevo
+    // (sin inundar); (26/10) AeroHub y Simplaza, en hace una semana, para que
+    // la primera vez se vea lo último que entró.
+    seen = source.id === "sceneryaddons" ? dated[0].ms : Date.now() - FIRST_LOOK_MS;
+    saveSeen(source.seenKey, seen);
+  }
+  const mark = seen;
+  return dated.filter((x) => x.ms > mark && !dismissed.has(x.a.id));
 }
 
 export const useNewSceneryStore = create<NewSceneryState>((set, get) => ({
@@ -89,46 +131,34 @@ export const useNewSceneryStore = create<NewSceneryState>((set, get) => ({
   async check(simVersion) {
     if (get().loading) return;
     set({ loading: true });
-    try {
-      const page = await api.browseSource("sceneryaddons", 1);
-      const dismissed = loadDismissed();
-      const dated = page.addons
-        .filter((a) => matchesSimVersion(a.simulator, simVersion))
-        .map((a) => ({ a, ms: releasedMs(a) }))
-        .filter((x): x is { a: Addon; ms: number } => x.ms !== null)
-        .sort((x, y) => y.ms - x.ms);
-
-      if (dated.length === 0) {
-        set({ loading: false, lastCheckedAt: Date.now() });
-        return;
-      }
-
-      const newestMs = dated[0].ms;
-      const seen = loadSeen();
-      if (seen === null) {
-        // Primer arranque: sembramos el marcador, sin inundar.
-        saveSeen(newestMs);
-        set({ fresh: [], loading: false, lastCheckedAt: Date.now() });
-        return;
-      }
-
-      const fresh = dated
-        .filter((x) => x.ms > seen && !dismissed.has(x.a.id))
-        .map((x) => x.a);
-      set({ fresh, loading: false, lastCheckedAt: Date.now() });
-    } catch (e) {
-      console.warn("newScenery.check falló:", e);
-      set({ loading: false });
-    }
+    const dismissed = loadDismissed();
+    // Cada catálogo por su lado: si uno falla, los demás siguen.
+    const lists = await Promise.all(
+      RADAR_SOURCES.map((src) =>
+        freshIn(src, simVersion, dismissed).catch((e) => {
+          console.warn(`newScenery.check(${src.id}) falló:`, e);
+          return [];
+        }),
+      ),
+    );
+    const fresh = lists
+      .flat()
+      .sort((x, y) => y.ms - x.ms)
+      .map((x) => x.a);
+    set({ fresh, loading: false, lastCheckedAt: Date.now() });
   },
 
   acknowledgeAll() {
     const { fresh } = get();
     if (fresh.length === 0) return;
-    const newest = fresh
-      .map((a) => Date.parse(a.releasedAt ?? ""))
-      .filter((n) => Number.isFinite(n));
-    if (newest.length) saveSeen(Math.max(...newest));
+    // La marca de cada catálogo avanza hasta lo más nuevo que se vio de él.
+    for (const src of RADAR_SOURCES) {
+      const newest = fresh
+        .filter((a) => a.source === src.id)
+        .map((a) => releasedMs(a))
+        .filter((n): n is number => n !== null);
+      if (newest.length) saveSeen(src.seenKey, Math.max(...newest));
+    }
     set({ fresh: [] });
   },
 
