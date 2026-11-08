@@ -8,6 +8,7 @@
 //! como "Tuyo" en la flota y pagan costo fijo en su aerolínea.
 
 use crate::airline_economy::normalize_reg;
+use crate::community_scanner::{list_pack_liveries, PackLivery};
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
@@ -29,7 +30,7 @@ pub struct MyAircraft {
 }
 
 /// Paquetes de tráfico IA: sus pinturas no son aviones del usuario.
-fn is_traffic_package(folder: &str) -> bool {
+pub(crate) fn is_traffic_package(folder: &str) -> bool {
     let f = folder.to_ascii_lowercase();
     ["traffic", "fsltl", "aig-", "aig_", "-ai-", "aiaircraft", "ai-aircraft", "simtraffic"]
         .iter()
@@ -100,25 +101,7 @@ pub async fn my_aircraft(pool: &SqlitePool) -> Result<HashMap<String, MyAircraft
         add(&mut out, &reg, "techlog", Some(tl.variant.clone()));
     }
     // 3) Pinturas instaladas (sin tráfico IA).
-    let packs: Vec<(String, String)> = sqlx::query(
-        "SELECT folder_name, install_path FROM community_packages
-          WHERE content_type IN ('AIRCRAFT', 'LIVERY', 'AIRCRAFT_LIVERY')",
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|r| (r.get("folder_name"), r.get("install_path")))
-    .filter(|(folder, _): &(String, String)| !is_traffic_package(folder))
-    .collect();
-    let liveries = tokio::task::spawn_blocking(move || {
-        packs
-            .into_iter()
-            .flat_map(|(_, path)| crate::community_scanner::list_pack_liveries(&path))
-            .collect::<Vec<_>>()
-    })
-    .await
-    .unwrap_or_default();
-    for l in liveries {
+    for (_, l) in installed_liveries(pool).await? {
         if let Some(reg) = l.registration.as_deref().filter(|r| !r.trim().is_empty()) {
             add(&mut out, reg, "livery", Some(l.title.clone()));
         }
@@ -127,6 +110,24 @@ pub async fn my_aircraft(pool: &SqlitePool) -> Result<HashMap<String, MyAircraft
         *g = Some((Instant::now(), out.clone()));
     }
     Ok(out)
+}
+
+/// (04/11) Pinturas instaladas con su paquete, sin los paquetes de tráfico IA.
+pub async fn installed_liveries(pool: &SqlitePool) -> Result<Vec<(String, PackLivery)>> {
+    let packs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT folder_name, install_path FROM community_packages
+          WHERE content_type IN ('AIRCRAFT', 'LIVERY', 'AIRCRAFT_LIVERY')",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for (folder, path) in packs.iter().filter(|(f, _)| !is_traffic_package(f)) {
+            out.extend(list_pack_liveries(path).into_iter().map(|l| (folder.clone(), l)));
+        }
+        out
+    })
+    .await?)
 }
 
 /// icao24 (Mode-S) de los aviones del usuario que están en la base de aviones.

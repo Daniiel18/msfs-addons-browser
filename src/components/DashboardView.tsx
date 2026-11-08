@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   BookOpen,
@@ -49,9 +49,11 @@ import { usePreflight } from "../lib/usePreflight";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { useUnits } from "../lib/units";
 import { cleanAtcType } from "../lib/aircraft";
+import { DetailModal, type DetailTab } from "./DetailModal";
 import { DiskCleanupModal } from "./DiskCleanupModal";
 import { ShareCardModal } from "./ShareCardModal";
 import { cleanAircraftLabel, useAircraftPhoto } from "./FlightBookView";
+import { useLatestOfp } from "../lib/useLatestOfp";
 import { effectiveRoute, phaseDisplay } from "./FlyingNowBadge";
 import { computeWrapped } from "../lib/wrapped";
 import { buildWrappedSvg } from "../lib/shareCards";
@@ -64,7 +66,6 @@ import { usePendingUpdatesCount, usePendingUpdatesModal } from "./PendingUpdates
 const RADAR_THROTTLE_MS = 30 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** Un OFP de SimBrief cuenta como "próximo vuelo" durante 36 h. */
-const NEXT_OFP_MAX_AGE_MS = 36 * 60 * 60 * 1000;
 
 /**
  * Inicio (antes "Dashboard de Community").
@@ -92,7 +93,8 @@ export function DashboardView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setView = useAppStore((s) => s.setView);
-  const healthRef = useRef<HTMLDivElement | null>(null);
+  // (03/11) Limpieza de vistas: lo que alargaba Inicio va en «Tu biblioteca».
+  const [library, setLibrary] = useState<LibraryTab | null>(null);
 
   // (v6.2.4) Aviso de update de GSX (FSDreamTeam) — el chequeo horario vive en
   // App.tsx; aquí leemos el resultado compartido.
@@ -215,7 +217,9 @@ export function DashboardView() {
   const addonsThisWeek = useMemo(() => {
     const now = Date.now();
     return packages.filter((p) => {
-      const ts = p.folderModifiedAt ? Date.parse(p.folderModifiedAt) : NaN;
+      // (04/11) `folderModifiedAt` también se mueve al encender o apagar.
+      const date = p.lastUpdate ?? p.folderModifiedAt;
+      const ts = date ? Date.parse(date) : NaN;
       return Number.isFinite(ts) && now - ts < WEEK_MS;
     }).length;
   }, [packages]);
@@ -323,8 +327,7 @@ export function DashboardView() {
       tone: "rose",
       title: t("home.notices.health"),
       desc: t("dashboard.health.to_review", { n: String(health.issueCount) }),
-      onClick: () =>
-        healthRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      onClick: () => setLibrary("health"),
     });
   }
   if (wrappedFlights > 0 && !wrappedDismissed) {
@@ -340,7 +343,7 @@ export function DashboardView() {
   }
 
   return (
-    <div className="space-y-4 pb-2">
+    <div className="flex min-h-full flex-col gap-3 pb-1">
       <WelcomeHero pilotName={pilot?.name ?? null} lastFlight={completedFlights[0] ?? null} />
 
       <QuickActions
@@ -362,6 +365,9 @@ export function DashboardView() {
           onClose={() => setShowWrapped(false)}
         />
       )}
+      {library && stats && (
+        <LibraryModal stats={stats} health={health} tab={library} onTab={setLibrary} onClose={() => setLibrary(null)} onChanged={load} />
+      )}
 
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -373,17 +379,23 @@ export function DashboardView() {
       {/* KPIs — 4 columnas en xl, 2 en sm. */}
       {stats && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard
-            icon={<Package className="h-5 w-5" />}
-            label={t("home.kpi.addons")}
-            value={stats.totalPackages.toLocaleString("es-ES")}
-            hint={
-              addonsThisWeek > 0
-                ? t("home.kpi.addons_week", { n: String(addonsThisWeek) })
-                : t("dashboard.kpi.airports.hint", { aircraft: aircraftCount, liveries: liveriesCount })
-            }
-            hintTone={addonsThisWeek > 0 ? "positive" : "muted"}
-          />
+          <button
+            onClick={() => setLibrary("types")}
+            title={t("home.library.title")}
+            className="rounded-xl text-left outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-brand-500/60"
+          >
+            <StatCard
+              icon={<Package className="h-5 w-5" />}
+              label={t("home.kpi.addons")}
+              value={stats.totalPackages.toLocaleString("es-ES")}
+              hint={
+                addonsThisWeek > 0
+                  ? t("home.kpi.addons_week", { n: String(addonsThisWeek) })
+                  : t("dashboard.kpi.airports.hint", { aircraft: aircraftCount, liveries: liveriesCount })
+              }
+              hintTone={addonsThisWeek > 0 ? "positive" : "muted"}
+            />
+          </button>
           <button
             onClick={() => setShowCleanup(true)}
             title={t("cleanup.cta")}
@@ -417,12 +429,18 @@ export function DashboardView() {
               hintTone={pendingCount > 0 ? "warning" : "muted"}
             />
           </button>
-          <StatCard
-            icon={<PlaneTakeoff className="h-5 w-5" />}
-            label={t("home.kpi.flights")}
-            value={completedFlights.length.toLocaleString("es-ES")}
-            hint={t("home.kpi.flights_month", { n: String(flightsThisMonth) })}
-          />
+          <button
+            onClick={() => setView("flightbook")}
+            title={t("home.quick.flightbook.title")}
+            className="rounded-xl text-left outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-brand-500/60"
+          >
+            <StatCard
+              icon={<PlaneTakeoff className="h-5 w-5" />}
+              label={t("home.kpi.flights")}
+              value={completedFlights.length.toLocaleString("es-ES")}
+              hint={t("home.kpi.flights_month", { n: String(flightsThisMonth) })}
+            />
+          </button>
         </div>
       )}
 
@@ -433,9 +451,9 @@ export function DashboardView() {
         </div>
       )}
 
-      <div className="grid items-stretch gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div className="grid min-h-0 flex-1 items-stretch gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <RecentFlights
-          entries={completedFlights.slice(0, 5)}
+          entries={completedFlights.slice(0, 24)}
           onOpenFlightBook={() => setView("flightbook")}
           onOpenFlight={(id) => useAppStore.getState().requestFlightFocus(id)}
         />
@@ -453,49 +471,92 @@ export function DashboardView() {
       )}
 
       {stats && stats.totalPackages > 0 && (
+        <LibraryBar stats={stats} health={health} onOpen={() => setLibrary("types")} />
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// (03/11) «Tu biblioteca»: el detalle de los addons, fuera de Inicio
+// ----------------------------------------------------------------------------
+
+type LibraryTab = "types" | "creators" | "largest" | "health";
+
+/** Barra de entrada: el reparto en una línea y un clic para ver el detalle. */
+function LibraryBar({
+  stats,
+  health,
+  onOpen,
+}: {
+  stats: DashboardStats;
+  health: AddonHealth | null;
+  onOpen: () => void;
+}) {
+  const top = [...stats.byType].sort((a, b) => b.count - a.count).slice(0, 3);
+  return (
+    <button
+      onClick={onOpen}
+      className="flex shrink-0 items-center gap-3 rounded-xl border border-sf-border/80 bg-sf-surface px-4 py-2.5 text-left outline-none transition-colors hover:border-brand-500/40 hover:bg-sf-raised focus-visible:ring-2 focus-visible:ring-brand-500/60"
+    >
+      <Layers className="h-4 w-4 shrink-0 text-sf-muted" />
+      <span className="shrink-0 text-sm font-semibold text-sf-text">{t("home.library.title")}</span>
+      <span className="min-w-0 flex-1 truncate text-xs text-sf-muted">
+        {top.map((x) => `${x.count} ${translateTypeLabel(x.label).toLowerCase()}`).join(" · ")}
+        {health && health.issueCount > 0 && ` · ${t("dashboard.health.to_review", { n: String(health.issueCount) })}`}
+      </span>
+      <span className="inline-flex shrink-0 items-center gap-0.5 text-xs font-medium text-brand-300">
+        {t("home.library.open")}
+        <ChevronRight className="h-3.5 w-3.5" />
+      </span>
+    </button>
+  );
+}
+
+function LibraryModal({
+  stats,
+  health,
+  tab,
+  onTab,
+  onClose,
+  onChanged,
+}: {
+  stats: DashboardStats;
+  health: AddonHealth | null;
+  tab: LibraryTab;
+  onTab: (tab: LibraryTab) => void;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const tabs: DetailTab[] = [
+    { id: "types", label: t("home.library.summary"), icon: <Rocket className="h-3.5 w-3.5" /> },
+    { id: "creators", label: t("dashboard.card.top_devs"), icon: <Users className="h-3.5 w-3.5" /> },
+    { id: "largest", label: t("dashboard.card.largest"), icon: <Trophy className="h-3.5 w-3.5" /> },
+    {
+      id: "health",
+      label: t("dashboard.health.title"),
+      icon: <HeartPulse className="h-3.5 w-3.5" />,
+      badge: health && health.issueCount > 0 ? health.issueCount : undefined,
+    },
+  ];
+  return (
+    <DetailModal
+      title={t("home.library.title")}
+      icon={<Layers className="h-4 w-4" />}
+      tabs={tabs}
+      tab={tab}
+      onTab={(id) => onTab(id as LibraryTab)}
+      onClose={onClose}
+    >
+      {tab === "types" && (
         <>
-          <Card title={t("dashboard.card.by_type")} icon={<Rocket className="h-4 w-4" />}>
-            <TypeBreakdown stats={stats} />
-          </Card>
-
-          {/* Top devs y largest packages se estiran a la misma
-              altura usando `items-stretch`, y dentro las cards crecen
-              con `h-full + flex-col`. */}
-          <div className="grid items-stretch gap-3 lg:grid-cols-2">
-            <Card
-              title={t("dashboard.card.top_devs")}
-              icon={<Users className="h-4 w-4" />}
-              hint={t("dashboard.card.top_devs.hint")}
-            >
-              {stats.topCreators.length === 0 ? (
-                <p className="px-1 py-2 text-xs text-sf-muted">
-                  {t("dashboard.card.top_devs.empty")}
-                </p>
-              ) : (
-                <CreatorsTable creators={stats.topCreators} />
-              )}
-            </Card>
-
-            <Card
-              title={t("dashboard.card.largest")}
-              icon={<Trophy className="h-4 w-4" />}
-              hint={t("dashboard.card.largest.hint")}
-            >
-              {stats.largestPackages.length === 0 ? (
-                <p className="px-1 py-2 text-xs text-sf-muted">
-                  {t("dashboard.card.largest.empty")}
-                </p>
-              ) : (
-                <LargestTable
-                  rows={stats.largestPackages}
-                  maxBytes={stats.largestPackages[0].sizeBytes ?? 1}
-                />
-              )}
-            </Card>
-          </div>
-
+          <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{t("dashboard.card.by_type")}</h3>
+          <TypeBreakdown stats={stats} />
           {stats.recentlyAdded.length > 0 && (
-            <Card title={t("dashboard.card.recently_added")} icon={<Plane className="h-4 w-4" />}>
+            <>
+              <h3 className="mb-2.5 mt-6 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
+                {t("dashboard.card.recently_added")}
+              </h3>
               <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {stats.recentlyAdded.map((p) => (
                   <li
@@ -513,17 +574,30 @@ export function DashboardView() {
                   </li>
                 ))}
               </ul>
-            </Card>
-          )}
-
-          {health && (
-            <div ref={healthRef} className="scroll-mt-4">
-              <HealthCenter health={health} onChanged={load} />
-            </div>
+            </>
           )}
         </>
       )}
-    </div>
+      {tab === "creators" &&
+        (stats.topCreators.length === 0 ? (
+          <p className="px-1 py-2 text-xs text-sf-muted">{t("dashboard.card.top_devs.empty")}</p>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-sf-muted">{t("dashboard.card.top_devs.hint")}</p>
+            <CreatorsTable creators={stats.topCreators} />
+          </>
+        ))}
+      {tab === "largest" &&
+        (stats.largestPackages.length === 0 ? (
+          <p className="px-1 py-2 text-xs text-sf-muted">{t("dashboard.card.largest.empty")}</p>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-sf-muted">{t("dashboard.card.largest.hint")}</p>
+            <LargestTable rows={stats.largestPackages} maxBytes={stats.largestPackages[0].sizeBytes ?? 1} />
+          </>
+        ))}
+      {tab === "health" && health && <HealthCenter health={health} onChanged={onChanged} />}
+    </DetailModal>
   );
 }
 
@@ -543,7 +617,7 @@ function WelcomeHero({
   const registration = useHeroRegistration(lastFlight);
   const photo = useAircraftPhoto(registration);
   return (
-    <section className="relative overflow-hidden rounded-2xl border border-sf-border/80 bg-gradient-to-br from-sf-surface via-sf-surface to-brand-500/15 lg:min-h-[230px]">
+    <section className="relative overflow-hidden rounded-2xl border border-sf-border/80 bg-gradient-to-br from-sf-surface via-sf-surface to-brand-500/15">
       {photo ? (
         <>
           <img
@@ -560,7 +634,7 @@ function WelcomeHero({
       ) : (
         <RouteArt className="pointer-events-none absolute inset-y-0 right-0 h-full w-full text-brand-400/25 lg:w-3/4" />
       )}
-      <div className="relative flex flex-col gap-5 p-6 lg:flex-row lg:items-center lg:justify-between">
+      <div className="relative flex flex-col gap-5 px-5 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-sf-text">
             {pilotName
@@ -577,22 +651,6 @@ function WelcomeHero({
   );
 }
 
-/** OFP de SimBrief más reciente si tiene menos de 36 h ("próximo vuelo"). */
-function useLatestOfp() {
-  const ofps = useSimBriefStore((s) => s.flights);
-  return useMemo(() => {
-    let best: (typeof ofps)[number] | null = null;
-    let bestTs = 0;
-    for (const f of ofps) {
-      const ts = f.generatedAt ? parseInt(f.generatedAt, 10) * 1000 : 0;
-      if (ts > bestTs) {
-        best = f;
-        bestTs = ts;
-      }
-    }
-    return best && Date.now() - bestTs < NEXT_OFP_MAX_AGE_MS ? best : null;
-  }, [ofps]);
-}
 
 /** (Ajustes 19/10) Matrícula para la foto del saludo, en el mismo orden que
  *  la tarjeta de vuelo: vuelo en curso (OFP enlazado o la del sim) → próximo
@@ -707,7 +765,7 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
     cells = [
       { label: t("home.flight.aircraft"), value: aircraftLabel(lastFlight) },
       { label: t("home.flight.duration"), value: formatDuration(lastFlight.flightTimeS) },
-      { label: t("home.flight.landing"), value: u.fmt.vs(lastFlight.landingFpm) },
+      { label: t("home.flight.landing"), value: u.fmt.vs(lastFlight.landingFpm != null ? -Math.abs(lastFlight.landingFpm) : null) },
     ];
   } else {
     return null;
@@ -724,12 +782,13 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
     <div className="w-full shrink-0 lg:w-[22rem]">
     <button
       // (19/10) "Último vuelo" abre el FlightBook con ese vuelo enfocado.
+      // (8.4.x) "Vuelo actual" y "Próximo vuelo" → la pantalla «En vuelo».
       onClick={() =>
         kind === "last" && lastFlight
           ? useAppStore.getState().requestFlightFocus(lastFlight.id)
-          : setView("flightbook")
+          : setView("inflight")
       }
-      className="w-full rounded-xl border border-sf-border bg-sf-bg/70 p-4 text-left outline-none transition-colors hover:border-brand-500/40 focus-visible:ring-2 focus-visible:ring-brand-500/60"
+      className="w-full rounded-xl border border-sf-border bg-sf-bg/70 px-4 py-3 text-left outline-none transition-colors hover:border-brand-500/40 focus-visible:ring-2 focus-visible:ring-brand-500/60"
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-sf-muted">{title}</span>
@@ -740,7 +799,7 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
           </span>
         )}
       </div>
-      <div className="mt-2 flex items-center gap-2 font-mono text-xl font-semibold text-sf-text">
+      <div className="mt-1 flex items-center gap-2 font-mono text-xl font-semibold text-sf-text">
         <span>{origin ?? "····"}</span>
         <span className="text-brand-300">→</span>
         <span>{destination ?? "····"}</span>
@@ -750,7 +809,7 @@ function FlightCard({ lastFlight }: { lastFlight: FlightLogEntry | null }) {
           {originName ?? "—"} → {destinationName ?? "—"}
         </div>
       )}
-      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-sf-border/70 pt-3">
+      <div className="mt-2 grid grid-cols-3 gap-2 border-t border-sf-border/70 pt-2">
         {cells.map((c) => (
           <div key={c.label} className="min-w-0">
             <div className="truncate text-[11px] uppercase tracking-wide text-sf-muted">
@@ -850,7 +909,7 @@ function QuickAction({
     <button
       onClick={onClick}
       className={cn(
-        "group relative flex items-start gap-3 rounded-xl border p-4 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-500/60",
+        "group relative flex items-center gap-3 rounded-xl border p-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-500/60",
         primary
           ? "border-brand-400/30 bg-gradient-to-br from-brand-600 to-brand-800 text-white hover:from-brand-500 hover:to-brand-700"
           : "border-sf-border/80 bg-sf-surface hover:border-brand-500/40 hover:bg-sf-raised",
@@ -865,10 +924,10 @@ function QuickAction({
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <div className={cn("text-sm font-semibold", primary ? "text-white" : "text-sf-text")}>
+        <div className={cn("truncate text-sm font-semibold", primary ? "text-white" : "text-sf-text")}>
           {title}
         </div>
-        <div className={cn("mt-0.5 text-xs leading-snug", primary ? "text-white/80" : "text-sf-muted")}>
+        <div className={cn("truncate text-xs", primary ? "text-white/80" : "text-sf-muted")} title={desc}>
           {desc}
         </div>
       </div>
@@ -901,6 +960,15 @@ function RecentFlights({
   onOpenFlight: (flightId: number) => void;
 }) {
   const u = useUnits();
+  // (03/11) Tantas filas como quepan: 5 como mínimo, más en ventanas altas.
+  const [fit, setFit] = useState(5);
+  const [box, setBox] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!box) return;
+    const ro = new ResizeObserver(([e]) => setFit(Math.max(5, Math.floor((e.contentRect.height - 34) / 34))));
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [box]);
   return (
     <Card
       title={t("home.recent.title")}
@@ -922,6 +990,7 @@ function RecentFlights({
           {t("home.recent.empty")}
         </p>
       ) : (
+        <div ref={setBox} className="min-h-0 flex-1">
         <div className="overflow-hidden rounded-lg border border-sf-border/60">
           <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1.1fr)_4.5rem_6.5rem] items-center gap-3 border-b border-sf-border/60 bg-sf-raised/50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
             <span>{t("home.recent.col.date")}</span>
@@ -931,11 +1000,11 @@ function RecentFlights({
             <span className="text-right">{t("home.recent.col.result")}</span>
           </div>
           <ul className="divide-y divide-sf-border/50">
-            {entries.map((e) => (
+            {entries.slice(0, fit).map((e) => (
               <li key={e.id}>
                 <button
                   onClick={() => onOpenFlight(e.id)}
-                  className="grid w-full grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1.1fr)_4.5rem_6.5rem] items-center gap-3 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-sf-raised/60"
+                  className="grid w-full grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1.1fr)_4.5rem_6.5rem] items-center gap-3 px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-sf-raised/60"
                 >
                   <span className="text-sf-muted">{formatShortDate(e.startedAt)}</span>
                   <span className="truncate text-sf-text" title={e.aircraftTitle ?? undefined}>
@@ -950,7 +1019,7 @@ function RecentFlights({
                   <span className="flex items-center justify-end gap-1.5">
                     {e.landingFpm !== null && (
                       <span className="truncate text-xs tabular-nums text-sf-muted">
-                        {u.fmt.vs(e.landingFpm)}
+                        {u.fmt.vs(e.landingFpm != null ? -Math.abs(e.landingFpm) : null)}
                       </span>
                     )}
                     {e.scoreGrade && (
@@ -968,6 +1037,7 @@ function RecentFlights({
               </li>
             ))}
           </ul>
+        </div>
         </div>
       )}
     </Card>
@@ -1011,7 +1081,7 @@ function NoticesPanel({ notices }: { notices: Notice[] }) {
           <p className="text-sm text-sf-muted">{t("home.notices.empty")}</p>
         </div>
       ) : (
-        <ul className="space-y-1">
+        <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto">
           {notices.map((n) => (
             <li key={n.key} className="group flex items-center gap-1 rounded-lg hover:bg-sf-raised/60">
               <button
@@ -1320,10 +1390,7 @@ function HealthCenter({
   );
 
   return (
-    <Card
-      title={t("dashboard.health.title")}
-      icon={<HeartPulse className="h-4 w-4" />}
-    >
+    <>
       {ok ? (
         <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-6 text-center">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/15">
@@ -1465,7 +1532,7 @@ function HealthCenter({
           )}
         </div>
       )}
-    </Card>
+    </>
   );
 }
 
@@ -1490,7 +1557,7 @@ function StatCard({
   hintTone?: "muted" | "positive" | "warning";
 }) {
   return (
-    <div className="flex h-full items-start gap-3 rounded-xl border border-sf-border/80 bg-sf-surface p-4">
+    <div className="flex h-full items-center gap-3 rounded-xl border border-sf-border/80 bg-sf-surface p-3">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sf-raised text-brand-300">
         {icon}
       </div>
@@ -1498,7 +1565,7 @@ function StatCard({
         <div className="truncate text-[13px] font-medium text-sf-muted">{label}</div>
         <div
           className={cn(
-            "mt-0.5 text-2xl font-semibold tabular-nums",
+            "text-xl font-semibold leading-7 tabular-nums",
             valueTone === "warning" ? "text-sf-warning" : "text-sf-text",
           )}
         >
@@ -1507,7 +1574,7 @@ function StatCard({
         {hint && (
           <div
             className={cn(
-              "mt-0.5 truncate text-xs",
+              "truncate text-xs",
               hintTone === "positive"
                 ? "text-emerald-300"
                 : hintTone === "warning"
@@ -1551,7 +1618,7 @@ function Card({
       {/* `flex-1` consume el espacio sobrante; el contenido se
           estira para llenar la card cuando hay otra card más alta
           al lado. */}
-      <div className="flex flex-1 flex-col p-4 pt-2.5">{children}</div>
+      <div className="flex min-h-0 flex-1 flex-col p-4 pt-2.5">{children}</div>
     </div>
   );
 }

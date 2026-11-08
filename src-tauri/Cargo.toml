@@ -1,6 +1,6 @@
 [package]
 name = "simfleet"
-version = "8.4.1"
+version = "9.0.0"
 description = "SimFleet â€” flight companion for MSFS: addons, FlightBook, SimBrief, GSX"
 authors = ["n0xful"]
 edition = "2021"
@@ -141,7 +141,10 @@ windows-core = "=0.61.2"
 # (desinstalador de Windows) para la sincronía (techlog.rs).
 # (25/10) + Win32_System_Com_StructuredStorage: stream en memoria para la foto
 # de flightsim.to (CapturePreview); wry ya la compila en esta misma versión.
-windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Storage_FileSystem", "Foundation", "Security_Credentials", "Security_Credentials_UI", "Win32_System_WinRT", "Win32_Security", "Win32_System_Registry", "Media_MediaProperties", "Media_Transcoding", "Storage", "Storage_FileProperties", "Storage_Streams"] }
+# (02/11) + Win32_UI_Shell / Win32_System_Threading: secuencia de arranque
+# (ShellExecuteExW para abrir minimizado o como administrador, y el PID de lo
+# que abre para cerrarlo al salir del simulador).
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Storage_FileSystem", "Foundation", "Security_Credentials", "Security_Credentials_UI", "Win32_System_WinRT", "Win32_Security", "Win32_System_Registry", "Media_MediaProperties", "Media_Transcoding", "Storage", "Storage_FileProperties", "Storage_Streams", "Win32_UI_Shell", "Win32_System_Threading"] }
 # (8.4.0) Media_*/Storage_*: recorte del clip de aterrizaje con el
 # MediaTranscoder de Windows (ver `clip_trim.rs`) — sin crates nuevos.
 # (v6.2.17) Motor de grabación de "Best Landings": Windows Graphics Capture +

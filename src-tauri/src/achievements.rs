@@ -163,14 +163,14 @@ const SKYTEAM_HUBS: &[&str] = &[
     "LKPR", // Praga — Czech Airlines
 ];
 
-/// ¿La fila es "basura"? Mismo criterio que la limpieza del log: origen en el
-/// punto (0,0) del mapa, o micro-vuelo de prueba.
+/// ¿La fila es "basura"? Mismo criterio que la limpieza del log: origen en una
+/// posición de carga de MSFS, o micro-vuelo de prueba.
 fn is_junk(e: &FlightLogEntry) -> bool {
     // (v7 fix) Los imports del logbook de MSFS traen origen (0,0) como
     // placeholder pero SÍ tienen ICAOs válidos y cuentan en FlightBook/Hangar,
     // así que NO son basura: excluir el chequeo (0,0) para esa fuente. Antes,
     // todo vuelo importado del logbook quedaba fuera de TODOS los logros.
-    if e.source != "msfs-logbook" && e.origin_lat.abs() < 0.01 && e.origin_lon.abs() < 0.01 {
+    if e.source != "msfs-logbook" && crate::flight_log::is_limbo(e.origin_lat, e.origin_lon) {
         return true;
     }
     let tiny_dist = e.distance_nm.map(|d| d < 2.0).unwrap_or(false);
@@ -288,7 +288,7 @@ pub async fn compute_achievements(
             if flight_log::landing_grade(fpm) == "butter" {
                 butter += 1.0;
             }
-            if fpm > -100 && fpm <= 0 && !e.bounced {
+            if fpm > -100 && fpm < 0 && !e.bounced {
                 kiss += 1.0;
             }
             landing_seq.push((e.started_at.clone(), fpm));
@@ -314,18 +314,18 @@ pub async fn compute_achievements(
         }
     }
 
-    // Racha más larga de aterrizajes sin ninguno "duro".
+    // Racha más larga de aterrizajes consecutivos "butter".
     landing_seq.sort_by(|a, b| a.0.cmp(&b.0));
     let mut streak = 0f64;
     let mut run = 0f64;
     for (_, fpm) in &landing_seq {
-        if flight_log::landing_grade(*fpm) == "hard" {
-            run = 0.0;
-        } else {
+        if flight_log::landing_grade(*fpm) == "butter" {
             run += 1.0;
             if run > streak {
                 streak = run;
             }
+        } else {
+            run = 0.0;
         }
     }
 

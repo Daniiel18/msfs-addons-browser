@@ -95,7 +95,7 @@ function gradeColor(grade: string | null): string {
     case "F":
       return "#f87171";
     default:
-      return "#94a3b8";
+      return "#a1a1a6";
   }
 }
 
@@ -146,15 +146,15 @@ export function buildFlightCardSvg(
   const grade = e.scoreGrade ?? "—";
 
   const stat = (x: number, value: string, label: string) => `
-    <text x="${x}" y="470" font-family="${FONT}" font-size="30" font-weight="700" fill="#f1f5f9" text-anchor="middle">${esc(value)}</text>
-    <text x="${x}" y="496" font-family="${FONT}" font-size="15" fill="#94a3b8" text-anchor="middle" letter-spacing="1">${esc(label.toUpperCase())}</text>`;
+    <text x="${x}" y="470" font-family="${FONT}" font-size="30" font-weight="700" fill="#ededf0" text-anchor="middle">${esc(value)}</text>
+    <text x="${x}" y="496" font-family="${FONT}" font-size="15" fill="#a1a1a6" text-anchor="middle" letter-spacing="1">${esc(label.toUpperCase())}</text>`;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/>
-      <stop offset="0.55" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#111a2e"/>
+      <stop offset="0" stop-color="#141416"/>
+      <stop offset="0.55" stop-color="#1c1c1e"/>
+      <stop offset="1" stop-color="#1a1a1c"/>
     </linearGradient>
     <linearGradient id="accent" gradientUnits="userSpaceOnUse" x1="60" y1="0" x2="${W - 60}" y2="0">
       <stop offset="0" stop-color="#38bdf8"/>
@@ -162,40 +162,40 @@ export function buildFlightCardSvg(
     </linearGradient>
   </defs>
   <rect width="${W}" height="${H}" fill="url(#bg)"/>
-  <rect x="10" y="10" width="${W - 20}" height="${H - 20}" rx="22" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <rect x="10" y="10" width="${W - 20}" height="${H - 20}" rx="22" fill="none" stroke="#2c2c2e" stroke-width="2"/>
 
-  <text x="40" y="62" font-family="${FONT}" font-size="22" font-weight="800" fill="#e2e8f0">${esc(labels.brand)}</text>
-  <text x="${W - 40}" y="62" font-family="${FONT}" font-size="16" fill="#94a3b8" text-anchor="end">${esc(date)}</text>
-  <rect x="40" y="80" width="${W - 80}" height="2" fill="#1e293b"/>
+  <text x="40" y="62" font-family="${FONT}" font-size="22" font-weight="800" fill="#e0e0e4">${esc(labels.brand)}</text>
+  <text x="${W - 40}" y="62" font-family="${FONT}" font-size="16" fill="#a1a1a6" text-anchor="end">${esc(date)}</text>
+  <rect x="40" y="80" width="${W - 80}" height="2" fill="#2c2c2e"/>
 
-  ${fittedText(`x="40" y="205" fill="#f8fafc"`, orig, HALF, icaoSize, 800, icaoSize)}
-  ${fittedText(`x="${W - 40}" y="205" fill="#f8fafc" text-anchor="end"`, dest, HALF, icaoSize, 800, icaoSize)}
-  ${fittedText(`x="40" y="238" fill="#94a3b8"`, origName, HALF, nameSize, 400, nameSize)}
-  ${fittedText(`x="${W - 40}" y="238" fill="#94a3b8" text-anchor="end"`, destName, HALF, nameSize, 400, nameSize)}
+  ${fittedText(`x="40" y="205" fill="#f5f5f7"`, orig, HALF, icaoSize, 800, icaoSize)}
+  ${fittedText(`x="${W - 40}" y="205" fill="#f5f5f7" text-anchor="end"`, dest, HALF, icaoSize, 800, icaoSize)}
+  ${fittedText(`x="40" y="238" fill="#a1a1a6"`, origName, HALF, nameSize, 400, nameSize)}
+  ${fittedText(`x="${W - 40}" y="238" fill="#a1a1a6" text-anchor="end"`, destName, HALF, nameSize, 400, nameSize)}
 
   <line x1="60" y1="300" x2="${W - 60}" y2="300" stroke="url(#accent)" stroke-width="3" stroke-dasharray="2 10" stroke-linecap="round"/>
   <circle cx="60" cy="300" r="7" fill="#38bdf8"/>
   <circle cx="${W - 60}" cy="300" r="7" fill="#818cf8"/>
   <g transform="translate(${W / 2}, 300) rotate(90)">
-    <path d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z" fill="#e2e8f0" transform="translate(-16,-16) scale(1.35)"/>
+    <path d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z" fill="#e0e0e4" transform="translate(-16,-16) scale(1.35)"/>
   </g>
 
-  <text x="40" y="360" font-family="${FONT}" font-size="14" fill="#64748b" letter-spacing="1">${esc(labels.aircraft.toUpperCase())}</text>
-  ${fittedText(`x="40" y="390" fill="#e2e8f0"`, ac, W - 80, 26, 700, 18)}
-  ${airline ? fittedText(`x="40" y="416" fill="#94a3b8"`, airline, W - 80, 16, 400, 13) : ""}
+  <text x="40" y="360" font-family="${FONT}" font-size="14" fill="#7a7a80" letter-spacing="1">${esc(labels.aircraft.toUpperCase())}</text>
+  ${fittedText(`x="40" y="390" fill="#e0e0e4"`, ac, W - 80, 26, 700, 18)}
+  ${airline ? fittedText(`x="40" y="416" fill="#a1a1a6"`, airline, W - 80, 16, 400, 13) : ""}
 
-  <rect x="40" y="430" width="${W - 80}" height="90" rx="16" fill="#0b1424" stroke="#1e293b"/>
+  <rect x="40" y="430" width="${W - 80}" height="90" rx="16" fill="#141416" stroke="#2c2c2e"/>
   ${stat(160, distance, labels.distance)}
   ${stat(310, dur, labels.duration)}
   ${stat(470, ceiling, labels.ceiling)}
 
-  <rect x="40" y="545" width="${W - 80}" height="110" rx="16" fill="#0b1424" stroke="#1e293b"/>
-  <text x="66" y="588" font-family="${FONT}" font-size="14" fill="#64748b" letter-spacing="1">${esc(labels.landing.toUpperCase())}</text>
-  <text x="66" y="628" font-family="${FONT}" font-size="40" font-weight="800" fill="#e2e8f0">${esc(fpm)}</text>
+  <rect x="40" y="545" width="${W - 80}" height="110" rx="16" fill="#141416" stroke="#2c2c2e"/>
+  <text x="66" y="588" font-family="${FONT}" font-size="14" fill="#7a7a80" letter-spacing="1">${esc(labels.landing.toUpperCase())}</text>
+  <text x="66" y="628" font-family="${FONT}" font-size="40" font-weight="800" fill="#e0e0e4">${esc(fpm)}</text>
   <circle cx="${W - 100}" cy="600" r="42" fill="none" stroke="${gcol}" stroke-width="5"/>
   <text x="${W - 100}" y="616" font-family="${FONT}" font-size="46" font-weight="800" fill="${gcol}" text-anchor="middle">${esc(grade)}</text>
 
-  <text x="${W / 2}" y="695" font-family="${FONT}" font-size="14" fill="#475569" text-anchor="middle">${esc(labels.tagline)}</text>
+  <text x="${W / 2}" y="695" font-family="${FONT}" font-size="14" fill="#5a5a5f" text-anchor="middle">${esc(labels.tagline)}</text>
 </svg>`;
 
   const name = `simfleet-${orig}-${dest}.png`.replace(/[^a-zA-Z0-9._-]/g, "");
@@ -230,14 +230,14 @@ export function buildWrappedSvg(
     value: string,
     label: string,
   ) => `
-    <text x="${x}" y="${y}" font-family="${FONT}" font-size="52" font-weight="800" fill="#f8fafc" text-anchor="middle">${esc(value)}</text>
+    <text x="${x}" y="${y}" font-family="${FONT}" font-size="52" font-weight="800" fill="#f5f5f7" text-anchor="middle">${esc(value)}</text>
     <text x="${x}" y="${y + 28}" font-family="${FONT}" font-size="15" fill="#c4b5fd" text-anchor="middle" letter-spacing="1">${esc(label.toUpperCase())}</text>`;
 
   const destLines = s.topDestinations
     .map(
       (d, i) => `
-    <text x="42" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#e2e8f0"><tspan fill="#a78bfa" font-weight="700">${i + 1}.</tspan> ${esc(fitText(d.label, W - 150, 20, 400, 20).text)}</text>
-    <text x="${W - 42}" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#94a3b8" text-anchor="end">${d.count}</text>`,
+    <text x="42" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#e0e0e4"><tspan fill="#a78bfa" font-weight="700">${i + 1}.</tspan> ${esc(fitText(d.label, W - 150, 20, 400, 20).text)}</text>
+    <text x="${W - 42}" y="${560 + i * 34}" font-family="${FONT}" font-size="20" fill="#a1a1a6" text-anchor="end">${d.count}</text>`,
     )
     .join("");
 
@@ -249,7 +249,7 @@ export function buildWrappedSvg(
   <defs>
     <linearGradient id="wbg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#1e1b4b"/>
-      <stop offset="0.5" stop-color="#0f172a"/>
+      <stop offset="0.5" stop-color="#1c1c1e"/>
       <stop offset="1" stop-color="#3b0764"/>
     </linearGradient>
   </defs>
@@ -257,7 +257,7 @@ export function buildWrappedSvg(
   <rect x="10" y="10" width="${W - 20}" height="${H - 20}" rx="22" fill="none" stroke="#4c1d95" stroke-width="2"/>
 
   <text x="40" y="70" font-family="${FONT}" font-size="18" font-weight="800" fill="#c4b5fd" letter-spacing="2">SIMFLEET</text>
-  <text x="40" y="140" font-family="${FONT}" font-size="64" font-weight="800" fill="#f8fafc">${esc(labels.title)}</text>
+  <text x="40" y="140" font-family="${FONT}" font-size="64" font-weight="800" fill="#f5f5f7">${esc(labels.title)}</text>
   ${labels.pilot ? `<text x="40" y="176" font-family="${FONT}" font-size="20" fill="#a78bfa">${esc(labels.pilot)}</text>` : ""}
 
   <rect x="40" y="210" width="${W - 80}" height="180" rx="18" fill="#150f33" stroke="#4c1d95"/>
@@ -267,7 +267,7 @@ export function buildWrappedSvg(
   ${bigStat(430, 360, nf(s.airportsVisited), labels.airports)}
 
   <text x="42" y="450" font-family="${FONT}" font-size="15" fill="#c4b5fd" letter-spacing="1">${esc(labels.topAircraft.toUpperCase())}</text>
-  ${fittedText(`x="42" y="486" fill="#f1f5f9"`, topAc?.label ?? "—", W - 84, 30, 700, 20)}
+  ${fittedText(`x="42" y="486" fill="#ededf0"`, topAc?.label ?? "—", W - 84, 30, 700, 20)}
 
   <text x="42" y="536" font-family="${FONT}" font-size="15" fill="#c4b5fd" letter-spacing="1">${esc(labels.topDestinations.toUpperCase())}</text>
   ${destLines}

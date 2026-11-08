@@ -87,7 +87,35 @@ pub async fn init(app_data_dir: &Path) -> anyhow::Result<SqlitePool> {
     match migrator.run(&pool).await {
         Ok(()) => tracing::info!("db: migraciones aplicadas OK"),
         Err(e) => {
+            let msg = format!(
+                "La base de datos no se pudo actualizar.\n\n\
+                 Error: {e:#}\n\n\
+                 Ruta: {}\n\n\
+                 Se creó una copia de seguridad (.db.bak) antes del intento.\n\
+                 La aplicación se cerrará.",
+                db_path.display()
+            );
             tracing::error!("db: sqlx migrate FALLÓ: {e:#}");
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStrExt;
+                let wide_msg: Vec<u16> = std::ffi::OsStr::new(&msg)
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let wide_title: Vec<u16> = std::ffi::OsStr::new("SimFleet — Error de base de datos")
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                        None,
+                        windows::core::PCWSTR(wide_msg.as_ptr()),
+                        windows::core::PCWSTR(wide_title.as_ptr()),
+                        windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                    );
+                }
+            }
             return Err(e.into());
         }
     }
@@ -314,6 +342,10 @@ pub mod repo {
                 icao = excluded.icao,
                 simulator = excluded.simulator,
                 page_url = excluded.page_url,
+                -- (02/11) Cuándo cambió la versión (los valores de la derecha
+                -- son los de antes de este UPDATE).
+                version_seen_at = CASE WHEN addons.version IS NOT excluded.version
+                                       THEN datetime('now') ELSE addons.version_seen_at END,
                 released_at = COALESCE(excluded.released_at, addons.released_at),
                 image_url = COALESCE(excluded.image_url, addons.image_url),
                 last_seen_at = datetime('now')
@@ -545,6 +577,27 @@ pub mod repo {
         pub has_flight_model: bool,
         /// (v4.31.0) false si el paquete no trae manifest.json (3rd-party).
         pub has_manifest: bool,
+        /// (03/11) Tipos ICAO que declara el `aircraft.cfg` (JSON).
+        pub icao_types_json: String,
+        /// (04/11) Última actualización real del addon.
+        pub last_update: Option<String>,
+        /// (04/11) Estrellas del usuario (1-5).
+        pub rating: Option<i64>,
+        /// (05/11) Carpeta real, si en Community es un enlace.
+        #[sqlx(default)]
+        pub link_target: Option<String>,
+        /// (05/11) Esa carpeta real es de un instalador.
+        #[sqlx(default)]
+        pub link_managed: bool,
+        /// (05/11) Dónde más está este paquete (`Community2024`).
+        #[sqlx(default)]
+        pub also_in: Option<String>,
+        /// (06/11) Tipo que le dio el usuario. Manda sobre el detectado.
+        #[sqlx(default)]
+        pub user_type: Option<String>,
+        /// (06/11) Etiquetas del usuario (JSON).
+        #[sqlx(default)]
+        pub user_tags_json: Option<String>,
         /// (v4.29.0) Ruta absoluta del thumbnail resuelto durante el
         /// scan (`<pkg>/thumbnail.jpg`, `SimObjects/Airplanes/*/…`, o
         /// `layout.json` fallback). NULL → frontend pinta silueta
@@ -586,11 +639,21 @@ pub mod repo {
                    cp.has_own_model,
                    cp.has_flight_model,
                    cp.has_manifest,
+                   cp.icao_types_json,
+                   cp.last_update,
+                   cp.link_target,
+                   cp.link_managed,
+                   cp.also_in,
+                   r.stars      AS rating,
+                   m.user_type  AS user_type,
+                   m.tags       AS user_tags_json,
                    ap.name      AS airport_name,
                    ap.latitude  AS latitude,
                    ap.longitude AS longitude
             FROM community_packages cp
             LEFT JOIN airports ap ON ap.icao = UPPER(cp.icao)
+            LEFT JOIN addon_rating r ON r.folder_name = cp.folder_name
+            LEFT JOIN addon_user_meta m ON m.folder_name = cp.folder_name
             ORDER BY cp.title COLLATE NOCASE ASC
             "#,
         )
@@ -604,6 +667,31 @@ pub mod repo {
                 crate::community_scanner::is_library_pack(&r.title, &r.folder_name);
         }
         Ok(rows)
+    }
+
+    /// (04/11) Guarda o, sin estrellas, quita la valoración de un addon.
+    pub async fn set_addon_rating(pool: &SqlitePool, folder: &str, stars: Option<i64>) -> anyhow::Result<()> {
+        match stars {
+            Some(n) if !(1..=5).contains(&n) => anyhow::bail!("valoración fuera de rango: {n}"),
+            Some(n) => {
+                sqlx::query(
+                    r#"INSERT INTO addon_rating (folder_name, stars) VALUES (?1, ?2)
+                       ON CONFLICT(folder_name) DO UPDATE SET
+                           stars = excluded.stars, updated_at = datetime('now')"#,
+                )
+                .bind(folder)
+                .bind(n)
+                .execute(pool)
+                .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM addon_rating WHERE folder_name = ?1")
+                    .bind(folder)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------
@@ -621,15 +709,46 @@ pub mod repo {
         pub source_folder: String,
         pub target_folder: String,
         pub origin: String,
+        #[serde(skip)]
+        pub conditions_json: Option<String>,
+        /// (05/11) El enlace solo vale en ciertos vuelos.
+        #[sqlx(skip)]
+        pub conditions: Option<crate::link_conditions::LinkConditions>,
     }
 
     pub async fn list_addon_links(pool: &SqlitePool) -> anyhow::Result<Vec<AddonLinkRow>> {
-        let rows = sqlx::query_as::<_, AddonLinkRow>(
-            "SELECT id, source_folder, target_folder, origin FROM addon_links ORDER BY id",
+        let mut rows = sqlx::query_as::<_, AddonLinkRow>(
+            "SELECT id, source_folder, target_folder, origin, conditions_json FROM addon_links WHERE origin != 'auto_removed' ORDER BY id",
         )
         .fetch_all(pool)
         .await?;
+        for row in &mut rows {
+            row.conditions = row.conditions_json.as_deref().and_then(|json| serde_json::from_str(json).ok());
+        }
         Ok(rows)
+    }
+
+    /// (05/11) Pone o quita la condición de un enlace manual. `false` si no hay
+    /// ese enlace manual: los automáticos no llevan condición.
+    pub async fn set_addon_link_conditions(
+        pool: &SqlitePool,
+        source_folder: &str,
+        target_folder: &str,
+        conditions: Option<&crate::link_conditions::LinkConditions>,
+    ) -> anyhow::Result<bool> {
+        let json = conditions.map(serde_json::to_string).transpose()?;
+        let done = sqlx::query(
+            r#"
+            UPDATE addon_links SET conditions_json = ?3
+            WHERE source_folder = ?1 AND target_folder = ?2 AND origin = 'manual'
+            "#,
+        )
+        .bind(source_folder)
+        .bind(target_folder)
+        .bind(json)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
     }
 
     pub async fn add_addon_link(
@@ -655,13 +774,23 @@ pub mod repo {
         source_folder: &str,
         target_folder: &str,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            "DELETE FROM addon_links WHERE source_folder = ?1 AND target_folder = ?2",
+        let changed = sqlx::query(
+            "UPDATE addon_links SET origin = 'auto_removed' WHERE source_folder = ?1 AND target_folder = ?2 AND origin = 'auto'",
         )
         .bind(source_folder)
         .bind(target_folder)
         .execute(pool)
-        .await?;
+        .await?
+        .rows_affected();
+        if changed == 0 {
+            sqlx::query(
+                "DELETE FROM addon_links WHERE source_folder = ?1 AND target_folder = ?2",
+            )
+            .bind(source_folder)
+            .bind(target_folder)
+            .execute(pool)
+            .await?;
+        }
         Ok(())
     }
 
@@ -905,6 +1034,64 @@ pub mod repo {
                 .fetch_all(pool)
                 .await?;
         Ok(rows.into_iter().collect())
+    }
+
+    // -----------------------------------------------------------------
+    // (02/11) Versión del catálogo que instaló SimFleet en cada carpeta
+    // -----------------------------------------------------------------
+
+    /// Versión del catálogo de un addon en este momento.
+    pub async fn addon_version(pool: &SqlitePool, addon_id: &str) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>("SELECT version FROM addons WHERE id = ?1")
+            .bind(addon_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    /// Apunta que SimFleet instaló `version` de ese addon del catálogo en esa
+    /// carpeta de Community (la última instalación manda).
+    pub async fn record_catalog_install(
+        pool: &SqlitePool,
+        folder_name: &str,
+        addon_id: &str,
+        source: Option<&str>,
+        version: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO catalog_installs (folder_name, addon_id, source, version, installed_at)
+            VALUES (?1, ?2, ?3, ?4, datetime('now'))
+            ON CONFLICT(folder_name, addon_id) DO UPDATE SET
+                source = excluded.source,
+                version = excluded.version,
+                installed_at = excluded.installed_at
+            "#,
+        )
+        .bind(folder_name)
+        .bind(addon_id)
+        .bind(source)
+        .bind(version)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// (carpeta en minúsculas, addon) → versión del catálogo instalada.
+    pub async fn catalog_installs(
+        pool: &SqlitePool,
+    ) -> anyhow::Result<std::collections::HashMap<(String, String), String>> {
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT folder_name, addon_id, version FROM catalog_installs")
+                .fetch_all(pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(folder, addon, version)| ((folder.to_lowercase(), addon), version))
+            .collect())
     }
 
     // -----------------------------------------------------------------
@@ -1425,9 +1612,9 @@ pub mod repo {
             INSERT INTO download_jobs (
                 id, addon_id, addon_title, source, method_kind, method_name,
                 url, phase, bytes_total, bytes_done, speed_bps, eta_seconds,
-                message, error, install_path, created_at, updated_at, resume, image_url
+                message, error, install_path, created_at, updated_at, resume, image_url, replaces
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'), ?17, ?18
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'), ?17, ?18, ?19
             )
             ON CONFLICT(id) DO UPDATE SET
                 addon_id     = excluded.addon_id,
@@ -1446,6 +1633,7 @@ pub mod repo {
                 install_path = excluded.install_path,
                 resume       = excluded.resume,
                 image_url    = excluded.image_url,
+                replaces     = excluded.replaces,
                 updated_at   = datetime('now')
             "#,
         )
@@ -1467,6 +1655,7 @@ pub mod repo {
         .bind(&job.created_at)
         .bind(&job.resume)
         .bind(&job.image_url)
+        .bind(&job.replaces)
         .execute(pool)
         .await?;
         Ok(())
@@ -1491,7 +1680,7 @@ pub mod repo {
             r#"
             SELECT id, addon_id, addon_title, source, method_kind, method_name,
                    url, phase, bytes_total, bytes_done, speed_bps, eta_seconds,
-                   message, error, install_path, created_at, resume, image_url
+                   message, error, install_path, created_at, resume, image_url, replaces
             FROM download_jobs
             ORDER BY created_at ASC
             "#,
@@ -1525,6 +1714,7 @@ pub mod repo {
                 pausable: false,
                 resumable: false,
                 resume: r.resume,
+                replaces: r.replaces,
             };
             job.refresh_flags();
             out.push(job);
@@ -1564,6 +1754,7 @@ pub mod repo {
         created_at: String,
         resume: Option<String>,
         image_url: Option<String>,
+        replaces: Option<String>,
     }
 
     fn phase_to_str(p: &crate::download::DownloadPhase) -> &'static str {

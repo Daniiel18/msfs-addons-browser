@@ -91,6 +91,8 @@ export interface DownloadJob {
   /** (25/10) Sigue desde lo ya bajado, también tras reiniciar o tras un
    *  fallo (torrents y descargas directas de SimFleet). */
   resumable: boolean;
+  /** (04/11) Carpeta de Community que esta descarga sustituye al terminar. */
+  replaces?: string | null;
 }
 
 export interface CommunityInfo {
@@ -293,6 +295,8 @@ export interface LandingClip {
   favorite: boolean;
   durationS: number;
   isTest: boolean;
+  /** (8.4.x) Vuelo del FlightBook al que pertenece (clips nuevos). */
+  flightId?: number | null;
 }
 
 /** (v6 #2a) Perfil del piloto + nivel/XP. */
@@ -433,6 +437,8 @@ export interface SimBriefFlight {
   /** (v4.17.0) Matrícula (registration) del OFP — usada por la doble
    *  validación del link y mostrada en el modal de confirmación. */
   aircraftReg?: string | null;
+  /** (03/11) Aeropuertos alternativos del plan, en orden. */
+  alternateIcaos?: string[];
   /** (v4.10.0) Puntos del plan de ruta (navlog). Vacío si el OFP no
    *  trae navlog. Se usa para dibujar la ruta planificada en el mapa. */
   routeFixes?: RouteFix[];
@@ -1102,6 +1108,23 @@ export interface CommunityPackage {
    *  SimObjects/Airplanes (avión real). ⚠️ Poco fiable para clasificar:
    *  falso en aviones encriptados (PMDG/Fenix), verdadero en mods de cabina. */
   hasOwnModel?: boolean;
+  /** (03/11) JSON: tipos ICAO que declara el `aircraft.cfg`. */
+  icaoTypesJson?: string;
+  /** (04/11) Última actualización real: encender y apagar no la cambian. */
+  lastUpdate?: string | null;
+  /** (04/11) Estrellas del usuario (1-5). */
+  rating?: number | null;
+  /** (05/11) Carpeta real, si en Community es un enlace. */
+  linkTarget?: string | null;
+  /** (05/11) Esa carpeta real es de un instalador: SimFleet no la reemplaza
+   *  ni la borra. */
+  linkManaged?: boolean;
+  /** (05/11) Dónde más está este paquete (`Community2024`). */
+  alsoIn?: string | null;
+  /** (06/11) Tipo que le dio el usuario. Manda sobre el detectado. */
+  userType?: AddonUserType | null;
+  /** (06/11) JSON: etiquetas del usuario. */
+  userTagsJson?: string | null;
   /** (v7.2.2) true si algún container trae su MODELO DE VUELO
    *  (flight_model.cfg / .air). Señal DEFINITIVA de avión: vale para los
    *  encriptados (PMDG/Fenix/iniBuilds) y excluye liveries/mods (cabina,
@@ -1129,6 +1152,17 @@ export interface AddonLink {
   sourceFolder: string;
   targetFolder: string;
   origin: "auto" | "manual";
+  /** (05/11) El enlace solo vale en ciertos vuelos. Solo en los manuales. */
+  conditions?: LinkConditions | null;
+}
+
+/** (05/11) Dentro de un tipo basta con uno; entre tipos, hay que cumplirlos
+ *  todos. Espejo de `link_conditions::LinkConditions` (Rust). */
+export interface LinkConditions {
+  country: string[];
+  airport: string[];
+  aircraft: string[];
+  airline: string[];
 }
 
 /** (v4.25.0) Posición persistida de un nodo en el lienzo del Link Map. */
@@ -1195,6 +1229,13 @@ export interface ScanReport {
   skippedNoManifest: number;
   skippedInvalidManifest: number;
   communityPath: string;
+  /** (05/11) Enlaces cuya carpeta real ya no existe. */
+  brokenLinks?: BrokenLink[];
+}
+
+export interface BrokenLink {
+  folderName: string;
+  target: string;
 }
 
 /** (v3.0.0 / v3.1.0) Livery de aircraft addon detectada en Community.
@@ -1384,6 +1425,8 @@ export interface UninstallReport {
   folderName: string;
   removedPaths: string[];
   failedPaths: { path: string; error: string }[];
+  /** (05/11) Carpetas reales de los enlaces quitados, que siguen en disco. */
+  keptTargets?: string[];
   dbRowsCleared: number;
 }
 
@@ -1489,7 +1532,7 @@ export interface AiracUpdateInfo {
  *  Espejo serializado de `gsx::GsxProfile` (Rust) — el comando
  *  `gsx_lookup` devuelve cero o varios. */
 /** (19/10) Etapa 2 — sincronía con Fenix/PMDG TechLog. */
-export type TechLogSource = "fenix" | "pmdg" | "simfleet";
+export type TechLogSource = "fenix" | "pmdg" | "simfleet" | "other";
 
 export interface TechLogDefect {
   id: number;
@@ -1509,6 +1552,10 @@ export interface TechLogDefect {
   failure: string | null;
   placard: string | null;
   restrictions: string | null;
+  /** (06/11) TechLog 1.2: informe escrito del defecto. */
+  report?: string | null;
+  /** (06/11) TechLog 1.2: cuándo llega el repuesto (sólo en vivo). */
+  partsExpectedUtc?: string | null;
 }
 
 export interface TechLogPart {
@@ -1565,6 +1612,17 @@ export interface TechLogCheck {
   hoursLeft: number | null;
 }
 
+/** (06/11) Lo que añade el TechLog unificado. Combustible y fiabilidad sólo
+ *  llegan con TechLog abierto y este avión activo. */
+export interface TechLogExtras {
+  familyLabel: string | null;
+  maintenanceBy: "pilot" | "airline" | string | null;
+  fuelFactorPct: number | null;
+  simbriefFactor: string | null;
+  systemsFhPerFailure: number | null;
+  cabinFhPerFailure: number | null;
+}
+
 export interface TechLogAircraft {
   source: TechLogSource;
   appName: string;
@@ -1598,6 +1656,7 @@ export interface TechLogAircraft {
   orderWait?: "sim_closed" | "not_loaded" | "not_parked" | string | null;
   /** (24/10) Trabajo en curso en TechLog (tiempos realistas): se cobra al terminar. */
   pendingWork?: string | null;
+  extras?: TechLogExtras | null;
 }
 
 export interface TechLogAppStatus {
@@ -1693,6 +1752,350 @@ export interface TechLogFlight {
   wear: { item: string; amount: number; unit: string }[];
   /** (19/10) Despegó con ítems NO-GO abiertos (violación de despacho). */
   dispatchViolation: boolean;
+}
+
+// ── (01/11) Etapa 5a: pantallas Cockpit, Cabina y Vuelos de Fenix/PMDG TechLog ──
+
+/** Dónde está el avión para su TechLog: `live` = es su avión activo. */
+export type TechLogPageState = "live" | "not_active" | "closed" | "unsupported" | "unmanaged";
+
+export interface TechLogCockpitControl {
+  id: string;
+  name: string;
+  /** "step" (posiciones con nombre) | "level" (de 0 a `max`). */
+  kind: string;
+  max: number | null;
+  positions: { value: number; label: string }[];
+  saved: number | null;
+  live: number | null;
+  /** Entra en el perfil (casilla «Keep» de TechLog). */
+  keep: boolean;
+  /** TechLog nunca lo ha leído: no se compara. */
+  never: boolean;
+}
+
+export interface TechLogCockpitPanel {
+  key: string;
+  name: string;
+  controls: TechLogCockpitControl[];
+}
+
+export interface TechLogCockpitZone {
+  key: string;
+  name: string;
+  panels: TechLogCockpitPanel[];
+}
+
+export interface TechLogCockpitProfile {
+  id: number;
+  name: string;
+  /** Se restaura solo al cargar el avión en frío y oscuro. */
+  auto: boolean;
+}
+
+export interface TechLogCockpit {
+  registration: string | null;
+  /** El simulador tiene el avión: se puede leer y mover. */
+  connected: boolean;
+  /** Tarea en curso de TechLog; `null` = libre. */
+  busy: string | null;
+  last: string | null;
+  /** «Restaurar al cargar en frío y oscuro» (general). */
+  restore: boolean;
+  savedUtc: string | null;
+  savedAirport: string | null;
+  liveUtc: string | null;
+  zones: TechLogCockpitZone[];
+  profiles: TechLogCockpitProfile[];
+  profileId: number | null;
+}
+
+export interface TechLogCockpitPage {
+  state: TechLogPageState;
+  source: TechLogSource | null;
+  activeRegistration: string | null;
+  cockpit: TechLogCockpit | null;
+}
+
+export type TechLogCockpitAction =
+  | "read"
+  | "save"
+  | "restore"
+  | "auto"
+  | "set"
+  | "keep"
+  | "select"
+  | "profileAuto"
+  | "rename"
+  | "delete";
+
+export interface TechLogCockpitRequest {
+  registration: string;
+  action: TechLogCockpitAction;
+  profile?: number | null;
+  name?: string;
+  on?: boolean;
+  /** Mando (`set`/`keep`) o panel (`restore` de un solo panel). */
+  id?: string;
+  value?: number;
+  keep?: boolean;
+}
+
+export interface TechLogSeat {
+  seat: string;
+  row: number;
+  letter: string;
+  cycles: number;
+  /** Piezas rotas del asiento. */
+  broken: string[];
+  /** Vida que le queda a su pieza más gastada (%). */
+  worstRemainingPct: number | null;
+  blocked: boolean;
+  /** (02/11) Cabina propia: claves de lo roto y cada pieza con su orden. */
+  brokenKeys?: string[];
+  items?: { id: number; key: string; remainingPct: number; status: string }[];
+}
+
+export interface TechLogFitting {
+  /** Id de pieza de TechLog: reparar / reemplazar usan las órdenes de piezas. */
+  id: number;
+  key: string;
+  name: string;
+  position: string | null;
+  ata: number;
+  system: string;
+  kind: string;
+  basis: string;
+  life: number;
+  used: number;
+  remainingPct: number;
+  /** "Ok" | "Degraded" | "Failed" */
+  status: string;
+  defectId: number | null;
+  mel: string | null;
+  repairs: number;
+  repairsLeft: number | null;
+  repairToPct: number | null;
+  worn: boolean;
+  /** Trabajo en curso en TechLog. */
+  work: unknown;
+}
+
+export interface TechLogCabinPlan {
+  rows: number;
+  letters: string;
+  seats: TechLogSeat[];
+  fittings: TechLogFitting[];
+  blockedSeats: number;
+}
+
+export interface TechLogCabinPage {
+  state: TechLogPageState;
+  source: TechLogSource | null;
+  activeRegistration: string | null;
+  /** Fecha de la cabina guardada cuando no llega en vivo. */
+  savedAt: string | null;
+  plan: TechLogCabinPlan | null;
+}
+
+/** Plazas y asientos bloqueados (aviso del pre-vuelo). */
+export interface TechLogSeatInfo {
+  total: number;
+  blocked: string[];
+}
+
+export interface TechLogLandingSummary {
+  airport: string | null;
+  runway: string | null;
+  vsFpm: number | null;
+  peakG: number | null;
+  ias: number | null;
+  bounces: number | null;
+  stable: boolean | null;
+}
+
+export interface TechLogFlightRow {
+  id: number;
+  /** "closed" | "open"… */
+  status: string;
+  openedUtc: string | null;
+  outUtc: string | null;
+  inUtc: string | null;
+  from: string | null;
+  to: string | null;
+  blockMin: number | null;
+  airMin: number | null;
+  score: number | null;
+  flags: string[];
+  pax: number | null;
+  distanceNm: number | null;
+  maxAltFt: number | null;
+  landing: TechLogLandingSummary | null;
+  /** Eventos de aviso o alerta. */
+  warnings: number;
+  /** Defectos y restricciones que dejó el vuelo. */
+  effects: number;
+}
+
+export interface TechLogFlightsPage {
+  source: TechLogSource;
+  appName: string;
+  flights: TechLogFlightRow[];
+}
+
+export interface TechLogFlightEvent {
+  id: number;
+  utc: string | null;
+  /** Segundos desde la apertura del vuelo. */
+  t: number | null;
+  phase: string | null;
+  altFt: number | null;
+  kind: string;
+  /** "Info" | "Caution" | "Warning" */
+  severity: string;
+  ata: number | null;
+  text: string;
+  value: number | null;
+  limit: number | null;
+}
+
+export interface TechLogFlightEffect {
+  defectId: number | null;
+  ata: number | null;
+  system: string;
+  title: string;
+  origin: string | null;
+  restriction: string | null;
+  complied: boolean | null;
+  complianceNote: string | null;
+  outcome: string | null;
+}
+
+export interface TechLogFlightWearItem {
+  item: string;
+  amount: number;
+  unit: string;
+  detail: string | null;
+}
+
+export interface TechLogReportItem {
+  item: string;
+  leftPct: number;
+  usedPct: number;
+  stage: string;
+}
+
+/** Vida de las piezas antes y después del vuelo. */
+export interface TechLogReport {
+  before: { good: number; low: number; failed: number };
+  after: { good: number; low: number; failed: number };
+  healthBefore: number;
+  healthAfter: number;
+  groups: { name: string; parts: number; usedPct: number; maxUsedPct: number }[];
+  agedMost: TechLogReportItem[];
+  crossed: TechLogReportItem[];
+}
+
+/** Despegue tal cual lo guarda TechLog (cada versión puede traer más o menos). */
+export interface TechLogTakeoff {
+  runway?: string | null;
+  airport?: string | null;
+  weightKg?: number | null;
+  mtowKg?: number | null;
+  flapsHandle?: number | null;
+  thrust?: string | null;
+  flexTempC?: number | null;
+  maxN1?: number | null;
+  maxEgtC?: number | null;
+  rotateIas?: number | null;
+  liftoffIas?: number | null;
+  liftoffGs?: number | null;
+  maxPitchOnGround?: number | null;
+  tailstrikePitch?: number | null;
+  brakeTempAtReleaseC?: number[] | null;
+  rollDistanceM?: number | null;
+  windHeadKt?: number | null;
+  windCrossKt?: number | null;
+}
+
+export interface TechLogLandingGate {
+  ias?: number | null;
+  vsFpm?: number | null;
+  gearDown?: boolean | null;
+  flapsHandle?: number | null;
+  maxSinkFpm?: number | null;
+  maxBank?: number | null;
+}
+
+/** Una toma tal cual la guarda TechLog. */
+export interface TechLogLanding {
+  index?: number;
+  utc?: string | null;
+  runway?: string | null;
+  airport?: string | null;
+  ias?: number | null;
+  gs?: number | null;
+  vsFpm?: number | null;
+  peakG?: number | null;
+  pitch?: number | null;
+  bank?: number | null;
+  crabDeg?: number | null;
+  windDir?: number | null;
+  windKt?: number | null;
+  headwindKt?: number | null;
+  crosswindKt?: number | null;
+  distancePastThresholdM?: number | null;
+  centrelineOffsetM?: number | null;
+  runwayLengthM?: number | null;
+  flareSec?: number | null;
+  bounces?: number | null;
+  flapsHandle?: number | null;
+  weightKg?: number | null;
+  mlwKg?: number | null;
+  touchAndGo?: boolean | null;
+  gate1000?: TechLogLandingGate | null;
+  gate500?: TechLogLandingGate | null;
+  stable?: boolean | null;
+  gearDownFt?: number | null;
+  landingFlapFt?: number | null;
+  maxReversePct?: number | null;
+  reverseStowGs?: number | null;
+  rolloutDistanceM?: number | null;
+  peakBrakeTempC?: number[] | null;
+}
+
+/** Traza del vuelo reducida (columnas `t`, `alt`, `ias`, `gs`, `vs`, …). */
+export interface TechLogTrack {
+  columns: string[];
+  rows: (number | null)[][];
+}
+
+export interface TechLogFlightDetail {
+  source: TechLogSource | null;
+  flight: TechLogFlightRow;
+  offUtc: string | null;
+  onUtc: string | null;
+  fuelOutKg: number | null;
+  fuelOffKg: number | null;
+  fuelOnKg: number | null;
+  fuelInKg: number | null;
+  zfwKg: number | null;
+  towKg: number | null;
+  lwKg: number | null;
+  takeoff: TechLogTakeoff | null;
+  landings: TechLogLanding[];
+  summary: string | null;
+  scoreNotes: string[];
+  events: TechLogFlightEvent[];
+  effects: TechLogFlightEffect[];
+  wear: TechLogFlightWearItem[];
+  report: TechLogReport | null;
+  track: TechLogTrack | null;
+  /** Hay registro de texto del vuelo. */
+  hasLog: boolean;
+  /** (02/11) Vuelos del Tech Log propio: combustible gastado y puntos perdidos por regla. */
+  fuelBurnKg?: number | null;
+  scoreItems?: { ruleId: string; label: string; lost: number }[];
 }
 
 /** (19/10) Tipo de posición de un perfil GSX (para colorear pines). */
@@ -2055,4 +2458,311 @@ export interface InstalledAddon {
   sizeBytes: number | null;
   /** ISO-8601 (UTC) — viene como TEXT desde SQLite. */
   installedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// (02/11) Etapa 6 — secuencia de arranque (apps, webs, carpetas y el simulador)
+// ---------------------------------------------------------------------------
+
+/** (07/11) Etapa F — cómo se ve un documento dentro de SimFleet. */
+export interface AddonDocPreview {
+  kind: "pdf" | "text" | "markdown" | "external";
+  text: string | null;
+}
+
+/** (07/11) Etapa F — `Content.xml` de MSFS 2024. */
+export interface ContentChange {
+  name: string;
+  active: boolean;
+}
+
+export interface ContentPackage {
+  name: string;
+  active: boolean;
+  /** Por qué no se puede cambiar. `null`: se puede. */
+  locked: "base" | "system" | null;
+  kind: string;
+}
+
+export interface ContentBackup {
+  file: string;
+  savedAt: string | null;
+  disabled: number;
+}
+
+export interface ContentReport {
+  users: string[];
+  user: string | null;
+  /** Huella del archivo leído: se comprueba al aplicar. */
+  stamp: string | null;
+  simRunning: boolean;
+  unknownFormat: boolean;
+  packages: ContentPackage[];
+  community: number;
+  /** Lo que ajustaste y MSFS deshizo. */
+  drift: ContentChange[];
+  backups: ContentBackup[];
+}
+
+/** (07/11) Etapa F — un script que aún no tiene tu permiso. */
+export interface LaunchScriptPermission {
+  name: string;
+  path: string;
+  hash: string;
+  preview: string;
+}
+
+export type LaunchStepKind = "app" | "web" | "folder" | "sim" | "script";
+export type LaunchOpen = "normal" | "minimized" | "admin";
+/** Espera ANTES del paso: segundos, MSFS abierto (menú) o avión cargado. */
+export type LaunchWait = "seconds" | "menu" | "loaded";
+/** `exit` = se cierra al salir del simulador. */
+export type LaunchClose = "stay" | "exit";
+
+export interface LaunchStep {
+  id: string;
+  kind: LaunchStepKind;
+  name: string;
+  /** Ruta del .exe, dirección web o carpeta (vacío en el simulador). */
+  target: string;
+  args: string;
+  /** Procesos de la app cuando se abre con un lanzador. */
+  process: string[];
+  open: LaunchOpen;
+  wait: LaunchWait;
+  waitSeconds: number;
+  close: LaunchClose;
+}
+
+export interface LaunchSequence {
+  /** 0 = nueva. */
+  id: number;
+  name: string;
+  /** Tipos ICAO del OFP que la usan (A20N, B738…). */
+  aircraft: string[];
+  isDefault: boolean;
+  steps: LaunchStep[];
+  /** Pasos cuyo .exe o carpeta ya no existe. */
+  missing?: string[];
+}
+
+export interface LaunchDetectedApp {
+  key: string;
+  name: string;
+  target: string;
+  args: string;
+  process: string[];
+  open: LaunchOpen;
+  wait: LaunchWait;
+  waitSeconds: number;
+  close: LaunchClose;
+}
+
+export interface LaunchSimInfo {
+  available: boolean;
+  /** «MSFS 2024 (Steam)»… */
+  label: string;
+  running: boolean;
+  testEnv: boolean;
+}
+
+export type LaunchRunStatus =
+  | "pending"
+  | "waiting"
+  | "opening"
+  | "opened"
+  | "already"
+  | "skipped"
+  | "failed"
+  | "cancelled";
+
+export interface LaunchRunStep {
+  id: string;
+  name: string;
+  kind: LaunchStepKind | "addons";
+  status: LaunchRunStatus;
+  wait: LaunchWait;
+  /** Fin de la espera en segundos (epoch ms). */
+  waitUntilMs: number | null;
+  /** Código: not_found, uac_cancelled, no_sim, failed:… */
+  error: string | null;
+  /** (03/11) Resultado del paso de addons. */
+  addons?: { on: number; off: number; failed: number } | null;
+}
+
+export interface LaunchRun {
+  runId: number;
+  sequenceId: number;
+  name: string;
+  /** «Probar todo»: sin simulador ni esperas. */
+  testAll: boolean;
+  /** `stopped`: un script falló y detuvo el arranque. */
+  state: "running" | "done" | "cancelled" | "stopped";
+  current: number | null;
+  steps: LaunchRunStep[];
+  /** Apps que se cerrarán al salir del simulador. */
+  closing: string[];
+  /** (03/11) Se cambiaron addons con el simulador abierto. */
+  restartSim?: boolean;
+}
+
+// (03/11) Etapa 7 — modos de lanzamiento y conjuntos de addons.
+export type DispatchMode = "just" | "add" | "focus" | "set";
+
+export interface ContentSet {
+  id: number;
+  name: string;
+  /** `user` lo guarda el usuario; `restore` es automático antes de apagar. */
+  kind: "user" | "restore";
+  enabled: string[];
+  known: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DispatchState {
+  mode: DispatchMode;
+  setId: number | null;
+  keep: string[];
+  sets: ContentSet[];
+  pendingRestore: number | null;
+  /** (03/11) Encender también el escenario del alternativo. */
+  useAlternate: boolean;
+  /** (04/11) Viaje de varias paradas activo. */
+  trip: DispatchTrip | null;
+  /** (05/11) Escenario elegido por aeropuerto cuando hay varios encendidos. */
+  sceneryChoices: SceneryChoice[];
+  /** (06/11) Último conjunto aplicado o guardado. */
+  activeSet: number | null;
+}
+
+/** (06/11) Optimizador: lo que se revisa de MSFS y de este PC. */
+export interface GpuInfo {
+  name: string;
+  driverVersion: string | null;
+  driverDate: string | null;
+}
+
+/** Lo que dice `UserCfg.opt`. Solo se lee. */
+export interface SimSettings {
+  adapter: string | null;
+  /** Nombra una tarjeta que este PC no tiene. */
+  otherAdapter: boolean;
+  preset: string | null;
+  antiAliasing: string | null;
+  upscalingMode: string | null;
+  frameGeneration: string | null;
+  frameLimiter: string | null;
+  vsync: boolean | null;
+}
+
+export interface CacheItem {
+  id: string;
+  path: string;
+  sizeBytes: number;
+  files: number;
+}
+
+export interface WindowsTip {
+  id: string;
+  value: string;
+}
+
+export interface OptimizerReport {
+  gpus: GpuInfo[];
+  sim: SimSettings | null;
+  caches: CacheItem[];
+  windows: WindowsTip[];
+  simRunning: boolean;
+}
+
+export interface CleanedCache {
+  id: string;
+  beforeBytes: number;
+  afterBytes: number;
+  removedFiles: number;
+  skippedFiles: number;
+}
+
+/** (06/11) Tipos que se pueden poner a mano en Instalados. */
+export type AddonUserType = "AIRCRAFT" | "LIVERY" | "INSTRUMENT" | "MISC";
+
+/** (06/11) METAR de un aeropuerto (clima real). */
+export interface AirportMetar {
+  icao: string;
+  raw: string;
+  category: string | null;
+  tempC: number | null;
+  windDir: string | null;
+  windKt: number | null;
+  gustKt: number | null;
+  observedAt: number | null;
+}
+
+/** (05/11) Aeropuerto que trae el propio simulador. */
+export interface SimAirport {
+  icao: string;
+  publisher: string;
+  name: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+/** (05/11) Un perfil GSX del disco. */
+export interface GsxLocalProfile {
+  icao: string;
+  file: string;
+  path: string;
+  creator: string | null;
+  /** Desarrollador de escenario que nombra el archivo, según el catálogo. */
+  sceneryDev: string | null;
+}
+
+/** (05/11) Qué hacer en un aeropuerto con varios escenarios encendidos. */
+export interface SceneryChoice {
+  icao: string;
+  /** Carpeta del escenario elegido. */
+  folder: string | null;
+  /** No avisar en este aeropuerto: se quedan todos encendidos. */
+  ignored: boolean;
+}
+
+/** (04/11) Varios vuelos en un día: paradas en orden y tipo de avión. */
+export interface DispatchTrip {
+  stops: string[];
+  aircraft: string | null;
+}
+
+/** (04/11) Un manual, guía o nota que trae un addon. */
+export interface AddonDoc {
+  folder: string;
+  name: string;
+  path: string;
+  kind: "pdf" | "text" | "web";
+  sizeBytes: number;
+}
+
+/** (03/11) Una livery instalada con su matrícula. */
+export interface LiveryEntry {
+  folder: string;
+  title: string;
+  /** Sin guiones ni espacios, en mayúsculas. */
+  registration: string;
+}
+
+export interface DispatchChanges {
+  on: string[];
+  off: string[];
+  restoreName?: string | null;
+  markPending?: boolean;
+  clearPending?: boolean;
+  /** (06/11) Conjunto que queda como activo al aplicar esto. */
+  activeSet?: number | null;
+}
+
+export interface DispatchApplyReport {
+  enabled: string[];
+  disabled: string[];
+  failed: string[];
+  pendingRestore: number | null;
 }

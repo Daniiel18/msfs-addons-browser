@@ -1367,6 +1367,10 @@ pub struct LandingClip {
     pub duration_s: i64,
     /// Clip de prueba (botón "grabar prueba"), no de un aterrizaje real.
     pub is_test: bool,
+    /// (8.4.x) Vuelo del FlightBook al que pertenece (lo fija el
+    /// enriquecido tras aterrizar). Los clips viejos no lo tienen.
+    #[serde(default)]
+    pub flight_id: Option<i64>,
 }
 
 fn read_clips(path: &Path) -> Option<Vec<LandingClip>> {
@@ -1440,10 +1444,11 @@ pub fn add_clip(data: &Path, clip: LandingClip, max_clips: i64) -> anyhow::Resul
 /// `max_clips`. Borra del disco lo descartado.
 fn apply_retention(clips: &mut Vec<LandingClip>, max_clips: i64) {
     let max = max_clips.max(1) as usize;
+    let newest_idx = clips.len().saturating_sub(1);
     let mut prunable: Vec<usize> = clips
         .iter()
         .enumerate()
-        .filter(|(_, c)| !c.favorite && !c.is_test)
+        .filter(|(i, c)| !c.favorite && !c.is_test && *i != newest_idx)
         .map(|(i, _)| i)
         .collect();
     let keep_real =
@@ -1493,6 +1498,7 @@ pub fn delete_clip(data: &Path, id: &str) -> anyhow::Result<()> {
 fn update_clip_meta(
     data: &Path,
     id: &str,
+    flight_id: Option<i64>,
     fpm: Option<i64>,
     grade: Option<String>,
     icao: Option<String>,
@@ -1502,6 +1508,9 @@ fn update_clip_meta(
 ) -> anyhow::Result<()> {
     let mut clips = load_clips(data);
     if let Some(c) = clips.iter_mut().find(|c| c.id == id) {
+        if c.flight_id.is_none() {
+            c.flight_id = flight_id;
+        }
         if c.fpm.is_none() {
             c.fpm = fpm;
         }
@@ -1920,11 +1929,7 @@ fn schedule_save(
         }
         match rrx.await {
             Ok(Ok(trimmed)) => {
-                let recorded_at = sqlx::query_as::<_, (String,)>("SELECT datetime('now')")
-                    .fetch_one(&pool)
-                    .await
-                    .map(|(s,)| s)
-                    .unwrap_or_default();
+                let recorded_at = chrono::Utc::now().to_rfc3339();
                 let clip = LandingClip {
                     id: uuid::Uuid::new_v4().to_string(),
                     path,
@@ -1938,6 +1943,7 @@ fn schedule_save(
                     favorite: false,
                     duration_s: trimmed.map_or(clip_seconds, |d| d.round() as i64),
                     is_test: false,
+                    flight_id: None,
                 };
                 let id = clip.id.clone();
                 migrate_legacy_manifests(&data_dir, std::slice::from_ref(&out_dir));
@@ -1957,9 +1963,13 @@ fn schedule_save(
 
 #[cfg(windows)]
 async fn enrich_clip_from_flightlog(pool: &SqlitePool, data_dir: &Path, id: &str) {
+    // (8.4.x) El vuelo que ACABA de aterrizar: sigue abierto hasta apagar
+    // motores, así que no se filtra por `completed` (antes se tomaba el
+    // vuelo ANTERIOR y el clip heredaba su FPM y su avión).
     let row = sqlx::query_as::<
         _,
         (
+            i64,
             Option<i64>,
             Option<String>,
             Option<String>,
@@ -1968,20 +1978,20 @@ async fn enrich_clip_from_flightlog(pool: &SqlitePool, data_dir: &Path, id: &str
             Option<String>,
         ),
     >(
-        "SELECT landing_fpm, destination_icao, destination_name, \
+        "SELECT id, landing_fpm, destination_icao, destination_name, \
                 aircraft_model, aircraft_atc_type, aircraft_registration \
-         FROM flight_log WHERE status = 'completed' ORDER BY started_at DESC LIMIT 1",
+         FROM flight_log WHERE status IS NULL OR status != 'partial' ORDER BY started_at DESC LIMIT 1",
     )
     .fetch_optional(pool)
     .await
     .ok()
     .flatten();
-    let Some((fpm, dico, dname, model, atc, reg)) = row else {
+    let Some((flight_id, fpm, dico, dname, model, atc, reg)) = row else {
         return;
     };
     let grade = fpm.map(|f| crate::flight_log::landing_grade(f).to_string());
     let model = model.or(atc);
-    let _ = update_clip_meta(data_dir, id, fpm, grade, dico, dname, model, reg);
+    let _ = update_clip_meta(data_dir, id, Some(flight_id), fpm, grade, dico, dname, model, reg);
 }
 
 #[cfg(not(windows))]
@@ -2082,6 +2092,7 @@ mod tests {
             favorite,
             duration_s: 40,
             is_test: false,
+            flight_id: None,
         }
     }
 

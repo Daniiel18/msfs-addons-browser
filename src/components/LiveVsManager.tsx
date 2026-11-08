@@ -15,6 +15,7 @@ import {
   DEFAULT_VS_SUPABASE_KEY,
   normalizeSupabaseUrl,
 } from "../lib/liveVsConfig";
+import { useCrewLiveStore } from "../stores/useCrewLiveStore";
 
 /**
  * (v6 #3) Componente headless que orquesta Live VS: arma el canal Supabase con
@@ -99,8 +100,20 @@ export function LiveVsManager() {
     ofp?.destinationIcao,
   ]);
 
+  // (8.4.x) Presencia siempre activa con el otro piloto (pantalla «En
+  // vuelo»): no depende del OFP, sólo de la identidad y las credenciales.
+  useEffect(() => {
+    if (!u || !k || !identity) {
+      useCrewLiveStore.getState().stop();
+      return;
+    }
+    useCrewLiveStore.getState().start(u, k, { identity: identity.identity, name: identity.name });
+  }, [u, k, identity?.identity, identity?.name]);
+  useEffect(() => () => useCrewLiveStore.getState().stop(), []);
+
   // Emitir la posición en vivo cada 1.5s (el store no-opera si no hay canal).
   useEffect(() => {
+    let tick = 0;
     const interval = setInterval(() => {
       const s = useFlightLogStore.getState().status;
       // (v6.2.2) Fija el avión REAL en vuelo (matrícula/aerolínea del sim) antes
@@ -124,6 +137,31 @@ export function LiveVsManager() {
           },
           s.phaseLabel ?? null,
         );
+        // (8.4.x) A la presencia, cada 3 s: posición + vuelo actual.
+        tick += 1;
+        if (tick % 2 === 0) {
+          const plan = useSimBriefStore
+            .getState()
+            .flights.find((f) => f.originIcao === s.originIcao && f.destinationIcao === s.destinationIcao);
+          useCrewLiveStore.getState().sendPos(
+            {
+              lat: s.currentLat,
+              lon: s.currentLon,
+              heading: s.currentHeadingDeg ?? 0,
+              alt: s.currentAltFt ?? 0,
+              gs: s.currentGroundSpeedKt ?? 0,
+            },
+            s.phaseLabel ?? null,
+            {
+              origin: s.originIcao ?? null,
+              dest: s.destinationIcao ?? plan?.destinationIcao ?? null,
+              callsign: plan?.callsign ?? null,
+              aircraft: s.aircraftIcao ?? plan?.aircraftIcao ?? null,
+              registration: s.aircraftRegistration ?? plan?.aircraftReg ?? null,
+              airline: s.aircraftAirline ?? null,
+            },
+          );
+        }
       }
     }, 1500);
     return () => clearInterval(interval);
@@ -145,9 +183,9 @@ export function LiveVsManager() {
   // Lo retransmitimos al rival para la comparativa final del duelo.
   useEffect(() => {
     if (!isTauri) return;
-    const un = listen<{ fpm: number; grade: string }>("landing://osd", (e) => {
+    const un = listen<{ fpm: number; grade: string; bounced?: boolean; test?: boolean }>("landing://osd", (e) => {
       const p = e.payload;
-      if (p && typeof p.fpm === "number") {
+      if (p && typeof p.fpm === "number" && !p.bounced && !p.test) {
         broadcastLanding({ fpm: p.fpm, grade: p.grade });
       }
     });

@@ -23,10 +23,21 @@ export type View =
   | "map"
   | "addons"
   | "flightbook"
+  // (8.4.x) Pantalla «En vuelo» (vuelo en vivo, plan y el otro piloto).
+  | "inflight"
   | "hangar"
   | "economy"
   // (Ajustes 19/10) Ajustes es una pantalla más (antes un modal).
   | "settings";
+
+/** (01/11) Etapa 5a: sub-pestañas de Mantenimiento (como el riel de TechLog). */
+export type TechLogSubTab = "status" | "cockpit" | "cabin" | "flights";
+
+export interface HangarFocusTarget {
+  sub: TechLogSubTab;
+  /** Vuelo de TechLog a abrir en «Vuelos». */
+  techlogFlightId?: number;
+}
 
 interface AppState {
   sources: SourceDescriptor[];
@@ -133,7 +144,9 @@ interface AppState {
   /** (19/10) Petición de abrir el mantenimiento de una matrícula en el Hangar
    *  (preflight / avisos). HangarView la consume. */
   hangarFocusRequest: string | null;
-  requestHangarFocus: (registration: string) => void;
+  /** (01/11) Etapa 5a: sub-pestaña de Mantenimiento (y vuelo de TechLog) a abrir. */
+  hangarFocusTarget: HangarFocusTarget | null;
+  requestHangarFocus: (registration: string, target?: HangarFocusTarget) => void;
   clearHangarFocusRequest: () => void;
   /** (26/10) Petición de abrir la tarjeta de un aeropuerto en el mapa del
    *  FlightBook (fichas del Hangar). RoutesMapView la consume. */
@@ -263,9 +276,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearFlightFocusRequest: () => set({ flightFocusRequest: null }),
 
   hangarFocusRequest: null,
-  requestHangarFocus: (registration) =>
-    set({ view: "hangar", hangarFocusRequest: registration }),
-  clearHangarFocusRequest: () => set({ hangarFocusRequest: null }),
+  hangarFocusTarget: null,
+  requestHangarFocus: (registration, target) =>
+    set({ view: "hangar", hangarFocusRequest: registration, hangarFocusTarget: target ?? null }),
+  clearHangarFocusRequest: () => set({ hangarFocusRequest: null, hangarFocusTarget: null }),
 
   airportCardRequest: null,
   requestAirportCard: (icao, name) => set({ view: "flightbook", airportCardRequest: { icao, name } }),

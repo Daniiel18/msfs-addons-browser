@@ -429,8 +429,9 @@ fn to_active_name(name: &str) -> String {
         return name.to_string();
     }
     // Replace-style: `X.<dis>` → `X.bgl` si <dis> es una ext de desactivado.
-    if let Some(dot) = lower.rfind('.') {
-        if DISABLED_EXTS.contains(&&lower[dot + 1..]) {
+    if let Some(dot) = name.rfind('.') {
+        let ext_lower = name[dot + 1..].to_lowercase();
+        if DISABLED_EXTS.contains(&ext_lower.as_str()) {
             return format!("{}.bgl", &name[..dot]);
         }
     }

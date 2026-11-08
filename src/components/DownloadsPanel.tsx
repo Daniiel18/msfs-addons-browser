@@ -724,7 +724,8 @@ function translateJobMessage(msg: string): string {
   if (installedMatch) {
     const count = installedMatch[1];
     const key = count === "1" ? "downloads.msg.installed.one" : "downloads.msg.installed.many";
-    return t(key, { count, mb: installedMatch[2] });
+    // (04/11) Lo que venga detrás: «· Sustituyó a …».
+    return t(key, { count, mb: installedMatch[2] }) + msg.slice(installedMatch[0].length);
   }
   // (v7.1.1) `job.message` se PERSISTE en la DB en el idioma en que se generó.
   // Un download abierto cuando el backend estaba en español queda con el texto

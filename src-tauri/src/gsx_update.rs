@@ -47,11 +47,28 @@ fn parse_latest(html: &str) -> Option<(String, Option<String>)> {
     Some((ver, date))
 }
 
-/// `a > b` por semver; si alguno no parsea, comparación lexicográfica.
+/// `a > b` por semver; si alguno no parsea, comparación numérica por partes.
 fn version_gt(a: &str, b: &str) -> bool {
     match (semver::Version::parse(a), semver::Version::parse(b)) {
         (Ok(va), Ok(vb)) => va > vb,
-        _ => a > b,
+        _ => {
+            let nums = |s: &str| -> Vec<u64> {
+                s.split('.').filter_map(|p| {
+                    let d: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    d.parse::<u64>().ok()
+                }).collect()
+            };
+            let na = nums(a);
+            let nb = nums(b);
+            if !na.is_empty() && na.len() == nb.len() {
+                let n = na.len();
+                if let Some((x, y)) = (0..n).map(|k| (na[k], nb[k])).find(|(x, y)| x != y) {
+                    return x > y;
+                }
+                return false;
+            }
+            a > b
+        }
     }
 }
 

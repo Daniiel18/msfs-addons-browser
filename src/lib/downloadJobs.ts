@@ -26,14 +26,25 @@ export function hasJobKey(path: string): boolean {
   return keys.has(path);
 }
 
-/** Cuenta el estado al job del archivo (si vino de una descarga interna). */
-export function jobStatus(path: string, status: DownloadJobStatus, message?: string) {
+/** Cuenta el estado al job del archivo (si vino de una descarga interna).
+ *  (02/11) Con «installed», `packages` son las carpetas instaladas: SimFleet
+ *  apunta qué versión del catálogo quedó en cada una (avisos de updates).
+ *  (04/11) Y quita lo que la descarga sustituía: se resuelve cuando ya está.
+ *  Con «installed», `message` es el error de lo que no se pudo instalar: en ese
+ *  caso lo sustituido se queda, porque podría ser justo lo que faltó. */
+export async function jobStatus(
+  path: string,
+  status: DownloadJobStatus,
+  message?: string,
+  packages?: string[],
+): Promise<void> {
   const key = keys.get(path);
   if (!key) return;
-  void api.downloadJobStatus(key, status, message).catch(() => {});
+  const sent = api.downloadJobStatus(key, status, message, packages).catch(() => {});
   if (status === "installed" || status === "saved" || status === "failed" || status === "cancelled") {
     keys.delete(path);
   }
+  await sent;
 }
 
 /** ¿El archivo es una descarga interna de SimFleet (carpeta temporal propia)?

@@ -19,6 +19,7 @@ import "@xyflow/react/dist/style.css";
 import dagre from "@dagrejs/dagre";
 import {
   Cog,
+  Filter,
   Gauge,
   GitBranch,
   HelpCircle,
@@ -49,6 +50,9 @@ import { RegionBadge } from "./RegionBadge";
 import { PerfBadge } from "./PerfBadge";
 import { PerformanceModal } from "./PerformanceModal";
 import { PackageDetailModal } from "./PackageDetailModal";
+import { LinkConditionEditor } from "./LinkConditionEditor";
+import { conditionsText } from "../lib/linkConditions";
+import { useDispatchStore } from "../stores/useDispatchStore";
 import { usePerfStore } from "../stores/usePerfStore";
 import { airportRegion, continentLabel, type Continent } from "../lib/oaciRegion";
 import { expandVendorQuery } from "../lib/vendorSynonyms";
@@ -237,6 +241,25 @@ const NODE_TYPES = {
 };
 type FlowNode = AddonNodeType | AirportNodeType | RegionHeaderNodeType;
 
+// Aspecto de las líneas del lienzo.
+const PLAIN_EDGE = {
+  animated: true,
+  style: { stroke: "#f59e0b", strokeWidth: 1.25, strokeOpacity: 0.55 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b", width: 14, height: 14 },
+};
+
+/** (05/11) Enlace con condición: punteado quieto, para distinguirlo del resto. */
+const conditionEdge = () => ({
+  animated: false,
+  style: { stroke: "#a78bfa", strokeWidth: 1.5, strokeDasharray: "6 4" },
+  markerEnd: { type: MarkerType.ArrowClosed, color: "#a78bfa", width: 14, height: 14 },
+  label: t("linkmap.cond.edge"),
+  labelStyle: { fill: "#c4b5fd", fontSize: 10 },
+  labelBgStyle: { fill: "#1c1c1e", fillOpacity: 0.9 },
+  labelBgPadding: [4, 2] as [number, number],
+  labelBgBorderRadius: 4,
+});
+
 // ---------------------------------------------------------------------------
 // Vista principal
 // ---------------------------------------------------------------------------
@@ -256,6 +279,9 @@ export function LinkMapView({
   );
   const [loaded, setLoaded] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
+  // (05/11) Línea manual elegida en el lienzo y enlace que se abre para editar.
+  const [pickedLinkId, setPickedLinkId] = useState<number | null>(null);
+  const [editLinkId, setEditLinkId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addQuery, setAddQuery] = useState("");
   const [findQuery, setFindQuery] = useState("");
@@ -279,6 +305,7 @@ export function LinkMapView({
         api.listAddonNodePositions(),
       ]);
       setLinks(ls);
+      useDispatchStore.setState({ links: ls });
       setPositions(new Map(ps.map((p) => [p.folderName, p])));
       setLoaded(true);
     } catch (e) {
@@ -421,9 +448,7 @@ export function LinkMapView({
         // links las curvas rectas se cruzaban como ruido sobre las
         // tarjetas. Las ortogonales suaves leen mejor y van por debajo.
         type: "smoothstep",
-        animated: true,
-        style: { stroke: "#f59e0b", strokeWidth: 1.25, strokeOpacity: 0.55 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b", width: 14, height: 14 },
+        ...(l.conditions ? conditionEdge() : PLAIN_EDGE),
       })),
     );
   }, [loaded, members, visibleLinks, byFolder, positions, airports, airportLayout, setNodes, setEdges]);
@@ -445,6 +470,17 @@ export function LinkMapView({
     },
     [reloadGraph, pushToast],
   );
+
+  // (05/11) Un clic sigue seleccionando la línea para Supr; las manuales
+  // enseñan además su condición.
+  const onEdgeClick = useCallback(
+    (_: unknown, edge: Edge) => {
+      const link = links.find((l) => `${l.sourceFolder}->${l.targetFolder}` === edge.id);
+      setPickedLinkId(link?.origin === "manual" ? link.id : null);
+    },
+    [links],
+  );
+  const pickedLink = links.find((l) => l.id === pickedLinkId) ?? null;
 
   // Borrar aristas seleccionadas (tecla Delete / Backspace).
   const onEdgesDelete = useCallback(
@@ -827,6 +863,8 @@ export function LinkMapView({
         onEdgesDelete={onEdgesDelete}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClick}
+        onPaneClick={() => setPickedLinkId(null)}
         onInit={(inst) => {
           flowRef.current = inst;
         }}
@@ -843,7 +881,7 @@ export function LinkMapView({
           variant={BackgroundVariant.Dots}
           gap={22}
           size={1.5}
-          color="#1e293b"
+          color="#2c2c2e"
         />
         <Controls position="bottom-left" showInteractive={false} />
       </ReactFlow>
@@ -870,6 +908,24 @@ export function LinkMapView({
         </div>
       )}
 
+      {pickedLink && (
+        <div className="absolute bottom-12 left-1/2 z-10 flex max-w-[min(560px,80%)] -translate-x-1/2 items-center gap-2 rounded-lg border border-sf-border bg-sf-surface px-3 py-1.5 text-[11px] text-sf-text shadow-lg">
+          <span className="min-w-0 truncate">
+            {pickedLink.conditions ? conditionsText(pickedLink.conditions) : t("linkmap.cond.none")}
+          </span>
+          <button
+            onClick={() => {
+              setEditLinkId(pickedLink.id);
+              setManageOpen(true);
+            }}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md bg-violet-500 px-2 py-1 font-semibold text-white hover:bg-violet-400"
+          >
+            <Filter className="h-3 w-3" />
+            {t("linkmap.cond.edit")}
+          </button>
+        </div>
+      )}
+
       {/* Hint de conexión, abajo al centro (estilo barra de atajos). */}
       <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md bg-slate-950/80 px-3 py-1 text-[10px] text-sf-muted ring-1 ring-sf-border backdrop-blur">
         {t("linkmap.hint")}
@@ -880,8 +936,12 @@ export function LinkMapView({
           links={links}
           addons={addons}
           byFolder={byFolder}
+          editId={editLinkId}
           onChanged={reloadGraph}
-          onClose={() => setManageOpen(false)}
+          onClose={() => {
+            setManageOpen(false);
+            setEditLinkId(null);
+          }}
         />
       )}
 
@@ -909,12 +969,15 @@ function ManageLinksModal({
   links,
   addons,
   byFolder,
+  editId,
   onChanged,
   onClose,
 }: {
   links: AddonLink[];
   addons: AddonItem[];
   byFolder: Map<string, AddonItem>;
+  /** (05/11) Enlace que se abre con su condición a la vista. */
+  editId: number | null;
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -922,6 +985,11 @@ function ManageLinksModal({
   const [source, setSource] = useState("");
   const [target, setTarget] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(editId);
+  const editingRow = useRef<HTMLLIElement | null>(null);
+  useEffect(() => {
+    editingRow.current?.scrollIntoView({ block: "center" });
+  }, []);
 
   const sorted = useMemo(
     () =>
@@ -931,6 +999,12 @@ function ManageLinksModal({
 
   const titleOf = (folder: string) =>
     byFolder.get(folder)?.p.title ?? folder;
+
+  // (05/11) Primero los manuales: son los que se pueden editar.
+  const listed = useMemo(
+    () => [...links].sort((a, b) => Number(a.origin === "auto") - Number(b.origin === "auto")),
+    [links],
+  );
 
   const addLink = async () => {
     if (!source || !target || source === target) return;
@@ -1033,37 +1107,67 @@ function ManageLinksModal({
             </p>
           ) : (
             <ul className="space-y-1.5">
-              {links.map((l) => (
+              {listed.map((l) => (
                 <li
                   key={l.id}
-                  className="flex items-center gap-2 rounded-lg border border-sf-border bg-sf-surface px-3 py-2"
+                  ref={l.id === editId ? editingRow : undefined}
+                  className="rounded-lg border border-sf-border bg-sf-surface px-3 py-2"
                 >
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text" title={l.sourceFolder}>
-                    {titleOf(l.sourceFolder)}
-                  </span>
-                  <span className="shrink-0 text-amber-400">→</span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text" title={l.targetFolder}>
-                    {titleOf(l.targetFolder)}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                      l.origin === "auto"
-                        ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                        : "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30"
-                    }`}
-                  >
-                    {l.origin === "auto"
-                      ? t("linkmap.modal.origin_auto")
-                      : t("linkmap.modal.origin_manual")}
-                  </span>
-                  <button
-                    onClick={() => void removeLink(l)}
-                    disabled={busy}
-                    title={t("linkmap.modal.delete")}
-                    className="shrink-0 rounded p-1 text-sf-muted hover:bg-rose-500/15 hover:text-rose-300 disabled:opacity-50"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text" title={l.sourceFolder}>
+                      {titleOf(l.sourceFolder)}
+                    </span>
+                    <span className="shrink-0 text-amber-400">→</span>
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-sf-text" title={l.targetFolder}>
+                      {titleOf(l.targetFolder)}
+                    </span>
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        l.origin === "auto"
+                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
+                          : "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30"
+                      }`}
+                    >
+                      {l.origin === "auto"
+                        ? t("linkmap.modal.origin_auto")
+                        : t("linkmap.modal.origin_manual")}
+                    </span>
+                    {l.origin === "manual" && (
+                      <button
+                        onClick={() => setEditing(editing === l.id ? null : l.id)}
+                        aria-expanded={editing === l.id}
+                        title={t("linkmap.cond.edit")}
+                        className={`shrink-0 rounded p-1 hover:bg-violet-500/15 hover:text-violet-300 ${
+                          l.conditions ? "text-violet-300" : "text-sf-muted"
+                        }`}
+                      >
+                        <Filter className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void removeLink(l)}
+                      disabled={busy}
+                      title={t("linkmap.modal.delete")}
+                      className="shrink-0 rounded p-1 text-sf-muted hover:bg-rose-500/15 hover:text-rose-300 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                  {l.conditions && editing !== l.id && (
+                    <p className="mt-1 truncate text-[11px] text-violet-300" title={conditionsText(l.conditions)}>
+                      {conditionsText(l.conditions)}
+                    </p>
+                  )}
+                  {editing === l.id && (
+                    <LinkConditionEditor
+                      link={l}
+                      onSaved={async () => {
+                        await onChanged();
+                        setEditing(null);
+                      }}
+                      onCancel={() => setEditing(null)}
+                    />
+                  )}
                 </li>
               ))}
             </ul>

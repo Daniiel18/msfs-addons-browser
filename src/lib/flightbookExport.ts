@@ -65,19 +65,19 @@ function buildRouteMap(entries: FlightLogEntry[]): string {
     dots.set(`${x2.toFixed(1)},${y2.toFixed(1)}`, [x2, y2]);
   }
   const dotEls = [...dots.values()]
-    .map(([x, y]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#f8fafc"/>`)
+    .map(([x, y]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#f5f5f7"/>`)
     .join("");
   // Graticule suave cada 30° lon / 30° lat.
   const grid: string[] = [];
   for (let lon = -180; lon <= 180; lon += 30) {
     const x = ((lon + 180) / 360) * W;
-    grid.push(`<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="#1e293b" stroke-width="0.5"/>`);
+    grid.push(`<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="#2c2c2e" stroke-width="0.5"/>`);
   }
   for (let lat = -90; lat <= 90; lat += 30) {
     const y = ((90 - lat) / 180) * H;
-    grid.push(`<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="#1e293b" stroke-width="0.5"/>`);
+    grid.push(`<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="#2c2c2e" stroke-width="0.5"/>`);
   }
-  return `<svg viewBox="0 0 ${W} ${H}" class="map" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="#0b1220"/>${grid.join("")}${lines.join("")}${dotEls}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="map" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="#141416"/>${grid.join("")}${lines.join("")}${dotEls}</svg>`;
 }
 
 export function buildFlightBookHtml(
@@ -127,25 +127,25 @@ export function buildFlightBookHtml(
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  body { margin:0; background:#0b1220; color:#e2e8f0; font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+  body { margin:0; background:#141416; color:#e0e0e4; font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
   .wrap { max-width:1040px; margin:0 auto; padding:32px 20px 56px; }
   header h1 { margin:0; font-size:28px; font-weight:800; }
-  header p { margin:4px 0 0; color:#94a3b8; font-size:14px; }
+  header p { margin:4px 0 0; color:#a1a1a6; font-size:14px; }
   .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:24px 0; }
-  .stat { background:#0f172a; border:1px solid #1e293b; border-radius:14px; padding:16px; text-align:center; }
-  .stat .v { font-size:30px; font-weight:800; color:#f8fafc; }
-  .stat .l { font-size:12px; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
-  .section-title { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:#64748b; margin:28px 0 10px; }
-  .map { width:100%; height:auto; border:1px solid #1e293b; border-radius:14px; display:block; }
+  .stat { background:#1c1c1e; border:1px solid #2c2c2e; border-radius:14px; padding:16px; text-align:center; }
+  .stat .v { font-size:30px; font-weight:800; color:#f5f5f7; }
+  .stat .l { font-size:12px; color:#a1a1a6; text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
+  .section-title { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:#7a7a80; margin:28px 0 10px; }
+  .map { width:100%; height:auto; border:1px solid #2c2c2e; border-radius:14px; display:block; }
   table { width:100%; border-collapse:collapse; margin-top:8px; font-size:14px; }
-  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid #17233b; }
-  th { color:#64748b; font-size:11px; text-transform:uppercase; letter-spacing:1px; }
-  tr:hover td { background:#0f172a; }
-  td.route { font-family:ui-monospace,monospace; color:#cbd5e1; }
-  td.num { text-align:right; color:#cbd5e1; white-space:nowrap; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid #262628; }
+  th { color:#7a7a80; font-size:11px; text-transform:uppercase; letter-spacing:1px; }
+  tr:hover td { background:#1c1c1e; }
+  td.route { font-family:ui-monospace,monospace; color:#c4c4c8; }
+  td.num { text-align:right; color:#c4c4c8; white-space:nowrap; }
   td.grade { text-align:center; font-weight:800; }
-  .g-a{color:#34d399}.g-b{color:#a3e635}.g-c{color:#fbbf24}.g-d{color:#fb923c}.g-f{color:#f87171}.g-x{color:#64748b}
-  footer { margin-top:32px; text-align:center; color:#475569; font-size:12px; }
+  .g-a{color:#34d399}.g-b{color:#a3e635}.g-c{color:#fbbf24}.g-d{color:#fb923c}.g-f{color:#f87171}.g-x{color:#7a7a80}
+  footer { margin-top:32px; text-align:center; color:#5a5a5f; font-size:12px; }
   @media (max-width:640px){ .stats{grid-template-columns:repeat(2,1fr)} }
 </style>
 </head>

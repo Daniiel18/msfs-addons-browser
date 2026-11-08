@@ -896,6 +896,10 @@ async fn auto_since(pool: &SqlitePool) -> Result<DateTime<Utc>> {
 /// Lo llama el recálculo de Finanzas antes de sumar costos.
 pub async fn sync_auto_ferries(pool: &SqlitePool) -> Result<usize> {
     let since = auto_since(pool).await?;
+    // A10: real_flight se purga a 35 días; no regenerar ferries para vuelos
+    // más antiguos porque la posición calculada ya no es fiable sin esos datos.
+    let retention_cutoff = chrono::Utc::now() - chrono::Duration::seconds(35 * 86_400);
+    let since = since.max(retention_cutoff);
     sync_reservations(pool).await?;
     let mut flights = load_flights(pool).await?;
     // (6.2d) Los vuelos reales del avión también lo mueven (sólo lo que se

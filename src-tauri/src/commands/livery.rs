@@ -711,7 +711,7 @@ pub(crate) fn handle_flightsim_download(
 
 /// (25/10) ¿Es el CDN público de flightsim.to (`cdn.*.flightsim.to`)?
 fn is_flightsim_cdn(url: &tauri::Url) -> bool {
-    url.host_str().is_some_and(|h| h.starts_with("cdn") && (h == "flightsim.to" || h.ends_with(".flightsim.to")))
+    url.host_str().is_some_and(|h| h.starts_with("cdn") && h.ends_with(".flightsim.to"))
 }
 
 /// URLs del CDN que pidieron la sesión del navegador: van por el WebView.
@@ -1900,11 +1900,17 @@ pub(crate) fn forget_direct(id: &str, spec_json: &str) {
 fn run_direct(app: tauri::AppHandle, id: String, spec: ResumeSpec, retry_label: Option<String>) {
     tauri::async_runtime::spawn(async move {
         // La tarea anterior sobre el mismo archivo (recién pausada) acaba ya.
+        let mut gave_up = true;
         for _ in 0..150 {
             if !direct_running().lock().unwrap().contains(&id) {
+                gave_up = false;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if gave_up {
+            tracing::warn!(target: "download", "run_direct({}): anterior no terminó en 30s, abortando nueva", id);
+            return;
         }
         // Tras reiniciar, el estado de la app puede no estar listo todavía.
         for _ in 0..75 {
@@ -2740,7 +2746,20 @@ async fn fetch_direct_to_file(
 
         // Éxito sólo si NO cortó a mitad, bajó ALGO, y (si conocemos el total)
         // llegó al total. Así un 200 vacío/truncado NO se toma por completo.
-        if !mid_fail && downloaded > 0 && (total == 0 || downloaded >= total) {
+        let magic_ok = if total == 0 && downloaded > 4 {
+            // Sin Content-Length → verificar que el archivo empieza con un magic conocido.
+            let mut buf = [0u8; 4];
+            if let Ok(mut f) = tokio::fs::File::open(&target).await {
+                use tokio::io::AsyncReadExt;
+                let _ = f.read_exact(&mut buf).await;
+            }
+            matches!(&buf, b"PK\x03\x04" | b"Rar!" | [0x37, 0x7A, 0xBC, 0xAF])
+                || buf[..2] == [0x1F, 0x8B] // gzip
+                || target.extension().and_then(|e| e.to_str()).is_some_and(|e| !matches!(e, "zip" | "rar" | "7z" | "gz"))
+        } else {
+            true
+        };
+        if !mid_fail && downloaded > 0 && (total == 0 || downloaded >= total) && magic_ok {
             tracing::info!(
                 target: "hoster",
                 "reqwest bajó {} bytes → {} (intento {})", downloaded, target.display(), attempt
@@ -2760,21 +2779,25 @@ async fn fetch_direct_to_file(
 /// (v6.2.56) Copia una app/instalador descargado a la carpeta que ELIJA el
 /// usuario — NUNCA a Community. Devuelve la ruta final.
 #[tauri::command]
-pub fn save_installer_to(src: String, dest_folder: String) -> Result<String, String> {
-    let src = std::path::PathBuf::from(&src);
-    let dest_dir = std::path::PathBuf::from(&dest_folder);
-    let file_name = src
-        .file_name()
-        .ok_or_else(|| crate::tr!("livery.fileNoName"))?;
-    std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
-    let dest = dest_dir.join(file_name);
-    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
-    tracing::info!(
-        target: "livery",
-        "app/instalador guardado: {} → {}",
-        src.display(), dest.display()
-    );
-    Ok(dest.to_string_lossy().into_owned())
+pub async fn save_installer_to(src: String, dest_folder: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let src = std::path::PathBuf::from(&src);
+        let dest_dir = std::path::PathBuf::from(&dest_folder);
+        let file_name = src
+            .file_name()
+            .ok_or_else(|| crate::tr!("livery.fileNoName"))?;
+        std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+        let dest = dest_dir.join(file_name);
+        std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+        tracing::info!(
+            target: "livery",
+            "app/instalador guardado: {} → {}",
+            src.display(), dest.display()
+        );
+        Ok(dest.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ===========================================================================

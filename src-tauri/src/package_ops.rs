@@ -87,6 +87,8 @@ pub struct UninstallReport {
     /// pueda intervenir manualmente si MSFS está corriendo y bloquea
     /// el delete por handles abiertos.
     pub failed_paths: Vec<RemovalFailure>,
+    /// (05/11) Carpetas reales de los enlaces quitados, que siguen en disco.
+    pub kept_targets: Vec<String>,
     /// Cuántas filas se borraron en `community_packages` +
     /// `installed_addons`.
     pub db_rows_cleared: u64,
@@ -106,9 +108,14 @@ pub struct RemovalFailure {
 /// El folder name proviene de `community_packages` (la fila escaneada
 /// del FS) o, si no existe esa fila, se borra usando el folder name
 /// tal cual — útil para "fantasmas" donde la DB se desincronizó.
+///
+/// (05/11) Si el paquete es un enlace, borrarlo quita solo el enlace. Con
+/// `delete_target` se borra además la carpeta real, salvo que sea de un
+/// instalador; lo que se quede se cuenta en `kept_targets`.
 pub async fn uninstall_by_folder(
     pool: &sqlx::SqlitePool,
     folder_name: &str,
+    delete_target: bool,
 ) -> Result<UninstallReport, PackageOpError> {
     let mut report = UninstallReport {
         folder_name: folder_name.to_string(),
@@ -152,6 +159,14 @@ pub async fn uninstall_by_folder(
         }
     }
 
+    // (05/11) Community2024 de MSFS 2024.
+    for folder in community::secondary_community_folders() {
+        let candidate = folder.join(folder_name);
+        if !already_listed(&candidates, &candidate) {
+            candidates.push(candidate);
+        }
+    }
+
     // Candidatos extras: `Documents\MSFS Sceneries\<folder>` y
     // `Documents\MSFS 2024 Sceneries\<folder>`. Algunos instaladores
     // .exe ponen ahí los assets — si están, hay que borrarlos también.
@@ -168,10 +183,22 @@ pub async fn uninstall_by_folder(
         }
     }
 
+    // Detectar si la entrada principal (DB) es un enlace. Si lo es,
+    // NO borrar carpetas reales de otras Community — podrían ser la
+    // fuente del enlace u otra instalación independiente.
+    let primary_is_link = db_target
+        .map(|t| {
+            std::fs::symlink_metadata(Path::new(&t.install_path))
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
     // Intentar borrar cada candidato. Sanity check antes de cada
     // delete — un path mal formado en DB no debe poder borrar `/`
     // ni `Community/`. Los que no existen se omiten silenciosamente
     // (eso es lo que queremos para idempotencia).
+    let primary_path = db_target.map(|t| PathBuf::from(&t.install_path));
     for candidate in &candidates {
         // El nombre `display` choca con un token reservado por las
         // macros de `tracing` (lo interpreta como helper formatter
@@ -185,6 +212,17 @@ pub async fn uninstall_by_folder(
             continue;
         };
         let is_junction = link_meta.file_type().is_symlink();
+        // (audit) Si la entrada primaria es un enlace, no borrar carpetas
+        // reales de otras Community: podrían ser el target u otra instalación.
+        let is_primary = primary_path.as_ref().is_some_and(|p| paths_equal(p, candidate));
+        if primary_is_link && !is_junction && !is_primary {
+            tracing::info!(
+                target: "install",
+                "uninstall: omitido {} (carpeta real en otra Community; la primaria es enlace)",
+                candidate.display()
+            );
+            continue;
+        }
         if let Err(reason) = sanity_check(candidate, folder_name) {
             tracing::warn!(
                 target: "install",
@@ -198,6 +236,7 @@ pub async fn uninstall_by_folder(
             });
             continue;
         }
+        let link = crate::folder_link::read(candidate).filter(|link| !link.broken);
         // Un junction/symlink se borra con remove_dir (quita SÓLO el reparse
         // point, nunca su target); una carpeta real con remove_dir_all.
         let removal = if is_junction {
@@ -213,6 +252,20 @@ pub async fn uninstall_by_folder(
                     "uninstall: borrado"
                 );
                 report.removed_paths.push(path_str);
+                if let Some(link) = link {
+                    let target = link.target.to_string_lossy().into_owned();
+                    if delete_target && !link.managed {
+                        match remove_link_target(&link.target, folder_name) {
+                            Ok(()) => report.removed_paths.push(target),
+                            Err(e) => report.failed_paths.push(RemovalFailure {
+                                path: target,
+                                error: e.to_string(),
+                            }),
+                        }
+                    } else {
+                        report.kept_targets.push(target);
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -229,6 +282,12 @@ pub async fn uninstall_by_folder(
         }
     }
 
+    // Otra Community pudo tener la carpeta real: entonces ya no se queda.
+    let removed = report.removed_paths.clone();
+    report
+        .kept_targets
+        .retain(|kept| !removed.iter().any(|r| paths_equal(Path::new(r), Path::new(kept))));
+
     // Limpiamos DB siempre que algo se haya borrado, O cuando no
     // existía nada en disco pero sí filas en DB (fantasma). Si
     // todo falló, dejamos las filas para que el usuario pueda
@@ -244,6 +303,46 @@ pub async fn uninstall_by_folder(
     }
 
     Ok(report)
+}
+
+/// (05/11) Borra la carpeta real de un enlace. Solo si conserva el nombre del
+/// paquete y es una carpeta de verdad, para no llevarse nada que no sea el addon.
+fn remove_link_target(target: &Path, folder_name: &str) -> std::io::Result<()> {
+    let invalid = || std::io::Error::other(crate::tr!("packageOps.linkTargetInvalid"));
+    let same_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(folder_name));
+    if !same_name || target.components().count() < 3 {
+        return Err(invalid());
+    }
+    if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
+        return Err(invalid());
+    }
+    // Con Community de pruebas, nada fuera de su carpeta se toca.
+    if let Some(root) = crate::test_env::community_override() {
+        if !target.starts_with(root.parent().unwrap_or(&root)) {
+            return Err(invalid());
+        }
+    }
+    std::fs::remove_dir_all(target)
+}
+
+/// (04/11) Qué carpeta hay que quitar después de instalar lo que sustituye a
+/// `replaces`. Si lo nuevo llegó en esa misma carpeta, ya la reemplazó la
+/// instalación; si no se instaló ningún paquete (un instalador .exe, un perfil
+/// de GSX), lo que había se queda. `installed`: nombres o rutas de carpeta.
+pub fn folder_to_remove<'a>(replaces: Option<&'a str>, installed: &[String]) -> Option<&'a str> {
+    let old = replaces?.trim();
+    if old.is_empty() || installed.is_empty() {
+        return None;
+    }
+    let same_folder = installed.iter().any(|p| {
+        let name = Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p);
+        // Windows no distingue mayúsculas: sería borrar lo recién instalado.
+        name.eq_ignore_ascii_case(old)
+    });
+    (!same_folder).then_some(old)
 }
 
 fn already_listed(list: &[PathBuf], candidate: &Path) -> bool {
@@ -312,6 +411,75 @@ pub struct ToggleReport {
 /// los apaga/enciende sin mover la carpeta (instantáneo aun con addons
 /// de varios GB, reversible al 100%). Devuelve `true` si el FS cambió.
 fn toggle_layout_file(install_path: &Path, enabled: bool) -> std::io::Result<bool> {
+    // Con Community de pruebas, nada fuera de ella se toca.
+    if let Some(root) = crate::test_env::community_override() {
+        let inside = install_path.starts_with(&root)
+            || community::secondary_community_folders().iter().any(|r| install_path.starts_with(r));
+        if !inside {
+            return Err(std::io::Error::other("fuera de la Community de pruebas"));
+        }
+    }
+    let is_link = std::fs::symlink_metadata(install_path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if is_link {
+        return toggle_junction(install_path, enabled);
+    }
+    // (04/11) Renombrar mueve la fecha de la carpeta, y esa fecha dice «el addon
+    // cambió»: decide si se recalcula el tamaño y si un hotfix ya se instaló.
+    // Encender y apagar no cambia el addon, así que se deja como estaba.
+    let folder_time = std::fs::metadata(install_path).and_then(|m| m.modified()).ok();
+    let changed = rename_layout(install_path, enabled)?;
+    if let (true, Some(time)) = (changed, folder_time) {
+        if let Err(e) = set_folder_time(install_path, time) {
+            tracing::debug!(target: "install", "toggle: fecha de {}: {e}", install_path.display());
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(windows)]
+fn set_folder_time(dir: &Path, time: std::time::SystemTime) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+    // Sin este permiso Windows no deja abrir una carpeta.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    std::fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)?
+        .set_modified(time)
+}
+
+#[cfg(not(windows))]
+fn set_folder_time(_dir: &Path, _time: std::time::SystemTime) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn toggle_junction(install_path: &Path, enabled: bool) -> std::io::Result<bool> {
+    let disabled = install_path.with_extension("disabled");
+    if enabled {
+        if install_path.exists() || std::fs::symlink_metadata(install_path).is_ok() {
+            return Ok(false);
+        }
+        if std::fs::symlink_metadata(&disabled).is_ok() {
+            std::fs::rename(&disabled, install_path)?;
+            return Ok(true);
+        }
+        Ok(false)
+    } else {
+        if std::fs::symlink_metadata(install_path).is_err() {
+            return Ok(false);
+        }
+        if std::fs::symlink_metadata(&disabled).is_ok() {
+            let _ = std::fs::remove_dir(&disabled);
+        }
+        std::fs::rename(install_path, &disabled)?;
+        Ok(true)
+    }
+}
+
+fn rename_layout(install_path: &Path, enabled: bool) -> std::io::Result<bool> {
     let on = install_path.join("layout.json");
     let off = install_path.join("layout.json.disabled");
     if enabled {
@@ -366,6 +534,16 @@ fn transitive_targets(
     order
 }
 
+/// Enlaces que sigue un interruptor. Los que tienen condición son de un vuelo,
+/// y aquí no hay vuelo.
+fn cascade_links(links: Vec<repo::AddonLinkRow>) -> Vec<(String, String)> {
+    links
+        .into_iter()
+        .filter(|l| l.conditions.is_none())
+        .map(|l| (l.source_folder, l.target_folder))
+        .collect()
+}
+
 /// Enciende/apaga un paquete y, con `cascade`, todos sus dependientes
 /// enlazados (transitivo, cycle-safe). Actualiza el FS primero y la
 /// columna `enabled` después — la DB es espejo, el FS manda.
@@ -385,12 +563,7 @@ pub async fn set_package_enabled(
     }
 
     let affected: Vec<String> = if cascade {
-        let links: Vec<(String, String)> = repo::list_addon_links(pool)
-            .await?
-            .into_iter()
-            .map(|l| (l.source_folder, l.target_folder))
-            .collect();
-        transitive_targets(folder_name, &links)
+        transitive_targets(folder_name, &cascade_links(repo::list_addon_links(pool).await?))
     } else {
         vec![folder_name.to_string()]
     };
@@ -399,14 +572,13 @@ pub async fn set_package_enabled(
         enabled,
         ..Default::default()
     };
+    let extra_folders = community::detect_all_community_folders().unwrap_or_default();
     for folder in &affected {
         let Some(pkg) = by_folder.get(&folder.to_lowercase()) else {
-            continue; // link hacia un paquete ya desinstalado
+            continue;
         };
         match toggle_layout_file(Path::new(&pkg.install_path), enabled) {
             Ok(_) => {
-                // El estado en DB se actualiza aunque el FS no cambiara
-                // (idempotencia: re-aplicar el mismo estado no es error).
                 sqlx::query("UPDATE community_packages SET enabled = ?1 WHERE folder_name = ?2")
                     .bind(enabled)
                     .bind(&pkg.folder_name)
@@ -431,6 +603,14 @@ pub async fn set_package_enabled(
                     path: pkg.install_path.clone(),
                     error: e.to_string(),
                 });
+            }
+        }
+        for cf in &extra_folders {
+            if !cf.exists { continue; }
+            let extra = PathBuf::from(&cf.path).join(&pkg.folder_name);
+            if extra == Path::new(&pkg.install_path) { continue; }
+            if std::fs::symlink_metadata(&extra).is_ok() {
+                let _ = toggle_layout_file(&extra, enabled);
             }
         }
     }
@@ -522,5 +702,183 @@ async fn cleanup_db(pool: &sqlx::SqlitePool, folder_name: &str) -> Result<u64, P
         .bind(folder_name)
         .execute(pool)
         .await?;
-    Ok(r1.rows_affected() + r2.rows_affected() + r3.rows_affected())
+    let r4 = sqlx::query("DELETE FROM catalog_installs WHERE folder_name = ?1")
+        .bind(folder_name)
+        .execute(pool)
+        .await?;
+    Ok(r1.rows_affected() + r2.rows_affected() + r3.rows_affected() + r4.rows_affected())
+}
+
+#[cfg(all(test, windows))]
+mod link_tests {
+    use super::*;
+    use crate::folder_link::tests::junction;
+
+    async fn pool_with(folder: &str, install_path: &Path) -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO community_packages (folder_name, install_path, title) VALUES (?1, ?2, ?1)")
+            .bind(folder)
+            .bind(install_path.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Community con un enlace al addon de una carpeta aparte.
+    fn linked(tmp: &Path, folder: &str, real: &Path) -> PathBuf {
+        let community = tmp.join("Community");
+        std::fs::create_dir_all(&community).unwrap();
+        std::fs::create_dir_all(real).unwrap();
+        std::fs::write(real.join("manifest.json"), "{}").unwrap();
+        let link = community.join(folder);
+        junction(&link, real);
+        link
+    }
+
+    #[tokio::test]
+    async fn a_condition_stops_the_cascade_and_only_manual_links_can_have_one() {
+        let pool = pool_with("a", Path::new("C:/no-existe/a")).await;
+        for (source, target) in [("a", "b"), ("b", "c"), ("a", "d")] {
+            repo::add_addon_link(&pool, source, target).await.unwrap();
+        }
+        sqlx::query("INSERT INTO addon_links (source_folder, target_folder, origin) VALUES ('a', 'e', 'auto')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let brazil = crate::link_conditions::LinkConditions { country: vec!["BR".into()], ..Default::default() };
+
+        assert!(repo::set_addon_link_conditions(&pool, "a", "b", Some(&brazil)).await.unwrap());
+        assert!(!repo::set_addon_link_conditions(&pool, "a", "e", Some(&brazil)).await.unwrap(), "automático");
+
+        let links = repo::list_addon_links(&pool).await.unwrap();
+        let conditional = links.iter().find(|l| l.target_folder == "b").unwrap();
+        assert_eq!(conditional.conditions.as_ref(), Some(&brazil));
+        assert_eq!(transitive_targets("a", &cascade_links(links)), ["a", "d", "e"], "b y lo que cuelga de b quedan fuera");
+
+        assert!(repo::set_addon_link_conditions(&pool, "a", "b", None).await.unwrap());
+        let links = repo::list_addon_links(&pool).await.unwrap();
+        assert!(links.iter().all(|l| l.conditions.is_none()));
+        assert!(transitive_targets("a", &cascade_links(links)).contains(&"c".to_string()));
+    }
+
+    #[tokio::test]
+    async fn by_default_only_the_link_goes_and_the_report_says_where_the_files_are() {
+        let folder = "simfleet-test-enlace-solo";
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("Addons").join(folder);
+        let link = linked(tmp.path(), folder, &real);
+        let pool = pool_with(folder, &link).await;
+
+        let report = uninstall_by_folder(&pool, folder, false).await.unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).is_err(), "el enlace se fue");
+        assert!(real.join("manifest.json").is_file(), "los archivos siguen");
+        assert_eq!(report.kept_targets.len(), 1);
+        assert!(report.kept_targets[0].ends_with(folder));
+        assert!(report.failed_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_real_folder_goes_too_when_asked() {
+        let folder = "simfleet-test-enlace-todo";
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("Addons").join(folder);
+        let link = linked(tmp.path(), folder, &real);
+        let pool = pool_with(folder, &link).await;
+
+        let report = uninstall_by_folder(&pool, folder, true).await.unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(!real.exists(), "se borró la carpeta real");
+        assert!(report.kept_targets.is_empty());
+        assert_eq!(report.removed_paths.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_installers_folder_is_never_deleted() {
+        let folder = "simfleet-test-enlace-instalador";
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("App").join("efb");
+        let link = linked(tmp.path(), folder, &real);
+        let pool = pool_with(folder, &link).await;
+
+        let report = uninstall_by_folder(&pool, folder, true).await.unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(real.join("manifest.json").is_file(), "es del instalador");
+        assert_eq!(report.kept_targets.len(), 1);
+    }
+
+    #[test]
+    fn a_folder_that_is_not_the_addons_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let other = tmp.path().join("Addons").join("otra-cosa");
+        std::fs::create_dir_all(&other).unwrap();
+
+        assert!(remove_link_target(&other, "acme-airport").is_err());
+        assert!(other.is_dir());
+    }
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::folder_to_remove;
+
+    fn folders(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_same_folder_is_never_removed() {
+        let installed = folders(&[r"B:\Community\acme-airport"]);
+        assert_eq!(folder_to_remove(Some("acme-airport"), &installed), None);
+        assert_eq!(folder_to_remove(Some("Acme-Airport"), &installed), None, "mayúsculas");
+        let names = folders(&["otro", "acme-airport"]);
+        assert_eq!(folder_to_remove(Some("acme-airport"), &names), None, "archivo con varios");
+    }
+
+    #[test]
+    fn a_new_folder_removes_the_old_one() {
+        let installed = folders(&[r"B:\Community\acme-airport-2024"]);
+        assert_eq!(folder_to_remove(Some("acme-airport"), &installed), Some("acme-airport"));
+    }
+
+    #[test]
+    fn without_a_new_package_nothing_is_removed() {
+        assert_eq!(folder_to_remove(Some("acme-airport"), &[]), None);
+        assert_eq!(folder_to_remove(None, &folders(&["otro"])), None);
+        assert_eq!(folder_to_remove(Some("  "), &folders(&["otro"])), None);
+    }
+}
+
+#[cfg(test)]
+mod toggle_tests {
+    use super::*;
+
+    /// (04/11) Enfocar no debe parecer una actualización de cada addon.
+    #[test]
+    fn toggling_keeps_the_folder_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("addon");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("layout.json"), "{}").unwrap();
+        let date = |d: &Path| std::fs::metadata(d).unwrap().modified().unwrap();
+        let before = date(&dir);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        assert!(toggle_layout_file(&dir, false).unwrap());
+        assert!(dir.join("layout.json.disabled").is_file());
+        assert_eq!(date(&dir), before);
+        assert!(toggle_layout_file(&dir, true).unwrap());
+        assert!(dir.join("layout.json").is_file());
+        assert_eq!(date(&dir), before);
+        // Sin cambios no se toca nada.
+        assert!(!toggle_layout_file(&dir, true).unwrap());
+    }
 }

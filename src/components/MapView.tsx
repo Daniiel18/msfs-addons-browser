@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { AnimatePresence } from "framer-motion";
 import {
   AlertCircle,
+  BoxSelect,
   MapPin,
+  Plane,
   Search,
   Sparkles,
+  X,
 } from "lucide-react";
 import type {
   AvailableUpdate,
@@ -15,6 +18,26 @@ import type {
 } from "../lib/types";
 import { GSX_KIND_COLORS } from "../lib/gsxKinds";
 import { isAirport } from "../lib/packageType";
+import { duplicateSceneries } from "../lib/dispatch";
+import { useDispatchStore } from "../stores/useDispatchStore";
+import { useToastStore } from "../stores/useToastStore";
+import { useSimContentStore } from "../stores/useSimContentStore";
+import { gsxStatusFor } from "../lib/gsxStatus";
+import { distanceToRoute, planRoute, unwrap } from "../lib/geo";
+import { bindWeatherPopup, pinTitle, simPinContent, type PlanEnd } from "../lib/mapPopups";
+import { useLatestOfp } from "../lib/useLatestOfp";
+import { countryName } from "../lib/countryName";
+import {
+  creatorOptions,
+  groupByCreator,
+  groupByMonth,
+  groupItems,
+  matchesCreator,
+  readChoice,
+  saveChoice,
+  type PackageGroup,
+} from "../lib/addonGroups";
+import { MapZoneModal, MapZoneOverlay } from "./MapZone";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
@@ -22,6 +45,8 @@ import { api } from "../lib/tauri";
 import { MapAirportCard } from "./MapAirportCard";
 import { t } from "../lib/i18n";
 import { gsxSearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
+import { AddonSortSelect, LabeledSelect, StarsShown, fmtUpdate } from "./AddonStars";
+import { compareAddons, readSort, saveSort, type AddonSort } from "../lib/addonSort";
 
 // (v4.28.0) Persistencia del FILTRO GSX y del texto de search del
 // sidebar — el usuario reportó: "el filtrado de gsx y no gsx se
@@ -29,6 +54,7 @@ import { gsxSearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
 // demás de esta vista.
 const GSX_FILTER_KEY = "simfleet.map.gsxFilter";
 const SEARCH_FILTER_KEY = "simfleet.map.filter";
+const SORT_KEY = "simfleet.map.sort";
 
 function readGsxFilter(): "all" | "gsx" | "no-gsx" {
   try {
@@ -92,6 +118,12 @@ export function MapView() {
   // (v4.28.0) Persistidos en localStorage — sobreviven al remount al
   // cambiar de pestaña (pedido explícito del usuario).
   const [filter, setFilterState] = useState(readSearchFilter);
+  // (04/11) Etapa 9: orden de la lista lateral.
+  const [sort, setSortState] = useState<AddonSort>(() => readSort(SORT_KEY));
+  const setSort = (s: AddonSort) => {
+    setSortState(s);
+    saveSort(SORT_KEY, s);
+  };
   const setFilter = (v: string) => {
     setFilterState(v);
     try {
@@ -127,6 +159,51 @@ export function MapView() {
   const packages = useMemo(
     () => allPackages.filter(isAirport),
     [allPackages],
+  );
+
+  // (06/11) País, creador, grupos y ruta del último OFP.
+  const countries = useDispatchStore((s) => s.countries);
+  const [country, setCountry] = useState("");
+  const [creator, setCreator] = useState("");
+  const [group, setGroup] = useState<MapGroup>(() => readChoice(GROUP_KEY, MAP_GROUPS, "none"));
+  const [nearOn, setNearOn] = useState(false);
+  const [nearNm, setNearNm] = useState(50);
+  const latestOfp = useLatestOfp();
+  const route = useMemo(() => (latestOfp ? planRoute(latestOfp) : null), [latestOfp]);
+  const nearRoute = useMemo(
+    () =>
+      new Set(
+        route
+          ? packages
+              .filter((p) => distanceToRoute([p.longitude as number, p.latitude as number], route) <= nearNm)
+              .map((p) => p.folderName)
+          : [],
+      ),
+    [packages, route, nearNm],
+  );
+  const countryOf = (p: CommunityPackage) => countries[p.icao?.toUpperCase() ?? ""] ?? "";
+  useEffect(() => {
+    void useDispatchStore
+      .getState()
+      .ensureCountries([...new Set(packages.map((p) => p.icao?.toUpperCase() ?? ""))].filter(Boolean));
+  }, [packages]);
+
+  // (06/11) Volar desde o hasta aquí: se termina en SimBrief.
+  const [planDraft, setPlanDraft] = useState<Record<PlanEnd, string | null>>({ orig: null, dest: null });
+  const setPlanEnd = (end: PlanEnd, icao: string) => setPlanDraft((d) => ({ ...d, [end]: icao }));
+  const planReady = !!planDraft.orig && !!planDraft.dest;
+  const openPlan = () => {
+    if (!planDraft.orig || !planDraft.dest) return;
+    void api.openExternal(simbriefDispatchUrl(planDraft.orig, planDraft.dest, latestOfp?.aircraftIcao));
+    setPlanDraft({ orig: null, dest: null });
+  };
+
+  // (06/11) Selección por zona.
+  const [zoneOn, setZoneOn] = useState(false);
+  const [zonePicked, setZonePicked] = useState<string[] | null>(null);
+  const zonePackages = useMemo(
+    () => (zonePicked ? allPackages.filter((p) => zonePicked.includes(p.folderName)) : []),
+    [zonePicked, allPackages],
   );
 
   // (v4.27.0) Aplicación de filtros — mismo pool para sidebar y mapa.
@@ -165,8 +242,33 @@ export function MapView() {
         return gsxFilter === "gsx" ? has : !has;
       });
     }
-    return pool;
-  }, [packages, filter, gsxFilter, gsxInstalledIcaos]);
+    if (country) pool = pool.filter((p) => countryOf(p) === country);
+    if (creator) pool = pool.filter((p) => matchesCreator(p, creator));
+    if (nearOn) pool = pool.filter((p) => nearRoute.has(p.folderName));
+    // Por nombre se mantiene el orden de siempre (y el ranking de la búsqueda).
+    return sort === "name" ? pool : [...pool].sort(compareAddons(sort));
+  }, [packages, filter, gsxFilter, gsxInstalledIcaos, sort, country, creator, nearOn, nearRoute, countries]);
+
+  const countryChoices = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const p of packages) {
+      const code = countryOf(p);
+      if (code) seen.set(code, (seen.get(code) ?? 0) + 1);
+    }
+    return [...seen]
+      .map(([value, n]) => ({ value, label: `${countryName(value) ?? value} (${n})` }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [packages, countries]);
+  const creatorChoices = useMemo(() => creatorOptions(packages), [packages]);
+  const sections = useMemo(() => {
+    const own = (p: CommunityPackage) => p;
+    if (group === "creator") return groupByCreator(visible, own);
+    if (group === "date") return groupByMonth(visible, own);
+    if (group === "country") {
+      return groupItems(visible, countryOf, (code) => countryName(code) ?? code, t("addons.group.no_country"));
+    }
+    return null;
+  }, [group, visible, countries]);
   // Marcadores del mapa = exactamente lo visible en la sidebar.
   const geolocated = visible;
   // (v4.24.1) El CONTEO del chip cuenta AEROPUERTOS (ICAOs distintos),
@@ -238,6 +340,7 @@ export function MapView() {
       attributionControl: { compact: true },
       renderWorldCopies: true,
     });
+    bindWeatherPopup(map);
     map.addControl(
       new maplibregl.NavigationControl({ showCompass: false }),
       "top-right",
@@ -292,9 +395,19 @@ export function MapView() {
     map.once("style.load", () => setStyleEpoch((e) => e + 1));
   }, [theme]);
 
+  // (05/11) Escenarios que compiten con otro encendido del mismo aeropuerto.
+  const sceneryChoices = useDispatchStore((s) => s.sceneryChoices);
+  const duplicated = useMemo(
+    () =>
+      new Set(
+        [...duplicateSceneries(allPackages, sceneryChoices).values()].flat().map((p) => p.folderName),
+      ),
+    [allPackages, sceneryChoices],
+  );
+
   const geojson = useMemo(
-    () => buildGeoJSON(geolocated, updatesByFolder, gsxInstalledIcaos),
-    [geolocated, updatesByFolder, gsxInstalledIcaos],
+    () => buildGeoJSON(geolocated, updatesByFolder, gsxInstalledIcaos, duplicated),
+    [geolocated, updatesByFolder, gsxInstalledIcaos, duplicated],
   );
 
   useEffect(() => {
@@ -352,8 +465,14 @@ export function MapView() {
             "#10b981", // verde — al día y con GSX
           ],
           "circle-radius": 6,
-          "circle-stroke-width": 1.5,
-          "circle-stroke-color": "rgba(255, 255, 255, 0.9)",
+          // (05/11) Anillo ámbar: otro escenario encendido del mismo aeropuerto.
+          "circle-stroke-width": ["case", ["==", ["get", "duplicate"], true], 3, 1.5],
+          "circle-stroke-color": [
+            "case",
+            ["==", ["get", "duplicate"], true],
+            "#f59e0b",
+            "rgba(255, 255, 255, 0.9)",
+          ],
         },
       });
 
@@ -401,6 +520,140 @@ export function MapView() {
     };
     run();
   }, [geojson, setFocused, styleEpoch]);
+
+  // (05/11) Aeropuertos del simulador: pines grises, solo si los pides y solo
+  // donde no tienes escenario propio.
+  const simAirports = useSimContentStore((s) => s.airports);
+  const simHandlersRef = useRef(false);
+  const [showSim, setShowSim] = useState(() => {
+    try {
+      return localStorage.getItem(SHOW_SIM_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSim = () => {
+    setShowSim((on) => {
+      try {
+        localStorage.setItem(SHOW_SIM_KEY, on ? "0" : "1");
+      } catch {
+        // Sin almacenamiento, vale para esta sesión.
+      }
+      return !on;
+    });
+  };
+  const simPoints = useMemo(() => {
+    const own = new Set(allPackages.map((p) => p.icao?.toUpperCase()));
+    return simAirports.filter((a) => a.latitude !== null && a.longitude !== null && !own.has(a.icao));
+  }, [simAirports, allPackages]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const data: GeoJSON.FeatureCollection<GeoJSON.Point> = {
+      type: "FeatureCollection",
+      features: (showSim ? simPoints : []).map((a) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [a.longitude as number, a.latitude as number] },
+        properties: { icao: a.icao, name: a.name, sim: true },
+      })),
+    };
+    const apply = () => {
+      const src = map.getSource("sim-airports") as GeoJSONSource | undefined;
+      if (src) {
+        src.setData(data);
+        return;
+      }
+      map.addSource("sim-airports", { type: "geojson", data });
+      map.addLayer(
+        {
+          id: "sim-airport-point",
+          type: "circle",
+          source: "sim-airports",
+          paint: {
+            "circle-color": "#94a3b8",
+            "circle-radius": 4,
+            "circle-stroke-width": 1,
+            "circle-stroke-color": "rgba(15, 23, 42, 0.9)",
+          },
+        },
+        map.getLayer("package-point") ? "package-point" : undefined,
+      );
+      if (simHandlersRef.current) return;
+      simHandlersRef.current = true;
+      map.on("click", "sim-airport-point", (e) => {
+        const props = e.features?.[0]?.properties as { icao?: string; name?: string; sim?: boolean } | null;
+        const icao = props?.icao;
+        if (!props || !icao) return;
+        const popup = new maplibregl.Popup({ closeButton: false, offset: 10, className: "sf-map-popup" });
+        const content = simPinContent(pinTitle(props), (end) => {
+          setPlanEnd(end, icao);
+          popup.remove();
+        });
+        popup.setLngLat(e.lngLat).setDOMContent(content).addTo(map);
+      });
+      map.on("mouseenter", "sim-airport-point", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "sim-airport-point", () => {
+        map.getCanvas().style.cursor = "";
+      });
+    };
+    const run = () => {
+      try {
+        apply();
+      } catch {
+        map.once("idle", run);
+      }
+    };
+    run();
+  }, [showSim, simPoints, styleEpoch]);
+
+  // (06/11) La ruta del último OFP, mientras se miran los escenarios cercanos.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const data: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features:
+        nearOn && route
+          ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: unwrap(route) } }]
+          : [],
+    };
+    const apply = () => {
+      const src = map.getSource("near-route") as GeoJSONSource | undefined;
+      if (src) {
+        src.setData(data);
+        return;
+      }
+      map.addSource("near-route", { type: "geojson", data });
+      map.addLayer(
+        {
+          id: "near-route-line",
+          type: "line",
+          source: "near-route",
+          paint: { "line-color": "#35cdb2", "line-width": 2, "line-opacity": 0.85 },
+        },
+        map.getLayer("sim-airport-point") ? "sim-airport-point" : undefined,
+      );
+    };
+    const run = () => {
+      try {
+        apply();
+      } catch {
+        map.once("idle", run);
+      }
+    };
+    run();
+    if (nearOn && route) {
+      const line = unwrap(route);
+      const bounds = line.reduce(
+        (b, p) => b.extend(p),
+        new maplibregl.LngLatBounds(line[0], line[0]),
+      );
+      map.fitBounds(bounds, { padding: 80, maxZoom: 6, duration: 700 });
+    }
+  }, [nearOn, route, styleEpoch]);
 
   // Cuando cambia el paquete enfocado (por click en sidebar o
   // marker), centramos la cámara. El modal se renderiza aparte.
@@ -613,6 +866,7 @@ export function MapView() {
           visible={visible}
           totalPackages={new Set(packages.map((p) => p.icao!.toUpperCase())).size}
           updatesByFolder={updatesByFolder}
+          duplicated={duplicated}
           updatesCount={updatesByFolder.size}
           onUpdateAll={() => useCommunityStore.getState().startUpdateAll()}
           focused={focused}
@@ -623,12 +877,125 @@ export function MapView() {
           setGsxFilter={setGsxFilter}
           gsxCount={gsxCount}
           noGsxCount={noGsxCount}
+          sections={sections}
+          extraFilters={
+            <>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                <LabeledSelect
+                  label={t("addons.filter.country")}
+                  value={country}
+                  onChange={setCountry}
+                  options={[{ value: "", label: t("addons.filter.all") }, ...countryChoices]}
+                />
+                <LabeledSelect
+                  label={t("addons.filter.creator")}
+                  value={creator}
+                  onChange={setCreator}
+                  options={[{ value: "", label: t("addons.filter.all") }, ...creatorChoices]}
+                />
+                <LabeledSelect
+                  label={t("addons.group.label")}
+                  value={group}
+                  onChange={(value) => {
+                    setGroup(value as MapGroup);
+                    saveChoice(GROUP_KEY, value);
+                  }}
+                  options={MAP_GROUPS.map((g) => ({ value: g, label: t(`addons.group.${g}`) }))}
+                />
+                <AddonSortSelect value={sort} onChange={setSort} />
+              </div>
+              {route && (
+                <div className="flex items-center gap-1.5" title={t("map.near.tooltip")}>
+                  <GsxFilterChip
+                    active={nearOn}
+                    tone="violet"
+                    onClick={() => setNearOn((on) => !on)}
+                    label={t("map.near.chip")}
+                    count={nearRoute.size}
+                  />
+                  {nearOn && (
+                    <select
+                      value={nearNm}
+                      onChange={(e) => setNearNm(Number(e.target.value))}
+                      aria-label={t("map.near.distance")}
+                      className="rounded-lg border border-sf-border bg-sf-surface px-2 py-1 text-xs text-sf-text"
+                    >
+                      {NEAR_DISTANCES.map((nm) => (
+                        <option key={nm} value={nm}>
+                          {nm} NM
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+            </>
+          }
         />
 
       <div className="relative overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
         <div ref={containerRef} className="absolute inset-0" />
+        {zoneOn && mapRef.current && (
+          <MapZoneOverlay
+            map={mapRef.current}
+            onCancel={() => setZoneOn(false)}
+            onPick={(folders) => {
+              setZoneOn(false);
+              if (folders.length > 0) setZonePicked(folders);
+              else useToastStore.getState().push({ kind: "info", title: t("map.zone.empty"), ttlMs: 2600 });
+            }}
+          />
+        )}
 
-        <div className="pointer-events-none absolute left-4 top-4 flex flex-col gap-2">
+        <div className="pointer-events-none absolute left-4 top-4 flex flex-col items-start gap-2">
+          {(planDraft.orig || planDraft.dest) && (
+            <div className="pointer-events-auto order-last inline-flex items-center gap-2 rounded-md bg-slate-950/85 px-3 py-1.5 text-xs font-medium text-white shadow">
+              <Plane className="h-3.5 w-3.5 text-brand-300" />
+              <span className="font-mono">
+                {planDraft.orig ?? "····"} → {planDraft.dest ?? "····"}
+              </span>
+              <button
+                onClick={openPlan}
+                disabled={!planReady}
+                title={t("map.plan.open_hint")}
+                className="rounded bg-brand-500 px-2 py-0.5 font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50"
+              >
+                {t("map.plan.open")}
+              </button>
+              <button
+                onClick={() => setPlanDraft({ orig: null, dest: null })}
+                aria-label={t("map.plan.clear")}
+                title={t("map.plan.clear")}
+                className="rounded p-0.5 text-slate-300 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+          <button
+            onClick={() => setZoneOn((on) => !on)}
+            aria-pressed={zoneOn}
+            title={t("map.zone.tooltip")}
+            className={`pointer-events-auto order-last inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium shadow ${
+              zoneOn ? "bg-brand-400 text-slate-950" : "bg-slate-950/80 text-slate-200 hover:bg-slate-900"
+            }`}
+          >
+            <BoxSelect className="h-3.5 w-3.5" />
+            {t("map.zone.button")}
+          </button>
+          {simPoints.length > 0 && (
+            <button
+              onClick={toggleSim}
+              aria-pressed={showSim}
+              title={t("map.sim_toggle_tooltip")}
+              className={`pointer-events-auto order-last inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium shadow ${
+                showSim ? "bg-slate-300 text-slate-900" : "bg-slate-950/80 text-slate-200 hover:bg-slate-900"
+              }`}
+            >
+              <span className="h-2 w-2 rounded-full bg-slate-400 ring-1 ring-slate-900/60" />
+              {t("map.sim_toggle")} ({simPoints.length})
+            </button>
+          )}
           <div className="pointer-events-auto inline-flex items-center gap-2 rounded-md bg-slate-950/80 px-3 py-1.5 text-xs text-sf-text backdrop-blur ring-1 ring-sf-border">
             <MapPin className="h-3.5 w-3.5 text-emerald-300" />
             {distinctAirports} {distinctAirports === 1 ? t("map.airport_singular") : t("map.airport_plural")}
@@ -668,9 +1035,11 @@ export function MapView() {
               pickedParking={pickedParking}
               onPickParking={setPickedParking}
               onGsxVisibleChange={setGsxVisible}
+              onPlan={setPlanEnd}
             />
           )}
         </AnimatePresence>
+        {zonePicked && <MapZoneModal packages={zonePackages} onClose={() => setZonePicked(null)} />}
       </div>
     </div>
   );
@@ -680,6 +1049,7 @@ function Sidebar({
   visible,
   totalPackages,
   updatesByFolder,
+  duplicated,
   updatesCount,
   onUpdateAll,
   focused,
@@ -690,10 +1060,16 @@ function Sidebar({
   setGsxFilter,
   gsxCount,
   noGsxCount,
+  extraFilters,
+  sections,
 }: {
+  /** (06/11) País, creador, grupos y ruta. */
+  extraFilters: ReactNode;
+  sections: PackageGroup<CommunityPackage>[] | null;
   visible: CommunityPackage[];
   totalPackages: number;
   updatesByFolder: Map<string, AvailableUpdate>;
+  duplicated: Set<string>;
   updatesCount: number;
   onUpdateAll: () => void;
   focused: string | null;
@@ -706,11 +1082,155 @@ function Sidebar({
   noGsxCount: number;
 }) {
   const gsxInstalledIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  const gsxProfiles = useGsxLocalStore((s) => s.profiles);
   // (v6.2.44) Perfiles GSX con update disponible (ICAO upper → info).
   const gsxUpdates = useGsxLocalStore((s) => s.updates);
   const gsxAckUpdate = useGsxLocalStore((s) => s.ackUpdate);
   const toggleGsx = (target: "gsx" | "no-gsx") => {
     setGsxFilter(gsxFilter === target ? "all" : target);
+  };
+
+  const renderRow = (p: CommunityPackage) => {
+      const update = updatesByFolder.get(p.folderName);
+      const isFocused = focused === p.folderName;
+      // (v2.0.0) ¿Tiene perfil GSX local para este ICAO? Sólo
+      // tiene sentido en sceneries con ICAO definido.
+      const hasGsx =
+        !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
+      // (v6.2.44) ¿Ese perfil GSX instalado tiene update? Badge
+      // ámbar clickeable → link del perfil en flightsim.to.
+      const gsxUpdate = p.icao
+        ? gsxUpdates.get(p.icao.toUpperCase())
+        : undefined;
+      return (
+        <li
+          key={p.folderName}
+          className={`group flex items-start gap-2 px-3 py-2.5 transition-colors ${
+            isFocused ? "bg-brand-500/15" : "hover:bg-sf-raised/70"
+          }`}
+        >
+          {/* Click principal: enfocar en el mapa. (v4.25.0) El
+              enfoque también muestra la card contextual con la
+              ficha técnica y las acciones — el botón "i" y el
+              modal desaparecieron de esta vista. */}
+          <button
+            onClick={() => onFocus(p.folderName)}
+            className="flex flex-1 items-start gap-2 text-left"
+            title={t("map.focus_tooltip")}
+          >
+            <div className="mt-1 shrink-0">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  update ? "bg-amber-400" : "bg-emerald-400"
+                }`}
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                {p.icao && (
+                  <span className="font-mono text-[11px] font-semibold text-brand-300">
+                    {p.icao}
+                  </span>
+                )}
+                {duplicated.has(p.folderName) && (
+                  <span
+                    className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 ring-1 ring-amber-500/30"
+                    title={t("map.duplicate_tooltip", { icao: p.icao ?? "" })}
+                  >
+                    {t("map.duplicate_chip")}
+                  </span>
+                )}
+                {p.icao && hasGsx && !gsxUpdate && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
+                    title={t("map.gsx_detected_tooltip", { icao: p.icao! })}
+                  >
+                    ✓ GSX
+                  </span>
+                )}
+                {p.icao && hasGsx && (() => {
+                  const gsx = gsxStatusFor(p.icao!, [p], gsxProfiles);
+                  if (gsx.status !== "duplicate" && gsx.status !== "other_scenery") return null;
+                  return (
+                    <span
+                      className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 ring-1 ring-amber-500/30"
+                      title={gsx.otherDev ?? gsx.profiles.map((x) => x.file).join(" · ")}
+                    >
+                      {t(`gsx.status.${gsx.status}`)}
+                    </span>
+                  );
+                })()}
+                {p.icao && hasGsx && gsxUpdate && (
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // (v6.2.58) Click → marcar como manejado (limpia el
+                      // badge). (26/10) Abre el perfil exacto que marcó tu
+                      // cuenta de flightsim.to (o la búsqueda del ICAO) en
+                      // la pestaña flightsim.to de Explorar.
+                      gsxAckUpdate(p.icao!);
+                      openInFlightsimTab(gsxUpdate.link || gsxSearchUrl(p.icao!));
+                    }}
+                    className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
+                    title={t("map.gsx_update_tooltip", {
+                      icao: p.icao!,
+                      version: gsxUpdate.latestVersion
+                        ? ` (v${gsxUpdate.latestVersion})`
+                        : "",
+                    })}
+                  >
+                    ⬆ GSX
+                  </a>
+                )}
+                {p.icao && !hasGsx && (
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // (v2.1.1) URL canónica de búsqueda GSX en
+                      // flightsim.to — el `?q=ICAO` filtra dentro
+                      // de la subcategoría gsx-pro.
+                      // (26/10) En la pestaña flightsim.to de Explorar.
+                      openInFlightsimTab(gsxSearchUrl(p.icao!));
+                    }}
+                    className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
+                    title={t("map.gsx_missing_tooltip", { icao: p.icao! })}
+                  >
+                    ✗ GSX
+                  </a>
+                )}
+                {update && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30">
+                    <Sparkles className="h-2.5 w-2.5" />
+                    {update.installedVersion} → {update.latestVersion}
+                  </span>
+                )}
+              </div>
+              {/* (v4.31.0) Nombre REAL del aeropuerto (de la
+                  tabla airports). Muchos packs traen un title
+                  genérico ("Airport" en los DominicDesignTeam);
+                  airportName da "Chubu Centrair International
+                  Airport". Fallback al title si no hay nombre. */}
+              <div className="mt-0.5 truncate text-xs text-sf-text">
+                {p.airportName ?? p.title}
+              </div>
+              {p.creator && (
+                <div className="mt-0.5 truncate text-[11px] text-sf-muted">
+                  {p.creator}
+                  {p.packageVersion && ` · v${p.packageVersion}`}
+                </div>
+              )}
+              <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-sf-muted">
+                <StarsShown value={p.rating} />
+                <span className="truncate">{fmtUpdate(p.lastUpdate)}</span>
+              </div>
+            </div>
+          </button>
+        </li>
+      );
   };
 
   return (
@@ -764,6 +1284,7 @@ function Sidebar({
             count={noGsxCount}
           />
         </div>
+        {extraFilters}
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -774,135 +1295,44 @@ function Sidebar({
               : t("map.empty.no_match")}
           </div>
         )}
-        <ul className="divide-y divide-sf-border">
-          {visible.map((p) => {
-            const update = updatesByFolder.get(p.folderName);
-            const isFocused = focused === p.folderName;
-            // (v2.0.0) ¿Tiene perfil GSX local para este ICAO? Sólo
-            // tiene sentido en sceneries con ICAO definido.
-            const hasGsx =
-              !!p.icao && gsxInstalledIcaos.has(p.icao.toUpperCase());
-            // (v6.2.44) ¿Ese perfil GSX instalado tiene update? Badge
-            // ámbar clickeable → link del perfil en flightsim.to.
-            const gsxUpdate = p.icao
-              ? gsxUpdates.get(p.icao.toUpperCase())
-              : undefined;
-            return (
-              <li
-                key={p.folderName}
-                className={`group flex items-start gap-2 px-3 py-2.5 transition-colors ${
-                  isFocused ? "bg-brand-500/15" : "hover:bg-sf-raised/70"
-                }`}
-              >
-                {/* Click principal: enfocar en el mapa. (v4.25.0) El
-                    enfoque también muestra la card contextual con la
-                    ficha técnica y las acciones — el botón "i" y el
-                    modal desaparecieron de esta vista. */}
-                <button
-                  onClick={() => onFocus(p.folderName)}
-                  className="flex flex-1 items-start gap-2 text-left"
-                  title={t("map.focus_tooltip")}
-                >
-                  <div className="mt-1 shrink-0">
-                    <span
-                      className={`inline-block h-2 w-2 rounded-full ${
-                        update ? "bg-amber-400" : "bg-emerald-400"
-                      }`}
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      {p.icao && (
-                        <span className="font-mono text-[11px] font-semibold text-brand-300">
-                          {p.icao}
-                        </span>
-                      )}
-                      {p.icao && hasGsx && !gsxUpdate && (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-500/40"
-                          title={t("map.gsx_detected_tooltip", { icao: p.icao! })}
-                        >
-                          ✓ GSX
-                        </span>
-                      )}
-                      {p.icao && hasGsx && gsxUpdate && (
-                        <a
-                          href="#"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            // (v6.2.58) Click → marcar como manejado (limpia el
-                            // badge). (26/10) Abre el perfil exacto que marcó tu
-                            // cuenta de flightsim.to (o la búsqueda del ICAO) en
-                            // la pestaña flightsim.to de Explorar.
-                            gsxAckUpdate(p.icao!);
-                            openInFlightsimTab(gsxUpdate.link || gsxSearchUrl(p.icao!));
-                          }}
-                          className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300 ring-1 ring-amber-500/40 hover:bg-amber-500/25 hover:text-amber-200"
-                          title={t("map.gsx_update_tooltip", {
-                            icao: p.icao!,
-                            version: gsxUpdate.latestVersion
-                              ? ` (v${gsxUpdate.latestVersion})`
-                              : "",
-                          })}
-                        >
-                          ⬆ GSX
-                        </a>
-                      )}
-                      {p.icao && !hasGsx && (
-                        <a
-                          href="#"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            // (v2.1.1) URL canónica de búsqueda GSX en
-                            // flightsim.to — el `?q=ICAO` filtra dentro
-                            // de la subcategoría gsx-pro.
-                            // (26/10) En la pestaña flightsim.to de Explorar.
-                            openInFlightsimTab(gsxSearchUrl(p.icao!));
-                          }}
-                          className="inline-flex items-center gap-0.5 rounded bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300/80 ring-1 ring-rose-500/30 hover:bg-rose-500/20 hover:text-rose-200"
-                          title={t("map.gsx_missing_tooltip", { icao: p.icao! })}
-                        >
-                          ✗ GSX
-                        </a>
-                      )}
-                      {update && (
-                        <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30">
-                          <Sparkles className="h-2.5 w-2.5" />
-                          {update.installedVersion} → {update.latestVersion}
-                        </span>
-                      )}
-                    </div>
-                    {/* (v4.31.0) Nombre REAL del aeropuerto (de la
-                        tabla airports). Muchos packs traen un title
-                        genérico ("Airport" en los DominicDesignTeam);
-                        airportName da "Chubu Centrair International
-                        Airport". Fallback al title si no hay nombre. */}
-                    <div className="mt-0.5 truncate text-xs text-sf-text">
-                      {p.airportName ?? p.title}
-                    </div>
-                    {p.creator && (
-                      <div className="mt-0.5 truncate text-[11px] text-sf-muted">
-                        {p.creator}
-                        {p.packageVersion && ` · v${p.packageVersion}`}
-                      </div>
-                    )}
-                  </div>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        {sections ? (
+          sections.map((s) => (
+            <section key={s.key}>
+              <h4 className="sticky top-0 z-[1] flex items-center gap-2 bg-sf-raised px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-sf-muted">
+                <span className="truncate">{s.label}</span>
+                <span className="ml-auto shrink-0">{s.items.length}</span>
+              </h4>
+              <ul className="divide-y divide-sf-border">{s.items.map(renderRow)}</ul>
+            </section>
+          ))
+        ) : (
+          <ul className="divide-y divide-sf-border">{visible.map(renderRow)}</ul>
+        )}
       </div>
     </aside>
   );
 }
 
+/** (05/11) Recuerda si se ven los aeropuertos del simulador. */
+const SHOW_SIM_KEY = "simfleet.map.showSimAirports";
+
+/** (06/11) Formulario de SimBrief con la ruta rellena. Hace falta sesión iniciada. */
+export function simbriefDispatchUrl(orig: string, dest: string, type: string | null | undefined): string {
+  const query = new URLSearchParams({ orig, dest });
+  if (type) query.set("type", type);
+  return `https://dispatch.simbrief.com/options/custom?${query}`;
+}
+
+const GROUP_KEY = "simfleet.map.group";
+const MAP_GROUPS = ["none", "country", "creator", "date"] as const;
+type MapGroup = (typeof MAP_GROUPS)[number];
+const NEAR_DISTANCES = [25, 50, 100];
+
 function buildGeoJSON(
   packages: CommunityPackage[],
   updatesByFolder: Map<string, AvailableUpdate>,
   gsxInstalledIcaos: Set<string>,
+  duplicated: Set<string>,
 ): GeoJSON.FeatureCollection<GeoJSON.Point> {
   return {
     type: "FeatureCollection",
@@ -918,6 +1348,7 @@ function buildGeoJSON(
           creator: p.creator,
           packageVersion: p.packageVersion,
           hasUpdate: updatesByFolder.has(p.folderName),
+          duplicate: duplicated.has(p.folderName),
           // (v4.0.0 — P3.1) `hasGsx` por feature. Si el ICAO no está
           // en el set local de perfiles GSX → false → marker rojo en
           // el paint expression. Sceneries sin ICAO se asumen "OK"
@@ -1010,7 +1441,8 @@ function styleFor(theme: string): maplibregl.StyleSpecification {
 // devuelven una imagen "API KEY REQUIRED" → el mapa salía tapado. Ahora: Esri
 // Dark Gray Canvas (base + capa de nombres), mismo look oscuro, sin clave y
 // del mismo servidor que el satélite del FlightBook.
-const DARK_STYLE: maplibregl.StyleSpecification = {
+// (8.4.x) Exportado: también lo usa la pantalla «En vuelo».
+export const DARK_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
     "esri-dark": {

@@ -5,9 +5,9 @@ import type { GsxParkingKind } from "./types";
 export const GSX_KIND_COLORS: Record<GsxParkingKind, string> = {
   gate: "#35cdb2",
   parking: "#38bdf8",
-  ramp: "#94a3b8",
+  ramp: "#a1a1a6",
   cargo: "#f59e0b",
   military: "#a3a3a3",
   pad: "#a78bfa",
-  other: "#cbd5e1",
+  other: "#c4c4c8",
 };

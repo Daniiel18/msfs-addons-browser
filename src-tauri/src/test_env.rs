@@ -51,6 +51,49 @@ pub fn is_active() -> bool {
     *ACTIVE
 }
 
+/// (03/11) Community falsa para probar el encendido en lote sin tocar la real:
+/// `SIMFLEET_COMMUNITY_DIR`, sólo en el entorno de pruebas.
+pub fn community_override() -> Option<PathBuf> {
+    if !is_active() {
+        return None;
+    }
+    std::env::var_os("SIMFLEET_COMMUNITY_DIR").map(PathBuf::from)
+}
+
+/// (06/11) Carpeta falsa con las cachés del Optimizador, sólo en pruebas:
+/// `SIMFLEET_OPTIMIZER_ROOT`. Sin ella, pruebas no vacía nada.
+pub fn optimizer_root() -> Option<PathBuf> {
+    if !is_active() {
+        return None;
+    }
+    std::env::var_os("SIMFLEET_OPTIMIZER_ROOT").map(PathBuf::from)
+}
+
+/// (07/11) `SIMFLEET_CONTENT_ROOT`: carpeta falsa con `<usuario>\Content.xml`.
+/// Sin ella, en pruebas se lee el archivo real pero no se escribe.
+pub fn content_root() -> Option<PathBuf> {
+    if !is_active() {
+        return None;
+    }
+    std::env::var_os("SIMFLEET_CONTENT_ROOT").map(PathBuf::from)
+}
+
+/// (07/11) `SIMFLEET_CONTENT_REAL`: deja escribir el `Content.xml` real en pruebas.
+pub fn content_real() -> bool {
+    std::env::var_os("SIMFLEET_CONTENT_REAL").is_some()
+}
+
+/// (06/11) `SIMFLEET_OPTIMIZER_REAL`: deja vaciar las cachés de verdad en pruebas.
+pub fn optimizer_real() -> bool {
+    std::env::var_os("SIMFLEET_OPTIMIZER_REAL").is_some()
+}
+
+/// (04/11) `SIMFLEET_REAL_SIM`: la secuencia de arranque abre y vigila el
+/// simulador de verdad en lugar del de prueba.
+pub fn real_sim() -> bool {
+    std::env::var_os("SIMFLEET_REAL_SIM").is_some()
+}
+
 /// `true` si el watcher de SimConnect debe arrancar. En pruebas está
 /// ENCENDIDO por defecto (pedido del usuario); se apaga con
 /// `SIMFLEET_DISABLE_WATCHER=1`. La instancia principal siempre lo arranca.

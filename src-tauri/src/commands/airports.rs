@@ -2,6 +2,15 @@ use crate::airports::{self, AddonOnMap, AirportBrief};
 use crate::AppState;
 use tauri::Manager;
 
+/// (06/11) METAR del pin señalado. `None`: ese aeropuerto no publica METAR.
+#[tauri::command]
+pub async fn airport_metar(
+    icao: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<crate::metar::AirportMetar>, String> {
+    crate::metar::fetch(&state.http, &icao).await.map_err(|e| e.to_string())
+}
+
 /// (24/10) Tarjeta de aeropuerto del FlightBook (clic en el mapa).
 /// (26/10) `flight_ids`: los vuelos de la aerolínea filtrada en el FlightBook
 /// (el filtro se resuelve en el frontend, con la misma clave que la lista).

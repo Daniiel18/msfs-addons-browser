@@ -70,7 +70,7 @@ export function TitleBar({
   return (
     <header
       data-tauri-drag-region
-      className="app-shell-header relative z-40 flex h-11 shrink-0 select-none items-center gap-3 border-b border-sf-border/70 bg-sf-bg pl-4"
+      className="app-shell-header relative z-40 flex h-11 shrink-0 select-none items-center gap-3 border-b border-sf-border/70 bg-sf-sidebar pl-4"
     >
       {leading}
 

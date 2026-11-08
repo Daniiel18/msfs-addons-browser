@@ -78,16 +78,16 @@ const TERMINATOR_STEP = 1;
  *
  *  Path tomado del set Material Icons (`flight` / `airplanemode_active`),
  *  un icono estándar de la industria — no inventado. */
-const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#fbbf24" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
+const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#fbbf24" stroke="#1c1c1e" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
 
 /** (v6 #3) Avión del RIVAL en Live VS — mismo silueta cenital pero en
  *  fucsia para distinguirlo del avión propio (ámbar). Se dibuja sobre el
  *  ROUTEMAP existente, no en un mapa nuevo. */
-const RIVAL_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#e879f9" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
+const RIVAL_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#e879f9" stroke="#1c1c1e" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
 
 /** (v6.2.28 / R5) Avión del REPLAY — cian para distinguirlo del track
  *  ámbar y del vuelo en vivo. Recorre el track grabado del vuelo. */
-const REPLAY_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#22d3ee" stroke="#0f172a" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
+const REPLAY_PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="36" height="36"><path fill="#22d3ee" stroke="#1c1c1e" stroke-width="0.7" stroke-linejoin="round" d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>`;
 
 /** Rumbo (0..360°) del segmento A→B para orientar el avión del replay. */
 function segBearing(aLat: number, aLon: number, bLat: number, bLon: number): number {
@@ -228,10 +228,14 @@ function saveMapCamera(map: maplibregl.Map): void {
  *   · Sin clusters, sin popups complejos — la lista de vuelos vive
  *     en la tabla del FlightBook; el mapa es una visualización.
  */
+/** (8.4.x) Traza vacía estable (para no re-renderizar con un `[]` nuevo). */
+const NO_TRACK: { lat: number; lon: number }[] = [];
+
 export function RoutesMapView({
   className,
   height = 360,
   selectedFlightId,
+  showLive = true,
 }: {
   className?: string;
   /** Altura del canvas. Acepta número (px) o string CSS (`"60vh"`,
@@ -243,6 +247,10 @@ export function RoutesMapView({
    *  de ese vuelo y hace fitBounds sobre ella. Cuando es `null` o
    *  `undefined`, vuelve al modo "globo con todos los vuelos". */
   selectedFlightId?: number | null;
+  /** (8.4.x) `false` = sin nada "en vivo" (tu avión, su traza, el plan del
+   *  vuelo en curso, el panel «Flying now» ni el avión del otro piloto): el
+   *  FlightBook es historial; lo en vivo está en la pantalla «En vuelo». */
+  showLive?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -318,14 +326,18 @@ export function RoutesMapView({
   const flightLogEntries = useFlightLogStore((s) => s.entries);
   // (v1.1.4) Estado en vivo del watcher SimConnect — usado para
   // pintar el avión en el mapa cuando hay vuelo en curso.
-  const flightStatus = useFlightLogStore((s) => s.status);
+  const flightStatusRaw = useFlightLogStore((s) => s.status);
+  const flightStatus = showLive ? flightStatusRaw : null;
   // (v6 #3) Posición en vivo del rival (Live VS). Llega por broadcast del
   // canal Supabase; la pintamos en ESTE mapa (no en uno nuevo).
-  const rivalPos = useLiveVsStore((s) => s.rivalPos);
-  const rivalName = useLiveVsStore((s) => s.rival?.name ?? null);
+  const rivalPosRaw = useLiveVsStore((s) => s.rivalPos);
+  const rivalPos = showLive ? rivalPosRaw : null;
+  const rivalNameRaw = useLiveVsStore((s) => s.rival?.name ?? null);
+  const rivalName = showLive ? rivalNameRaw : null;
   const rivalPosAt = useLiveVsStore((s) => s.rivalPosAt);
   // (v6.2.7) Datos del rival para su panel "Flying now" (al clicar su avión).
-  const rival = useLiveVsStore((s) => s.rival);
+  const rivalRaw = useLiveVsStore((s) => s.rival);
+  const rival = showLive ? rivalRaw : null;
   const rivalAircraft = useLiveVsStore((s) => s.rivalAircraft);
   const rivalPhase = useLiveVsStore((s) => s.rivalPhase);
   // (v4.27.0) Seguimiento sticky del avión en vivo. Cuando el usuario
@@ -370,7 +382,8 @@ export function RoutesMapView({
   // en cada broadcast, así está completa aunque no estuvieras en el
   // FlightBook cuando el rival despegó. Antes se acumulaba local aquí y
   // sólo desde que montabas el mapa → "sólo aparecía tras hacer clic".
-  const rivalTrackPoints = useLiveVsStore((s) => s.rivalTrack);
+  const rivalTrackRaw = useLiveVsStore((s) => s.rivalTrack);
+  const rivalTrackPoints = showLive ? rivalTrackRaw : NO_TRACK;
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -553,13 +566,13 @@ export function RoutesMapView({
           "circle-color": [
             "case",
             ["==", ["get", "dim"], true],
-            "#64748b",
+            "#7a7a80",
             ["==", ["get", "kind"], "real"],
             "#34d399",
             "#7dd3fc",
           ],
           "circle-stroke-width": 1.5,
-          "circle-stroke-color": "#0f172a",
+          "circle-stroke-color": "#1c1c1e",
           "circle-opacity": ["case", ["==", ["get", "dim"], true], 0.55, 0.95],
           "circle-stroke-opacity": ["case", ["==", ["get", "dim"], true], 0.55, 1],
         },
@@ -824,7 +837,7 @@ export function RoutesMapView({
           type: "fill",
           source: band.source,
           paint: {
-            "fill-color": "#020617",
+            "fill-color": "#0e0e10",
             "fill-opacity": band.opacity,
             "fill-antialias": true,
           },
@@ -877,7 +890,7 @@ export function RoutesMapView({
           "text-allow-overlap": true,
           "text-ignore-placement": true,
         },
-        paint: { "text-color": "#ffffff", "text-halo-color": "#0f172a", "text-halo-width": 1.6 },
+        paint: { "text-color": "#ffffff", "text-halo-color": "#1c1c1e", "text-halo-width": 1.6 },
       });
 
       setMapReady(true);
@@ -1112,8 +1125,8 @@ export function RoutesMapView({
   // hay un vuelo abierto, polling cada 10s en sync con el
   // sample del backend (que escribe un punto cada 10s).
   const inFlightEntry = useMemo(
-    () => flightLogEntries.find((e) => e.endedAt === null),
-    [flightLogEntries],
+    () => (showLive ? flightLogEntries.find((e) => e.endedAt === null) : undefined),
+    [flightLogEntries, showLive],
   );
   const inFlightId = inFlightEntry?.id ?? null;
   const [liveTrackPoints, setLiveTrackPoints] = useState<FlightTrackPoint[]>([]);

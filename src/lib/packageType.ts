@@ -34,7 +34,7 @@ export type DerivedType =
  *  tráfico AI, GSX-extras, FS2Crew, Navigraph, SimBrief, AICopilot,
  *  Flow scripts…). */
 const UTILITY_RE =
-  /\b(fsltl|fs2crew|raaspro|aicopilot|ai\s*copilot|gsx[\s-]*(?:cobus|profile|fuel|hydrant|catering|menzies|haeco)|simbrief|navigraph|tablet|efb|companion|toolbar|enhancement|improver|plugin|module|tweak|flow\s*(?:pro|scripts?)|command\s*center|truflite|toliss|gauge|wxr|weather\s*radar)\b/i;
+  /\b(fsltl|fs2crew|raaspro|aicopilot|ai\s*copilot|gsx[\s-]*(?:cobus|profile|fuel|hydrant|catering|menzies|haeco)|simbrief|navigraph|tablet|efb|companion|toolbar|enhancement|improver|plugin|module|tweak|flow\s*(?:pro|scripts?)|command\s*center|truflite|toliss|gauge|wxr|weather\s*radar|apronlife)\b/i;
 
 /** Keywords de vehículos/objetos no-avión → MISC. */
 const VEHICLE_RE =
@@ -144,6 +144,9 @@ function parseJsonArray(raw: string | undefined): string[] {
 }
 
 export function derivedType(p: CommunityPackage): DerivedType {
+  // (06/11) Lo que dijo el usuario manda sobre lo detectado.
+  if (p.userType) return p.userType;
+
   const ct = p.contentType?.toUpperCase().trim() ?? "";
   const hay = `${p.title} ${p.folderName}`;
 

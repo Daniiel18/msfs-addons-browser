@@ -30,6 +30,12 @@ import { useThumbnail } from "../lib/thumbnails";
 import { AddonFallbackArt } from "./AddonArt";
 import { useFlightsimUpdateStore } from "../stores/useFlightsimUpdateStore";
 import { t } from "../lib/i18n";
+import { AddonDocsSection } from "./AddonDocsView";
+import { StarsPicker, fmtUpdate } from "./AddonStars";
+import { reinstallChoices, type ReinstallChoice } from "../lib/addonMatch";
+import { inSecondFolder, keptNote } from "../lib/packageLinks";
+import { sceneriesFor } from "../lib/dispatch";
+import { gsxStatusFor } from "../lib/gsxStatus";
 
 interface Props {
   pkg: CommunityPackage;
@@ -41,11 +47,9 @@ interface Props {
  * Modal con el detalle de un paquete instalado en Community.
  *
  * Tres acciones principales en la fila inferior:
- *   1. **Reparar** — abre un sub-popup con todos los métodos de
- *      descarga disponibles (en cada fuente). El usuario elige uno
- *      → desinstalamos + descargamos. Esto sustituye el "Reparar"
- *      original que elegía silenciosamente el primer torrent y
- *      sorprendía al usuario.
+ *   1. **Reparar** — abre un sub-popup con los métodos de descarga de
+ *      este addon en cada fuente. El usuario elige uno y se descarga; lo
+ *      instalado sigue ahí hasta que lo nuevo termine de instalarse.
  *   2. **Desinstalar** — borra el folder en TODAS las Community
  *      detectadas (Steam/MSStore × 2020/2024) + carpetas extras +
  *      filas de DB. Confirmación adicional para evitar accidentes;
@@ -153,11 +157,11 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, confirmingUninstall, pickingRepair, onClose]);
 
-  const doUninstall = async () => {
+  const doUninstall = async (deleteTarget: boolean) => {
     setBusy("uninstalling");
     setError(null);
     try {
-      const report = await api.uninstallCommunityPackage(pkg.folderName);
+      const report = await api.uninstallCommunityPackage(pkg.folderName, deleteTarget);
       await rescan();
       // Reporte al usuario — toast verde con cuántas ubicaciones se
       // limpiaron. Si hubo fallos parciales (típicamente MSFS abierto
@@ -165,16 +169,18 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
       const removed = report.removedPaths.length;
       pushToast({
         kind: removed > 0 ? "success" : "info",
-        title:
-          removed === 0
+        title: keptNote(report)
+          ? t("pkg.uninstall_link.done")
+          : removed === 0
             ? t("pkg.not_on_disk")
             : removed === 1
               ? t("pkg.uninstalled_one")
               : t("pkg.uninstalled_many", { n: removed }),
         message:
-          removed > 0
+          keptNote(report) ??
+          (removed > 0
             ? report.removedPaths.join(" · ")
-            : t("pkg.uninstalled_db_only"),
+            : t("pkg.uninstalled_db_only")),
       });
       if (report.failedPaths.length > 0) {
         pushToast({
@@ -193,24 +199,24 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
   };
 
   /** Reparación con método elegido por el usuario en el sub-popup.
-   *  Desinstala el paquete actual y dispara la descarga con el
-   *  método seleccionado. El paquete reaparecerá en
-   *  `community_packages` después del rescan que el DownloadsStore
-   *  hace al completar la instalación. */
+   *  (04/11) No borra nada: lanza la descarga y `replaces` hace que lo
+   *  instalado se sustituya solo cuando lo nuevo ya esté instalado. Si la
+   *  descarga falla o se cancela, el addon sigue como estaba. */
   const doRepairWith = async (addon: Addon, method: DownloadMethod) => {
     setBusy("repairing");
     setPickingRepair(false);
     setError(null);
     try {
-      await api.uninstallCommunityPackage(pkg.folderName);
       await startDownload({
         addonId: addon.id,
         addonTitle: addon.name,
         source: addon.source,
         method,
         addonSimulator: addon.simulator,
+        allMethods: addon.downloadMethods,
+        notes: addon.notes,
+        replaces: pkg.folderName,
       });
-      await rescan();
       onClose();
     } catch (e) {
       setError(String(e));
@@ -233,7 +239,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
   // buscar — ICAO (SCENERY) o keyword del título (todo lo demás).
   // Antes exigíamos `!!pkg.icao` y por eso liveries/aviones quedaban
   // bloqueados. Ahora caen en el camino Simplaza-by-name.
-  const canRepair = !!pkg.icao || !!searchKeyword;
+  const canRepair = (!!pkg.icao || !!searchKeyword) && !pkg.linkManaged;
 
   return (
     <AnimatePresence>
@@ -301,6 +307,9 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                   {pkg.packageVersion && ` · v${pkg.packageVersion}`}
                 </p>
               )}
+              <div className="mt-1">
+                <StarsPicker folder={pkg.folderName} value={pkg.rating} />
+              </div>
             </div>
             <button
               onClick={onClose}
@@ -328,12 +337,14 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
               )}
               <Detail
                 label={t("pkg.last_modified")}
-                value={pkg.folderModifiedAt ?? "—"}
+                value={fmtUpdate(pkg.lastUpdate) ?? "—"}
               />
               <GsxProfileRow icao={pkg.icao} />
+              <PackageLinkRows pkg={pkg} />
             </dl>
 
             <PackLiveriesSection installPath={pkg.installPath} />
+            <AddonDocsSection folder={pkg.folderName} />
 
             {error && (
               <div className="mt-4 flex items-start gap-2 rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200 ring-1 ring-rose-500/30">
@@ -344,32 +355,12 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
 
             {confirmingUninstall && (
               <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-100">
-                <p className="font-medium">
-                  {t("pkg.uninstall_confirm.q")} <span className="font-mono">{pkg.folderName}</span>?
-                </p>
-                <p className="mt-1 text-rose-200/80">
-                  {t("pkg.uninstall_confirm.body")}
-                </p>
-                <div className="mt-2 flex justify-end gap-2">
-                  <button
-                    onClick={() => setConfirmingUninstall(false)}
-                    className="rounded-md border border-sf-border px-3 py-1 text-sf-text hover:bg-sf-raised"
-                  >
-                    {t("common.cancel")}
-                  </button>
-                  <button
-                    onClick={doUninstall}
-                    disabled={busy !== "none"}
-                    className="inline-flex items-center gap-1 rounded-md bg-rose-500 px-3 py-1 font-medium text-rose-950 hover:bg-rose-400 disabled:opacity-50"
-                  >
-                    {busy === "uninstalling" ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3 w-3" />
-                    )}
-                    {t("common.confirm")}
-                  </button>
-                </div>
+                <UninstallChoices
+                  pkg={pkg}
+                  busy={busy !== "none"}
+                  onCancel={() => setConfirmingUninstall(false)}
+                  onConfirm={(deleteTarget) => void doUninstall(deleteTarget)}
+                />
               </div>
             )}
 
@@ -454,7 +445,7 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
                     : pkg.icao
                       ? t("pkg.reinstall_picker")
                       : t("pkg.reinstall_by_name")
-                  : t("pkg.cannot_reinstall")
+                  : t(pkg.linkManaged ? "pkg.reinstall_managed" : "pkg.cannot_reinstall")
               }
               className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 update
@@ -516,11 +507,11 @@ export function PackageDetailModal({ pkg, update, onClose }: Props) {
 }
 
 /**
- * Sub-popup superpuesto al modal principal con la lista exhaustiva
- * de métodos de descarga disponibles en cada fuente. El usuario
- * elige el que prefiera (torrent recomendado para auto-instalación;
- * mirrors abren el navegador). Cancela vuelve al modal sin tocar
- * nada.
+ * Sub-popup superpuesto al modal principal con los métodos de descarga
+ * de este addon en cada fuente. El usuario elige el que prefiera
+ * (torrent recomendado para auto-instalación; mirrors abren el
+ * navegador). Lo de otros desarrolladores sale solo con «Ver otros» y
+ * avisando. Cancela vuelve al modal sin tocar nada.
  */
 export function RepairMethodPicker({
   pkg,
@@ -535,10 +526,9 @@ export function RepairMethodPicker({
   onPick: (addon: Addon, method: DownloadMethod) => void;
   onCancel: () => void;
 }) {
-  // Ordena: torrent primero (mejor para reparar), luego mirror,
-  // luego direct. Dentro de cada fuente ordena addons por versión
-  // descendente para que el más nuevo aparezca arriba.
-  const grouped = useMemo(() => groupBySourceWithMethods(matches), [matches]);
+  const { own, others } = useMemo(() => reinstallChoices(matches, pkg), [matches, pkg]);
+  const [showOthers, setShowOthers] = useState(false);
+  const nothing = own.length === 0 && others.length === 0;
 
   return (
     <motion.div
@@ -556,9 +546,9 @@ export function RepairMethodPicker({
         exit={{ opacity: 0, scale: 0.96, y: 8 }}
         transition={{ duration: 0.14 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-[min(560px,calc(100%-2rem))] max-h-[calc(100%-2rem)] overflow-hidden rounded-xl border border-amber-500/30 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
+        className="flex w-[min(560px,calc(100%-2rem))] max-h-[calc(100%-2rem)] flex-col overflow-hidden rounded-xl border border-amber-500/30 bg-sf-bg shadow-2xl ring-1 ring-amber-500/20"
       >
-        <header className="flex items-start justify-between gap-3 border-b border-sf-border px-5 py-3">
+        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-sf-border px-5 py-3">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-amber-200">
               {t("pkg.repair.title")}
@@ -577,53 +567,47 @@ export function RepairMethodPicker({
           </button>
         </header>
 
-        <div className="max-h-[60vh] overflow-y-auto p-4">
-          {searching && grouped.length === 0 ? (
+        <div className="max-h-[60vh] min-h-0 flex-1 overflow-y-auto p-4">
+          {searching && nothing ? (
             <div className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-sf-muted">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t("pkg.repair.searching", { icao: pkg.icao ?? "" })}
+              {t("pkg.repair.searching", { icao: pkg.icao ?? pkg.title })}
             </div>
-          ) : grouped.length === 0 ? (
+          ) : nothing ? (
             <p className="px-2 py-4 text-center text-xs text-sf-muted">
               {t("pkg.repair.no_methods")}
             </p>
           ) : (
-            <ul className="space-y-3">
-              {grouped.map((g, gi) => (
-                <li key={`${g.source}-${gi}`}>
-                  <div className="mb-1.5 flex items-center gap-2 text-[11px] text-sf-muted">
-                    <span className="rounded bg-sf-raised px-1.5 py-0.5 font-semibold uppercase tracking-wide">
-                      {g.source}
-                    </span>
-                    {g.version && <span className="text-sf-muted">v{g.version}</span>}
+            <div className="space-y-4">
+              {own.length > 0 ? (
+                <ChoiceRows choices={own} onPick={onPick} />
+              ) : (
+                <p className="px-2 py-2 text-center text-xs text-sf-muted">
+                  {t("pkg.repair.not_found")}
+                </p>
+              )}
+              {others.length > 0 &&
+                (showOthers ? (
+                  <div className="space-y-3 border-t border-sf-border pt-3">
+                    <p className="flex items-start gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-200 ring-1 ring-amber-500/30">
+                      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <span>{t("pkg.repair.others_warning", { folder: pkg.folderName })}</span>
+                    </p>
+                    <ChoiceRows choices={others} onPick={onPick} />
                   </div>
-                  <p className="mb-2 truncate text-xs text-sf-text">{g.title}</p>
-                  <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                    {g.methods.map((mm, mi) => (
-                      <button
-                        key={mi}
-                        onClick={() => onPick(g.addon, mm)}
-                        className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors ${
-                          mm.kind === "torrent"
-                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20"
-                            : "border-sf-border bg-sf-raised text-sf-text hover:border-brand-500/40 hover:bg-sf-raised"
-                        }`}
-                      >
-                        <Download className="h-3.5 w-3.5 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">{mm.name}</span>
-                        <span className="shrink-0 rounded bg-sf-surface px-1.5 py-0.5 text-[11px] uppercase">
-                          {mm.kind}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </li>
-              ))}
-            </ul>
+                ) : (
+                  <button
+                    onClick={() => setShowOthers(true)}
+                    className="w-full rounded-md border border-sf-border px-3 py-2 text-xs text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+                  >
+                    {t("pkg.repair.see_others", { n: others.length })}
+                  </button>
+                ))}
+            </div>
           )}
         </div>
 
-        <footer className="flex justify-end gap-2 border-t border-sf-border px-5 py-3">
+        <footer className="flex shrink-0 justify-end gap-2 border-t border-sf-border px-5 py-3">
           <button
             onClick={onCancel}
             className="rounded-md border border-sf-border px-3 py-1.5 text-xs text-sf-text hover:bg-sf-raised"
@@ -636,39 +620,121 @@ export function RepairMethodPicker({
   );
 }
 
-interface Grouped {
-  source: string;
-  title: string;
-  version: string | null;
-  addon: Addon;
-  methods: DownloadMethod[];
+/** (05/11) Dónde está de verdad el addon, si no es lo normal. */
+export function PackageLinkRows({ pkg }: { pkg: CommunityPackage }) {
+  return (
+    <>
+      {inSecondFolder(pkg) && <Detail label={t("pkg.location")} value="Community2024" />}
+      {pkg.linkTarget && (
+        <Detail
+          label={t(pkg.linkManaged ? "pkg.link_installer" : "pkg.link_target")}
+          value={pkg.linkTarget}
+          mono
+        />
+      )}
+      {pkg.alsoIn && <Detail label={t("pkg.also_in")} value={pkg.alsoIn} mono />}
+    </>
+  );
 }
 
-function groupBySourceWithMethods(matches: Addon[]): Grouped[] {
-  // Para cada source, quedarnos con un único addon (el de mayor
-  // versión) y combinar todos sus métodos. Esto evita duplicar
-  // botones cuando hay variaciones del mismo addon en sceneryaddons.
-  const order = (k: DownloadMethod["kind"]) =>
-    k === "torrent" ? 0 : k === "mirror" ? 1 : 2;
-  const bySource = new Map<string, Addon>();
-  for (const a of matches) {
-    if (a.downloadMethods.length === 0) continue;
-    const prev = bySource.get(a.source);
-    if (!prev) {
-      bySource.set(a.source, a);
-      continue;
-    }
-    if ((a.version ?? "") > (prev.version ?? "")) {
-      bySource.set(a.source, a);
-    }
-  }
-  return Array.from(bySource.values()).map((a) => ({
-    source: a.source,
-    title: a.name,
-    version: a.version,
-    addon: a,
-    methods: [...a.downloadMethods].sort((x, y) => order(x.kind) - order(y.kind)),
-  }));
+/** (05/11) Confirmar Desinstalar. Con un enlace hay que decidir qué se borra, y
+ *  lo que es de un instalador solo se puede desenlazar. */
+export function UninstallChoices({
+  pkg,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  pkg: CommunityPackage;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (deleteTarget: boolean) => void;
+}) {
+  const link = pkg.linkTarget;
+  const danger =
+    "inline-flex items-center gap-1 rounded-md bg-rose-500 px-3 py-1 font-medium text-rose-950 hover:bg-rose-400 disabled:opacity-50";
+  return (
+    <>
+      <p className="font-medium">
+        {t(link ? "pkg.uninstall_link.q" : "pkg.uninstall_confirm.q")}{" "}
+        <span className="font-mono">{pkg.folderName}</span>?
+      </p>
+      <p className="mt-1 break-words text-rose-200/80">
+        {link
+          ? t(pkg.linkManaged ? "pkg.uninstall_link.managed" : "pkg.uninstall_link.body", { path: link })
+          : t("pkg.uninstall_confirm.body")}
+      </p>
+      <div className="mt-2 flex flex-wrap justify-end gap-2">
+        <button
+          onClick={onCancel}
+          className="rounded-md border border-sf-border px-3 py-1 text-sf-text hover:bg-sf-raised"
+        >
+          {t("common.cancel")}
+        </button>
+        {link && (
+          <button
+            onClick={() => onConfirm(false)}
+            disabled={busy}
+            className="rounded-md border border-rose-400/40 px-3 py-1 font-medium text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+          >
+            {t("pkg.uninstall_link.only")}
+          </button>
+        )}
+        {(!link || !pkg.linkManaged) && (
+          <button onClick={() => onConfirm(true)} disabled={busy} className={danger}>
+            {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+            {link ? t("pkg.uninstall_link.all") : t("common.confirm")}
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
+function ChoiceRows({
+  choices,
+  onPick,
+}: {
+  choices: ReinstallChoice[];
+  onPick: (addon: Addon, method: DownloadMethod) => void;
+}) {
+  return (
+    <ul className="space-y-3">
+      {choices.map(({ addon, methods }) => (
+        <li key={addon.id}>
+          <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px] text-sf-muted">
+            <span className="rounded bg-sf-raised px-1.5 py-0.5 font-semibold uppercase tracking-wide">
+              {addon.source}
+            </span>
+            {addon.developer && <span className="font-medium text-sf-text/90">{addon.developer}</span>}
+            {addon.version && <span>v{addon.version}</span>}
+            {addon.simulator && <span>{addon.simulator}</span>}
+          </div>
+          <p className="mb-2 truncate text-xs text-sf-text">{addon.name}</p>
+          {/* Según el ancho del recuadro: en la tarjeta del mapa, una columna. */}
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-1.5">
+            {methods.map((mm, mi) => (
+              <button
+                key={mi}
+                onClick={() => onPick(addon, mm)}
+                className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors ${
+                  mm.kind === "torrent"
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20"
+                    : "border-sf-border bg-sf-raised text-sf-text hover:border-brand-500/40 hover:bg-sf-raised"
+                }`}
+              >
+                <Download className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{mm.name}</span>
+                <span className="shrink-0 rounded bg-sf-surface px-1.5 py-0.5 text-[11px] uppercase">
+                  {mm.kind}
+                </span>
+              </button>
+            ))}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export function Detail({
@@ -697,13 +763,24 @@ export function Detail({
  *  instalado. Lee del store local hidratado al boot. */
 export function GsxProfileRow({ icao }: { icao: string | null }) {
   const installedIcaos = useGsxLocalStore((s) => s.installedIcaos);
+  const profiles = useGsxLocalStore((s) => s.profiles);
+  const packages = useCommunityStore((s) => s.packages);
   if (!icao) return null;
   const has = installedIcaos.has(icao.toUpperCase());
+  const gsx = gsxStatusFor(icao, sceneriesFor(icao, packages), profiles);
+  const alert = gsx.status === "duplicate" || gsx.status === "other_scenery";
   return (
     <>
       <dt className="text-sf-muted">{t("pkg.gsx_profile")}</dt>
       <dd className="truncate">
-        {has ? (
+        {alert ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-200 ring-1 ring-amber-500/40"
+            title={gsx.otherDev ?? gsx.profiles.map((p) => p.file).join(" · ")}
+          >
+            {t(`gsx.status.${gsx.status}`)}
+          </span>
+        ) : has ? (
           <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-200 ring-1 ring-violet-500/40">
             ✓ {t("pkg.gsx_installed")}
           </span>

@@ -268,6 +268,8 @@ struct WindowResp {
 enum FetchError {
     /// Cuota agotada: esperar `retry_after` segundos.
     RateLimited(Option<u64>),
+    /// 404: datos de esa ventana aún no publicados.
+    NoData,
     Other(anyhow::Error),
 }
 
@@ -296,7 +298,7 @@ async fn fetch_window(http: &reqwest::Client, begin: i64, end: i64) -> Result<Wi
                 forget_token();
                 continue;
             }
-            404 => return Ok(WindowResp { flights: Vec::new(), remaining }),
+            404 => return Err(FetchError::NoData),
             429 => return Err(FetchError::RateLimited(retry_after)),
             s if !(200..300).contains(&s) => {
                 return Err(FetchError::Other(anyhow!("OpenSky respondió HTTP {status}")));
@@ -601,6 +603,10 @@ async fn sync_inner(pool: &SqlitePool, http: &reqwest::Client) -> Result<SyncRep
                 report.kept += kept;
                 report.credits += cost;
                 tracing::info!(target: "opensky", "ventana {begin}: {total} vuelos, {kept} de tus aerolíneas · {cost} créditos · quedan {:?}", w.remaining);
+            }
+            Err(FetchError::NoData) => {
+                tracing::debug!(target: "opensky", "ventana {begin}: 404, datos aún no publicados — se reintentará");
+                continue;
             }
             Err(FetchError::RateLimited(retry)) => {
                 tracing::warn!(target: "opensky", "cuota de OpenSky agotada (reintentar en {retry:?} s)");

@@ -33,6 +33,12 @@ use serde::Serialize;
 /// archives without wandering into the layout.json-listed asset tree.
 const MAX_PACKAGE_DEPTH: usize = 3;
 
+/// (04/11) Carpeta de trabajo para cambiar un paquete por otro. Vive dentro de
+/// Community para estar en el mismo disco (renombrar es instantáneo, también
+/// si Community es un enlace a otro disco) y MSFS no la lee: no tiene manifest
+/// y el simulador no mira dentro de las subcarpetas de un paquete.
+const WORK_DIR: &str = ".simfleet-install";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledPackage {
@@ -156,15 +162,7 @@ pub fn install_archive(
         let target = community_path.join(&name);
         tracing::info!("install: {} → {}", name, target.display());
 
-        if target.exists() {
-            fs::remove_dir_all(&target).with_context(|| {
-                crate::tr!("install.removePrevFailed", path = target.display())
-            })?;
-        }
-
-        let size = copy_dir_recursive(pkg, &target).with_context(|| {
-            crate::tr!("install.copyFailed", from = pkg.display(), to = target.display())
-        })?;
+        let size = place_package(pkg, community_path, &name)?;
 
         total_bytes += size;
         installed.push(InstalledPackage {
@@ -181,6 +179,160 @@ pub fn install_archive(
         total_bytes,
         installer_payload: None,
     })
+}
+
+/// (04/11) Deja `src` en `Community/<name>` sin quedarse nunca sin addon. Lo
+/// nuevo se copia aparte; solo con la copia entera se aparta lo viejo y se pone
+/// lo nuevo, con dos renombrados. Si MSFS tiene algo abierto, el renombrado
+/// falla entero y no se ha tocado nada. Lo viejo se borra al final.
+///
+/// Si en Community hay un enlace, lo nuevo va a su carpeta real y el enlace se
+/// queda. Lo que es de un instalador no se toca: se actualiza con ese programa.
+pub fn place_package(src: &Path, community: &Path, name: &str) -> anyhow::Result<u64> {
+    let link = crate::folder_link::read(&community.join(name)).filter(|link| !link.broken);
+    if let Some(link) = link.as_ref().filter(|link| link.managed) {
+        return Err(anyhow!(
+            "{}",
+            crate::tr!("install.linkManaged", name = name, path = link.target.display())
+        ));
+    }
+    let real = link.and_then(|link| {
+        let name = link.target.file_name()?.to_str()?.to_string();
+        Some((link.target.parent()?.to_path_buf(), name))
+    });
+    let (root, name) = match &real {
+        Some((root, name)) => (root.as_path(), name.as_str()),
+        None => (community, name),
+    };
+    let work = root.join(WORK_DIR);
+    let result = swap_in(src, root, &work, name);
+    // Solo se van si quedaron vacías: puede haber otra instalación en curso.
+    let _ = fs::remove_dir(work.join("new"));
+    let _ = fs::remove_dir(work.join("old"));
+    let _ = fs::remove_dir(&work);
+    result
+}
+
+fn swap_in(src: &Path, community: &Path, work: &Path, name: &str) -> anyhow::Result<u64> {
+    let target = community.join(name);
+    let fresh = work.join("new").join(name);
+    let old = work.join("old").join(name);
+    let copy_failed = || crate::tr!("install.copyFailed", from = src.display(), to = target.display());
+
+    remove_path(&fresh).with_context(copy_failed)?;
+    fs::create_dir_all(work.join("new")).with_context(copy_failed)?;
+    let size = match copy_dir_recursive(src, &fresh) {
+        Ok(size) => size,
+        Err(e) => {
+            let _ = remove_path(&fresh);
+            // Con la causa en el mensaje: «no hay espacio en el disco».
+            return Err(anyhow!("{}: {e:#}", copy_failed()));
+        }
+    };
+
+    let had_previous = fs::symlink_metadata(&target).is_ok();
+    if had_previous {
+        let moved = remove_path(&old)
+            .and_then(|_| fs::create_dir_all(work.join("old")))
+            .and_then(|_| rename_patiently(&target, &old));
+        if let Err(e) = moved {
+            let _ = remove_path(&fresh);
+            return Err(anyhow::Error::new(e)
+                .context(crate::tr!("install.removePrevFailed", path = name)));
+        }
+    }
+    if let Err(e) = rename_patiently(&fresh, &target) {
+        if had_previous {
+            if let Err(back) = rename_patiently(&old, &target) {
+                tracing::error!("install: no pude devolver {}: {back}", target.display());
+            }
+        }
+        let _ = remove_path(&fresh);
+        return Err(anyhow::Error::new(e).context(copy_failed()));
+    }
+    if had_previous {
+        // Ya está lo nuevo: si esto falla, el próximo arranque lo limpia.
+        if let Err(e) = remove_path(&old) {
+            tracing::warn!("install: queda {} por borrar: {e}", old.display());
+        }
+    }
+    Ok(size)
+}
+
+/// (04/11) Renombra con paciencia: el antivirus o el indexador revisan lo recién
+/// copiado y un archivo abierto dentro de una carpeta impide renombrarla. Si
+/// sigue fallando a los 3 segundos, es que alguien la tiene abierta de verdad.
+fn rename_patiently(from: &Path, to: &Path) -> io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match fs::rename(from, to) {
+            Err(_) if tries < 6 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Borra lo que haya en `path`, si hay algo. Un enlace se quita él solo, sin
+/// tocar aquello a lo que apunta.
+fn remove_path(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(m) if m.file_type().is_symlink() => {
+            fs::remove_dir(path).or_else(|_| fs::remove_file(path))
+        }
+        Ok(m) if m.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+    }
+}
+
+/// (04/11) Si SimFleet se cerró a mitad de un cambio de carpetas, lo viejo
+/// vuelve a su sitio cuando falta y lo que sobra se limpia. Solo al arrancar:
+/// con una instalación en curso borraría su copia.
+pub fn recover_interrupted(community: &Path) {
+    let work = community.join(WORK_DIR);
+    if !work.is_dir() {
+        return;
+    }
+    tracing::warn!("install: quedó un cambio a medias en {}", work.display());
+    if let Ok(entries) = fs::read_dir(work.join("old")) {
+        for entry in entries.flatten() {
+            let target = community.join(entry.file_name());
+            let done = if fs::symlink_metadata(&target).is_err() {
+                fs::rename(entry.path(), &target)
+            } else {
+                remove_path(&entry.path())
+            };
+            if let Err(e) = done {
+                tracing::warn!("install: no pude recuperar {}: {e}", target.display());
+            }
+        }
+    }
+    let _ = remove_path(&work.join("new"));
+    let _ = fs::remove_dir(work.join("old"));
+    let _ = fs::remove_dir(&work);
+}
+
+/// (05/11) [`recover_interrupted`] en Community y junto a las carpetas reales de
+/// sus addons enlazados, que es donde se cambian.
+pub fn recover_everywhere(community: &Path) {
+    recover_interrupted(community);
+    let Ok(entries) = fs::read_dir(community) else {
+        return;
+    };
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries.flatten() {
+        let parent = crate::folder_link::read(&entry.path())
+            .and_then(|link| link.target.parent().map(Path::to_path_buf));
+        if let Some(parent) = parent {
+            if seen.insert(parent.clone()) {
+                recover_interrupted(&parent);
+            }
+        }
+    }
 }
 
 /// Busca ejecutables sueltos en el árbol extraído. Sólo extensiones
@@ -231,10 +383,11 @@ fn persist_installer_payload(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("archive");
-    let target = parent.join(format!("{}_extracted", stem));
+    let mut target = parent.join(format!("{}_extracted", stem));
 
     if target.exists() {
-        fs::remove_dir_all(&target).ok();
+        let unique = format!("{}_{}_extracted", stem, chrono::Utc::now().format("%H%M%S"));
+        target = parent.join(unique);
     }
     copy_dir_recursive(extract_root, &target)
         .with_context(|| crate::tr!("install.persistFailed", path = target.display()))?;
@@ -576,4 +729,196 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<u64> {
         }
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    fn write_pkg(dir: &Path, text: &str) {
+        fs::create_dir_all(dir.join("scenery")).unwrap();
+        fs::write(dir.join("manifest.json"), text).unwrap();
+        fs::write(dir.join("scenery").join("a.bgl"), text).unwrap();
+    }
+
+    fn read(dir: &Path) -> String {
+        fs::read_to_string(dir.join("manifest.json")).unwrap()
+    }
+
+    #[test]
+    fn a_new_package_lands_in_community_and_leaves_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let community = tmp.path().join("Community");
+        fs::create_dir_all(&community).unwrap();
+        write_pkg(&src, "nuevo");
+
+        let size = place_package(&src, &community, "acme-airport").unwrap();
+
+        assert_eq!(size, 10);
+        assert_eq!(read(&community.join("acme-airport")), "nuevo");
+        assert!(!community.join(WORK_DIR).exists());
+    }
+
+    #[test]
+    fn the_new_copy_fully_replaces_the_old_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let community = tmp.path().join("Community");
+        write_pkg(&src, "nuevo");
+        write_pkg(&community.join("acme-airport"), "viejo");
+        fs::write(community.join("acme-airport").join("solo-viejo.txt"), "x").unwrap();
+
+        place_package(&src, &community, "acme-airport").unwrap();
+
+        let pkg = community.join("acme-airport");
+        assert_eq!(read(&pkg), "nuevo");
+        assert!(!pkg.join("solo-viejo.txt").exists(), "no se mezcla con lo viejo");
+        assert!(!community.join(WORK_DIR).exists());
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_the_old_package_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let community = tmp.path().join("Community");
+        write_pkg(&community.join("acme-airport"), "viejo");
+
+        let missing = tmp.path().join("no-existe");
+        assert!(place_package(&missing, &community, "acme-airport").is_err());
+
+        assert_eq!(read(&community.join("acme-airport")), "viejo");
+        assert!(!community.join(WORK_DIR).exists());
+    }
+
+    /// Lo mismo que le pasa con MSFS abierto: un archivo en uso dentro.
+    #[cfg(windows)]
+    #[test]
+    fn with_a_file_in_use_nothing_changes() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let community = tmp.path().join("Community");
+        write_pkg(&src, "nuevo");
+        write_pkg(&community.join("acme-airport"), "viejo");
+
+        let bgl = community.join("acme-airport").join("scenery").join("a.bgl");
+        let lock = fs::OpenOptions::new().read(true).share_mode(1).open(&bgl).unwrap();
+        let result = place_package(&src, &community, "acme-airport");
+        drop(lock);
+
+        assert!(result.is_err());
+        assert_eq!(read(&community.join("acme-airport")), "viejo");
+        assert_eq!(fs::read_to_string(&bgl).unwrap(), "viejo");
+        assert!(!community.join(WORK_DIR).exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_linked_package_is_updated_in_its_real_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let community = tmp.path().join("Community");
+        let library = tmp.path().join("Addons").join("Airport");
+        let real = library.join("acme-airport");
+        fs::create_dir_all(&community).unwrap();
+        write_pkg(&src, "nuevo");
+        write_pkg(&real, "viejo");
+        fs::write(real.join("solo-viejo.txt"), "x").unwrap();
+        let link = community.join("acme-airport");
+        crate::folder_link::tests::junction(&link, &real);
+
+        place_package(&src, &community, "acme-airport").unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "el enlace sigue");
+        assert_eq!(read(&link), "nuevo");
+        assert_eq!(read(&real), "nuevo");
+        assert!(!real.join("solo-viejo.txt").exists(), "no queda la copia vieja");
+        assert!(!library.join(WORK_DIR).exists());
+        assert!(!community.join(WORK_DIR).exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn what_an_installer_linked_is_not_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let community = tmp.path().join("Community");
+        let real = tmp.path().join("App").join("efb");
+        fs::create_dir_all(&community).unwrap();
+        write_pkg(&src, "nuevo");
+        write_pkg(&real, "instalador");
+        let link = community.join("acme-efb");
+        crate::folder_link::tests::junction(&link, &real);
+
+        assert!(place_package(&src, &community, "acme-efb").is_err());
+
+        assert_eq!(read(&real), "instalador");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_broken_link_gives_way_to_a_real_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let community = tmp.path().join("Community");
+        let gone = tmp.path().join("Addons").join("acme-airport");
+        fs::create_dir_all(&community).unwrap();
+        fs::create_dir_all(&gone).unwrap();
+        write_pkg(&src, "nuevo");
+        let link = community.join("acme-airport");
+        crate::folder_link::tests::junction(&link, &gone);
+        fs::remove_dir_all(&gone).unwrap();
+
+        place_package(&src, &community, "acme-airport").unwrap();
+
+        assert_eq!(read(&link), "nuevo");
+        assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_change_cut_short_next_to_a_linked_folder_is_recovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let community = tmp.path().join("Community");
+        let library = tmp.path().join("Addons");
+        let real = library.join("acme-airport");
+        fs::create_dir_all(&community).unwrap();
+        write_pkg(&real, "viejo");
+        crate::folder_link::tests::junction(&community.join("acme-airport"), &real);
+        write_pkg(&library.join(WORK_DIR).join("old").join("otro-airport"), "viejo");
+
+        recover_everywhere(&community);
+
+        assert_eq!(read(&library.join("otro-airport")), "viejo");
+        assert!(!library.join(WORK_DIR).exists());
+    }
+
+    #[test]
+    fn after_a_crash_the_old_package_comes_back_if_it_went_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let community = tmp.path().join("Community");
+        let work = community.join(WORK_DIR);
+        write_pkg(&work.join("old").join("sin-sustituir"), "viejo");
+        write_pkg(&work.join("new").join("sin-sustituir"), "a medias");
+        write_pkg(&work.join("old").join("ya-sustituido"), "viejo");
+        write_pkg(&community.join("ya-sustituido"), "nuevo");
+
+        recover_interrupted(&community);
+
+        assert_eq!(read(&community.join("sin-sustituir")), "viejo");
+        assert_eq!(read(&community.join("ya-sustituido")), "nuevo");
+        assert!(!work.exists());
+    }
+
+    #[test]
+    fn with_nothing_interrupted_recovery_does_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pkg(&tmp.path().join("acme-airport"), "viejo");
+
+        recover_interrupted(tmp.path());
+
+        assert_eq!(read(&tmp.path().join("acme-airport")), "viejo");
+    }
 }

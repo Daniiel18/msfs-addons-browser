@@ -6,6 +6,9 @@ use crate::techlog::{
     self, TechLogAircraft, TechLogFlight, TlActionRequest, TlActionResult, TlAppStatus, TlCabin, TlPendingOrder,
     TlReadings, TlSource,
 };
+use crate::techlog_pages::{
+    self, TlCabinPage, TlCockpitPage, TlCockpitRequest, TlFlightDetail, TlFlightsPage, TlSeatInfo,
+};
 use crate::AppState;
 
 /// Apps TechLog instaladas / abiertas y cuántos aviones conoce cada una.
@@ -136,4 +139,136 @@ pub async fn techlog_flight(
         crate::tl_i18n::localize_flight(f);
     }
     Ok(f)
+}
+
+// ---------------------------------------------------------------------------
+// (01/11) Etapa 5a: pantallas Cockpit, Cabina y Vuelos (Hangar → Mantenimiento)
+// ---------------------------------------------------------------------------
+
+/// Cockpit (perfiles) del avión: en vivo sólo si es el activo de su TechLog.
+/// (02/11) Sin Fenix/PMDG TechLog, el Cockpit propio (interruptores estándar).
+#[tauri::command]
+pub async fn techlog_cockpit(state: State<'_, AppState>, registration: String) -> Result<TlCockpitPage, String> {
+    if managed(&registration).await {
+        Ok(techlog_pages::cockpit(&registration).await)
+    } else {
+        crate::cockpit_std::page(&state.db, &registration)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Orden al cockpit (leer, guardar, restaurar, perfiles, mandos).
+#[tauri::command]
+pub async fn techlog_cockpit_action(
+    state: State<'_, AppState>,
+    request: TlCockpitRequest,
+) -> Result<TlActionResult, String> {
+    if !managed(&request.registration).await {
+        return crate::cockpit_std::action(&state.db, request)
+            .await
+            .map_err(|e| e.to_string());
+    }
+    let mut r = techlog_pages::cockpit_action(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    r.message = crate::tl_i18n::sentence(&r.message);
+    Ok(r)
+}
+
+/// Plano de cabina (asientos y equipos); el último visto si no es el activo.
+/// (02/11) Sin Fenix/PMDG TechLog, la Cabina propia.
+#[tauri::command]
+pub async fn techlog_cabin_plan(state: State<'_, AppState>, registration: String) -> Result<TlCabinPage, String> {
+    Ok(if managed(&registration).await {
+        techlog_pages::cabin_plan(&state.db, &registration).await
+    } else {
+        crate::mx::pages::own_cabin(&state.db, &registration).await
+    })
+}
+
+/// Plazas y asientos bloqueados (aviso del pre-vuelo).
+#[tauri::command]
+pub async fn techlog_seat_info(
+    state: State<'_, AppState>,
+    registration: String,
+) -> Result<Option<TlSeatInfo>, String> {
+    if managed(&registration).await {
+        techlog_pages::seat_info(&state.db, &registration).await
+    } else {
+        crate::mx::pages::own_seat_info(&state.db, &registration).await
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// Vuelos del avión en su TechLog (de su base; también con TechLog cerrado).
+/// (02/11) Sin Fenix/PMDG TechLog, los del Tech Log propio (FlightBook).
+#[tauri::command]
+pub async fn techlog_flights(
+    state: State<'_, AppState>,
+    registration: String,
+    limit: Option<i64>,
+) -> Result<Option<TlFlightsPage>, String> {
+    let limit = limit.unwrap_or(100);
+    if managed(&registration).await {
+        techlog_pages::flights(&registration, limit).await
+    } else {
+        crate::mx::pages::own_flights(&state.db, &registration, limit).await
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// ¿Lleva esta matrícula Fenix/PMDG TechLog? (si no, el Tech Log propio).
+async fn managed(registration: &str) -> bool {
+    techlog::managed_registrations()
+        .await
+        .contains_key(&techlog::normalize_reg(registration))
+}
+
+/// Detalle de un vuelo (informe, cronología, despegue y tomas, sistemas,
+/// desgaste y perfil).
+#[tauri::command]
+pub async fn techlog_flight_detail(
+    state: State<'_, AppState>,
+    registration: String,
+    flight_id: i64,
+) -> Result<Option<TlFlightDetail>, String> {
+    if managed(&registration).await {
+        techlog_pages::flight_detail(&registration, flight_id).await
+    } else {
+        crate::mx::pages::own_flight_detail(&state.db, &registration, flight_id).await
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// Guarda el registro de texto (`kind = "log"`) o el JSON (`"json"`) del
+/// vuelo en la ruta elegida.
+#[tauri::command]
+pub async fn techlog_flight_save(
+    registration: String,
+    flight_id: i64,
+    kind: String,
+    path: String,
+) -> Result<(), String> {
+    techlog_pages::flight_save(&registration, flight_id, &kind, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Borra un vuelo en TechLog (irreversible; el front pide confirmación).
+#[tauri::command]
+pub async fn techlog_flight_delete(
+    app: tauri::AppHandle,
+    registration: String,
+    flight_id: i64,
+) -> Result<TlActionResult, String> {
+    let mut r = techlog_pages::flight_delete(&registration, flight_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    r.message = crate::tl_i18n::sentence(&r.message);
+    if r.ok {
+        use tauri::Emitter;
+        let _ = app.emit("techlog://changed", registration);
+    }
+    Ok(r)
 }

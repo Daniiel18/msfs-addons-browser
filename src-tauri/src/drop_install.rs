@@ -134,6 +134,7 @@ pub fn inspect(
     sessions: &DropSessions,
 ) -> anyhow::Result<DropInspection> {
     tracing::info!(target: "drop", "inspect: path={}", archive_path.display());
+    cleanup_stale(sessions);
     if !archive_path.exists() {
         anyhow::bail!("{}", crate::tr!("dropInstall.pathNotExist", path = archive_path.display()));
     }
@@ -706,6 +707,28 @@ fn estimate_uncompressed(archive: &Path, ext: &str, password: Option<&str>) -> O
     }
 }
 
+pub(crate) fn rar_entry_path_is_unsafe(p: &Path) -> bool {
+    use std::path::Component;
+    if p.is_absolute() {
+        return true;
+    }
+    for c in p.components() {
+        match c {
+            Component::ParentDir => return true,
+            Component::Prefix(_) => return true,
+            Component::Normal(s) => {
+                if let Some(s) = s.to_str() {
+                    if s.contains(':') {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn extract_rar(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
     let mut iter = match password {
         Some(pw) => unrar::Archive::with_password(src, pw)
@@ -721,6 +744,17 @@ fn extract_rar(src: &Path, dest: &Path, password: Option<&str>) -> anyhow::Resul
             Ok(None) => break,
             Err(e) => anyhow::bail!("rar read header: {e}"),
         };
+        if rar_entry_path_is_unsafe(&header.entry().filename) {
+            tracing::warn!(
+                target: "drop",
+                "entrada RAR con ruta insegura omitida: {}",
+                header.entry().filename.display()
+            );
+            iter = header
+                .skip()
+                .map_err(|e| anyhow::anyhow!("rar skip: {e}"))?;
+            continue;
+        }
         iter = header
             .extract_with_base(dest)
             .map_err(|e| anyhow::anyhow!("rar extract: {e}"))?;
@@ -927,9 +961,12 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
             // contenido) — esas SÍ las separamos y enrutamos a la carpeta `work`
             // del addon. Es el caso de los livery packs que traen el .ini de
             // iFly dentro: el texturizado va a Community y el config a `work`.
-            if ext == "ini" && detect_ini_owner(entry.path()) != "gsx_profile" {
-                if let Ok(item) = classify_gsx_file(entry.path(), root) {
-                    items.push(item);
+            if ext == "ini" {
+                let owner = detect_ini_owner(entry.path());
+                if owner == "ifly_config" || owner == "pmdg_config" {
+                    if let Ok(item) = classify_gsx_file(entry.path(), root) {
+                        items.push(item);
+                    }
                 }
             }
             continue;
@@ -954,6 +991,22 @@ fn scan_extracted(root: &Path) -> anyhow::Result<Vec<DropItem>> {
     let leftovers = leftover_files(root, &claimed);
     if !leftovers.is_empty() {
         items.push(external_item(root, &leftovers, has_msfs_content));
+    }
+
+    // A06: variantes con el mismo destino → sólo preseleccionar la primera.
+    {
+        let mut seen_folders = std::collections::HashSet::new();
+        for item in items.iter_mut() {
+            if item.kind != "community_package" { continue; }
+            let dest = PathBuf::from(&item.source_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !seen_folders.insert(dest) {
+                item.preselect = false;
+            }
+        }
     }
 
     // (v2.1.1) Ordenar items por relative_path para que las variantes
@@ -1379,7 +1432,7 @@ fn detect_ini_owner(file_path: &Path) -> &'static str {
         // Algunos .ini de PMDG/iFly traen bytes no-UTF8: leemos lossy.
         Err(_) => match std::fs::read(file_path) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(_) => return "gsx_profile",
+            Err(_) => return "unknown_ini",
         },
     };
     let c = content.to_ascii_lowercase();
@@ -1404,7 +1457,18 @@ fn detect_ini_owner(file_path: &Path) -> &'static str {
     {
         return "pmdg_config";
     }
-    "gsx_profile"
+    // GSX — secciones típicas de un perfil de aeropuerto.
+    if c.contains("[departure]")
+        || c.contains("[arrival]")
+        || c.contains("[refueling]")
+        || c.contains("[deboarding]")
+        || c.contains("[boarding]")
+        || c.contains("pushbacktype")
+        || c.contains("latitude=")
+    {
+        return "gsx_profile";
+    }
+    "unknown_ini"
 }
 
 fn classify_gsx_file(file_path: &Path, extract_root: &Path) -> anyhow::Result<DropItem> {
@@ -1839,16 +1903,35 @@ fn install_addon_config(
 }
 
 fn install_community_package(src_dir: &Path, community_path: &Path) -> anyhow::Result<String> {
-    let folder_name = src_dir
+    let raw_name = src_dir
         .file_name()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.folderNoName")))?;
-    let dest = community_path.join(folder_name);
+        .ok_or_else(|| anyhow::anyhow!("{}", crate::tr!("dropInstall.folderNoName")))?
+        .to_string();
+
+    // A05: cuando el paquete está en la raíz del archivo, src_dir es el
+    // tempdir mismo y file_name() devuelve un nombre aleatorio como
+    // ".tmpXYZ". Derivamos un nombre del título del manifest.
+    let folder_name = if raw_name.starts_with(".tmp") || raw_name.starts_with("tmp") {
+        let manifest = src_dir.join("manifest.json");
+        if manifest.exists() {
+            let text = std::fs::read_to_string(&manifest).unwrap_or_default();
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
+                .map(|t| sanitize_folder_name(&t))
+                .filter(|s| !s.is_empty())
+                .unwrap_or(raw_name)
+        } else {
+            raw_name
+        }
+    } else {
+        raw_name
+    };
+    let dest = community_path.join(&folder_name);
     // (v7) Guard "src == dest": si arrastran una carpeta que YA vive en Community
     // (o la propia carpeta Community), `src_dir` y `dest` resuelven al MISMO
-    // directorio. Sin este chequeo, el `remove_dir_all(dest)` de abajo BORRA el
-    // addon y `copy_dir_recursive` lo recrea VACÍO → pérdida silenciosa e
-    // irreversible (reportada como instalación exitosa). No-op en ese caso.
+    // directorio: copiarla sobre sí misma no tiene sentido. No-op en ese caso.
     if let (Ok(cs), Ok(cd)) = (
         std::fs::canonicalize(src_dir),
         std::fs::canonicalize(&dest),
@@ -1867,26 +1950,8 @@ fn install_community_package(src_dir: &Path, community_path: &Path) -> anyhow::R
         "copiando Community {} → {}",
         src_dir.display(), dest.display()
     );
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
-    }
-    copy_dir_recursive(src_dir, &dest)?;
+    crate::install::place_package(src_dir, community_path, &folder_name)?;
     Ok(dest.to_string_lossy().into_owned())
-}
-
-fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dest)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_recursive(&path, &dest_path)?;
-        } else {
-            std::fs::copy(&path, &dest_path)?;
-        }
-    }
-    Ok(())
 }
 
 fn directory_size(path: &Path) -> std::io::Result<u64> {

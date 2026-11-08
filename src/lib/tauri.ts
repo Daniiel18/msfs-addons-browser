@@ -59,6 +59,9 @@ import type {
   GsxProfile,
   TechLogAircraft,
   TechLogPart,
+  ContentChange,
+  ContentReport,
+  LaunchScriptPermission,
   TechLogAppStatus,
   TechLogActionRequest,
   TechLogActionResult,
@@ -66,6 +69,12 @@ import type {
   TechLogCabinLights,
   TechLogReadings,
   TechLogFlight,
+  TechLogCabinPage,
+  TechLogCockpitPage,
+  TechLogCockpitRequest,
+  TechLogFlightDetail,
+  TechLogFlightsPage,
+  TechLogSeatInfo,
   TechLogPendingOrder,
   TechLogSource,
   GsxAirportParkings,
@@ -89,7 +98,15 @@ import type {
   LandingClip,
   PmdgLivery,
   RefreshSummary,
+  AddonUserType,
+  AirportMetar,
+  CleanedCache,
+  OptimizerReport,
+  GsxLocalProfile,
+  LinkConditions,
   ScanReport,
+  SceneryChoice,
+  SimAirport,
   SimBriefBriefing,
   SimBriefFlight,
   LinkOutcome,
@@ -117,6 +134,20 @@ import type {
   OpenSkySyncReport,
   AirlineFleet,
   Reservation,
+  LaunchDetectedApp,
+  LaunchRun,
+  LaunchSequence,
+  LaunchSimInfo,
+  ContentSet,
+  DispatchApplyReport,
+  DispatchChanges,
+  DispatchMode,
+  DispatchState,
+  LiveryEntry,
+  AddonDoc,
+  AddonDocPreview,
+  DispatchTrip,
+  LaunchStep,
 } from "./types";
 
 /** True when we're running inside the Tauri webview (vs. a plain browser). */
@@ -134,6 +165,9 @@ interface StartDownloadInput {
    *  para ofrecer el cross-link tras instalar — el título limpio no
    *  menciona los años. Opcional por retro-compatibilidad. */
   addonSimulator?: string;
+  /** (04/11) Carpeta de Community que esta descarga sustituye. Sigue
+   *  instalada hasta que lo nuevo termine de instalarse. */
+  replaces?: string | null;
 }
 
 /** (v6.2.15) Diagnóstico de memoria — un proceso del árbol de SimFleet. */
@@ -236,6 +270,10 @@ interface Api {
    *  instalado en `%APPDATA%\Virtuali\GSX\MSFS`. La frontend usa esto
    *  para mostrar un check en cada card de escenario. */
   gsxListInstalledIcaos: () => Promise<string[]>;
+  /** (05/11) Perfiles del disco, con su autor y el escenario que nombran. */
+  gsxLocalProfiles: () => Promise<GsxLocalProfile[]>;
+  /** (05/11) Aeropuertos que trae el propio simulador. */
+  simAirports: () => Promise<SimAirport[]>;
   /** (19/10) Etapa 2 — sincronía con Fenix/PMDG TechLog. */
   techlogStatus: () => Promise<TechLogAppStatus[]>;
   techlogAircraft: (registration: string) => Promise<TechLogAircraft | null>;
@@ -267,6 +305,51 @@ interface Api {
     startedAt: string,
     endedAt: string | null,
   ) => Promise<TechLogFlight | null>;
+  /** (01/11) Etapa 5a: cockpit (perfiles) en vivo si es el avión activo. */
+  techlogCockpit: (registration: string) => Promise<TechLogCockpitPage>;
+  techlogCockpitAction: (request: TechLogCockpitRequest) => Promise<TechLogActionResult>;
+  /** (01/11) Plano de cabina; el último visto si no es el avión activo. */
+  techlogCabinPlan: (registration: string) => Promise<TechLogCabinPage>;
+  /** (01/11) Plazas y asientos bloqueados (aviso del pre-vuelo). */
+  techlogSeatInfo: (registration: string) => Promise<TechLogSeatInfo | null>;
+  /** (01/11) Vuelos del avión en su TechLog (también con TechLog cerrado). */
+  techlogFlights: (registration: string, limit?: number) => Promise<TechLogFlightsPage | null>;
+  techlogFlightDetail: (registration: string, flightId: number) => Promise<TechLogFlightDetail | null>;
+  /** (01/11) Guarda el registro de texto o el JSON de un vuelo en `path`. */
+  techlogFlightSave: (registration: string, flightId: number, kind: "log" | "json", path: string) => Promise<void>;
+  /** (01/11) Borra un vuelo en TechLog (irreversible). */
+  techlogFlightDelete: (registration: string, flightId: number) => Promise<TechLogActionResult>;
+  /** (02/11) Etapa 6 — secuencias de arranque. */
+  launchSequences: () => Promise<LaunchSequence[]>;
+  launchSequenceSave: (sequence: LaunchSequence) => Promise<LaunchSequence[]>;
+  launchSequenceDelete: (id: number) => Promise<LaunchSequence[]>;
+  launchDetectedApps: () => Promise<LaunchDetectedApp[]>;
+  launchSimInfo: () => Promise<LaunchSimInfo>;
+  launchRun: (sequenceId: number, testAll: boolean, changes?: DispatchChanges) => Promise<LaunchRun>;
+  dispatchState: () => Promise<DispatchState>;
+  dispatchSetMode: (mode: DispatchMode, setId: number | null) => Promise<void>;
+  dispatchSetKeep: (folder: string, keep: boolean) => Promise<string[]>;
+  dispatchLiveries: () => Promise<LiveryEntry[]>;
+  dispatchSetAlternate: (on: boolean) => Promise<void>;
+  /** (05/11) Sin carpeta y sin ignorar, olvida el aeropuerto. */
+  dispatchSetScenery: (icao: string, folder: string | null, ignored: boolean) => Promise<SceneryChoice[]>;
+  dispatchSetTrip: (trip: DispatchTrip | null) => Promise<DispatchTrip | null>;
+  addonDocs: () => Promise<AddonDoc[]>;
+  addonDocPreview: (path: string) => Promise<AddonDocPreview>;
+  addonSetRating: (folder: string, stars: number | null) => Promise<void>;
+  dispatchApply: (changes: DispatchChanges) => Promise<DispatchApplyReport>;
+  contentSetSave: (name: string) => Promise<DispatchState>;
+  contentSetUpdate: (id: number) => Promise<DispatchState>;
+  contentSetRename: (id: number, name: string) => Promise<DispatchState>;
+  contentSetDelete: (id: number) => Promise<DispatchState>;
+  launchStatus: () => Promise<LaunchRun | null>;
+  launchCancel: () => Promise<void>;
+  /** «Seguir ya»: deja de esperar en el paso actual. */
+  launchSkipWait: () => Promise<void>;
+  /** «Probar»: abre sólo ese paso. */
+  launchTestStep: (step: LaunchStep) => Promise<"opened" | "already">;
+  launchScriptsPending: (steps: LaunchStep[]) => Promise<LaunchScriptPermission[]>;
+  launchScriptsApprove: (hashes: string[]) => Promise<void>;
   /** (19/10) Gates y parkings del perfil GSX instalado de un aeropuerto
    *  (Scenery map). `null` si no hay perfil para ese ICAO. */
   gsxAirportParkings: (icao: string) => Promise<GsxAirportParkings | null>;
@@ -441,6 +524,8 @@ interface Api {
     key: string,
     status: "processing" | "ready" | "installed" | "saved" | "failed" | "cancelled",
     message?: string | null,
+    /** (02/11) Con «installed»: carpetas que quedaron en Community. */
+    packages?: string[],
   ) => Promise<void>;
   /** (v4.7.0) Borra el archivo comprimido original arrastrado, tras una
    *  instalación exitosa y con confirmación del usuario. */
@@ -457,6 +542,8 @@ interface Api {
    *  Si todo va bien la app no retorna — el `exit(0)` la mata. Si
    *  falla la descarga o el spawn devuelve un error. */
   installUpdate: (assetUrl: string, autoRestart?: boolean) => Promise<void>;
+  checkRollback: () => Promise<{ available: boolean; version: string; releaseUrl: string }>;
+  rollbackToPrevious: () => Promise<void>;
   /** Listener del progreso de descarga del installer. Se suscribe
    *  durante `installUpdate` y se llama cada chunk con bytes
    *  descargados + total (puede ser `null` si el servidor no envió
@@ -475,6 +562,19 @@ interface Api {
   refreshAirportsDataset: () => Promise<number>;
   /** (v4.11.0) Resuelve nombre/ciudad/país de uno o varios ICAO. */
   lookupAirports: (icaos: string[]) => Promise<AirportBrief[]>;
+  /** (06/11) Tarjeta, ajustes de MSFS, cachés y consejos de Windows. */
+  contentReport: (user: string | null) => Promise<ContentReport>;
+  contentApply: (user: string, stamp: string, changes: ContentChange[]) => Promise<number>;
+  contentRestore: (user: string, file: string) => Promise<void>;
+  optimizerReport: () => Promise<OptimizerReport>;
+  /** (06/11) Vacía las cachés marcadas, por id. */
+  optimizerClean: (ids: string[]) => Promise<CleanedCache[]>;
+  /** (06/11) METAR del pin señalado; `null` si ese aeropuerto no publica. */
+  airportMetar: (icao: string) => Promise<AirportMetar | null>;
+  /** (06/11) Tipo de unos addons; `null` vuelve al detectado. */
+  setAddonsUserType: (folders: string[], userType: AddonUserType | null) => Promise<void>;
+  /** (06/11) Pone y quita etiquetas en unos addons. */
+  editAddonsTags: (folders: string[], add: string[], remove: string[]) => Promise<void>;
   /** (24/10) Tarjeta de aeropuerto del FlightBook. */
   /** (26/10) `flightIds`: sólo esos vuelos (filtro de aerolínea). */
   airportCard: (icao: string, flightIds?: number[] | null) => Promise<AirportCardData>;
@@ -523,7 +623,8 @@ interface Api {
    *  extras (Documents\MSFS Sceneries\…) + filas de DB. Devuelve un
    *  reporte con los paths borrados, los que fallaron y cuántas filas
    *  de DB se limpiaron. */
-  uninstallCommunityPackage: (folderName: string) => Promise<UninstallReport>;
+  /** `deleteTarget`: si es un enlace, borra también su carpeta real. */
+  uninstallCommunityPackage: (folderName: string, deleteTarget?: boolean) => Promise<UninstallReport>;
   /** Diagnóstico de update — devuelve el estado completo de la
    *  cadena (paquete, airport match, catalog entries, cache,
    *  bloqueador). Lo invoca el botón "Diagnosticar" del modal. */
@@ -559,6 +660,12 @@ interface Api {
   listAddonLinks: () => Promise<AddonLink[]>;
   /** (v4.25.0) Crea una arista manual source → target. */
   addAddonLink: (sourceFolder: string, targetFolder: string) => Promise<void>;
+  /** (05/11) Pone o quita la condición de un enlace manual. */
+  setAddonLinkConditions: (
+    sourceFolder: string,
+    targetFolder: string,
+    conditions: LinkConditions | null,
+  ) => Promise<void>;
   /** (v4.25.0) Elimina una arista (auto o manual). */
   removeAddonLink: (
     sourceFolder: string,
@@ -835,13 +942,14 @@ const realApi: Api = {
   openLocalPath: (path) => openPath(path),
 
   listDownloads: () => invoke<DownloadJob[]>("list_downloads"),
-  startDownload: ({ addonId, addonTitle, source, method, addonSimulator }) =>
+  startDownload: ({ addonId, addonTitle, source, method, addonSimulator, replaces }) =>
     invoke<DownloadJob>("start_download", {
       addonId,
       addonTitle,
       source,
       method,
       addonSimulator: addonSimulator ?? "",
+      replaces: replaces ?? null,
     }),
   cancelDownload: (id) => invoke<void>("cancel_download", { id }),
   pauseDownload: (id) => invoke<void>("pause_download", { id }),
@@ -878,6 +986,8 @@ const realApi: Api = {
 
   gsxLookup: (icao) => invoke<GsxProfile[]>("gsx_lookup", { icao }),
   gsxListInstalledIcaos: () => invoke<string[]>("gsx_list_installed_icaos"),
+  gsxLocalProfiles: () => invoke<GsxLocalProfile[]>("gsx_local_profiles"),
+  simAirports: () => invoke<SimAirport[]>("sim_airports"),
   techlogStatus: () => invoke<TechLogAppStatus[]>("techlog_status"),
   techlogAircraft: (registration) =>
     invoke<TechLogAircraft | null>("techlog_aircraft", { registration }),
@@ -898,6 +1008,47 @@ const realApi: Api = {
     invoke<TechLogActionResult>("techlog_cabin_set", { registration, control, value }),
   techlogFlight: (registration, startedAt, endedAt) =>
     invoke<TechLogFlight | null>("techlog_flight", { registration, startedAt, endedAt }),
+  techlogCockpit: (registration) => invoke<TechLogCockpitPage>("techlog_cockpit", { registration }),
+  techlogCockpitAction: (request) => invoke<TechLogActionResult>("techlog_cockpit_action", { request }),
+  techlogCabinPlan: (registration) => invoke<TechLogCabinPage>("techlog_cabin_plan", { registration }),
+  techlogSeatInfo: (registration) => invoke<TechLogSeatInfo | null>("techlog_seat_info", { registration }),
+  techlogFlights: (registration, limit) =>
+    invoke<TechLogFlightsPage | null>("techlog_flights", { registration, limit: limit ?? null }),
+  techlogFlightDetail: (registration, flightId) =>
+    invoke<TechLogFlightDetail | null>("techlog_flight_detail", { registration, flightId }),
+  techlogFlightSave: (registration, flightId, kind, path) =>
+    invoke<void>("techlog_flight_save", { registration, flightId, kind, path }),
+  techlogFlightDelete: (registration, flightId) =>
+    invoke<TechLogActionResult>("techlog_flight_delete", { registration, flightId }),
+  launchSequences: () => invoke<LaunchSequence[]>("launch_sequences"),
+  launchSequenceSave: (sequence) => invoke<LaunchSequence[]>("launch_sequence_save", { sequence }),
+  launchSequenceDelete: (id) => invoke<LaunchSequence[]>("launch_sequence_delete", { id }),
+  launchDetectedApps: () => invoke<LaunchDetectedApp[]>("launch_detected_apps"),
+  launchSimInfo: () => invoke<LaunchSimInfo>("launch_sim_info"),
+  launchRun: (sequenceId, testAll, changes) =>
+    invoke<LaunchRun>("launch_run", { sequenceId, testAll, changes: changes ?? null }),
+  dispatchState: () => invoke<DispatchState>("dispatch_state"),
+  dispatchSetMode: (mode, setId) => invoke<void>("dispatch_set_mode", { mode, setId }),
+  dispatchSetKeep: (folder, keep) => invoke<string[]>("dispatch_set_keep", { folder, keep }),
+  dispatchLiveries: () => invoke<LiveryEntry[]>("dispatch_liveries"),
+  dispatchSetAlternate: (on) => invoke<void>("dispatch_set_alternate", { on }),
+  dispatchSetScenery: (icao, folder, ignored) =>
+    invoke<SceneryChoice[]>("dispatch_set_scenery", { icao, folder, ignored }),
+  dispatchSetTrip: (trip) => invoke<DispatchTrip | null>("dispatch_set_trip", { trip }),
+  addonDocs: () => invoke<AddonDoc[]>("addon_docs"),
+  addonDocPreview: (path) => invoke<AddonDocPreview>("addon_doc_preview", { path }),
+  addonSetRating: (folder, stars) => invoke<void>("addon_set_rating", { folder, stars }),
+  dispatchApply: (changes) => invoke<DispatchApplyReport>("dispatch_apply", { changes }),
+  contentSetSave: (name) => invoke<DispatchState>("content_set_save", { name }),
+  contentSetUpdate: (id) => invoke<DispatchState>("content_set_update", { id }),
+  contentSetRename: (id, name) => invoke<DispatchState>("content_set_rename", { id, name }),
+  contentSetDelete: (id) => invoke<DispatchState>("content_set_delete", { id }),
+  launchStatus: () => invoke<LaunchRun | null>("launch_status"),
+  launchCancel: () => invoke<void>("launch_cancel"),
+  launchSkipWait: () => invoke<void>("launch_skip_wait"),
+  launchTestStep: (step) => invoke<"opened" | "already">("launch_test_step", { step }),
+  launchScriptsPending: (steps) => invoke<LaunchScriptPermission[]>("launch_scripts_pending", { steps }),
+  launchScriptsApprove: (hashes) => invoke<void>("launch_scripts_approve", { hashes }),
   gsxAirportParkings: (icao) =>
     invoke<GsxAirportParkings | null>("gsx_airport_parkings", { icao }),
   gsxCheckProfileUpdates: () =>
@@ -988,8 +1139,8 @@ const realApi: Api = {
   dropSaveExternal: (sessionId, sourcePath, destFolder, name) =>
     invoke<SavedExternal>("drop_save_external", { sessionId, sourcePath, destFolder, name }),
   revealPath: (path, isFile) => (isFile ? revealItemInDir(path) : openPath(path)),
-  downloadJobStatus: (key, status, message) =>
-    invoke<void>("download_job_status", { key, status, message: message ?? null }),
+  downloadJobStatus: (key, status, message, packages) =>
+    invoke<void>("download_job_status", { key, status, message: message ?? null, packages: packages ?? null }),
   deleteDroppedArchive: (archivePath) =>
     invoke<void>("delete_dropped_archive", { archivePath }),
 
@@ -1014,6 +1165,9 @@ const realApi: Api = {
   })(),
   installUpdate: (assetUrl, autoRestart) =>
     invoke<void>("install_update", { assetUrl, autoRestart: autoRestart ?? true }),
+  checkRollback: () =>
+    invoke<{ available: boolean; version: string; releaseUrl: string }>("check_rollback"),
+  rollbackToPrevious: () => invoke<void>("rollback_to_previous"),
   onUpdateProgress: async (cb) => {
     // Lazy-import del evento — los entornos non-Tauri (vitest, demo
     // mode) no traen `@tauri-apps/api/event` con un canal real.
@@ -1027,6 +1181,14 @@ const realApi: Api = {
 
   listAddonsOnMap: () => invoke<AddonOnMap[]>("list_addons_on_map"),
   refreshAirportsDataset: () => invoke<number>("refresh_airports_dataset"),
+  contentReport: (user) => invoke<ContentReport>("content_report", { user }),
+  contentApply: (user, stamp, changes) => invoke<number>("content_apply", { user, stamp, changes }),
+  contentRestore: (user, file) => invoke<void>("content_restore", { user, file }),
+  optimizerReport: () => invoke<OptimizerReport>("optimizer_report"),
+  optimizerClean: (ids) => invoke<CleanedCache[]>("optimizer_clean", { ids }),
+  airportMetar: (icao) => invoke<AirportMetar | null>("airport_metar", { icao }),
+  setAddonsUserType: (folders, userType) => invoke<void>("set_addons_user_type", { folders, userType }),
+  editAddonsTags: (folders, add, remove) => invoke<void>("edit_addons_tags", { folders, add, remove }),
   lookupAirports: (icaos: string[]) =>
     invoke<AirportBrief[]>("lookup_airports", { icaos }),
   airportCard: (icao: string, flightIds?: number[] | null) =>
@@ -1059,8 +1221,8 @@ const realApi: Api = {
   listAvailableUpdates: () => invoke<AvailableUpdate[]>("list_available_updates"),
   refreshUpdatesForInstalled: () =>
     invoke<RefreshSummary>("refresh_updates_for_installed"),
-  uninstallCommunityPackage: (folderName) =>
-    invoke<UninstallReport>("uninstall_community_package", { folderName }),
+  uninstallCommunityPackage: (folderName, deleteTarget) =>
+    invoke<UninstallReport>("uninstall_community_package", { folderName, deleteTarget: deleteTarget ?? false }),
   diagnoseUpdateForPackage: (folderName) =>
     invoke<UpdateDiagnostic>("diagnose_update_for_package", { folderName }),
   packageThumbnail: (folderName) =>
@@ -1078,6 +1240,8 @@ const realApi: Api = {
   listAddonLinks: () => invoke<AddonLink[]>("list_addon_links"),
   addAddonLink: (sourceFolder, targetFolder) =>
     invoke<void>("add_addon_link", { sourceFolder, targetFolder }),
+  setAddonLinkConditions: (sourceFolder, targetFolder, conditions) =>
+    invoke<void>("set_addon_link_conditions", { sourceFolder, targetFolder, conditions }),
   removeAddonLink: (sourceFolder, targetFolder) =>
     invoke<void>("remove_addon_link", { sourceFolder, targetFolder }),
   listAddonNodePositions: () =>
@@ -1282,6 +1446,53 @@ const realApi: Api = {
 // ---------------------------------------------------------------------------
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// (02/11) Demo de la secuencia de arranque.
+const demoLaunchApps: LaunchDetectedApp[] = [
+  { key: "activesky", name: "Active Sky FS", target: "B:\\Program Files\\HiFi\\AS_FS\\AS_FS.exe", args: "", process: [], open: "normal", wait: "seconds", waitSeconds: 2, close: "exit" },
+  { key: "navigraph-simlink", name: "Navigraph Simlink", target: "B:\\Program Files\\Navigraph\\Simlink\\NavigraphSimlink.exe", args: "", process: [], open: "minimized", wait: "seconds", waitSeconds: 2, close: "stay" },
+  { key: "sayintentions", name: "SayIntentions.AI", target: "C:\\Program Files\\SayIntentions.AI\\SayIntentionsUpdater3.exe", args: "", process: ["SayIntentionsAI.exe"], open: "normal", wait: "loaded", waitSeconds: 0, close: "exit" },
+  { key: "vpilot", name: "vPilot", target: "C:\\vPilot\\vPilot.exe", args: "", process: [], open: "normal", wait: "loaded", waitSeconds: 0, close: "exit" },
+];
+const demoStep = (a: LaunchDetectedApp, id: string): LaunchStep => ({ id, kind: "app", name: a.name, target: a.target, args: a.args, process: a.process, open: a.open, wait: a.wait, waitSeconds: a.waitSeconds, close: a.close });
+let demoDispatch: DispatchState = {
+  mode: "just",
+  setId: null,
+  keep: [],
+  sets: [],
+  pendingRestore: null,
+  useAlternate: true,
+  trip: null,
+  sceneryChoices: [],
+  activeSet: null,
+};
+
+let demoLaunchSequences: LaunchSequence[] = [
+  {
+    id: 1,
+    name: "Fenix A320",
+    aircraft: ["A319", "A320", "A20N", "A321", "A21N"],
+    isDefault: false,
+    steps: [
+      demoStep(demoLaunchApps[0], "d1"),
+      demoStep(demoLaunchApps[1], "d2"),
+      { id: "d3", kind: "sim", name: "MSFS", target: "", args: "", process: [], open: "normal", wait: "seconds", waitSeconds: 3, close: "stay" },
+      demoStep(demoLaunchApps[2], "d4"),
+      { id: "d5", kind: "web", name: "simbrief.com", target: "https://www.simbrief.com/home/", args: "", process: [], open: "normal", wait: "seconds", waitSeconds: 0, close: "stay" },
+    ],
+  },
+  {
+    id: 2,
+    name: "Por defecto",
+    aircraft: [],
+    isDefault: true,
+    steps: [
+      demoStep(demoLaunchApps[0], "e1"),
+      { id: "e2", kind: "sim", name: "MSFS", target: "", args: "", process: [], open: "normal", wait: "seconds", waitSeconds: 3, close: "stay" },
+    ],
+  },
+];
+
 
 const demoAddons: Addon[] = [
   {
@@ -1602,6 +1813,12 @@ const demoApi: Api = {
     }
     return [];
   },
+  async gsxLocalProfiles() {
+    return [];
+  },
+  async simAirports() {
+    return [];
+  },
   async gsxListInstalledIcaos() {
     return [];
   },
@@ -1701,6 +1918,159 @@ const demoApi: Api = {
   },
   async techlogFlight() {
     return null;
+  },
+  // (01/11) Demo: sin TechLog, las pantallas nuevas dicen que está cerrado.
+  async techlogCockpit() {
+    return { state: "closed", source: "fenix", activeRegistration: null, cockpit: null } as TechLogCockpitPage;
+  },
+  async techlogCockpitAction() {
+    return { ok: false, message: "Demo." };
+  },
+  async techlogCabinPlan() {
+    return { state: "closed", source: "fenix", activeRegistration: null, savedAt: null, plan: null } as TechLogCabinPage;
+  },
+  async techlogSeatInfo() {
+    return null;
+  },
+  async techlogFlights() {
+    return null;
+  },
+  async techlogFlightDetail() {
+    return null;
+  },
+  async techlogFlightSave() {},
+  async techlogFlightDelete() {
+    return { ok: false, message: "Demo." };
+  },
+  // (02/11) Demo: secuencias en memoria; «Lanzar» no abre nada.
+  async launchSequences() {
+    return demoLaunchSequences;
+  },
+  async launchSequenceSave(sequence) {
+    const id = sequence.id || Math.max(0, ...demoLaunchSequences.map((s) => s.id)) + 1;
+    const saved = { ...sequence, id };
+    demoLaunchSequences = [
+      ...demoLaunchSequences
+        .filter((s) => s.id !== id)
+        .map((s) => ({
+          ...s,
+          isDefault: saved.isDefault ? false : s.isDefault,
+          aircraft: s.aircraft.filter((a) => !saved.aircraft.includes(a)),
+        })),
+      saved,
+    ].sort((a, b) => a.id - b.id);
+    return demoLaunchSequences;
+  },
+  async launchSequenceDelete(id) {
+    demoLaunchSequences = demoLaunchSequences.filter((s) => s.id !== id);
+    return demoLaunchSequences;
+  },
+  async launchDetectedApps() {
+    return demoLaunchApps;
+  },
+  async launchSimInfo() {
+    return { available: true, label: "MSFS 2024 (Steam)", running: false, testEnv: false };
+  },
+  async launchRun(sequenceId, testAll) {
+    const seq = demoLaunchSequences.find((s) => s.id === sequenceId);
+    if (!seq) throw new Error("not_found");
+    return {
+      runId: 1,
+      sequenceId,
+      name: seq.name,
+      testAll,
+      state: "done",
+      current: null,
+      steps: seq.steps.map((s) => ({
+        id: s.id,
+        name: s.name,
+        kind: s.kind,
+        status: testAll && s.kind === "sim" ? "skipped" : "opened",
+        wait: s.wait,
+        waitUntilMs: null,
+        error: null,
+      })),
+      closing: [],
+    };
+  },
+  // (03/11) Demo: modos y conjuntos en memoria; no se toca ningún addon.
+  async dispatchState() {
+    return demoDispatch;
+  },
+  async dispatchSetMode(mode, setId) {
+    demoDispatch = { ...demoDispatch, mode, setId };
+  },
+  async dispatchSetKeep(folder, keep) {
+    const rest = demoDispatch.keep.filter((f) => f !== folder);
+    demoDispatch = { ...demoDispatch, keep: keep ? [...rest, folder] : rest };
+    return demoDispatch.keep;
+  },
+  async dispatchLiveries() {
+    return [];
+  },
+  async dispatchSetScenery(icao, folder, ignored) {
+    const rest = demoDispatch.sceneryChoices.filter((c) => c.icao !== icao);
+    const sceneryChoices = folder || ignored ? [...rest, { icao, folder, ignored }] : rest;
+    demoDispatch = { ...demoDispatch, sceneryChoices };
+    return sceneryChoices;
+  },
+  async dispatchSetAlternate(on) {
+    demoDispatch = { ...demoDispatch, useAlternate: on };
+  },
+  async dispatchSetTrip(trip) {
+    demoDispatch = { ...demoDispatch, trip };
+    return trip;
+  },
+  async addonDocPreview() {
+    return { kind: "external" as const, text: null };
+  },
+  async addonDocs() {
+    return [];
+  },
+  async addonSetRating() {},
+  async dispatchApply(changes) {
+    return { enabled: changes.on, disabled: changes.off, failed: [], pendingRestore: null };
+  },
+  async contentSetSave(name) {
+    const packages = await demoApi.listCommunityPackages();
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    const item: ContentSet = {
+      id: Math.max(0, ...demoDispatch.sets.map((s) => s.id)) + 1,
+      name: name.trim(),
+      kind: "user",
+      enabled: packages.filter((p) => p.enabled !== false).map((p) => p.folderName),
+      known: packages.map((p) => p.folderName),
+      createdAt: now,
+      updatedAt: now,
+    };
+    demoDispatch = { ...demoDispatch, sets: [item, ...demoDispatch.sets] };
+    return demoDispatch;
+  },
+  async contentSetUpdate() {
+    return demoDispatch;
+  },
+  async contentSetRename(id, name) {
+    demoDispatch = {
+      ...demoDispatch,
+      sets: demoDispatch.sets.map((s) => (s.id === id ? { ...s, name: name.trim() } : s)),
+    };
+    return demoDispatch;
+  },
+  async contentSetDelete(id) {
+    demoDispatch = { ...demoDispatch, sets: demoDispatch.sets.filter((s) => s.id !== id) };
+    return demoDispatch;
+  },
+  async launchStatus() {
+    return null;
+  },
+  async launchCancel() {},
+  async launchSkipWait() {},
+  async launchScriptsPending() {
+    return [];
+  },
+  async launchScriptsApprove() {},
+  async launchTestStep() {
+    return "opened";
   },
   async gsxAirportParkings(icao: string) {
     // (26/10) Demo: unos gates con `airlinecodes` (ICAO, IATA y handling).
@@ -1951,8 +2321,13 @@ const demoApi: Api = {
     };
   },
   async installUpdate() {
-    // En demo no hay nada que instalar — sólo loggeamos.
     console.info("[demo] installUpdate llamado (no-op)");
+  },
+  async checkRollback() {
+    return { available: true, version: "v8.4.1", releaseUrl: "" };
+  },
+  async rollbackToPrevious() {
+    console.info("[demo] rollbackToPrevious llamado (no-op)");
   },
   async onUpdateProgress() {
     // En demo no llega ningún evento, sólo devolvemos un unsubscribe
@@ -2007,6 +2382,34 @@ const demoApi: Api = {
     await sleep(300);
     return 4;
   },
+  async contentReport() {
+    return {
+      users: [],
+      user: null,
+      stamp: null,
+      simRunning: false,
+      unknownFormat: false,
+      packages: [],
+      community: 0,
+      drift: [],
+      backups: [],
+    };
+  },
+  async contentApply() {
+    return 0;
+  },
+  async contentRestore() {},
+  async optimizerReport() {
+    return { gpus: [], sim: null, caches: [], windows: [], simRunning: false };
+  },
+  async optimizerClean() {
+    return [];
+  },
+  async airportMetar() {
+    return null;
+  },
+  async setAddonsUserType() {},
+  async editAddonsTags() {},
   async lookupAirports(icaos: string[]) {
     await sleep(50);
     const demo: Record<string, AirportBrief> = {
@@ -2179,6 +2582,7 @@ const demoApi: Api = {
     return [];
   },
   async addAddonLink() {},
+  async setAddonLinkConditions() {},
   async removeAddonLink() {},
   async listAddonNodePositions() {
     return [];

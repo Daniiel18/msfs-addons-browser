@@ -11,6 +11,8 @@
 //!   · `store`    — reglas al cerrar el vuelo, vistas y acciones.
 
 pub mod catalog;
+// (02/11) Etapa 5b: Vuelos, Cabina y Cockpit del Tech Log propio.
+pub mod pages;
 pub mod recorder;
 pub mod store;
 

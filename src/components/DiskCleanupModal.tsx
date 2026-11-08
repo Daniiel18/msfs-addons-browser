@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/tauri";
 import { t, getActiveLocale } from "../lib/i18n";
+import { keptNote } from "../lib/packageLinks";
 import { isAirport } from "../lib/packageType";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
@@ -130,10 +131,10 @@ export function DiskCleanupModal({ onClose }: Props) {
     return `${m}:${String(sec).padStart(2, "0")}`;
   };
 
-  const uninstall = async (folderName: string) => {
+  const uninstall = async (folderName: string, deleteTarget: boolean) => {
     setBusyPkg(folderName);
     try {
-      const report = await api.uninstallCommunityPackage(folderName);
+      const report = await api.uninstallCommunityPackage(folderName, deleteTarget);
       if (report.failedPaths.length > 0) {
         pushToast({
           kind: "error",
@@ -141,7 +142,7 @@ export function DiskCleanupModal({ onClose }: Props) {
           message: report.failedPaths[0].error,
         });
       } else {
-        pushToast({ kind: "success", title: t("cleanup.uninstalled"), ttlMs: 2200 });
+        pushToast({ kind: "success", title: t("cleanup.uninstalled"), message: keptNote(report), ttlMs: 4000 });
       }
       await rescan();
     } catch (e) {
@@ -251,18 +252,29 @@ export function DiskCleanupModal({ onClose }: Props) {
                     </button>
                     {confirmPkg === p.folderName ? (
                       <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          onClick={() => void uninstall(p.folderName)}
-                          disabled={busyPkg === p.folderName}
-                          className="inline-flex items-center gap-1 rounded-md bg-rose-500 px-2 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
-                        >
-                          {busyPkg === p.folderName ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <AlertTriangle className="h-3 w-3" />
-                          )}
-                          {t("cleanup.confirm_yes")}
-                        </button>
+                        {p.linkTarget && (
+                          <button
+                            onClick={() => void uninstall(p.folderName, false)}
+                            disabled={busyPkg === p.folderName}
+                            className="rounded-md border border-rose-400/40 px-2 py-1.5 text-[11px] font-medium text-rose-200 hover:bg-rose-500/20 disabled:opacity-50"
+                          >
+                            {t("pkg.uninstall_link.only")}
+                          </button>
+                        )}
+                        {(!p.linkTarget || !p.linkManaged) && (
+                          <button
+                            onClick={() => void uninstall(p.folderName, true)}
+                            disabled={busyPkg === p.folderName}
+                            className="inline-flex items-center gap-1 rounded-md bg-rose-500 px-2 py-1.5 text-[11px] font-bold text-white hover:bg-rose-400 disabled:opacity-50"
+                          >
+                            {busyPkg === p.folderName ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <AlertTriangle className="h-3 w-3" />
+                            )}
+                            {t(p.linkTarget ? "pkg.uninstall_link.all" : "cleanup.confirm_yes")}
+                          </button>
+                        )}
                         <button
                           onClick={() => setConfirmPkg(null)}
                           className="rounded-md px-2 py-1.5 text-[11px] text-sf-muted hover:text-sf-text"

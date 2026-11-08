@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -22,7 +22,7 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAiracUpdateStore } from "../stores/useAiracUpdateStore";
 import { useNewSceneryStore } from "../stores/useNewSceneryStore";
 import type { Addon } from "../lib/types";
-import { gsxSearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
+import { gsxSearchUrl, liverySearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
 import { useAppStore } from "../stores/useAppStore";
 import { useToastStore } from "../stores/useToastStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
@@ -30,6 +30,9 @@ import { useGsxLocalStore } from "../stores/useGsxLocalStore";
 import { useFerryStore } from "../stores/useFerryStore";
 import { fmtFerryDuration } from "../lib/preflight";
 import { FerryCountdown } from "./FerryCountdown";
+import { LaunchButton } from "./LaunchButton";
+import { isTopOverlay } from "./DetailModal";
+import { dispatchFlight } from "../lib/dispatch";
 
 interface Props {
   onClose: () => void;
@@ -61,17 +64,25 @@ export function PreflightModal({ onClose }: Props) {
   const acknowledgeAll = useNewSceneryStore((s) => s.acknowledgeAll);
   const dismissScenery = useNewSceneryStore((s) => s.dismiss);
 
+  const root = useRef<HTMLDivElement>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // (v8.3) El traslado cuesta dinero: se confirma en la misma fila.
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
   const {
     result: { route, checks, issues, ready },
+    plan,
   } = usePreflight();
+  const launchFlight = useMemo(
+    () =>
+      dispatchFlight(route?.originIcao, route?.destinationIcao, route?.aircraftIcao, route?.fromPlan ? plan : null),
+    [route, plan],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // Con la revisión de Lanzar encima, Escape es para ella.
+      if (e.key === "Escape" && isTopOverlay(root.current)) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -147,12 +158,16 @@ export function PreflightModal({ onClose }: Props) {
     if (action.kind === "search") {
       onClose();
       void triggerSearch(action.icao);
+    } else if (action.kind === "livery-search") {
+      onClose();
+      openInFlightsimTab(liverySearchUrl(action.registration));
     } else if (action.kind === "airac") {
       void airacOpenUpdater();
     } else if (action.kind === "hangar") {
       // (19/10) NO-GO: abre el mantenimiento de ese avión en el Hangar.
+      // (01/11) Asientos bloqueados: directo a su Cabina.
       onClose();
-      useAppStore.getState().requestHangarFocus(action.registration);
+      useAppStore.getState().requestHangarFocus(action.registration, action.sub ? { sub: action.sub } : undefined);
     } else if (action.kind === "gsx" || action.kind === "gsx-update") {
       // (v6.2.58) Si es un update real, márcalo como manejado (avanza el
       // baseline para que el badge no reaparezca).
@@ -207,6 +222,7 @@ export function PreflightModal({ onClose }: Props) {
     <AnimatePresence>
       <motion.div
         key="preflight-backdrop"
+        ref={root}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -221,7 +237,7 @@ export function PreflightModal({ onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="relative flex max-h-[calc(100vh-3rem)] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
+          className="relative flex max-h-[calc(100vh-3rem)] w-[min(760px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
         >
           {/* Header con veredicto */}
           <header
@@ -261,7 +277,7 @@ export function PreflightModal({ onClose }: Props) {
                       · {route.aircraftIcao}
                     </span>
                   )}
-                  <span className="ml-1 rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
+                  <span className="ml-1 shrink-0 whitespace-nowrap rounded bg-sf-raised px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-sf-muted">
                     {route.fromPlan ? t("preflight.from_ofp") : t("preflight.from_sim")}
                   </span>
                 </p>
@@ -271,6 +287,27 @@ export function PreflightModal({ onClose }: Props) {
                 </p>
               )}
             </div>
+            {/* (02/11) Etapa 6: abre las apps y el simulador de este vuelo. */}
+            <LaunchButton
+              aircraftIcao={route?.aircraftIcao}
+              flight={launchFlight}
+              size="sm"
+              className="shrink-0"
+            />
+            {/* (8.4.x) El vuelo en el mapa, con lo que necesita y su estado. */}
+            {route && (
+              <button
+                type="button"
+                onClick={() => {
+                  useAppStore.getState().setView("inflight");
+                  onClose();
+                }}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-sf-border bg-sf-surface px-2.5 py-1.5 text-xs font-medium text-sf-text hover:border-brand-500/40"
+              >
+                <Plane className="h-3.5 w-3.5" />
+                {t("preflight.open_inflight")}
+              </button>
+            )}
             <button
               onClick={onClose}
               className="rounded-md p-1.5 text-sf-muted hover:bg-sf-raised hover:text-sf-text"
@@ -367,7 +404,7 @@ export function PreflightModal({ onClose }: Props) {
                     >
                       {busyId === c.id ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : c.action.kind === "search" ? (
+                      ) : c.action.kind === "search" || c.action.kind === "livery-search" ? (
                         <Search className="h-3 w-3" />
                       ) : c.action.kind === "hangar" ? (
                         <Wrench className="h-3 w-3" />

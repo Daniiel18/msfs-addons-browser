@@ -50,9 +50,11 @@ export async function installPendingNow(id: string): Promise<void> {
         await api.deleteDroppedArchive(insp.archivePath).catch(() => {});
       }
       // (v8.3) El job del panel de Descargas pasa a "instalado".
-      if (installedSomething) jobStatus(insp.archivePath, "installed");
+      if (installedSomething) await jobStatus(insp.archivePath, "installed", r.errors?.[0], r.installedPackages);
+      else if (r.errors?.length) await discardInternalDownload(insp.archivePath, "failed", r.errors[0]);
     } catch (e) {
       reports.push({ installedGsx: [], installedPackages: [], errors: [String(e)] });
+      await discardInternalDownload(insp.archivePath, "failed", String(e));
     }
   }
   const errors = reports.flatMap((r) => r.errors ?? []);

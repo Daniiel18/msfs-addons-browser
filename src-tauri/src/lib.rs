@@ -22,6 +22,7 @@ pub mod discord_rpc;
 pub mod drop_install;
 pub mod download;
 pub mod flight_log;
+pub mod folder_link;
 pub mod i18n;
 pub mod flight_report;
 pub mod flightsim_track;
@@ -44,11 +45,17 @@ pub mod logger;
 // SO el módulo queda vacío.
 pub mod mobiflight_lvars;
 pub mod msfs_logbook;
+pub mod addon_meta;
+pub mod content_xml;
+pub mod optimizer;
 pub mod package_ops;
+pub mod sim_content;
 pub mod parser;
 pub mod perf_config;
 pub mod planespotters;
 pub mod runways;
+// (8.4.x) Agua, baños y catering que cobran el Tech Log y GSX: reembolsos.
+pub mod service_refunds;
 pub mod pmdg_install;
 pub mod pmdg_liveries;
 pub mod scoring;
@@ -66,6 +73,15 @@ pub mod vas_summary;
 // (19/10) Bloqueo de inicio con la cuenta de Windows (Hello / contraseña).
 pub mod win_lock;
 pub mod techlog;
+// (01/11) Etapa 5a: pantallas Cockpit, Cabina y Vuelos de TechLog.
+pub mod techlog_pages;
+// (02/11) Etapa 5b: Cockpit del Tech Log propio (interruptores estándar).
+pub mod cockpit_std;
+pub mod launch_flow;
+pub mod link_conditions;
+pub mod metar;
+pub mod dispatch;
+pub mod addon_docs;
 pub mod mx;
 // (v8.3 · Etapa 6.1) Ubicación de aviones y traslados.
 pub mod ferry;
@@ -154,6 +170,14 @@ pub fn run() {
             }
         }
     }
+    /// Ventanas cuyo JavaScript puede invocar comandos Tauri. Las externas
+    /// (fsto-embed, livery-browser, hoster-dl-*, fsto-account) cargan páginas
+    /// de terceros: si pudieran llamar a `invoke()`, cualquier JS inyectado o
+    /// XSS en esas páginas ejecutaría comandos arbitrarios en el equipo.
+    fn is_local_webview(label: &str) -> bool {
+        matches!(label, "main" | "osd" | "desktop-notice")
+    }
+
     let mut builder = tauri::Builder::default();
     // (v2.2.0) Single instance — si la app ya está corriendo, abrir el .exe
     // de nuevo le manda los args a la instancia existente y trae su ventana
@@ -293,7 +317,8 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let inner: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
             commands::search::search,
             commands::search::list_sources,
             commands::search::browse_source,
@@ -313,6 +338,7 @@ pub fn run() {
             commands::install::forget_install,
             commands::gsx::gsx_lookup,
             commands::gsx::gsx_list_installed_icaos,
+            commands::gsx::gsx_local_profiles,
             commands::gsx::gsx_airport_parkings,
             commands::gsx::gsx_check_profile_updates,
             commands::gsx::gsx_ack_update,
@@ -334,6 +360,39 @@ pub fn run() {
             commands::techlog::techlog_cabin,
             commands::techlog::techlog_cabin_set,
             commands::techlog::techlog_readings,
+            commands::techlog::techlog_cockpit,
+            commands::techlog::techlog_cockpit_action,
+            commands::techlog::techlog_cabin_plan,
+            commands::techlog::techlog_seat_info,
+            commands::techlog::techlog_flights,
+            commands::techlog::techlog_flight_detail,
+            commands::techlog::techlog_flight_save,
+            commands::techlog::techlog_flight_delete,
+            commands::launch::launch_sequences,
+            commands::launch::launch_sequence_save,
+            commands::launch::launch_sequence_delete,
+            commands::launch::launch_detected_apps,
+            commands::launch::launch_sim_info,
+            commands::launch::launch_run,
+            commands::launch::launch_status,
+            commands::launch::launch_cancel,
+            commands::launch::launch_skip_wait,
+            commands::launch::launch_test_step,
+            commands::dispatch::dispatch_state,
+            commands::dispatch::dispatch_set_mode,
+            commands::dispatch::dispatch_set_keep,
+            commands::dispatch::dispatch_liveries,
+            commands::dispatch::dispatch_set_alternate,
+            commands::dispatch::dispatch_set_scenery,
+            commands::dispatch::dispatch_set_trip,
+            commands::community::addon_docs,
+            commands::community::addon_doc_preview,
+            commands::community::addon_set_rating,
+            commands::dispatch::dispatch_apply,
+            commands::dispatch::content_set_save,
+            commands::dispatch::content_set_update,
+            commands::dispatch::content_set_rename,
+            commands::dispatch::content_set_delete,
             commands::mx::mx_aircraft,
             commands::mx::mx_action,
             commands::mx::mx_flight,
@@ -353,13 +412,17 @@ pub fn run() {
             planespotters::aircraft_photo,
             commands::updater::check_for_update,
             commands::updater::install_update,
+            commands::updater::check_rollback,
+            commands::updater::rollback_to_previous,
             commands::airports::list_addons_on_map,
             commands::airports::refresh_airports_dataset,
             commands::airports::lookup_airports,
+            commands::airports::airport_metar,
             commands::airports::airport_card,
             commands::airports::airport_photo,
             commands::airports::airport_runways,
             commands::community::scan_community,
+            commands::community::sim_airports,
             commands::community::get_installed_sims,
             commands::community::community_targets,
             commands::community::pack_liveries,
@@ -384,6 +447,16 @@ pub fn run() {
             commands::community::list_addon_links,
             commands::community::add_addon_link,
             commands::community::remove_addon_link,
+            commands::community::set_addon_link_conditions,
+            commands::launch::launch_scripts_pending,
+            commands::launch::launch_scripts_approve,
+            commands::content::content_report,
+            commands::content::content_apply,
+            commands::content::content_restore,
+            commands::optimizer::optimizer_report,
+            commands::optimizer::optimizer_clean,
+            commands::community::set_addons_user_type,
+            commands::community::edit_addons_tags,
             commands::community::list_addon_node_positions,
             commands::community::save_addon_node_positions,
             commands::perf::perf_read_config,
@@ -494,7 +567,16 @@ pub fn run() {
             commands::scoring::score_get_report,
             commands::scoring::list_airlines,
             commands::scoring::airline_kpis,
-        ])
+        ]);
+            move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+                let label = invoke.message.webview_ref().label();
+                if !is_local_webview(label) {
+                    invoke.resolver.reject(format!("command not available from {label}"));
+                    return true;
+                }
+                inner(invoke)
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error running tauri app");
 }
@@ -745,7 +827,7 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
 
     let http = reqwest::Client::builder()
         .user_agent("SimFleet/3.0 (+https://github.com/Daniiel18/msfs-addons-browser)")
-        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(20))
         .build()?;
 
     // (v6.2.38) Auth compartida de Skybound (fuente MSFS2024). Se llena
@@ -786,21 +868,35 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // `installed_addons` cuando termina un torrent — clonamos el handle
     // (es barato, internamente es un Arc).
     let downloads = DownloadManager::new(app.clone(), torrent_data_dir, db.clone());
+    // (04/11) Un cambio de carpetas que un cierre dejó a medias, antes de que
+    // arranque ninguna instalación.
+    for folder in community::detect_all_community_folders().unwrap_or_default() {
+        if folder.exists {
+            install::recover_everywhere(std::path::Path::new(&folder.path));
+        }
+    }
+    for folder in community::secondary_community_folders() {
+        install::recover_everywhere(&folder);
+    }
     // Resume de descargas tras un cierre/crash de la app. Carga los
     // jobs persistidos en `download_jobs` y re-lanza los torrents
     // activos — librqbit detecta los ficheros parciales en
     // `<torrent_data_dir>/job-{id}/` y continúa desde donde se quedó.
     // Best-effort: si la DB está corrupta o vacía no rompemos el
     // arranque de la app, sólo logueamos.
-    match downloads.restore_persisted().await {
-        Ok(n) if n > 0 => tracing::info!("downloads: {n} job(s) restaurado(s) tras restart"),
-        Ok(_) => tracing::debug!("downloads: sin jobs persistidos para restaurar"),
-        Err(e) => tracing::warn!("downloads: restore_persisted falló: {e:#}"),
-    }
+    let restore_ok = match downloads.restore_persisted().await {
+        Ok(n) if n > 0 => { tracing::info!("downloads: {n} job(s) restaurado(s) tras restart"); true },
+        Ok(_) => { tracing::debug!("downloads: sin jobs persistidos para restaurar"); true },
+        Err(e) => { tracing::warn!("downloads: restore_persisted falló: {e:#}"); false },
+    };
     // (v7 fix · 25/10) Temporales huérfanos de una sesión anterior (descarga
     // cancelada / no instalable / cierre sin instalar), salvo lo ya bajado
     // de las descargas que siguen (en pausa o reanudándose).
-    downloads.purge_temp(&app_data_dir.join("temp")).await;
+    if restore_ok {
+        downloads.purge_temp(&app_data_dir.join("temp")).await;
+    } else {
+        tracing::warn!("downloads: purge_temp omitida porque restore_persisted falló");
+    }
 
     // (v1.1.1) Cleanup de "vuelos fantasma" — los creaba el watcher
     // en versiones viejas cuando MSFS reportaba el avión en world
@@ -838,6 +934,8 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     // Cliente GSX comparte el `reqwest::Client` con las fuentes — mismo
     // pool de conexiones, mismo timeout, misma resolución DNS.
     let gsx = GsxClient::new(http.clone());
+    // (02/11) Cockpit propio: su base para el perfil «al cargar».
+    cockpit_std::init(db.clone());
 
     // Disparamos la sincronización del dataset de aeropuertos en
     // background. Estrategia "offline-first":
@@ -860,6 +958,11 @@ async fn init_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
             // (26/10) Pistas para la tarjeta de aeropuerto del FlightBook.
             if let Err(e) = runways::ensure_dataset(&bg_pool, &bg_http).await {
                 tracing::warn!("runways: background sync failed: {e:#}");
+            }
+            // (8.4.x) Servicios cobrados dos veces (Tech Log + GSX) de antes:
+            // su reembolso, sin esperar a abrir Finanzas.
+            if let Err(e) = service_refunds::reconcile_from_db(&bg_pool).await {
+                tracing::warn!("reembolsos de servicios cobrados por GSX: {e:#}");
             }
         });
     }

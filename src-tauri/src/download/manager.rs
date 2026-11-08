@@ -13,6 +13,7 @@ use super::{DownloadJob, DownloadPhase};
 use crate::community;
 use crate::db::repo;
 use crate::install;
+use crate::package_ops::{self, PackageOpError};
 use crate::sources::{DownloadKind, DownloadMethod};
 
 /// Intervalo mínimo entre escrituras a DB para el mismo job cuando
@@ -23,6 +24,23 @@ use crate::sources::{DownloadKind, DownloadMethod};
 /// usuario vea "estaba a 4.2 GB" tras un crash, y barato (~120
 /// escrituras en una descarga de 6 minutos vs ~720 sin throttle).
 const PERSIST_PROGRESS_THROTTLE_SECS: u64 = 3;
+
+/// (04/11) Cómo acabó quitar lo que una descarga sustituía: nota para el job o
+/// aviso de que quedaron los dos.
+type ReplaceOutcome = Option<Result<String, String>>;
+
+fn note_replaced(job: &mut DownloadJob, outcome: ReplaceOutcome) {
+    match outcome {
+        Some(Ok(note)) => {
+            job.message = Some(match job.message.take() {
+                Some(message) => format!("{message} · {note}"),
+                None => note,
+            });
+        }
+        Some(Err(failure)) => job.error = Some(failure),
+        None => {}
+    }
+}
 
 /// (25/10) Borra lo que hay en `dir` salvo los archivos de `keep` (y las
 /// carpetas que los contienen, de las que sólo se borra lo demás).
@@ -139,6 +157,7 @@ impl DownloadManager {
         source: String,
         method: DownloadMethod,
         addon_simulator: String,
+        replaces: Option<String>,
     ) -> anyhow::Result<DownloadJob> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
@@ -183,6 +202,7 @@ impl DownloadManager {
             pausable: false,
             resumable: kind_is_torrent,
             resume: None,
+            replaces,
         };
 
         self.set_job(job.clone()).await;
@@ -644,6 +664,43 @@ impl DownloadManager {
         .await;
     }
 
+    /// (04/11) Lo nuevo ya está instalado en `installed`: quita lo que esta
+    /// descarga sustituía. Antes de avisar al frontend, que relee Community.
+    async fn remove_replaced(&self, id: &str, installed: &[String]) -> ReplaceOutcome {
+        let job = self.snapshot(id).await?;
+        let old = package_ops::folder_to_remove(job.replaces.as_deref(), installed)?;
+        let failed = |reason: String| {
+            tracing::warn!(target: "install", "sustituir '{old}': {reason}");
+            Err(crate::tr!("manager.replaceFailed", folder = old, reason = reason))
+        };
+        // Lo sustituido se va del todo: si era un enlace, también su carpeta real.
+        Some(match package_ops::uninstall_by_folder(&self.inner.db, old, true).await {
+            Ok(report) if report.failed_paths.is_empty() => {
+                tracing::info!(target: "install", "'{old}' sustituido por {installed:?}");
+                Ok(crate::tr!("manager.replaced", folder = old))
+            }
+            Ok(report) => {
+                let reasons: Vec<String> = report.failed_paths.into_iter().map(|f| f.error).collect();
+                failed(reasons.join(" · "))
+            }
+            Err(PackageOpError::NothingToRemove(_)) => return None,
+            Err(e) => failed(e.localized()),
+        })
+    }
+
+    /// (04/11) Lo mismo para las descargas que instala la ventana principal.
+    /// `install_error`: algo no se pudo instalar; podría ser justo lo que se
+    /// sustituye, así que se queda donde está.
+    pub async fn finish_replace(&self, id: &str, installed: &[String], install_error: Option<String>) {
+        let outcome = match install_error {
+            Some(failure) => Some(Err(failure)),
+            None => self.remove_replaced(id, installed).await,
+        };
+        if outcome.is_some() {
+            self.update_with(id, true, |j| note_replaced(j, outcome)).await;
+        }
+    }
+
     /// (v8.3) Job para una descarga que NO arrancó este gestor (la web de
     /// flightsim.to embebida / la ventana de liveries): así también se ve en
     /// el panel de Descargas, con su progreso, y se puede cancelar.
@@ -676,6 +733,7 @@ impl DownloadManager {
             pausable: false,
             resumable: false,
             resume: None,
+            replaces: None,
         };
         self.set_job(job).await;
     }
@@ -1068,7 +1126,20 @@ impl DownloadManager {
                             );
                         }
                     }
+                    // (02/11) Qué versión del catálogo quedó en cada carpeta.
+                    let paths: Vec<String> = res.packages.iter().map(|p| p.install_path.clone()).collect();
+                    crate::updates::record_installed_packages(
+                        &self.inner.db,
+                        &snapshot.addon_id,
+                        Some(&snapshot.source),
+                        &paths,
+                    )
+                    .await;
                 }
+
+                // (04/11) Lo sustituido se va ahora que lo nuevo ya está.
+                let folders: Vec<String> = res.packages.iter().map(|p| p.name.clone()).collect();
+                let replaced = self.remove_replaced(id, &folders).await;
 
                 // Ahora sí — emitimos el evento Completed con la cadena ya
                 // visible en DB.
@@ -1090,6 +1161,7 @@ impl DownloadManager {
                         ));
                     }
                     j.install_path = primary.map(|p| p.install_path);
+                    note_replaced(j, replaced);
                 })
                 .await;
 
@@ -1210,11 +1282,78 @@ impl DownloadManager {
         let map = self.inner.jobs.read().await;
         map.get(id).cloned()
     }
+
+    /// (02/11) Un job por su id (qué ficha del catálogo instaló).
+    pub async fn job(&self, id: &str) -> Option<DownloadJob> {
+        self.snapshot(id).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn job(replaces: Option<&str>) -> DownloadJob {
+        DownloadJob {
+            id: "job-1".into(),
+            addon_id: "sceneryaddons-1".into(),
+            addon_title: "CYOW Ottawa".into(),
+            source: "sceneryaddons".into(),
+            method_kind: "torrent".into(),
+            method_name: "Torrent".into(),
+            url: "magnet:?x".into(),
+            phase: DownloadPhase::Downloading,
+            bytes_total: 0,
+            bytes_done: 0,
+            speed_bps: 0,
+            eta_seconds: None,
+            message: None,
+            error: None,
+            install_path: None,
+            created_at: "2026-11-04T00:00:00Z".into(),
+            image_url: None,
+            pausable: false,
+            resumable: true,
+            resume: None,
+            replaces: replaces.map(str::to_string),
+        }
+    }
+
+    /// (04/11) Una descarga reanudada tras cerrar SimFleet sigue sabiendo qué
+    /// sustituye: si no, quedarían los dos addons instalados.
+    #[tokio::test]
+    async fn a_resumed_download_remembers_what_it_replaces() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        repo::upsert_download_job(&pool, &job(Some("simaddons-airport-cyow-ottawa"))).await.unwrap();
+
+        let saved = repo::list_download_jobs(&pool).await.unwrap();
+        assert_eq!(saved[0].replaces.as_deref(), Some("simaddons-airport-cyow-ottawa"));
+    }
+
+    #[test]
+    fn the_job_tells_how_the_replacement_went() {
+        let mut done = job(Some("vieja"));
+        done.message = Some("Instalado".into());
+        note_replaced(&mut done, Some(Ok("Sustituyó a vieja".into())));
+        assert_eq!(done.message.as_deref(), Some("Instalado · Sustituyó a vieja"));
+        assert_eq!(done.error, None);
+
+        let mut failed = job(Some("vieja"));
+        failed.message = Some("Instalado".into());
+        note_replaced(&mut failed, Some(Err("no se pudo".into())));
+        assert_eq!(failed.message.as_deref(), Some("Instalado"));
+        assert_eq!(failed.error.as_deref(), Some("no se pudo"));
+
+        let mut same = job(None);
+        note_replaced(&mut same, None);
+        assert_eq!(same.message, None);
+    }
 
     /// (25/10) La purga de arranque respeta lo ya bajado de una descarga
     /// pendiente y su carpeta, y borra todo lo demás.

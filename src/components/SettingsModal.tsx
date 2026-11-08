@@ -13,6 +13,8 @@ import {
   Archive,
   Bell,
   CheckCircle2,
+  Boxes,
+  Gauge,
   ChevronDown,
   Cloud,
   CloudOff,
@@ -49,13 +51,18 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { useAppStore } from "../stores/useAppStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useCommunityStore } from "../stores/useCommunityStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { api } from "../lib/tauri";
+import { sceneriesFor } from "../lib/dispatch";
+import { gsxStatusFor } from "../lib/gsxStatus";
 import { t } from "../lib/i18n";
 import { RecordingSettings } from "./RecordingSettings";
 import { MxWearRateSetting } from "./MxWearRateSetting";
 import { OpenSkySetting } from "./OpenSkySetting";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
+import { ContentXmlPanel } from "./ContentXmlPanel";
+import { OptimizerPanel } from "./OptimizerPanel";
 
 /**
  * Modal de configuración.
@@ -78,6 +85,8 @@ const SECTION_META: Array<{ key: string; labelKey: string }> = [
   { key: "discord", labelKey: "settings.section.discord" },
   { key: "folders", labelKey: "settings.section.folders" },
   { key: "gsx", labelKey: "settings.section.gsx" },
+  { key: "optimizer", labelKey: "settings.section.optimizer" },
+  { key: "sim_content", labelKey: "settings.section.sim_content" },
   { key: "cloud", labelKey: "settings.section.cloud" },
   { key: "msfs_logbook", labelKey: "settings.section.msfs_logbook" },
   { key: "backup", labelKey: "settings.section.backup" },
@@ -110,7 +119,7 @@ const SETTINGS_GROUPS: Array<{
     labelKey: "settings.group.flight",
     icon: <Plane className="h-4 w-4" />,
     // (v7.4.2) "skybound" oculto mientras la fuente esté caída.
-    sections: ["flights", "maintenance", "real_flights", "map_display", "discord", "gsx"],
+    sections: ["flights", "maintenance", "real_flights", "map_display", "discord", "gsx", "optimizer", "sim_content"],
   },
   {
     id: "data",
@@ -833,6 +842,18 @@ export function SettingsModal({
                 <GsxProfilesPanel onFeedback={setFeedback} />
               </Section>
 
+              <Section navKey="optimizer" title={t("settings.section.optimizer")} icon={<Gauge className="h-3.5 w-3.5" />}>
+                <OptimizerPanel />
+              </Section>
+
+              <Section
+                navKey="sim_content"
+                title={t("settings.section.sim_content")}
+                icon={<Boxes className="h-3.5 w-3.5" />}
+              >
+                <ContentXmlPanel />
+              </Section>
+
               <Section
                 navKey="cloud"
                 title={t("settings.section.cloud")}
@@ -959,6 +980,7 @@ export function SettingsModal({
                     </button>
                   </div>
                 </div>
+                <RollbackButton />
               </Section>
 
               <Section navKey="diagnostics" title={t("settings.section.diagnostics")} icon={<Activity className="h-3.5 w-3.5" />}>
@@ -1045,6 +1067,85 @@ export function SettingsModal({
  *  para dark, así que el modo light se marca como "Experimental"
  *  (algunos componentes hardcoded a colores dark seguirán igual).
  *  El mapa de FlightBook sí cambia de basemap según el tema. */
+function RollbackButton() {
+  const [state, setState] = useState<"idle" | "checking" | "confirming" | "rolling">("idle");
+  const [info, setInfo] = useState<{ available: boolean; version: string } | null>(null);
+
+  const check = async () => {
+    setState("checking");
+    try {
+      const r = await api.checkRollback();
+      setInfo(r);
+      if (r.available) setState("confirming");
+      else setState("idle");
+    } catch {
+      setState("idle");
+    }
+  };
+
+  const doRollback = async () => {
+    setState("rolling");
+    try {
+      await api.rollbackToPrevious();
+    } catch {
+      setState("idle");
+    }
+  };
+
+  const ver = info?.version ?? "v8.4.1";
+
+  if (state === "confirming") {
+    return (
+      <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-[11px]">
+        <p className="text-sf-text">{t("settings.about.rollback_confirm", { version: ver })}</p>
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={() => void doRollback()}
+            className="rounded bg-amber-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-amber-500"
+          >
+            {t("settings.about.rollback")}
+          </button>
+          <button
+            onClick={() => setState("idle")}
+            className="rounded border border-sf-border px-3 py-1 text-[11px] text-sf-muted hover:text-sf-text"
+          >
+            {t("common.cancel")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "rolling") {
+    return (
+      <div className="mt-2 flex items-center gap-2 text-[11px] text-sf-muted">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        {t("settings.about.rolling_back")}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => void check()}
+        disabled={state === "checking"}
+        className="flex items-center gap-1.5 rounded border border-sf-border px-3 py-1.5 text-[11px] text-sf-muted hover:border-sf-border-hover hover:text-sf-text disabled:opacity-50"
+      >
+        {state === "checking" ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <RotateCcw className="h-3.5 w-3.5" />
+        )}
+        {t("settings.about.rollback")}
+      </button>
+      <p className="mt-1 text-[10px] text-sf-muted/70">
+        {t("settings.about.rollback_desc", { version: "v8.4.1" })}
+      </p>
+    </div>
+  );
+}
+
 function ThemeRow({
   current,
   onChange,
@@ -1558,6 +1659,48 @@ function GsxProfilesPanel({
           {t("settings.gsx.install_button")}…
         </button>
       </div>
+      <GsxProfileList />
+    </div>
+  );
+}
+
+/** (05/11) Tus perfiles y qué pasa con cada uno. Solo informa. */
+function GsxProfileList() {
+  const profiles = useGsxLocalStore((s) => s.profiles);
+  const packages = useCommunityStore((s) => s.packages);
+  const [open, setOpen] = useState(false);
+  if (profiles.length === 0) return null;
+  const folder = profiles[0].path.replace(/[\\/][^\\/]*$/, "");
+  return (
+    <div className="mt-2 border-t border-sf-border pt-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="text-[11px] font-medium text-sf-text hover:underline"
+        >
+          {t(open ? "settings.gsx.hide_profiles" : "settings.gsx.show_profiles", { n: String(profiles.length) })}
+        </button>
+        <button onClick={() => void api.openLocalPath(folder)} className="text-[11px] text-sf-muted hover:text-sf-text">
+          {t("settings.gsx.open_folder")}
+        </button>
+      </div>
+      {open && (
+        <ul className="mt-1.5 max-h-56 space-y-0.5 overflow-y-auto">
+          {profiles.map((p) => {
+            const s = gsxStatusFor(p.icao, sceneriesFor(p.icao, packages), profiles).status;
+            return (
+              <li key={p.file} className="flex items-center gap-2 text-[11px]" title={p.creator ?? undefined}>
+                <span className="w-10 shrink-0 font-mono text-sf-text">{p.icao}</span>
+                <span className="min-w-0 flex-1 truncate text-sf-muted">{p.file}</span>
+                <span className={`shrink-0 ${s === "ok" ? "text-emerald-300" : s === "orphan" ? "text-sf-muted" : "text-amber-300"}`}>
+                  {t(`settings.gsx.state.${s}`)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

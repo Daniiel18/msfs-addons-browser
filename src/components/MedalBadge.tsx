@@ -7,7 +7,7 @@
 
 export const TIERS = [
   { key: "bronze", a: "#f3c08a", b: "#a2582c", ring: "#e0a06a" },
-  { key: "silver", a: "#f2f7fb", b: "#8593a5", ring: "#cbd5e1" },
+  { key: "silver", a: "#f2f7fb", b: "#8593a5", ring: "#c4c4c8" },
   { key: "gold", a: "#ffe9a8", b: "#c9930d", ring: "#fcd34d" },
   { key: "platinum", a: "#eaf6ff", b: "#6f8fa6", ring: "#bae6fd" },
   { key: "diamond", a: "#e9d8ff", b: "#6d3fc4", ring: "#c4b5fd" },
@@ -88,8 +88,8 @@ export function MedalBadge({
           <stop offset="1" stopColor={C.b} />
         </linearGradient>
         <linearGradient id={`r-${uid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor={locked ? "#2b3441" : "#334155"} />
-          <stop offset="1" stopColor={locked ? "#1c2430" : "#1e293b"} />
+          <stop offset="0" stopColor={locked ? "#353537" : "#3a3a3c"} />
+          <stop offset="1" stopColor={locked ? "#262628" : "#2c2c2e"} />
         </linearGradient>
       </defs>
       {/* cintas */}
@@ -120,7 +120,7 @@ export function MedalBadge({
         cx="50"
         cy="66"
         r="25.5"
-        fill={locked ? "#141b26" : "#101827"}
+        fill={locked ? "#1a1a1c" : "#161618"}
         opacity="0.92"
       />
       <circle

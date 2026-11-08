@@ -1,10 +1,13 @@
 import { useEffect, useMemo } from "react";
 import { computePreflight, pickTodayPlan, type PreflightResult } from "./preflight";
+import { dispatchFlight, duplicateSceneries, planFlight } from "./dispatch";
+import { useDispatchStore, useFlightCountries } from "../stores/useDispatchStore";
 import { useSimBriefStore } from "../stores/useSimBriefStore";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useAiracUpdateStore } from "../stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "../stores/useGsxLocalStore";
+import { useSimContentStore } from "../stores/useSimContentStore";
 import { usePreflightStore } from "../stores/usePreflightStore";
 import { normalizeTechLogReg, useTechLogStore } from "../stores/useTechLogStore";
 import { normalizeFerryReg, useFerryStore } from "../stores/useFerryStore";
@@ -23,6 +26,9 @@ export function usePreflight(): {
   const status = useFlightLogStore((s) => s.status);
   const packages = useCommunityStore((s) => s.packages);
   const updates = useCommunityStore((s) => s.updates);
+  const sceneryChoices = useDispatchStore((s) => s.sceneryChoices);
+  const simAirports = useSimContentStore((s) => s.icaos);
+  const gsxProfiles = useGsxLocalStore((s) => s.profiles);
   const airac = useAiracUpdateStore((s) => s.info);
   const gsxIcaos = useGsxLocalStore((s) => s.installedIcaos);
   const gsxUpdates = useGsxLocalStore((s) => s.updates);
@@ -43,6 +49,33 @@ export function usePreflight(): {
   const flightsSig = useFlightLogStore(
     (s) => `${s.entries.length}|${s.entries[0]?.endedAt ?? ""}`,
   );
+  // (03/11) Etapa 8: la livery con la matrícula del plan.
+  const links = useDispatchStore((s) => s.links);
+  const liveries = useDispatchStore((s) => s.liveries);
+  const picks = useDispatchStore((s) => s.picks);
+  const todayFlight = useMemo(
+    () =>
+      todayPlan &&
+      dispatchFlight(todayPlan.originIcao, todayPlan.destinationIcao, todayPlan.aircraftIcao, todayPlan),
+    [todayPlan],
+  );
+  const countries = useFlightCountries(todayFlight);
+  const liveryRow = useMemo(() => {
+    const flight = todayFlight;
+    if (!flight?.registration) return null;
+    const { rows } = planFlight({
+      mode: "just",
+      flight,
+      packages,
+      links,
+      keep: [],
+      liveries,
+      useAlternate: false,
+      pick: picks[flight.key],
+      countries,
+    });
+    return rows.find((r) => r.role === "livery") ?? null;
+  }, [todayFlight, packages, links, liveries, picks, countries]);
   const planOrigin = todayPlan?.originIcao ?? status?.originIcao ?? null;
   const planModel = todayPlan?.aircraftIcao ?? status?.aircraftIcao ?? null;
   useEffect(() => {
@@ -71,7 +104,11 @@ export function usePreflight(): {
         fi && reg
           ? { registration: reg.trim().toUpperCase(), model: planModel, ...fi }
           : null,
+      livery: liveryRow,
+      duplicates: duplicateSceneries(packages, sceneryChoices),
+      simAirports,
+      gsxProfiles,
     });
     return { result, plan };
-  }, [todayPlan, status, packages, updates, airac, gsxIcaos, gsxUpdates, bypass, reg, dispatch, ferryInfo, planModel]);
+  }, [todayPlan, status, packages, updates, airac, gsxIcaos, gsxUpdates, bypass, sceneryChoices, simAirports, gsxProfiles, reg, dispatch, ferryInfo, planModel, liveryRow]);
 }

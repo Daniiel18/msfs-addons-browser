@@ -288,13 +288,16 @@ fn parse_search_page(html: &str) -> Vec<SearchEntry> {
             // usuario. SceneryAddons rotula los posts como "MSFS 2020",
             // "MSFS 2024" o "MSFS 2020/2024"; mostramos los del sim activo
             // (los "2020/2024" matchean en ambos).
-            let keep = if crate::sim::is_2024() {
-                title_lower.contains("2024")
-            } else {
-                title_lower.contains("2020")
-            };
-            if !keep {
-                return None;
+            let mentions_year = title_lower.contains("2024") || title_lower.contains("2020");
+            if mentions_year {
+                let keep = if crate::sim::is_2024() {
+                    title_lower.contains("2024")
+                } else {
+                    title_lower.contains("2020")
+                };
+                if !keep {
+                    return None;
+                }
             }
             let simulator = if title_lower.contains("2024") && title_lower.contains("2020") {
                 "MSFS 2020/2024".to_string()

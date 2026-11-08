@@ -21,6 +21,12 @@ use sqlx::SqlitePool;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannedPackage {
+    /// (05/11) Carpeta real, si en Community es un enlace.
+    pub link_target: Option<String>,
+    /// (05/11) Esa carpeta real es de un instalador.
+    pub link_managed: bool,
+    /// (05/11) Dónde más está este paquete (`Community2024`).
+    pub also_in: Option<String>,
     pub folder_name: String,
     pub install_path: String,
     pub title: String,
@@ -55,6 +61,11 @@ pub struct ScannedPackage {
     /// `FNX_320`). Es la referencia REAL livery → aircraft base que
     /// usa MSFS — mucho más fiable que adivinar por folder name.
     pub base_containers: Vec<String>,
+    /// (03/11) Tipos ICAO que declara el `aircraft.cfg` (`icao_type_designator`).
+    /// Los aviones cifrados (PMDG/Fenix/iniBuilds) no lo traen.
+    pub icao_types: Vec<String>,
+    /// (04/11) Última actualización real, ver `last_update`.
+    pub last_update: Option<String>,
     /// (v4.29.0) Ruta absoluta del thumbnail "nativo" de MSFS,
     /// pre-resuelto durante el scan. Cuatro estrategias en orden:
     ///   1. `<pkg>/thumbnail.jpg|png` (raíz del paquete).
@@ -119,6 +130,35 @@ pub struct ScanReport {
     pub skipped_no_manifest: usize,
     pub skipped_invalid_manifest: usize,
     pub community_path: String,
+    /// (05/11) Enlaces cuya carpeta real ya no existe.
+    pub broken_links: Vec<BrokenLink>,
+}
+
+/// (05/11) No es un paquete, pero se ofrece quitarlo.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokenLink {
+    pub folder_name: String,
+    pub target: String,
+}
+
+/// (05/11) Une el escaneo de una segunda carpeta. Si un paquete está en las dos,
+/// manda el de la principal y se apunta dónde más está.
+pub fn merge(mut main: ScanReport, extra: ScanReport) -> ScanReport {
+    for pkg in extra.packages {
+        let same = main
+            .packages
+            .iter_mut()
+            .find(|p| p.folder_name.eq_ignore_ascii_case(&pkg.folder_name));
+        match same {
+            Some(same) => same.also_in = Some(pkg.install_path),
+            None => main.packages.push(pkg),
+        }
+    }
+    main.broken_links.extend(extra.broken_links);
+    main.skipped_no_manifest += extra.skipped_no_manifest;
+    main.skipped_invalid_manifest += extra.skipped_invalid_manifest;
+    main
 }
 
 /// Escanea Community recursivamente al primer nivel. No descendemos
@@ -135,6 +175,7 @@ pub type SizeCache = std::collections::HashMap<String, (String, u64)>;
 
 pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<ScanReport> {
     let mut packages = Vec::new();
+    let mut broken_links = Vec::new();
     let mut skipped_no_manifest = 0usize;
     let mut skipped_invalid_manifest = 0usize;
 
@@ -142,6 +183,12 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
+            if let Some(link) = crate::folder_link::read(&path).filter(|link| link.broken) {
+                broken_links.push(BrokenLink {
+                    folder_name: entry.file_name().to_string_lossy().into_owned(),
+                    target: link.target.to_string_lossy().into_owned(),
+                });
+            }
             continue;
         }
         let folder_name = match path.file_name().and_then(|s| s.to_str()) {
@@ -160,7 +207,7 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
         // (v4.26.0) Contenedores SimObjects propios + base_container
         // referenciados — alimentan el auto-link del Link Map.
         // (v4.31.0) + has_own_model: ¿hay geometría 3D propia?
-        let (simobject_dirs, base_containers, has_own_model, has_flight_model) =
+        let (simobject_dirs, base_containers, has_own_model, has_flight_model, icao_types) =
             scan_simobjects(&path);
         // (v4.29.0) Thumbnail resuelto UNA vez (no en runtime por la
         // UI). Persistido en DB para que `package_thumbnail` sea O(1).
@@ -188,35 +235,41 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
                 skipped_no_manifest += 1;
                 continue;
             }
-            packages.push(materialize_fallback(
-                &path,
-                &folder_name,
-                enabled,
-                simobject_dirs,
-                base_containers,
-                thumbnail_path,
-                has_own_model,
-                has_flight_model,
-                false, // has_manifest
-                size_cache,
-            ));
+            packages.push(ScannedPackage {
+                icao_types,
+                ..materialize_fallback(
+                    &path,
+                    &folder_name,
+                    enabled,
+                    simobject_dirs,
+                    base_containers,
+                    thumbnail_path,
+                    has_own_model,
+                    has_flight_model,
+                    false, // has_manifest
+                    size_cache,
+                )
+            });
             continue;
         }
 
         match parse_manifest(&manifest_path) {
             Ok(raw) => {
-                packages.push(materialize(
-                    &path,
-                    &folder_name,
-                    raw,
-                    enabled,
-                    simobject_dirs,
-                    base_containers,
-                    thumbnail_path.clone(),
-                    has_own_model,
-                    has_flight_model,
-                    size_cache,
-                ));
+                packages.push(ScannedPackage {
+                    icao_types,
+                    ..materialize(
+                        &path,
+                        &folder_name,
+                        raw,
+                        enabled,
+                        simobject_dirs,
+                        base_containers,
+                        thumbnail_path.clone(),
+                        has_own_model,
+                        has_flight_model,
+                        size_cache,
+                    )
+                });
             }
             Err(e) => {
                 tracing::debug!(
@@ -229,18 +282,21 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
                 // permite que el usuario lo vea en el mapa con un
                 // título plausible y nuestra heurística de ICAO.
                 skipped_invalid_manifest += 1;
-                packages.push(materialize_fallback(
-                    &path,
-                    &folder_name,
-                    enabled,
-                    simobject_dirs,
-                    base_containers,
-                    thumbnail_path,
-                    has_own_model,
-                    has_flight_model,
-                    true, // tiene manifest pero está corrupto
-                    size_cache,
-                ));
+                packages.push(ScannedPackage {
+                    icao_types,
+                    ..materialize_fallback(
+                        &path,
+                        &folder_name,
+                        enabled,
+                        simobject_dirs,
+                        base_containers,
+                        thumbnail_path,
+                        has_own_model,
+                        has_flight_model,
+                        true, // tiene manifest pero está corrupto
+                        size_cache,
+                    )
+                });
             }
         }
     }
@@ -250,6 +306,7 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
         skipped_no_manifest,
         skipped_invalid_manifest,
         community_path: community_path.to_string_lossy().into_owned(),
+        broken_links,
     })
 }
 
@@ -257,9 +314,10 @@ pub fn scan(community_path: &Path, size_cache: &SizeCache) -> anyhow::Result<Sca
 /// paquete: nombres de contenedores propios + los `base_container`
 /// que referencian sus aircraft.cfg. Barato: lista 1-2 dirs y lee
 /// los primeros KB de cada aircraft.cfg.
-fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool, bool) {
+fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool, bool, Vec<String>) {
     let mut dirs: Vec<String> = Vec::new();
     let mut bases: Vec<String> = Vec::new();
+    let mut types: Vec<String> = Vec::new();
     // (v4.31.0) ¿Algún container tiene geometría 3D propia? Un AVIÓN
     // real trae `model/` o `model.<variant>/` con .gltf/.bin; una
     // modificación (texturas de cabina, sonido) sólo trae `texture.*`
@@ -332,7 +390,10 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool, bool) {
                 }
             }
             let cfg = path.join("aircraft.cfg");
-            if let Ok(raw) = std::fs::read_to_string(&cfg) {
+            // Con pérdida: muchos cfg no son UTF-8 y sin esto se saltaban enteros.
+            if let Ok(bytes) = std::fs::read(&cfg) {
+                let raw = String::from_utf8_lossy(&bytes);
+                icao_types_in(&raw, &mut types);
                 // `base_container = "..\Asobo_A320_NEO"` (o con más ..\).
                 // Tomamos el último componente del path entre comillas.
                 for line in raw.lines().take(200) {
@@ -359,7 +420,26 @@ fn scan_simobjects(root: &Path) -> (Vec<String>, Vec<String>, bool, bool) {
     }
     bases.sort();
     bases.dedup();
-    (dirs, bases, has_own_model, has_flight_model)
+    types.sort();
+    types.dedup();
+    (dirs, bases, has_own_model, has_flight_model, types)
+}
+
+/// (03/11) Tipos ICAO de un `aircraft.cfg`: `icao_type_designator = "A20N"`,
+/// uno por cada `[FLTSIM.N]`/`[GENERAL]`. Las líneas comentadas no cuentan.
+fn icao_types_in(raw: &str, out: &mut Vec<String>) {
+    const KEY: &str = "icao_type_designator";
+    for line in raw.lines() {
+        let t = line.trim_start();
+        if !t.get(..KEY.len()).is_some_and(|k| k.eq_ignore_ascii_case(KEY)) {
+            continue;
+        }
+        let Some(value) = t.split('=').nth(1) else { continue };
+        let value = value.split(';').next().unwrap_or("").trim().trim_matches('"').trim();
+        if (2..=4).contains(&value.len()) && value.chars().all(|c| c.is_ascii_alphanumeric()) {
+            out.push(value.to_ascii_uppercase());
+        }
+    }
 }
 
 /// ¿La carpeta `model*` contiene geometría 3D real? Un avión trae
@@ -556,10 +636,9 @@ fn thumbnail_from_layout(root: &Path) -> Option<String> {
 
 fn parse_manifest(path: &Path) -> anyhow::Result<RawManifest> {
     let raw = std::fs::read_to_string(path)?;
-    // Algunos manifests de la comunidad traen comentarios o trailing
-    // commas — `serde_json::from_str` los rechaza. Sobre el universo
-    // típico funciona, y los rotos caen al fallback.
-    let parsed: RawManifest = serde_json::from_str(&raw)?;
+    // M11: algunos manifests traen BOM UTF-8 al inicio.
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    let parsed: RawManifest = serde_json::from_str(raw)?;
     Ok(parsed)
 }
 
@@ -628,7 +707,11 @@ fn materialize(
         .filter(|s| !s.is_empty())
         .collect();
 
+    let link = crate::folder_link::read(path);
     ScannedPackage {
+        link_target: link.as_ref().map(|l| l.target.to_string_lossy().into_owned()),
+        link_managed: link.is_some_and(|l| l.managed),
+        also_in: None,
         folder_name: folder_name.to_string(),
         install_path: path.to_string_lossy().into_owned(),
         title,
@@ -647,6 +730,8 @@ fn materialize(
         enabled,
         simobject_dirs,
         base_containers,
+        icao_types: Vec::new(),
+        last_update: last_update(path),
         thumbnail_path,
         has_own_model,
         has_flight_model,
@@ -671,7 +756,11 @@ fn materialize_fallback(
     // Sin manifest válido no podemos saber si es SCENERY. Conservador:
     // no extraemos ICAO para evitar falsos positivos cuando alguien
     // tiene un livery o sound pack con folder name que parezca ICAO.
+    let link = crate::folder_link::read(path);
     ScannedPackage {
+        link_target: link.as_ref().map(|l| l.target.to_string_lossy().into_owned()),
+        link_managed: link.is_some_and(|l| l.managed),
+        also_in: None,
         folder_name: folder_name.to_string(),
         install_path: path.to_string_lossy().into_owned(),
         title,
@@ -687,6 +776,8 @@ fn materialize_fallback(
         enabled,
         simobject_dirs,
         base_containers,
+        icao_types: Vec::new(),
+        last_update: last_update(path),
         thumbnail_path,
         has_own_model,
         has_flight_model,
@@ -756,6 +847,27 @@ fn folder_metadata(
         _ => directory_size(path).ok(),
     };
     (size, modified)
+}
+
+/// (04/11) Cuándo cambió el addon de verdad: lo último entre que su carpeta se
+/// creó aquí (instalación) y las fechas de `manifest.json` y `layout.json`
+/// (nueva versión). La fecha de la carpeta no vale: encender y apagar renombran
+/// `layout.json`, y eso la mueve sin que el addon haya cambiado.
+fn last_update(path: &Path) -> Option<String> {
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+    };
+    let mut latest = secs(std::fs::metadata(path).ok()?.created());
+    for file in ["manifest.json", "layout.json", "layout.json.disabled"] {
+        if let Ok(meta) = std::fs::metadata(path.join(file)) {
+            latest = latest.max(secs(meta.modified()));
+        }
+    }
+    latest
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 /// Suma el tamaño de los archivos del folder. Se consulta on-demand
@@ -949,6 +1061,25 @@ fn extract_icao_airport_prefixed(text: &str) -> Option<String> {
     None
 }
 
+/// (07/11) Etapa F: código corto de aeropuerto (`S50`, `0S9`, `EG78`) en un
+/// patrón claro: justo detrás de `airport-`. Lleva algún dígito (el de 4 letras
+/// ya lo resuelve `extract_icao_airport_prefixed`) y alguna letra.
+fn short_airport_code(folder: &str) -> Option<String> {
+    static RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?i)(?:^|[-_ ])airports?[-_ ]([a-z0-9]{3,4})(?:[-_ ]|$)").expect("regex")
+    });
+    let code = RE.captures(folder)?.get(1)?.as_str().to_ascii_uppercase();
+    let mixed = code.chars().any(|c| c.is_ascii_digit()) && code.chars().any(|c| c.is_ascii_alphabetic());
+    mixed.then_some(code)
+}
+
+/// El código como está en la base de aeropuertos, directo o con la K de
+/// EE. UU. delante (`S50` → `KS50`). Si no está, no se acepta: sin él no habría
+/// sitio donde poner el pin y podría ser cualquier otra cosa.
+fn known_short_code(code: &str, valid: &std::collections::HashSet<String>) -> Option<String> {
+    [code.to_string(), format!("K{code}")].into_iter().find(|c| valid.contains(c))
+}
+
 /// `airport-zbyn---` → `Some("ZBYN")`. Requiere el prefijo `airport-` y 4
 /// letras ASCII a continuación.
 fn icao_from_airport_folder(name: &str) -> Option<String> {
@@ -1010,10 +1141,14 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
     let mut tx = pool.begin().await?;
 
     // Borra los que ya no están — por exclusión del set actual.
+    // (audit) Si no se encontró NADA, la Community probablemente no
+    // existe o el disco está desconectado — no purgar la DB entera.
     if report.packages.is_empty() {
-        sqlx::query("DELETE FROM community_packages")
-            .execute(&mut *tx)
-            .await?;
+        tracing::warn!(
+            target: "scanner",
+            "sync_to_db: 0 paquetes escaneados en {}; se conservan las filas existentes",
+            report.community_path
+        );
     } else {
         // SQLite no soporta `DELETE … WHERE x NOT IN (?,?,…)` con
         // `bind` plural genérico; armamos placeholders manualmente.
@@ -1080,6 +1215,7 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
             };
             let path = std::path::Path::new(&pkg.install_path);
             validate(extract_icao_airport_prefixed(&pkg.folder_name))
+                .or_else(|| short_airport_code(&pkg.folder_name).and_then(|c| known_short_code(&c, &valid_icaos)))
                 .or_else(|| validate(extract_icao_airport_prefixed(&pkg.title)))
                 .or_else(|| validate(icao_from_scenery_files(path)))
                 .or_else(|| validate(pkg.icao.clone()))
@@ -1090,6 +1226,8 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
             .unwrap_or_else(|_| "[]".to_string());
         let base_containers_json = serde_json::to_string(&pkg.base_containers)
             .unwrap_or_else(|_| "[]".to_string());
+        let icao_types_json = serde_json::to_string(&pkg.icao_types)
+            .unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
             r#"
             INSERT INTO community_packages (
@@ -1097,9 +1235,10 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 package_version, minimum_game_version, icao, size_bytes,
                 folder_modified_at, dependencies_count, scanned_at, enabled,
                 simobject_dirs_json, base_containers_json, thumbnail_path,
-                has_own_model, has_flight_model, has_manifest
+                has_own_model, has_flight_model, has_manifest, icao_types_json, last_update,
+                link_target, link_managed, also_in
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'), ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             ON CONFLICT(folder_name) DO UPDATE SET
                 install_path = excluded.install_path,
                 title = excluded.title,
@@ -1118,7 +1257,12 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
                 thumbnail_path = excluded.thumbnail_path,
                 has_own_model = excluded.has_own_model,
                 has_flight_model = excluded.has_flight_model,
-                has_manifest = excluded.has_manifest
+                has_manifest = excluded.has_manifest,
+                icao_types_json = excluded.icao_types_json,
+                last_update = excluded.last_update,
+                link_target = excluded.link_target,
+                link_managed = excluded.link_managed,
+                also_in = excluded.also_in
             "#,
         )
         .bind(&pkg.folder_name)
@@ -1139,6 +1283,11 @@ pub async fn sync_to_db(pool: &SqlitePool, report: &ScanReport) -> anyhow::Resul
         .bind(pkg.has_own_model)
         .bind(pkg.has_flight_model)
         .bind(pkg.has_manifest)
+        .bind(&icao_types_json)
+        .bind(&pkg.last_update)
+        .bind(&pkg.link_target)
+        .bind(pkg.link_managed)
+        .bind(&pkg.also_in)
         .execute(&mut *tx)
         .await?;
     }
@@ -1509,6 +1658,9 @@ fn parse_fenix_livery_cfg(raw: &str, container: &str, out: &mut Vec<PackLivery>)
             }
             ("[fltsim]", "atc_id") => registration = unquote(v),
             ("[fltsim]", "atc_airline") => airline = unquote(v),
+            // (04/11) Algunas pinturas de PMDG lo traen en [GENERAL].
+            (_, "atc_id") if registration.is_none() => registration = unquote(v),
+            (_, "atc_airline") if airline.is_none() => airline = unquote(v),
             _ => {}
         }
     }
@@ -1797,6 +1949,172 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_livery_registration_is_read_from_any_section() {
+        let mut out = Vec::new();
+        let cfg = ["[GENERAL]", "name = \"Air Canada\"", "atc_id = \"C-FIVM\"", "[FLTSIM]", "atc_airline = \"ACA\""];
+        parse_fenix_livery_cfg(&cfg.join("\n"), "X", &mut out);
+        assert_eq!(out[0].registration.as_deref(), Some("C-FIVM"));
+        assert_eq!(out[0].airline.as_deref(), Some("ACA"));
+
+        let mut out = Vec::new();
+        let cfg = ["[GENERAL]", "name = \"A\"", "atc_id = \"X-AAAA\"", "[FLTSIM]", "atc_id = \"Y-BBBB\""];
+        parse_fenix_livery_cfg(&cfg.join("\n"), "X", &mut out);
+        assert_eq!(out[0].registration.as_deref(), Some("Y-BBBB"), "manda [FLTSIM]");
+    }
+
+    /// Encender y apagar renombra `layout.json`: la fecha no debe moverse.
+    #[test]
+    fn toggling_does_not_change_the_update_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("addon");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("layout.json"), "{}").unwrap();
+        let on = last_update(&pkg).expect("fecha");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::rename(pkg.join("layout.json"), pkg.join("layout.json.disabled")).unwrap();
+        assert_eq!(last_update(&pkg).as_deref(), Some(on.as_str()));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(pkg.join("manifest.json"), "{}").unwrap();
+        assert!(last_update(&pkg).unwrap() > on, "una versión nueva sí la mueve");
+    }
+
+    fn package(folder: &str, install_path: &str) -> ScannedPackage {
+        ScannedPackage {
+            link_target: None,
+            link_managed: false,
+            also_in: None,
+            folder_name: folder.to_string(),
+            install_path: install_path.to_string(),
+            title: folder.to_string(),
+            creator: None,
+            content_type: None,
+            package_version: None,
+            minimum_game_version: None,
+            icao: None,
+            size_bytes: None,
+            folder_modified_at: None,
+            dependencies_count: 0,
+            dependency_names: Vec::new(),
+            enabled: true,
+            simobject_dirs: Vec::new(),
+            base_containers: Vec::new(),
+            icao_types: Vec::new(),
+            last_update: None,
+            thumbnail_path: None,
+            has_own_model: false,
+            has_flight_model: false,
+            has_manifest: true,
+        }
+    }
+
+    fn report(packages: Vec<ScannedPackage>) -> ScanReport {
+        ScanReport {
+            packages,
+            skipped_no_manifest: 0,
+            skipped_invalid_manifest: 0,
+            community_path: String::new(),
+            broken_links: Vec::new(),
+        }
+    }
+
+    /// Community2024 suma lo suyo, y lo repetido manda desde Community.
+    #[test]
+    fn a_second_folder_adds_its_packages_and_flags_the_repeated_ones() {
+        let main = report(vec![package("acme-airport", r"B:\Community\acme-airport")]);
+        let extra = report(vec![
+            package("ACME-airport", r"B:\Community2024\ACME-airport"),
+            package("solo-2024", r"B:\Community2024\solo-2024"),
+        ]);
+
+        let merged = merge(main, extra);
+
+        assert_eq!(merged.packages.len(), 2);
+        assert_eq!(merged.packages[0].install_path, r"B:\Community\acme-airport");
+        assert_eq!(merged.packages[0].also_in.as_deref(), Some(r"B:\Community2024\ACME-airport"));
+        assert_eq!(merged.packages[1].folder_name, "solo-2024");
+        assert_eq!(merged.packages[1].also_in, None);
+    }
+
+    /// Un addon enlazado se escanea entero y dice dónde está; un enlace roto se
+    /// cuenta aparte, porque ya no hay paquete que leer.
+    #[cfg(windows)]
+    #[test]
+    fn a_scan_sees_through_links_and_reports_the_broken_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let community = tmp.path().join("Community");
+        let real = tmp.path().join("Addons").join("acme-airport");
+        let gone = tmp.path().join("Addons").join("acme-perdido");
+        std::fs::create_dir_all(&community).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&gone).unwrap();
+        std::fs::write(real.join("manifest.json"), r#"{"title":"Acme","content_type":"SCENERY"}"#).unwrap();
+        std::fs::write(real.join("layout.json"), "{}").unwrap();
+        crate::folder_link::tests::junction(&community.join("acme-airport"), &real);
+        crate::folder_link::tests::junction(&community.join("acme-perdido"), &gone);
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let found = scan(&community, &SizeCache::new()).unwrap();
+
+        assert_eq!(found.packages.len(), 1);
+        let pkg = &found.packages[0];
+        assert_eq!(pkg.title, "Acme");
+        assert!(pkg.link_target.as_deref().is_some_and(|t| t.ends_with("acme-airport")));
+        assert!(!pkg.link_managed);
+        assert_eq!(found.broken_links.len(), 1);
+        assert_eq!(found.broken_links[0].folder_name, "acme-perdido");
+    }
+
+    /// Escaneo y guardado de punta a punta: el INSERT cuadra con sus columnas.
+    #[tokio::test]
+    async fn a_scan_saves_the_aircraft_types() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("acme-aircraft-a320");
+        let container = pkg.join("SimObjects").join("Airplanes").join("Acme_A320");
+        std::fs::create_dir_all(&container).unwrap();
+        std::fs::write(pkg.join("manifest.json"), r#"{"title":"Acme A320","content_type":"AIRCRAFT"}"#).unwrap();
+        std::fs::write(pkg.join("layout.json"), "{}").unwrap();
+        std::fs::write(container.join("aircraft.cfg"), "[GENERAL]\nicao_type_designator = \"A20N\"\n").unwrap();
+
+        let report = scan(tmp.path(), &SizeCache::new()).unwrap();
+        assert_eq!(report.packages.len(), 1);
+        sync_to_db(&pool, &report).await.unwrap();
+        let (types,): (String,) = sqlx::query_as("SELECT icao_types_json FROM community_packages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(types, r#"["A20N"]"#);
+        let (updated,): (Option<String>,) = sqlx::query_as("SELECT last_update FROM community_packages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(updated.is_some());
+    }
+
+    #[test]
+    fn aircraft_cfg_declares_its_icao_types() {
+        let cfg = [
+            "[GENERAL]",
+            "; icao_type_designator = \"B738\"",
+            "ICAO_type_designator = \"a20n\" ; neo",
+            "[FLTSIM.0]",
+            "icao_type_designator=E170",
+            "icao_type_designator = \"$$:\"",
+            "icao_type_designator = \"ASOBO4J\"",
+        ]
+        .join("\r\n");
+        let mut out = Vec::new();
+        icao_types_in(&cfg, &mut out);
+        assert_eq!(out, vec!["A20N", "E170"]);
+    }
+
+    #[test]
     fn pretty_folder_name_handles_dashes_and_underscores() {
         assert_eq!(
             pretty_folder_name("bravoairspace-airport-mdsd-las-americas"),
@@ -1807,6 +2125,25 @@ mod tests {
             "Foo Bar Baz"
         );
         assert_eq!(pretty_folder_name(""), "");
+    }
+
+    #[test]
+    fn short_airport_codes_need_a_clear_pattern_and_a_real_airport() {
+        let code = |f: &str| short_airport_code(f);
+        assert_eq!(code("acme-airport-s50-auburn").as_deref(), Some("S50"));
+        assert_eq!(code("acme-airports-0s9-jefferson").as_deref(), Some("0S9"));
+        assert_eq!(code("acme_airport_1n7").as_deref(), Some("1N7"));
+        assert_eq!(code("fs24-asobo-airport-eg78-outskerries").as_deref(), Some("EG78"));
+        assert_eq!(code("acme-airport-klax-los-angeles"), None, "cuatro letras: ya lo resuelve el otro camino");
+        assert_eq!(code("acme-airport-123-x"), None, "sin letras");
+        assert_eq!(code("pmdg-a32-livery"), None, "fuera del patrón");
+        assert_eq!(code("acme-b73-airport"), None);
+        assert_eq!(code("airportsim-a32-liveries"), None);
+
+        let valid: std::collections::HashSet<String> = ["KS50", "EG78"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(known_short_code("S50", &valid).as_deref(), Some("KS50"));
+        assert_eq!(known_short_code("EG78", &valid).as_deref(), Some("EG78"));
+        assert_eq!(known_short_code("0S9", &valid), None);
     }
 
     #[test]

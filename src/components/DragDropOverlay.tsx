@@ -20,6 +20,7 @@ import { nativeNotify } from "../lib/nativeNotify";
 import {
   discardInternalDownload,
   hasJobKey,
+  isInternalDownload,
   jobStatus,
   rememberJobKey,
 } from "../lib/downloadJobs";
@@ -170,13 +171,17 @@ export function DragDropOverlay() {
         const id = toast.push({ kind: "info", title: t("drop.extracting"), message: file, ttlMs: null });
         extractingToastRef.current.set(r.path, id);
       } else if (r.state === "installed") {
-        const errors = r.report.errors.length;
-        toast.push({
-          kind: errors > 0 ? "error" : "success",
-          title: t("drop.installed.prefix"),
-          message: `${file} · ${installedSummary(r.report)}${errors > 0 ? ` · ${errors} ${t("common.errors")}` : ""}`,
-          ttlMs: errors > 0 ? null : 6000,
-        });
+        const errors = r.report.errors;
+        // Descarga interna que no instaló nada: ya lo cuenta el aviso de su job.
+        const nothing = installedSummary(r.report) === t("drop.installed.nothing");
+        if (errors.length === 0 || !nothing || !isInternalDownload(r.path)) {
+          toast.push({
+            kind: errors.length > 0 ? "error" : "success",
+            title: errors.length > 0 ? t("installq.done_errors") : t("drop.installed.prefix"),
+            message: `${file} · ${installedSummary(r.report)}${errors.length > 0 ? ` · ${errors[0]}` : ""}`,
+            ttlMs: errors.length > 0 ? null : 6000,
+          });
+        }
         done.push(r.path);
       } else if (r.state === "error") {
         toast.push({ kind: "error", title: t("drop.error_title"), message: `${file}: ${r.error}` });
@@ -302,7 +307,9 @@ export function DragDropOverlay() {
   };
 
   const processDropBatch = async (paths: string[], password?: string) => {
-    for (const p of paths) jobStatus(p, "processing");
+    // (04/11) Esperando: un archivo roto falla en un milisegundo y su «falló»
+    // llegaba antes que este aviso, que lo tapaba: se quedaba en «Procesando».
+    await Promise.all(paths.map((p) => jobStatus(p, "processing")));
     // (v5.2.0) Upsert por path: en el reintento con contraseña, el path
     // ya existe en la lista — lo volvemos a "inspecting" en vez de
     // duplicarlo. Soporta archivos Y carpetas (el backend resuelve).
@@ -546,7 +553,11 @@ export function DragDropOverlay() {
       const r = reports[idx];
       if (r && (r.installedGsx.length > 0 || r.installedPackages.length > 0 ||
         (r.installedConfigs?.length ?? 0) > 0 || (r.installedLiveries?.length ?? 0) > 0)) {
-        jobStatus(insp.archivePath, "installed");
+        await jobStatus(insp.archivePath, "installed", r.errors?.[0], r.installedPackages);
+      } else if (r?.errors?.length) {
+        // (04/11) No se instaló nada (MSFS abierto, disco lleno…): el job lo
+        // cuenta en vez de quedarse esperando.
+        await discardInternalDownload(insp.archivePath, "failed", r.errors[0]);
       }
     }
     // Actualiza el result toaster por archivo.

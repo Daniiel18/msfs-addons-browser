@@ -487,7 +487,7 @@ function pickBest(raw: InventoryItem, results: Addon[]): Addon | null {
   const rawDev = (raw.developer || "").toLowerCase();
   const rawIcao = (raw.icao || "").toUpperCase();
   let best: Addon | null = null;
-  let bestScore = -1;
+  let bestScore = 0;
   for (const r of results) {
     let score = 0;
     if (rawIcao && r.icao?.toUpperCase() === rawIcao) score += 4;

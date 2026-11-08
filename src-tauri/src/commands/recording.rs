@@ -52,6 +52,7 @@ pub async fn osd_test(app: tauri::AppHandle) -> Result<(), String> {
         "windDir": 250.0,
         "windKt": 8.0,
         "headingDeg": 270.0,
+        "test": true,
     });
     app.emit("landing://osd", payload).map_err(|e| e.to_string())?;
     cmd_log!("osd_test", "OSD de prueba emitido");
@@ -182,6 +183,7 @@ pub async fn recording_test_clip(
         favorite: false,
         duration_s: dur,
         is_test: true,
+        flight_id: None,
     };
     landing_recorder::add_clip(&clips_index(&app, &cfg), clip.clone(), cfg.max_clips)
         .map_err(|e| e.to_string())?;

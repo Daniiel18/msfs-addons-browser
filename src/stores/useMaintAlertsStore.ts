@@ -43,6 +43,8 @@ interface MaintAlertsState {
   visible: () => MaintAlert[];
   refresh: () => Promise<void>;
   dismiss: (a: MaintAlert) => void;
+  /** (8.4.x) Descarta de una vez todos los avisos de mantenimiento/Tech Log. */
+  dismissAll: (list: MaintAlert[]) => void;
   /** Arranca el ciclo: fetch inicial + re-fetch en cada cambio del flight log. */
   start: () => void;
 }
@@ -72,6 +74,13 @@ export const useMaintAlertsStore = create<MaintAlertsState>((set, get) => ({
 
   dismiss: (a) => {
     const next = { ...get().dismissed, [alertKey(a)]: a.wearPct };
+    set({ dismissed: next });
+    saveDismissed(next);
+  },
+
+  dismissAll: (list) => {
+    const next = { ...get().dismissed };
+    for (const a of list) next[alertKey(a)] = a.wearPct;
     set({ dismissed: next });
     saveDismissed(next);
   },

@@ -285,7 +285,7 @@ export function OnboardingTour({ onClose, onSettingsOpenChange }: Props) {
               left: rect.left - 6,
               width: rect.width + 12,
               height: rect.height + 12,
-              boxShadow: "0 0 0 9999px rgba(2, 6, 23, 0.78)",
+              boxShadow: "0 0 0 9999px rgba(8, 8, 10, 0.78)",
               borderRadius: 12,
               // (Rediseño F5) Acento turquesa del sistema (antes verde).
               border: "2px solid rgb(var(--sf-accent))",

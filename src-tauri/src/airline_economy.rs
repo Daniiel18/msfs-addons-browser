@@ -602,6 +602,21 @@ pub(crate) fn classify(model: Option<&str>) -> (Size, u32) {
     if has("SAAB") || has("EMB-120") || has("BEECH") {
         return (Size::Regional, 50);
     }
+    if has("FOKKER") || has("F100") || has("F70") || has("F28") {
+        return (Size::Regional, 100);
+    }
+    if has("BAE146") || has("BAE-146") || has("AVRO") || has("RJ85") || has("RJ100") {
+        return (Size::Regional, 100);
+    }
+    if has("CONCORDE") {
+        return (Size::Narrow, 100);
+    }
+    if has("IL-96") || has("IL96") {
+        return (Size::Wide, 300);
+    }
+    if has("TU-154") || has("TU154") || has("TU-204") || has("TU204") {
+        return (Size::Narrow, 170);
+    }
     // ── Narrowbody / por defecto ──
     if has("A318") {
         return (Size::Narrow, 107);
@@ -1097,6 +1112,43 @@ fn assign_lines(lines: &[GsxLine], flights: &[FlightLogEntry]) -> Vec<Option<i64
                 .map(|(_, id)| id)
         })
         .collect()
+}
+
+/// (8.4.x) Escalas (vuelos del FlightBook) y servicios que GSX cobra a cada
+/// vuelo, para `service_refunds`. Sólo las líneas que GSX cobra de verdad
+/// (con vuelo tras quitar las repetidas).
+fn refund_inputs(
+    lines: &[GsxLine],
+    assigned: &[Option<i64>],
+    flights: &[FlightLogEntry],
+) -> (Vec<crate::service_refunds::Span>, Vec<crate::service_refunds::Cover>) {
+    use crate::service_refunds::{svc_of_gsx, Cover, Span};
+    let spans = flights
+        .iter()
+        .filter_map(|e| {
+            let reg = normalize_reg(e.aircraft_registration.as_deref()?);
+            let start = parse_dt(&e.started_at)?;
+            let end = e.ended_at.as_deref().and_then(parse_dt).unwrap_or(start);
+            (!reg.is_empty()).then_some(Span { id: e.id, reg, start, end })
+        })
+        .collect();
+    let covers = lines
+        .iter()
+        .zip(assigned)
+        .filter_map(|(l, fid)| {
+            let flight_id = (*fid)?;
+            if !l.is_cost() || l.usd <= 0.0 {
+                return None;
+            }
+            Some(Cover {
+                reg: l.reg.clone(),
+                svc: svc_of_gsx(l.kind.id(), &l.service)?,
+                flight_id,
+                arr: l.side == Side::Arr,
+            })
+        })
+        .collect();
+    (spans, covers)
 }
 
 /// Servicio "igual" a efectos de repetición: todo el catering es uno; el
@@ -1760,7 +1812,14 @@ async fn refresh_auto_days(
     learned: &HashMap<String, String>,
     policies: &HashMap<String, AirlinePolicy>,
 ) -> Result<usize> {
-    let days = crate::opensky::complete_days(pool).await?;
+    let all_days = crate::opensky::complete_days(pool).await?;
+    if all_days.is_empty() {
+        return Ok(0);
+    }
+    // (audit) No recomputar días cuya ventana de 30d de flota ya fue purgada.
+    // real_flight se retiene 35d; días > (now - 35d) tienen flota intacta.
+    let cutoff = chrono::Utc::now().timestamp() - 35 * 86_400;
+    let days: Vec<i64> = all_days.into_iter().filter(|d| *d >= cutoff).collect();
     if days.is_empty() {
         return Ok(0);
     }
@@ -1929,11 +1988,23 @@ async fn refresh_auto_days(
     let mut tx = pool.begin().await?;
     for (key, day, t, fleet_n) in &rows_out {
         sqlx::query(
-            "INSERT OR REPLACE INTO auto_daily
+            "INSERT INTO auto_daily
                 (airline_key, day, flights, pax, revenue_tickets, revenue_ancillary, cost_fuel,
                  cost_catering, cost_handling, cost_maintenance, cost_fees, cost_fixed, fleet, computed_at,
                  cargo_kg, hourly)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(airline_key, day) DO UPDATE SET
+                flights=excluded.flights, pax=excluded.pax,
+                revenue_tickets=excluded.revenue_tickets, revenue_ancillary=excluded.revenue_ancillary,
+                cost_fuel=excluded.cost_fuel, cost_catering=excluded.cost_catering,
+                cost_handling=excluded.cost_handling, cost_maintenance=excluded.cost_maintenance,
+                cost_fees=excluded.cost_fees, cost_fixed=excluded.cost_fixed,
+                fleet=excluded.fleet, cargo_kg=excluded.cargo_kg, hourly=excluded.hourly,
+                computed_at = CASE WHEN
+                    flights!=excluded.flights OR pax!=excluded.pax OR
+                    revenue_tickets!=excluded.revenue_tickets OR cost_fuel!=excluded.cost_fuel OR
+                    cost_fixed!=excluded.cost_fixed OR fleet!=excluded.fleet
+                THEN excluded.computed_at ELSE computed_at END",
         )
         .bind(key)
         .bind(day)
@@ -2020,6 +2091,13 @@ pub async fn recompute(pool: &SqlitePool) -> Result<()> {
     // servicios repetidos de intentos abortados.
     let mut gsx_assigned = assign_lines(&gsx_lines, &flights);
     drop_repeats(&gsx_lines, &mut gsx_assigned);
+    // (8.4.x) Agua, baños y catering que GSX cobra en la misma escala en la
+    // que el Tech Log ya los cobró: se reembolsa el del Tech Log. Antes de
+    // leer los costes de mantenimiento, para que esta pasada ya lo refleje.
+    let (spans, covers) = refund_inputs(&gsx_lines, &gsx_assigned, &flights);
+    if let Err(e) = crate::service_refunds::reconcile(pool, &spans, &covers).await {
+        tracing::warn!(target: "economy", "reembolsos de servicios cobrados por GSX: {e:#}");
+    }
     let mut gsx_costs = gsx_costs_by_flight(&gsx_lines, &gsx_assigned, &flights);
     let policies = load_policies(pool).await?;
     let learned = learn_airline_icaos(&flights);
@@ -2517,6 +2595,7 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
              FROM flight_pnl fp
              JOIN flight_log fl ON fl.id = fp.flight_id
             WHERE fp.airline_key = ? AND fl.started_at IS NOT NULL
+              AND fl.status = 'completed'
             ORDER BY fl.started_at ASC"#,
     )
     .bind(key)
@@ -2585,10 +2664,18 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
         let cost: f64 = m.get("cost");
         let comp: String = m.get("component");
         let t: String = m.get("serviced_at");
+        // (8.4.x) Reembolso de un servicio que cobró GSX: dice cuál.
+        let label = match comp
+            .strip_prefix(crate::service_refunds::REFUND_PREFIX)
+            .and_then(crate::service_refunds::svc_of_charge)
+        {
+            Some(svc) => crate::tr!("economy.refundGsx", svc = crate::tr!(svc.label_key())),
+            None => crate::tr!("economy.maintenance", comp = comp),
+        };
         events.push(Ev {
             t,
             delta: -cost,
-            label: crate::tr!("economy.maintenance", comp = comp),
+            label,
             kind: "maint",
         });
     }
@@ -2677,6 +2764,19 @@ pub async fn balance_history(pool: &SqlitePool, key: &str) -> Result<Vec<Balance
             label: ev.label,
             kind: ev.kind.to_string(),
         });
+    }
+    if !out.is_empty() {
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        if out.last().map_or(true, |p| p.t < now) {
+            out.push(BalancePoint {
+                t: now,
+                balance: bal,
+                operating: op,
+                delta: 0.0,
+                label: crate::tr!("economy.today"),
+                kind: "today".to_string(),
+            });
+        }
     }
     Ok(out)
 }

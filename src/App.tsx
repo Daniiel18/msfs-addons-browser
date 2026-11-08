@@ -13,10 +13,13 @@ import { useSettingsStore } from "./stores/useSettingsStore";
 import { useGsxUpdateStore } from "./stores/useGsxUpdateStore";
 import { useAiracUpdateStore } from "./stores/useAiracUpdateStore";
 import { useGsxLocalStore } from "./stores/useGsxLocalStore";
+import { useSimContentStore } from "./stores/useSimContentStore";
 import { useFlightsimUpdateStore } from "./stores/useFlightsimUpdateStore";
 import { SourceToggle } from "./components/SourceToggle";
 import { FlightsimEmbed, FlightsimReloadButton } from "./components/FlightsimEmbed";
 import { initTechLogSync } from "./stores/useTechLogStore";
+import { initLaunchSync } from "./stores/useLaunchStore";
+import { initDispatchSync } from "./stores/useDispatchStore";
 import { initRecorderNotices } from "./lib/recorderNotices";
 import { SearchBar } from "./components/SearchBar";
 import { ResultsList } from "./components/ResultsList";
@@ -28,6 +31,7 @@ import { MapView } from "./components/MapView";
 import { AddonsView } from "./components/AddonsView";
 import { DashboardView } from "./components/DashboardView";
 import { FlightBookView } from "./components/FlightBookView";
+import { InFlightView } from "./components/InFlightView";
 import { HangarView } from "./components/HangarView";
 import { EconomyView } from "./components/EconomyView";
 import { TitleBar } from "./components/TitleBar";
@@ -55,6 +59,9 @@ import { GsxSearchSummary } from "./components/GsxSearchSummary";
 import { SettingsView } from "./components/SettingsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { PreflightHost } from "./components/PreflightHost";
+import { LaunchEditorHost } from "./components/LaunchEditorModal";
+import { LaunchProgressCard } from "./components/LaunchProgressCard";
+import { DispatchHost } from "./components/DispatchHost";
 import { SplashScreen, type SplashTask } from "./components/SplashScreen";
 import type { UpdateInfo } from "./lib/types";
 import { FlyingNowBadge } from "./components/FlyingNowBadge";
@@ -175,6 +182,11 @@ export default function App() {
   });
   // (25/10) Una búsqueda pedida desde fuera (campanita, modal de updates,
   // Ctrl+K) se ve aunque la última pestaña fuera flightsim.to.
+  // (05/11) Aeropuertos que trae el propio simulador.
+  useEffect(() => {
+    void useSimContentStore.getState().load();
+  }, []);
+
   // (26/10) Nueva lectura de la cuenta de flightsim.to: GSX (ámbar del mapa)
   // y addons de flightsim.to se recalculan al momento.
   useEffect(() => {
@@ -307,6 +319,8 @@ export default function App() {
     if (ready) {
       initTechLogSync();
       initRecorderNotices();
+      initLaunchSync();
+      initDispatchSync();
     }
   }, [ready]);
   // Tareas que el splash AWAITEA antes de dar paso a la app.
@@ -1179,6 +1193,7 @@ export default function App() {
           {view === "map" && <MapView />}
           {view === "addons" && <AddonsView />}
           {view === "flightbook" && <FlightBookView />}
+          {view === "inflight" && <InFlightView />}
           {view === "hangar" && <HangarView />}
           {view === "economy" && <EconomyView />}
           {view === "settings" && <SettingsView />}
@@ -1191,6 +1206,10 @@ export default function App() {
       <CommandPalette onOpenSettings={openSettings} />
       {/* (v6.2.34) Pre-vuelo "¿Listo para volar?" — auto-alerta al OFP del día. */}
       <PreflightHost />
+      {/* (02/11) Etapa 6: secuencia de arranque (editor y progreso). */}
+      <LaunchEditorHost />
+      <LaunchProgressCard />
+      <DispatchHost />
       {tourOpen && (
         <OnboardingTour
           onClose={() => setTourOpen(false)}

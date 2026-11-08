@@ -225,10 +225,12 @@ pub struct UpdateEntryDto {
 /// pausa no detectada en versiones viejas, pasajeros sin GSX).
 #[tauri::command]
 pub async fn update_flight_log_entry(
+    app: tauri::AppHandle,
     id: i64,
     input: UpdateEntryDto,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    use tauri::Emitter;
     let mapped = UpdateEntryInput {
         flight_time_s: input.flight_time_s,
         passengers: input.passengers,
@@ -244,7 +246,23 @@ pub async fn update_flight_log_entry(
     };
     flight_log::update_entry(&state.db, id, &mapped)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if mapped.passengers.is_some()
+        || mapped.cargo_kg.is_some()
+        || mapped.fuel_used_kg.is_some()
+        || mapped.origin_icao.is_some()
+        || mapped.destination_icao.is_some()
+        || mapped.callsign.is_some()
+    {
+        let pool = state.db.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::airline_economy::recompute(&pool).await {
+                tracing::warn!(target: "economy", "recompute tras editar vuelo: {e:#}");
+            }
+        });
+    }
+    let _ = app.emit("flightlog://changed", ());
+    Ok(())
 }
 
 /// Devuelve el estado actual del watcher: ¿MSFS corriendo? ¿qué

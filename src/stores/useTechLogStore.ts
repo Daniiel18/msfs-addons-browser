@@ -60,10 +60,12 @@ export const useTechLogStore = create<TechLogState>((set, get) => ({
     if (inflight.has(stamp)) return;
     inflight.add(stamp);
     try {
-      const a = get().managed.has(key)
-        ? await api.techlogAircraft(registration)
-        : await api.mxAircraft(registration);
+      const managed = get().managed.has(key);
+      const a = managed ? await api.techlogAircraft(registration) : await api.mxAircraft(registration);
       if (!a) return;
+      // (01/11) Etapa 5a: asientos bloqueados para el aviso del pre-vuelo;
+      // (02/11) 5b: también los de la Cabina propia.
+      const seats = await api.techlogSeatInfo(registration).catch(() => null);
       set((s) => ({
         dispatch: {
           ...s.dispatch,
@@ -72,6 +74,7 @@ export const useTechLogStore = create<TechLogState>((set, get) => ({
             appName: a.appName,
             status: a.dispatch.status,
             reasons: a.dispatch.reasons,
+            seats,
           },
         },
       }));

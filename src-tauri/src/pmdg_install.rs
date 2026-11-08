@@ -70,6 +70,15 @@ const PMDG_DB: &[PmdgSpec] = &[
         variants: &[("b736_ext", "600")],
     },
     PmdgSpec {
+        key: "PMDG 737-700",
+        sim_folder: "PMDG 737-700",
+        wasm: "pmdg-aircraft-737",
+        variants: &[
+            ("b737bbj1_ext", "BBJ"),
+            ("b737_ext", "700"),
+        ],
+    },
+    PmdgSpec {
         key: "PMDG 737-800",
         sim_folder: "PMDG 737-800",
         wasm: "pmdg-aircraft-738",
@@ -287,10 +296,18 @@ pub fn install_livery(livery_dir: &Path, community: &Path) -> anyhow::Result<Pat
     std::fs::create_dir_all(&target_base)?;
 
     let target = target_base.join(&info.name);
+    let backup = target.with_extension("old");
     if target.exists() {
-        std::fs::remove_dir_all(&target)?;
+        let _ = std::fs::remove_dir_all(&backup);
+        std::fs::rename(&target, &backup)?;
     }
-    copy_dir(livery_dir, &target)?;
+    if let Err(e) = copy_dir(livery_dir, &target) {
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &target);
+        }
+        return Err(e.into());
+    }
+    let _ = std::fs::remove_dir_all(&backup);
     tracing::info!(
         target: "drop",
         "livery instalada: {} → {}",

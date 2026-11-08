@@ -36,6 +36,14 @@ pub struct CommunityTargets {
     pub folder2024: Option<String>,
 }
 
+/// (05/11) Aeropuertos que trae el propio simulador.
+#[tauri::command]
+pub async fn sim_airports(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::sim_content::SimAirport>, String> {
+    crate::sim_content::list(&state.db).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn community_targets() -> Result<CommunityTargets, String> {
     let (has2020, has2024) = community::detect_installed_sims();
@@ -61,6 +69,32 @@ pub async fn community_targets() -> Result<CommunityTargets, String> {
         folder2020,
         folder2024,
     })
+}
+
+/// (04/11) Manuales, guías y notas de los addons instalados.
+#[tauri::command]
+pub async fn addon_docs(state: tauri::State<'_, AppState>) -> Result<Vec<crate::addon_docs::AddonDoc>, String> {
+    crate::addon_docs::all(&state.db).await.map_err(|e| e.to_string())
+}
+
+/// (07/11) Etapa F: cómo se ve un documento dentro de SimFleet.
+#[tauri::command]
+pub async fn addon_doc_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<crate::addon_docs::DocPreview, String> {
+    crate::addon_docs::preview(&app, &state.db, &path).await.map_err(|e| e.to_string())
+}
+
+/// (04/11) Estrellas de un addon (`None` las quita).
+#[tauri::command]
+pub async fn addon_set_rating(
+    state: tauri::State<'_, AppState>,
+    folder: String,
+    stars: Option<i64>,
+) -> Result<(), String> {
+    repo::set_addon_rating(&state.db, &folder, stars).await.map_err(|e| e.to_string())
 }
 
 /// (v6.1) Lista las liveries de un pack (parsea sus aircraft.cfg). La usa el
@@ -134,16 +168,30 @@ pub async fn scan_community(
 ) -> Result<ScanReport, String> {
     cmd_log!("scan_community", "path={:?}", community_path);
     let _t = CmdTimer::start("scan_community");
+    // (05/11) Sin ruta concreta, también Community2024 si es MSFS 2024.
+    let extras = if community_path.is_none() && crate::sim::is_2024() {
+        community::secondary_community_folders()
+    } else {
+        Vec::new()
+    };
     let path = resolve_path(community_path).await?;
-    tracing::info!(target: "scan", "scan_community: usando path {}", path.display());
+    tracing::info!(target: "scan", "scan_community: usando path {} + {} más", path.display(), extras.len());
     let path_for_task = path.clone();
     // (v6.2.25) Arranque incremental: cargamos el cache de tamaños del
     // scan anterior para saltarnos el walk recursivo de los folders
     // que no cambiaron desde la última vez.
     let size_cache = community_scanner::load_size_cache(&state.db).await;
-    let report =
-        tokio::task::spawn_blocking(move || community_scanner::scan(&path_for_task, &size_cache))
-            .await
+    let report = tokio::task::spawn_blocking(move || {
+        let mut report = community_scanner::scan(&path_for_task, &size_cache)?;
+        for extra in &extras {
+            match community_scanner::scan(extra, &size_cache) {
+                Ok(found) => report = community_scanner::merge(report, found),
+                Err(e) => tracing::warn!(target: "scan", "{}: {e:#}", extra.display()),
+            }
+        }
+        Ok::<_, anyhow::Error>(report)
+    })
+    .await
         .map_err(|e| {
             tracing::error!(target: "scan", "scan_community: tarea panic: {e}");
             crate::tr!("community.scanTaskFailed", e = e)
@@ -165,6 +213,9 @@ pub async fn scan_community(
             tracing::error!(target: "scan", "scan_community: sync_to_db error: {e:#}");
             e.to_string()
         })?;
+    crate::dispatch::invalidate_liveries();
+    crate::addon_docs::invalidate();
+    crate::my_fleet::invalidate();
 
     // (v4.26.0) Best-effort en background: bajar de Wikipedia las
     // imágenes de aeropuertos sin thumbnail (o con el placeholder del
@@ -256,11 +307,12 @@ pub async fn refresh_updates_for_installed(
 #[tauri::command]
 pub async fn uninstall_community_package(
     folder_name: String,
+    delete_target: Option<bool>,
     state: tauri::State<'_, AppState>,
 ) -> Result<package_ops::UninstallReport, String> {
-    cmd_log!("uninstall_community_package", "folder={}", folder_name);
+    cmd_log!("uninstall_community_package", "folder={} delete_target={:?}", folder_name, delete_target);
     let _t = CmdTimer::start("uninstall_community_package");
-    match package_ops::uninstall_by_folder(&state.db, &folder_name).await {
+    match package_ops::uninstall_by_folder(&state.db, &folder_name, delete_target.unwrap_or(false)).await {
         Ok(report) => {
             tracing::info!(
                 target: "install",
@@ -364,6 +416,52 @@ pub async fn remove_addon_link(
     repo::remove_addon_link(&state.db, &source_folder, &target_folder)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// (05/11) Pone o quita la condición de un enlace manual del Link Map.
+#[tauri::command]
+pub async fn set_addon_link_conditions(
+    source_folder: String,
+    target_folder: String,
+    conditions: Option<crate::link_conditions::LinkConditions>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let clean = match conditions {
+        Some(c) => c.normalized().map_err(|value| crate::tr!("community.linkConditionInvalid", value = value))?,
+        None => None,
+    };
+    cmd_log!("set_addon_link_conditions", "{} -> {} ({})", source_folder, target_folder, clean.is_some());
+    let saved = repo::set_addon_link_conditions(&state.db, &source_folder, &target_folder, clean.as_ref())
+        .await
+        .map_err(|e| e.to_string())?;
+    if saved {
+        Ok(())
+    } else {
+        Err(crate::tr!("community.linkConditionAuto"))
+    }
+}
+
+/// (06/11) Tipo de unos addons. `None` vuelve al que detecta SimFleet.
+#[tauri::command]
+pub async fn set_addons_user_type(
+    folders: Vec<String>,
+    user_type: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    cmd_log!("set_addons_user_type", "n={} tipo={:?}", folders.len(), user_type);
+    crate::addon_meta::set_type(&state.db, &folders, user_type.as_deref()).await.map_err(|e| e.to_string())
+}
+
+/// (06/11) Pone y quita etiquetas en unos addons.
+#[tauri::command]
+pub async fn edit_addons_tags(
+    folders: Vec<String>,
+    add: Vec<String>,
+    remove: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    cmd_log!("edit_addons_tags", "n={} +{} -{}", folders.len(), add.len(), remove.len());
+    crate::addon_meta::edit_tags(&state.db, &folders, &add, &remove).await.map_err(|e| e.to_string())
 }
 
 /// (v4.25.0) Posiciones persistidas de los nodos del Link Map.

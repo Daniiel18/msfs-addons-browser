@@ -26,7 +26,6 @@ import {
   SlidersHorizontal,
   Download,
   ChevronDown,
-  MoreVertical,
   Info,
   Film,
   Loader2,
@@ -59,10 +58,12 @@ import worldLand from "../lib/worldLand.json";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
-import { TechLogBadge, TechLogPanel, TechLogSummaryCard, useTechLogAircraft } from "./TechLogPanel";
+import { TechLogBadge, TechLogSummaryCard, useTechLogAircraft } from "./TechLogPanel";
+import { TechLogTabs } from "./TechLogTabs";
+import { useChartInk } from "./TechLogFlights";
 import { normalizeTechLogReg, useTechLogStore } from "../stores/useTechLogStore";
-import { maintComponentLabel } from "../lib/maintLabels";
-import { useAppStore } from "../stores/useAppStore";
+import { isRefundComponent, maintComponentLabel } from "../lib/maintLabels";
+import { useAppStore, type HangarFocusTarget } from "../stores/useAppStore";
 import { AirlineLogo } from "./AirlineLogo";
 import { cleanAtcType } from "../lib/aircraft";
 import { airportRegion } from "../lib/oaciRegion";
@@ -71,6 +72,7 @@ import { deriveMaintenance, type MaintenanceReport } from "../lib/hangarMaintena
 import { useAircraftPhoto } from "./FlightBookView";
 import { useFlightLogStore } from "../stores/useFlightLogStore";
 import { useToastStore } from "../stores/useToastStore";
+import { DetailModal } from "./DetailModal";
 import { FerryCountdown } from "./FerryCountdown";
 import { HangarInsightModal, type InsightTarget } from "./HangarInsightModal";
 
@@ -179,18 +181,20 @@ export function HangarView() {
   const selected = data?.aircraft.find((a) => a.key === selectedKey) ?? null;
   // (19/10) Preflight / avisos piden abrir el mantenimiento de una matrícula.
   const hangarFocusRequest = useAppStore((s) => s.hangarFocusRequest);
-  const [tabRequest, setTabRequest] = useState<{ tab: "maintenance"; n: number } | null>(null);
+  const [tabRequest, setTabRequest] = useState<MaintTabRequest | null>(null);
   useEffect(() => {
     if (!hangarFocusRequest || !data) return;
     const want = normalizeTechLogReg(hangarFocusRequest);
     const ac = data.aircraft.find((a) => a.registration && normalizeTechLogReg(a.registration) === want);
+    // (01/11) Etapa 5a: sub-pestaña (y vuelo de TechLog) pedida.
+    const target = useAppStore.getState().hangarFocusTarget;
     useAppStore.getState().clearHangarFocusRequest();
     if (!ac) return;
     // (21/10) Que se vea resaltado en la lista: su página, sin búsqueda.
     setSearch("");
     setPage(Math.floor(data.aircraft.indexOf(ac) / PER_PAGE));
     setSelectedKey(ac.key);
-    setTabRequest({ tab: "maintenance", n: Date.now() });
+    setTabRequest({ tab: "maintenance", n: Date.now(), target });
   }, [hangarFocusRequest, data]);
 
   if (loading) {
@@ -217,9 +221,9 @@ export function HangarView() {
   }
 
   return (
-    <div className="h-full overflow-y-auto pb-8">
+    <div className="flex h-full min-h-0 flex-col pb-1">
       {/* ── Cabecera ───────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-sf-text">
             {t("hangar.heading")}
@@ -250,9 +254,9 @@ export function HangarView() {
       </div>
 
       {/* ── Cuerpo maestro/detalle ─────────────────────────────── */}
-      <div className="mt-5 grid grid-cols-1 items-start gap-4 md:grid-cols-[280px_1fr] lg:grid-cols-[320px_1fr]">
-        {/* Flota */}
-        <section className="self-start rounded-2xl border border-sf-border bg-sf-surface p-3">
+      <div className="mt-3 grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-3 md:grid-cols-[280px_minmax(0,1fr)] lg:grid-cols-[300px_minmax(0,1fr)]">
+        {/* Flota: la lista se desplaza dentro de su panel. */}
+        <section className="flex min-h-0 flex-col rounded-2xl border border-sf-border bg-sf-surface p-3">
           <h2 className="mb-2 flex items-center gap-1.5 px-1 text-sm font-semibold text-sf-text">
             {t("hangar.fleet")}
             <Info className="h-3.5 w-3.5 text-sf-muted/70" />
@@ -271,7 +275,7 @@ export function HangarView() {
               <SlidersHorizontal className="h-3.5 w-3.5" />
             </button>
           </div>
-          <div className="space-y-1.5">
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
             {fleet.map((ac, i) => (
               <FleetRow
                 key={ac.key}
@@ -355,7 +359,10 @@ function HeaderKpi({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-sf-border bg-sf-surface px-3 py-2">
+    <div
+      title={t("hangar.all_aircraft")}
+      className="flex items-center gap-2.5 rounded-xl border border-sf-border bg-sf-surface px-3 py-1.5"
+    >
       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500/15 text-brand-300">
         {icon}
       </div>
@@ -364,7 +371,6 @@ function HeaderKpi({
           {label}
         </div>
         <div className="text-sm font-semibold text-sf-text">{value}</div>
-        <div className="text-[11px] text-sf-muted">{t("hangar.all_aircraft")}</div>
       </div>
     </div>
   );
@@ -456,17 +462,18 @@ function FleetOverview({
   };
 
   return (
-    <section className="rounded-2xl border border-sf-border bg-sf-surface p-4">
-      <h2 className="mb-1 text-base font-semibold text-sf-text">
-        {t("hangar.overview.heading")}
-      </h2>
-      <p className="mb-4 text-xs text-sf-muted">{t("hangar.overview.hint")}</p>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <section className="flex min-h-0 flex-col overflow-y-auto rounded-2xl border border-sf-border bg-sf-surface p-3">
+      <div className="mb-2 flex items-baseline justify-between gap-3 px-1">
+        <h2 className="shrink-0 text-sm font-semibold text-sf-text">{t("hangar.overview.heading")}</h2>
+        <p className="min-w-0 truncate text-xs text-sf-muted" title={t("hangar.overview.hint")}>
+          {t("hangar.overview.hint")}
+        </p>
+      </div>
+      <div className="grid min-h-[300px] flex-1 grid-cols-1 gap-3 md:grid-cols-2 md:grid-rows-2">
         <TreemapCard
           icon={<Plane className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.aircraft")}
           data={aircraftData}
-          hint={t("hangar.overview.tap_hint")}
           onSelect={(item) =>
             item.ikey &&
             setInsight({ kind: "type", filter: { kind: "type", key: item.ikey }, title: item.name })
@@ -476,7 +483,6 @@ function FleetOverview({
           icon={<Building2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.airlines")}
           data={airlineData}
-          hint={t("hangar.overview.tap_hint")}
           onSelect={(item) =>
             item.ikey
               ? setInsight({
@@ -492,7 +498,6 @@ function FleetOverview({
           icon={<MapPin className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.destinations")}
           data={destData}
-          hint={t("hangar.overview.tap_hint")}
           onSelect={(item) =>
             setInsight({
               kind: "destination",
@@ -507,7 +512,6 @@ function FleetOverview({
           icon={<Globe2 className="h-4 w-4 text-brand-400" />}
           title={t("hangar.overview.regions")}
           data={regionData}
-          hint={t("hangar.overview.tap_hint")}
           onSelect={openRegion}
         />
       </div>
@@ -519,45 +523,32 @@ function FleetOverview({
       />
 
       {/* (v6.1 #27) Top 10 mejores aterrizajes de toda la flota. */}
-      <div className="mt-2">
-        <BestLandings
-          recorded={topClips}
-          synthetic={data.bestLandings}
-          onReload={onReloadClips}
-        />
-      </div>
+      <BestLandings recorded={topClips} synthetic={data.bestLandings} onReload={onReloadClips} />
     </section>
   );
 }
 
 const TREE_COLORS = [
   "#0ea5e9", "#22c55e", "#f59e0b", "#a855f7", "#ef4444", "#14b8a6",
-  "#eab308", "#6366f1", "#ec4899", "#84cc16", "#fb7185", "#64748b",
+  "#eab308", "#6366f1", "#ec4899", "#84cc16", "#fb7185", "#7a7a80",
 ];
 
 function CardShell({
   icon,
   title,
   empty,
-  hint,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
   empty: boolean;
-  hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
-      <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
+    <div className="flex min-h-[132px] flex-col rounded-xl border border-sf-border bg-sf-bg/40 p-2.5">
+      <h3 className="mb-1.5 flex shrink-0 items-center gap-1.5 text-xs font-semibold text-sf-text">
         {icon}
-        {title}
-        {hint && (
-          <span className="ml-auto text-[10px] font-normal text-sf-muted">
-            {hint}
-          </span>
-        )}
+        <span className="truncate">{title}</span>
       </h3>
       {empty ? (
         <div className="py-10 text-center text-xs text-sf-muted/70">
@@ -613,7 +604,7 @@ function TreeLabel(props: {
       className={clickable ? "transition-opacity hover:opacity-85" : undefined}
     >
       {/* Cuadrada: el "gap" entre celdas lo da el stroke; sin rx. */}
-      <rect x={x} y={y} width={width} height={height} fill={c} stroke="#0b1220" strokeWidth={2.5} />
+      <rect x={x} y={y} width={width} height={height} fill={c} stroke="#141416" strokeWidth={2.5} />
       {hasImg && (
         <image
           href={img!}
@@ -625,7 +616,7 @@ function TreeLabel(props: {
         />
       )}
       {width > 40 && height > 22 && (
-        <text x={cx} y={textY} textAnchor="middle" fill="#0b1220" fontSize={fontSize} fontWeight={500}>
+        <text x={cx} y={textY} textAnchor="middle" fill="#141416" fontSize={fontSize} fontWeight={500}>
           {label}
         </text>
       )}
@@ -657,25 +648,23 @@ function TreeTip({
 }
 
 function TreemapCard({
-  icon, title, data, hint, onSelect,
+  icon, title, data, onSelect,
 }: {
   icon: React.ReactNode;
   title: string;
   data: Array<{ name: string; size: number; code?: string | null; ikey?: string | null }>;
-  /** Pista bajo el título (ej. "toca para ver detalle"). */
-  hint?: string;
   /** Si se pasa, cada celda es clicable y dispara esto con su item. */
   onSelect?: (item: TreeItem) => void;
 }) {
   const total = data.reduce((s, d) => s + d.size, 0);
   return (
-    <CardShell icon={icon} title={title} empty={data.length === 0} hint={hint}>
-      <div className="h-52 w-full overflow-hidden rounded-lg">
+    <CardShell icon={icon} title={title} empty={data.length === 0}>
+      <div className="min-h-0 w-full flex-1 overflow-hidden rounded-lg">
         <ResponsiveContainer width="100%" height="100%">
           <Treemap
             data={data}
             dataKey="size"
-            stroke="#0b1220"
+            stroke="#141416"
             isAnimationActive={false}
             content={<TreeLabel onSelect={onSelect} />}
           >
@@ -705,7 +694,7 @@ function RadarTick(props: {
       y={y}
       dy={4}
       textAnchor={textAnchor}
-      fill="#cbd5e1"
+      fill="#c4c4c8"
       fontSize={11}
       className="cursor-pointer hover:fill-brand-300 hover:underline"
       onClick={() => onSelect?.(label)}
@@ -731,21 +720,20 @@ function RadarTip({ active, payload }: { active?: boolean; payload?: Array<{ pay
 }
 
 function RadarCard({
-  icon, title, data, hint, onSelect,
+  icon, title, data, onSelect,
 }: {
   icon: React.ReactNode;
   title: string;
   data: RegionDatum[];
-  hint?: string;
   /** (26/10) Tocar un país (etiqueta o punto) abre su ficha. */
   onSelect: (label: string) => void;
 }) {
   // El radar necesita 3 ejes; con 1 o 2 países, una lista con barras.
   const max = Math.max(1, ...data.map((d) => d.count));
   return (
-    <CardShell icon={icon} title={title} empty={data.length === 0} hint={hint}>
+    <CardShell icon={icon} title={title} empty={data.length === 0}>
       {data.length < 3 ? (
-        <ul className="flex h-52 flex-col justify-center gap-2">
+        <ul className="flex min-h-0 flex-1 flex-col justify-center gap-2">
           {data.map((d) => (
             <li key={d.label}>
               <button
@@ -766,12 +754,12 @@ function RadarCard({
           ))}
         </ul>
       ) : (
-        <div className="h-52 w-full">
+        <div className="min-h-0 w-full flex-1">
           <ResponsiveContainer width="100%" height="100%">
             <RadarChart data={data} outerRadius="70%">
-              <PolarGrid stroke="#334155" />
+              <PolarGrid stroke="#3a3a3c" />
               <PolarAngleAxis dataKey="label" tick={<RadarTick onSelect={onSelect} />} />
-              <PolarRadiusAxis tick={{ fill: "#64748b", fontSize: 9 }} stroke="#334155" angle={45} />
+              <PolarRadiusAxis tick={{ fill: "#7a7a80", fontSize: 9 }} stroke="#3a3a3c" angle={45} />
               <Radar
                 dataKey="count"
                 stroke="#38bdf8"
@@ -785,7 +773,7 @@ function RadarCard({
                     cy={p.cy}
                     r={4}
                     fill="#38bdf8"
-                    stroke="#0b1220"
+                    stroke="#141416"
                     strokeWidth={1}
                     className="cursor-pointer hover:fill-sky-200"
                     onClick={() => p.payload && onSelect(p.payload.label)}
@@ -816,7 +804,7 @@ function FleetRow({
   return (
     <button
       onClick={onClick}
-      className={`flex w-full items-center gap-2.5 rounded-xl border p-2 text-left transition-colors ${
+      className={`flex w-full items-center gap-2.5 rounded-xl border px-2 py-1.5 text-left transition-colors ${
         active
           ? "border-brand-500/60 bg-brand-500/10 ring-1 ring-brand-500/30"
           : "border-transparent bg-sf-bg/40 hover:bg-sf-raised/70"
@@ -830,12 +818,9 @@ function FleetRow({
         <div className="truncate text-xs font-semibold text-sf-text">
           {ac.airlineName ?? model ?? t("hangar.unknown_model")}
         </div>
-        <div className="truncate text-[11px] text-sf-muted">{model ?? "—"}</div>
-        {ac.registration && (
-          <div className="truncate font-mono text-[10px] text-sf-muted/70">
-            {ac.registration}
-          </div>
-        )}
+        <div className="truncate text-[11px] text-sf-muted">
+          {[ac.registration, model].filter(Boolean).join(" · ") || "—"}
+        </div>
       </div>
       {ac.flights === 0 ? (
         // (21/10) Avión que sólo existe en Fenix/PMDG TechLog (sin vuelos aquí).
@@ -852,10 +837,12 @@ function FleetRow({
           </div>
         </div>
       )}
-      <MoreVertical className="h-3.5 w-3.5 shrink-0 text-sf-muted/70" />
     </button>
   );
 }
+
+/** (19/10) Petición de abrir Mantenimiento; (01/11) con su sub-pestaña. */
+type MaintTabRequest = { tab: "maintenance"; n: number; target?: HangarFocusTarget | null };
 
 const TABS = [
   "overview",
@@ -875,7 +862,7 @@ function AircraftDetail({
   ac: HangarAircraft;
   recorded: LandingClip[];
   onReloadClips: () => void;
-  tabRequest?: { tab: "maintenance"; n: number } | null;
+  tabRequest?: MaintTabRequest | null;
 }) {
   const [tab, setTab] = useState<(typeof TABS)[number]>("overview");
   useEffect(() => {
@@ -935,13 +922,13 @@ function AircraftDetail({
       : ac.lastIcao ?? null;
 
   return (
-    <section className="flex flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface lg:self-stretch">
+    <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
       {/* Banner */}
-      <div className="relative overflow-hidden">
-        <div className="absolute right-3 top-3 z-10 flex">
+      <div className="relative shrink-0 overflow-hidden">
+        <div className="absolute right-3 top-2.5 z-10 flex">
           <button
             onClick={() => setReportOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-slate-950/70 px-3 py-1.5 text-xs text-sf-text backdrop-blur hover:border-brand-500/40"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-sf-bg/80 px-3 py-1.5 text-xs text-sf-text backdrop-blur hover:border-brand-500/40"
           >
             <Download className="h-3.5 w-3.5" />
             {t("hangar.export")}
@@ -957,22 +944,22 @@ function AircraftDetail({
               alt={ac.registration ?? ""}
               className="absolute inset-0 h-full w-full object-cover"
             />
-            <div className="absolute inset-0 bg-gradient-to-r from-slate-950/95 via-slate-950/70 to-slate-950/30" />
+            <div className="absolute inset-0 bg-gradient-to-r from-sf-bg via-sf-bg/80 to-sf-bg/10" />
             <span className="pointer-events-none absolute bottom-1.5 right-2 z-10 rounded bg-sf-bg/60 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-sf-text/90/80 backdrop-blur-sm">
               planespotters.net
             </span>
           </>
         )}
         <div
-          className={`relative flex items-end gap-4 p-5 ${
+          className={`relative flex items-center gap-4 px-4 py-2.5 ${
             photo
               ? ""
-              : "bg-gradient-to-br from-slate-800 via-slate-900 to-brand-900/40"
+              : "bg-gradient-to-br from-sf-surface via-sf-surface to-brand-500/15"
           }`}
         >
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 pr-32">
             <div className="flex items-center gap-2">
-              <h2 className="text-3xl font-bold tracking-tight text-slate-50">
+              <h2 className="text-xl font-bold tracking-tight text-sf-text">
                 {ac.registration ?? t("hangar.unknown_model")}
               </h2>
               <span className="inline-flex items-center gap-1 rounded-full bg-brand-500/20 px-2 py-0.5 text-[10px] font-medium text-brand-300 ring-1 ring-brand-500/30">
@@ -981,30 +968,27 @@ function AircraftDetail({
               </span>
               {tl && <TechLogBadge data={tl} />}
             </div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={20} />
-              <span className="text-sm font-medium text-sf-text">
+            <div className="mt-1 flex min-w-0 items-center gap-2">
+              <AirlineLogo icao={ac.airlineIcao} name={ac.airlineName} size={18} />
+              <span className="shrink-0 text-xs font-medium text-sf-text">
                 {ac.airlineName ?? "—"}
               </span>
+              <span className="min-w-0 truncate text-xs text-sf-muted">
+                {[model, location].filter(Boolean).join(" · ") || "—"}
+                {ferryEnroute && (
+                  <>
+                    {" "}
+                    <FerryCountdown to={ac.ferryArrivesAt as string} onArrived={() => setArrived((n) => n + 1)} />
+                  </>
+                )}
+              </span>
             </div>
-            <p className="mt-0.5 text-xs text-sf-muted">
-              {[model, location].filter(Boolean).join(" · ") || "—"}
-              {ferryEnroute && (
-                <>
-                  {" "}
-                  <FerryCountdown to={ac.ferryArrivesAt as string} onArrived={() => setArrived((n) => n + 1)} />
-                </>
-              )}
-            </p>
           </div>
-          {!photo && (
-            <PlaneLanding className="h-16 w-16 shrink-0 text-sf-muted/70/60" />
-          )}
         </div>
       </div>
 
       {/* (Rediseño F4) KPIs del avión bajo la foto + estado general. */}
-      <div className="grid grid-cols-2 gap-px border-b border-sf-border/70 bg-sf-border/50 sm:grid-cols-4">
+      <div className="grid shrink-0 grid-cols-2 gap-px border-b border-sf-border/70 bg-sf-border/50 sm:grid-cols-4">
         <AcKpi label={t("hangar.kpi.flights")} value={ac.flights.toLocaleString()} />
         <AcKpi label={t("hangar.kpi.miles")} value={`${Math.round(ac.totalNm).toLocaleString()} nm`} />
         <AcKpi label={t("hangar.kpi.hours")} value={hours(ac.totalTimeS)} />
@@ -1013,7 +997,7 @@ function AircraftDetail({
           value={ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)} fpm` : "—"}
         />
       </div>
-      <div className="flex items-center gap-3 border-b border-sf-border/70 px-4 py-2.5">
+      <div className="flex shrink-0 items-center gap-3 border-b border-sf-border/70 px-4 py-1.5">
         <span className="shrink-0 text-xs text-sf-muted" title={t("hangar.health_hint")}>
           {t("hangar.health_general")}
         </span>
@@ -1034,7 +1018,7 @@ function AircraftDetail({
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-sf-border px-4">
+      <div className="flex shrink-0 gap-1 border-b border-sf-border px-4">
         {TABS.map((tb) => (
           <button
             key={tb}
@@ -1053,10 +1037,10 @@ function AircraftDetail({
         ))}
       </div>
 
-      <div className="flex-1 p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {tab === "overview" && (
           <>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {tl ? (
                 <TechLogSummaryCard data={tl} onOpen={() => setTab("maintenance")} />
               ) : (
@@ -1074,7 +1058,15 @@ function AircraftDetail({
         {tab === "performance" && <PerformanceTab ac={ac} tl={tl} />}
         {tab === "maintenance" &&
           (tl ? (
-            <TechLogPanel data={tl} onReload={() => void techlog.reload()} loading={techlog.loading} model={ac.model} />
+            // (01/11) Etapa 5a: sub-pestañas como el riel de TechLog;
+            // (02/11) 5b: también con el Tech Log propio.
+            <TechLogTabs
+              data={tl}
+              onReload={() => void techlog.reload()}
+              loading={techlog.loading}
+              model={ac.model}
+              request={tabRequest ? { ...(tabRequest.target ?? { sub: "status" }), n: tabRequest.n } : null}
+            />
           ) : (
             <TechLogPending loading={techlog.loading} />
           ))}
@@ -1101,9 +1093,9 @@ function money(n: number): string {
 /** (Rediseño F4) Celda de la fila de KPIs bajo la foto del avión. */
 function AcKpi({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-sf-surface px-4 py-3">
-      <div className="truncate text-[11px] uppercase tracking-wide text-sf-muted">{label}</div>
-      <div className="mt-0.5 truncate text-lg font-semibold tabular-nums text-sf-text">{value}</div>
+    <div className="bg-sf-surface px-4 py-1.5">
+      <div className="truncate text-[10px] uppercase tracking-wide text-sf-muted">{label}</div>
+      <div className="truncate text-sm font-semibold tabular-nums text-sf-text">{value}</div>
     </div>
   );
 }
@@ -1209,7 +1201,7 @@ function FlightsTab({ ac }: { ac: HangarAircraft }) {
                   <td className="px-2 py-2 text-right text-sf-muted">
                     {f.flightTimeS ? hours(f.flightTimeS) : "—"}
                   </td>
-                  <td className="px-3 py-2 text-right font-semibold" style={{ color: GRADE_COLOR[fpmGrade(f.landingFpm)] ?? "#94a3b8" }}>
+                  <td className="px-3 py-2 text-right font-semibold" style={{ color: GRADE_COLOR[fpmGrade(f.landingFpm)] ?? "#a1a1a6" }}>
                     {f.landingFpm ?? "—"}
                   </td>
                 </tr>
@@ -1263,10 +1255,10 @@ function FlightDetail({ flight, engineHealth }: { flight: FlightLogEntry; engine
                     <stop offset="1" stopColor="#f43f5e" stopOpacity={0.04} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="t" tick={{ fill: "#64748b", fontSize: 10 }} axisLine={{ stroke: "#1e293b" }} tickLine={false} />
-                <YAxis tick={{ fill: "#64748b", fontSize: 10 }} axisLine={false} tickLine={false} width={36} unit="°" />
-                <Tooltip contentStyle={{ background: "#020617", border: "1px solid #334155", borderRadius: 8, fontSize: 11 }} />
+                <CartesianGrid stroke="#2c2c2e" vertical={false} />
+                <XAxis dataKey="t" tick={{ fill: "#7a7a80", fontSize: 10 }} axisLine={{ stroke: "#2c2c2e" }} tickLine={false} />
+                <YAxis tick={{ fill: "#7a7a80", fontSize: 10 }} axisLine={false} tickLine={false} width={36} unit="°" />
+                <Tooltip contentStyle={{ background: "#0e0e10", border: "1px solid #3a3a3c", borderRadius: 8, fontSize: 11 }} />
                 <Area type="monotone" dataKey="EGT1" stroke="#f43f5e" strokeWidth={2} fill="url(#egtFill)" isAnimationActive={false} />
                 {tel.engines > 1 && (
                   <Area type="monotone" dataKey="EGT2" stroke="#fb923c" strokeWidth={2} fill="none" isAnimationActive={false} />
@@ -1309,13 +1301,13 @@ function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
     <svg viewBox="0 0 380 220" width="100%" className="select-none" aria-hidden>
       <defs>
         <linearGradient id="engMetal" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#cbd5e1" />
+          <stop offset="0" stopColor="#c4c4c8" />
           <stop offset="0.5" stopColor="#8a9bad" />
-          <stop offset="1" stopColor="#475569" />
+          <stop offset="1" stopColor="#5a5a5f" />
         </linearGradient>
         <linearGradient id="engCore" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#94a3b8" />
-          <stop offset="1" stopColor="#334155" />
+          <stop offset="0" stopColor="#a1a1a6" />
+          <stop offset="1" stopColor="#3a3a3c" />
         </linearGradient>
         <radialGradient id="engHot" cx="0.5" cy="0.5" r="0.55">
           <stop offset="0" stopColor="#fde68a" />
@@ -1325,21 +1317,21 @@ function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
       </defs>
 
       {/* Ala semitransparente (en ángulo) + pilón */}
-      <path d="M24 34 L356 16 L362 50 L40 80 Z" fill="#94a3b8" fillOpacity="0.16" stroke="#94a3b8" strokeOpacity="0.45" strokeWidth="1" />
-      <path d={`M150 66 L182 66 L176 ${cy - fanR * 0.95} L156 ${cy - fanR * 0.95} Z`} fill="#64748b" stroke="#334155" strokeWidth="1" />
+      <path d="M24 34 L356 16 L362 50 L40 80 Z" fill="#a1a1a6" fillOpacity="0.16" stroke="#a1a1a6" strokeOpacity="0.45" strokeWidth="1" />
+      <path d={`M150 66 L182 66 L176 ${cy - fanR * 0.95} L156 ${cy - fanR * 0.95} Z`} fill="#7a7a80" stroke="#3a3a3c" strokeWidth="1" />
 
       {turboprop ? (
         <g>
           {/* Hélice */}
-          <g stroke="#1e293b" strokeWidth="1.5" fill="#334155">
+          <g stroke="#2c2c2e" strokeWidth="1.5" fill="#3a3a3c">
             {Array.from({ length: 5 }, (_, i) => {
               const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
               return <ellipse key={i} cx={70 + Math.cos(a) * 4} cy={cy + Math.sin(a) * 44} rx="5" ry="22" transform={`rotate(${(a * 180) / Math.PI + 90} ${70} ${cy})`} />;
             })}
           </g>
-          <circle cx="70" cy={cy} r="10" fill="url(#engMetal)" stroke="#1e293b" strokeWidth="1.5" />
+          <circle cx="70" cy={cy} r="10" fill="url(#engMetal)" stroke="#2c2c2e" strokeWidth="1.5" />
           {/* Góndola del turbohélice */}
-          <path d={`M86 ${cy - 22} L300 ${cy - 16} Q316 ${cy - 14} 316 ${cy} Q316 ${cy + 14} 300 ${cy + 16} L86 ${cy + 22} Z`} fill="url(#engMetal)" stroke="#1e293b" strokeWidth="1.5" />
+          <path d={`M86 ${cy - 22} L300 ${cy - 16} Q316 ${cy - 14} 316 ${cy} Q316 ${cy + 14} 300 ${cy + 16} L86 ${cy + 22} Z`} fill="url(#engMetal)" stroke="#2c2c2e" strokeWidth="1.5" />
           <rect x="250" y={cy - 9} width="56" height="18" rx="9" fill="url(#engHot)" />
         </g>
       ) : (
@@ -1352,26 +1344,26 @@ function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
                 Q300 ${cy + fanR * 0.96} 300 ${cy + fanR * 0.6}
                 L300 ${cy - fanR * 0.6}
                 Q300 ${cy - fanR * 0.96} 210 ${cy - fanR * 1.05} Z`}
-            fill="#94a3b8" fillOpacity="0.16" stroke="#94a3b8" strokeOpacity="0.55" strokeWidth="1.5"
+            fill="#a1a1a6" fillOpacity="0.16" stroke="#a1a1a6" strokeOpacity="0.55" strokeWidth="1.5"
           />
           {/* Labio del inlet */}
           <path d={`M60 ${cy - fanR * 1.12} Q44 ${cy} 60 ${cy + fanR * 1.12}`} fill="none" stroke="url(#engMetal)" strokeWidth="6" strokeLinecap="round" />
 
           {/* Spinner + Fan (disco de canto) */}
-          <path d={`M50 ${cy} L70 ${cy - fanR} L70 ${cy + fanR} Z`} fill="url(#engMetal)" stroke="#1e293b" strokeWidth="1" />
-          <ellipse cx="72" cy={cy} rx="9" ry={fanR} fill="url(#engCore)" stroke="#0b1220" strokeWidth="1.5" />
+          <path d={`M50 ${cy} L70 ${cy - fanR} L70 ${cy + fanR} Z`} fill="url(#engMetal)" stroke="#2c2c2e" strokeWidth="1" />
+          <ellipse cx="72" cy={cy} rx="9" ry={fanR} fill="url(#engCore)" stroke="#141416" strokeWidth="1.5" />
           {Array.from({ length: 13 }, (_, i) => {
             const yy = cy - fanR + ((2 * fanR) / 12) * i;
-            return <line key={i} x1="66" y1={yy} x2="78" y2={yy - 3} stroke="#cbd5e1" strokeWidth="1" opacity="0.8" />;
+            return <line key={i} x1="66" y1={yy} x2="78" y2={yy - 3} stroke="#c4c4c8" strokeWidth="1" opacity="0.8" />;
           })}
 
           {/* Núcleo: cárter + ejes */}
-          <path d={`M100 ${cy - coreR} L255 ${cy - coreR * 0.78} L288 ${cy - coreR * 0.5} L288 ${cy + coreR * 0.5} L255 ${cy + coreR * 0.78} L100 ${cy + coreR} Z`} fill="url(#engCore)" stroke="#1e293b" strokeWidth="1" />
+          <path d={`M100 ${cy - coreR} L255 ${cy - coreR * 0.78} L288 ${cy - coreR * 0.5} L288 ${cy + coreR * 0.5} L255 ${cy + coreR * 0.78} L100 ${cy + coreR} Z`} fill="url(#engCore)" stroke="#2c2c2e" strokeWidth="1" />
           {/* Compresor (etapas decrecientes) */}
           {Array.from({ length: 7 }, (_, i) => {
             const x = 108 + i * 10;
             const h = coreR * (0.95 - i * 0.07);
-            return <line key={i} x1={x} y1={cy - h} x2={x} y2={cy + h} stroke="#e2e8f0" strokeWidth="1.6" opacity="0.85" />;
+            return <line key={i} x1={x} y1={cy - h} x2={x} y2={cy + h} stroke="#e0e0e4" strokeWidth="1.6" opacity="0.85" />;
           })}
           {/* Cámara de combustión (caliente) */}
           <rect x="186" y={cy - coreR * 0.82} width="26" height={coreR * 1.64} rx="5" fill="url(#engHot)" stroke={hotColor} strokeWidth="1" />
@@ -1384,14 +1376,14 @@ function EngineDiagram({ tel }: { tel: FlightTelemetry }) {
           {/* Glow de la zona caliente */}
           <ellipse cx="206" cy={cy} rx="58" ry={coreR * 1.5} fill="url(#engHot)" opacity="0.55" />
           {/* Cono de salida + tobera */}
-          <path d={`M288 ${cy - coreR * 0.5} L320 ${cy} L288 ${cy + coreR * 0.5} Z`} fill="url(#engCore)" stroke="#1e293b" strokeWidth="1" />
+          <path d={`M288 ${cy - coreR * 0.5} L320 ${cy} L288 ${cy + coreR * 0.5} Z`} fill="url(#engCore)" stroke="#2c2c2e" strokeWidth="1" />
         </g>
       )}
 
       {/* Etiqueta del motor */}
       <g transform="translate(20,18)">
-        <rect x="0" y="0" width={tel.engineName.length * 6.6 + 16} height="18" rx="9" fill="#0b1220" fillOpacity="0.7" stroke="#334155" />
-        <text x="8" y="13" fill="#e2e8f0" fontSize="11" fontWeight="600">{tel.engines}× {tel.engineName}</text>
+        <rect x="0" y="0" width={tel.engineName.length * 6.6 + 16} height="18" rx="9" fill="#141416" fillOpacity="0.7" stroke="#3a3a3c" />
+        <text x="8" y="13" fill="#e0e0e4" fontSize="11" fontWeight="600">{tel.engines}× {tel.engineName}</text>
       </g>
       {/* Etiqueta zona caliente */}
       {!turboprop && (
@@ -1428,6 +1420,26 @@ function HistoryTab({ realHistory }: { realHistory: MaintRecord[] }) {
       {/* (v6.1) Servicios REALES — mismo estilo de taller que los reportes
           (sin "done in finance"); el taller se asigna de forma estable. */}
       {realHistory.map((r, i) => {
+        // (8.4.x) Reembolso: lo cobró GSX en la misma escala (no es un taller).
+        if (isRefundComponent(r.component)) {
+          return (
+            <div key={`real-${i}`} className="flex items-start gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/25">
+                GSX
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-sf-text">{maintComponentLabel(r.component)}</span>
+                  <span className="shrink-0 text-[11px] text-sf-muted">{fmtDate(r.servicedAt)}</span>
+                </div>
+                <p className="mt-0.5 truncate text-[11px] text-sf-muted">{t("hangar.history.refund_note")}</p>
+                <div className="mt-1 flex items-center gap-3 text-[10px]">
+                  <span className="font-semibold text-emerald-300">+{money(-r.cost)}</span>
+                </div>
+              </div>
+            </div>
+          );
+        }
         const shop = maintShopFor(`${r.component}-${r.servicedAt}`);
         return (
           <div key={`real-${i}`} className="flex items-start gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3">
@@ -1784,7 +1796,7 @@ function FlightMapSvg({ flights }: { flights: FlightLogEntry[] }) {
       {[...airports.entries()].map(([icao, [lat, lon]], i) => (
         <g key={i}>
           <circle cx={px(lon)} cy={py(lat)} r="3.4" fill="#dc2626" stroke="#fff" strokeWidth="1" />
-          <text x={px(lon) + 5} y={py(lat) + 3} fontSize="9" fill="#0f172a" fontWeight="600">{icao}</text>
+          <text x={px(lon) + 5} y={py(lat) + 3} fontSize="9" fill="#1c1c1e" fontWeight="600">{icao}</text>
         </g>
       ))}
     </svg>
@@ -1955,6 +1967,7 @@ function RKpi({ k, v }: { k: string; v: string }) {
 }
 
 function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
+  const ink = useChartInk();
   const landings = ac.recentLandings;
   const n = landings.length;
   const chartData = landings.map((l, i) => ({
@@ -1973,35 +1986,38 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
     ac.avgLandingFpm != null ? `${Math.round(ac.avgLandingFpm)} fpm` : "—";
 
   return (
-    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-4">
-      <h3 className="mb-2 flex items-center gap-1.5 text-base font-semibold text-sf-text">
-        <Gauge className="h-4 w-4 text-brand-400" />
-        {t("hangar.fpm.title", { n: String(n) })}
-        <Info className="h-3 w-3 text-sf-muted/70" />
+    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
+      <h3 className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-sf-text">
+        <Gauge className="h-4 w-4 shrink-0 text-brand-400" />
+        <span className="truncate">{t("hangar.fpm.title", { n: String(n) })}</span>
+        <Info className="h-3 w-3 shrink-0 text-sf-muted/70" />
+        <span className="ml-auto shrink-0 font-semibold tabular-nums text-sf-text" title={t("hangar.fpm.avg")}>
+          {avg}
+        </span>
       </h3>
       {n === 0 ? (
-        <div className="flex h-40 items-center justify-center text-sm text-sf-muted/70">
+        <div className="flex h-28 items-center justify-center text-sm text-sf-muted/70">
           {t("hangar.fpm.no_data")}
         </div>
       ) : (
-        <div className="h-52 w-full">
+        <div className="h-28 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
               data={chartData}
-              margin={{ top: 18, right: 14, left: -4, bottom: 0 }}
+              margin={{ top: 14, right: 10, left: -8, bottom: 0 }}
             >
-              <CartesianGrid stroke="#1e293b" vertical={false} />
+              <CartesianGrid stroke={ink.grid} vertical={false} />
               <XAxis
                 dataKey="label"
-                tick={{ fill: "#94a3b8", fontSize: 13 }}
-                axisLine={{ stroke: "#1e293b" }}
+                tick={{ fill: ink.axis, fontSize: 11 }}
+                axisLine={{ stroke: ink.grid }}
                 tickLine={false}
               />
               <YAxis
-                tick={{ fill: "#94a3b8", fontSize: 13 }}
+                tick={{ fill: ink.axis, fontSize: 11 }}
                 axisLine={false}
                 tickLine={false}
-                width={44}
+                width={38}
                 domain={["dataMin - 50", 50]}
               />
               <Line
@@ -2015,9 +2031,9 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
                 <LabelList
                   dataKey="fpm"
                   position="top"
-                  fontSize={12}
+                  fontSize={10}
                   fontWeight={600}
-                  fill="#e2e8f0"
+                  fill={ink.text}
                 />
               </Line>
             </LineChart>
@@ -2025,18 +2041,10 @@ function FpmTrendCard({ ac }: { ac: HangarAircraft }) {
         </div>
       )}
       {/* Leyenda */}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-sf-border pt-3">
-        <div className="flex flex-wrap gap-3 text-[12px]">
-          <Legend color={GRADE_COLOR.butter} label={t("hangar.fpm.butter")} n={counts.butter ?? 0} />
-          <Legend color={GRADE_COLOR.acceptable} label={t("hangar.fpm.acceptable")} n={counts.acceptable ?? 0} />
-          <Legend color={GRADE_COLOR.hard} label={t("hangar.fpm.hard")} n={counts.hard ?? 0} />
-        </div>
-        <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wide text-sf-muted">
-            {t("hangar.fpm.avg")}
-          </div>
-          <div className="text-base font-semibold text-sf-text">{avg}</div>
-        </div>
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 border-t border-sf-border pt-1.5 text-[11px]">
+        <Legend color={GRADE_COLOR.butter} label={t("hangar.fpm.butter")} n={counts.butter ?? 0} />
+        <Legend color={GRADE_COLOR.acceptable} label={t("hangar.fpm.acceptable")} n={counts.acceptable ?? 0} />
+        <Legend color={GRADE_COLOR.hard} label={t("hangar.fpm.hard")} n={counts.hard ?? 0} />
       </div>
     </div>
   );
@@ -2051,7 +2059,7 @@ function FpmDot(props: {
   if (cx == null || cy == null) return <></>;
   const color = GRADE_COLOR[payload?.grade ?? ""] ?? "#38bdf8";
   return (
-    <circle cx={cx} cy={cy} r={4} fill={color} stroke="#0f172a" strokeWidth={1.5} />
+    <circle cx={cx} cy={cy} r={4} fill={color} stroke="#1c1c1e" strokeWidth={1.5} />
   );
 }
 
@@ -2064,6 +2072,9 @@ function Legend({ color, label, n }: { color: string; label: string; n: number }
   );
 }
 
+/** Best Landings que caben en una fila. */
+const LANDINGS_ROW = 6;
+
 function BestLandings({
   recorded,
   synthetic,
@@ -2074,45 +2085,70 @@ function BestLandings({
   onReload: () => void;
 }) {
   const hasClips = recorded.length > 0;
+  const total = hasClips ? recorded.length : synthetic.length;
+  // (03/11) Limpieza de vistas: una fila; el resto, en un modal.
+  const [all, setAll] = useState(false);
 
   return (
-    <div className="mt-5">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-sf-text">
+    <div className="mt-3 shrink-0">
+      <div className="mb-1.5 flex items-center justify-between px-1">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold text-sf-text">
           <Film className="h-4 w-4 text-brand-400" />
           {t("hangar.best_landings.title")}
-          <Info className="h-3 w-3 text-sf-muted/70" />
-        </h3>
-        {hasClips && (
-          <span className="text-[11px] text-sf-muted">
-            {recorded.length} {t("hangar.flights_short")}
+          <span title={t("hangar.best_landings.enable_hint")}>
+            <Info className="h-3 w-3 text-sf-muted/70" />
           </span>
+        </h3>
+        {total > LANDINGS_ROW ? (
+          <button
+            onClick={() => setAll(true)}
+            className="inline-flex items-center gap-0.5 text-xs font-medium text-brand-300 hover:text-brand-200"
+          >
+            {t("hangar.best_landings.see_all", { n: String(total) })}
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        ) : (
+          hasClips && (
+            <span className="text-[11px] text-sf-muted">
+              {recorded.length} {t("hangar.flights_short")}
+            </span>
+          )
         )}
       </div>
 
       {hasClips ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {recorded.map((c) => (
+        <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
+          {recorded.slice(0, LANDINGS_ROW).map((c) => (
             <ClipCard key={c.id} clip={c} onReload={onReload} />
           ))}
         </div>
       ) : synthetic.length > 0 ? (
-        <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {synthetic.map((l, i) => (
-              <LandingCard key={i} l={l} />
-            ))}
-          </div>
-          <p className="mt-1 text-[11px] text-sf-muted/70">
-            {t("hangar.best_landings.enable_hint")}
-          </p>
-        </>
+        <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
+          {synthetic.slice(0, LANDINGS_ROW).map((l, i) => (
+            <LandingCard key={i} l={l} compact />
+          ))}
+        </div>
       ) : (
-        <div className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-sf-border bg-sf-surface/60 py-8 text-sf-muted">
-          <Film className="h-6 w-6" />
+        <div className="flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-sf-border bg-sf-surface/60 py-4 text-sf-muted">
+          <Film className="h-5 w-5" />
           <p className="text-sm">{t("hangar.best_landings.empty")}</p>
           <p className="text-[11px]">{t("hangar.best_landings.enable_hint")}</p>
         </div>
+      )}
+
+      {all && (
+        <DetailModal
+          title={t("hangar.best_landings.title")}
+          subtitle={hasClips ? undefined : t("hangar.best_landings.enable_hint")}
+          icon={<Film className="h-4 w-4" />}
+          onClose={() => setAll(false)}
+        >
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {hasClips
+              ? recorded.map((c) => <ClipCard key={c.id} clip={c} onReload={onReload} />)
+              : synthetic.map((l, i) => <LandingCard key={i} l={l} />)}
+          </div>
+        </DetailModal>
       )}
     </div>
   );
@@ -2153,7 +2189,7 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
     <div className="group w-full overflow-hidden rounded-xl border border-sf-border bg-sf-bg/40">
       <button
         onClick={play}
-        className="relative flex aspect-video w-full items-center justify-center overflow-hidden bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950"
+        className="relative flex aspect-video w-full items-center justify-center overflow-hidden bg-gradient-to-br from-sf-raised via-sf-surface to-sf-bg"
       >
         {/* (v6.1 #28) Miniatura REAL: el <video> con preload=metadata pinta
             el primer frame del clip (como el explorador de Windows). Sin
@@ -2167,7 +2203,7 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (
-          <span className="font-mono text-2xl font-bold text-sf-text/90/70">
+          <span className="font-mono text-2xl font-bold text-sf-text">
             {clip.airportIcao ?? "✈"}
           </span>
         )}
@@ -2223,7 +2259,7 @@ function ClipCard({ clip, onReload }: { clip: LandingClip; onReload: () => void 
   );
 }
 
-function LandingCard({ l }: { l: HangarLanding }) {
+function LandingCard({ l, compact }: { l: HangarLanding; compact?: boolean }) {
   const color = GRADE_COLOR[l.grade] ?? "#38bdf8";
   const gradeLabel =
     l.grade === "butter"
@@ -2232,25 +2268,35 @@ function LandingCard({ l }: { l: HangarLanding }) {
         ? t("hangar.fpm.acceptable")
         : t("hangar.fpm.hard");
   return (
-    <div className="w-full overflow-hidden rounded-xl border border-sf-border bg-sf-bg/40">
-      <div className="relative flex aspect-video items-center justify-center bg-gradient-to-br from-slate-700/50 via-slate-900 to-slate-950">
-        <span className="font-mono text-2xl font-bold text-sf-text/90/80">
+    <div
+      className="w-full overflow-hidden rounded-xl border border-sf-border bg-sf-bg/40"
+      title={compact ? `${l.fpm} fpm · ${gradeLabel}` : undefined}
+    >
+      <div
+        className={`relative flex items-center justify-center bg-gradient-to-br from-sf-raised via-sf-surface to-sf-bg ${
+          compact ? "h-12" : "aspect-video"
+        }`}
+      >
+        <span className={`font-mono font-bold text-sf-text ${compact ? "text-sm" : "text-2xl"}`}>
           {l.icao ?? "—"}
         </span>
         <span
-          className="absolute right-2 top-2 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-slate-950"
+          className={`absolute rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-slate-950 ${
+            compact ? "right-1 top-1" : "right-2 top-2"
+          }`}
           style={{ backgroundColor: color }}
         >
-          {l.fpm} fpm · {gradeLabel}
+          {l.fpm}
+          {compact ? "" : ` fpm · ${gradeLabel}`}
         </span>
       </div>
-      <div className="p-2.5">
+      <div className={compact ? "px-2 py-1.5" : "p-2.5"}>
         <div className="truncate text-xs font-medium text-sf-text">
           {l.airportName ?? l.icao ?? "—"}
         </div>
-        <div className="mt-0.5 flex items-center justify-between text-[10px] text-sf-muted">
-          <span>{fmtDate(l.date)}</span>
-          <span>{l.model ? cleanAtcType(l.model) ?? l.model : ""}</span>
+        <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-sf-muted">
+          <span className="truncate">{fmtDate(l.date)}</span>
+          {!compact && <span className="truncate">{l.model ? cleanAtcType(l.model) ?? l.model : ""}</span>}
         </div>
       </div>
     </div>

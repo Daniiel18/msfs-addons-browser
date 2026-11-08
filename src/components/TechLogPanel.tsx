@@ -4,12 +4,16 @@ import {
   Armchair,
   CheckCircle2,
   ChevronRight,
+  CircleDot,
   ClipboardCheck,
   Clock,
   Droplets,
   ExternalLink,
+  Fan,
   Gauge,
   Loader2,
+  Network,
+  Plane,
   Play,
   RefreshCw,
   ShieldAlert,
@@ -33,7 +37,8 @@ import { cn } from "../lib/cn";
 import { useTechLogStore } from "../stores/useTechLogStore";
 import { useToastStore } from "../stores/useToastStore";
 import { useAppStore } from "../stores/useAppStore";
-import { TechLogStatus } from "./TechLogStatus";
+import { DetailModal, type DetailTab } from "./DetailModal";
+import { TechLogStatus, statusCounts, type TechLogStatusView } from "./TechLogStatus";
 
 /**
  * (19/10) Etapa 2 — Mantenimiento de TechLog dentro de SimFleet.
@@ -81,7 +86,7 @@ function statusText(data: TechLogAircraft): string {
 }
 
 /** (20/10) Errores del backend → texto para el usuario. */
-function actionError(msg: string): string {
+export function actionError(msg: string): string {
   if (msg.includes("in_flight")) return t("mx.in_flight");
   if (msg.includes("not_installed")) return t("techlog.err.not_installed");
   if (msg.includes("launch_timeout")) return t("techlog.err.launch_timeout");
@@ -98,7 +103,7 @@ function dispatchStyle(status: string) {
   return { cls: "bg-rose-500/15 text-rose-300 ring-rose-500/40", label: "NO-GO" };
 }
 
-function fmtDate(iso: string | null): string {
+export function fmtDate(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso.length === 10 ? `${iso}T00:00:00` : iso);
   return Number.isNaN(d.getTime())
@@ -106,7 +111,7 @@ function fmtDate(iso: string | null): string {
     : d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function barColor(pct: number) {
+export function barColor(pct: number) {
   return pct >= 60 ? "bg-emerald-400" : pct >= 30 ? "bg-lime-400" : pct >= 10 ? "bg-amber-400" : "bg-rose-400";
 }
 
@@ -128,8 +133,64 @@ export function TechLogBadge({ data }: { data: TechLogAircraft }) {
           data.active ? "bg-emerald-400" : data.running ? "bg-amber-400" : "bg-slate-400",
         )}
       />
-      {data.appName}
+      {data.extras?.familyLabel ? `${data.appName} · ${data.extras.familyLabel}` : data.appName}
     </span>
+  );
+}
+
+/** Horas con un decimal como máximo, en el idioma del sistema. */
+const fmtHours = (h: number) => h.toLocaleString(undefined, { maximumFractionDigits: 1 });
+
+/** Factor de combustible con su signo: «+2 %», «0 %». */
+function fmtFuelFactor(pct: number): string {
+  const n = pct.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return `${pct > 0 ? "+" : ""}${n} %`;
+}
+
+/** (06/11) Lo que añade el TechLog unificado: perfil, quién mantiene,
+ *  combustible y fiabilidad. Lo que sólo da su API aparece con el avión activo. */
+function TechLogExtrasLine({ data }: { data: TechLogAircraft }) {
+  const x = data.extras;
+  if (!x) return null;
+  const items: { label: string; value: string; hint?: string }[] = [];
+  if (data.maintenance === "well" || data.maintenance === "standard" || data.maintenance === "aging") {
+    items.push({ label: t("techlog.extra.profile"), value: t(`techlog.extra.profile_${data.maintenance}`) });
+  }
+  if (x.maintenanceBy === "pilot" || x.maintenanceBy === "airline") {
+    items.push({ label: t("techlog.extra.by"), value: t(`techlog.extra.by_${x.maintenanceBy}`) });
+  }
+  if (x.fuelFactorPct !== null) {
+    const pct = fmtFuelFactor(x.fuelFactorPct);
+    items.push({
+      label: t("techlog.extra.fuel"),
+      value: x.simbriefFactor ? `${pct} · SimBrief ${x.simbriefFactor}` : pct,
+      hint: t("techlog.extra.fuel_hint"),
+    });
+  }
+  if (x.systemsFhPerFailure !== null) {
+    items.push({
+      label: t("techlog.extra.systems"),
+      value: t("techlog.extra.every", { h: fmtHours(x.systemsFhPerFailure) }),
+      hint: t("techlog.extra.reliability_hint"),
+    });
+  }
+  if (x.cabinFhPerFailure !== null) {
+    items.push({
+      label: t("techlog.extra.cabin"),
+      value: t("techlog.extra.every", { h: fmtHours(x.cabinFhPerFailure) }),
+      hint: t("techlog.extra.reliability_hint"),
+    });
+  }
+  if (items.length === 0) return null;
+  return (
+    <dl className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px]">
+      {items.map((i) => (
+        <div key={i.label} className="flex gap-1" title={i.hint}>
+          <dt className="text-sf-muted">{i.label}:</dt>
+          <dd className="text-sf-text">{i.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -195,6 +256,44 @@ function Mini({ label, value, tone }: { label: string; value: number; tone: stri
   );
 }
 
+/** (24/10) Por qué espera una orden (código del backend). */
+export function orderWaitText(code?: string | null): string {
+  return code === "sim_closed" || code === "not_loaded" || code === "not_parked"
+    ? t(`techlog.wait.${code}`)
+    : t("techlog.queued.detail");
+}
+
+/** (01/11) Órdenes de mantenimiento: las mismas en Estado y en Cabina. */
+export function useTechLogOrders(data: TechLogAircraft, onDone: () => void) {
+  const pushToast = useToastStore((s) => s.push);
+  const [busy, setBusy] = useState<string | null>(null);
+  const own = data.source === "simfleet";
+  const run = async (busyKey: string, req: Omit<TechLogActionRequest, "registration">) => {
+    setBusy(busyKey);
+    try {
+      const request = { registration: data.registration, ...req };
+      const r = own ? await api.mxAction(request) : await api.techlogAction(request);
+      if (r.queued) {
+        pushToast({ kind: "info", title: t("techlog.queued.title"), message: orderWaitText(r.message) });
+      } else {
+        pushToast({
+          kind: r.ok ? "success" : "error",
+          title: r.ok ? t("techlog.action.done") : t("techlog.action.refused"),
+          message: r.message || undefined,
+        });
+      }
+      onDone();
+    } catch (e) {
+      pushToast({ kind: "error", title: t("techlog.action.refused"), message: actionError(String(e)) });
+    } finally {
+      setBusy(null);
+    }
+  };
+  return { busy, run };
+}
+
+type MaintDetail = TechLogStatusView | "defects" | "parts" | "consumables" | "checks" | "readings";
+
 /** Panel completo (pestaña Mantenimiento del Hangar). */
 export function TechLogPanel({
   data,
@@ -210,7 +309,6 @@ export function TechLogPanel({
 }) {
   const pushToast = useToastStore((s) => s.push);
   const epoch = useTechLogStore((s) => s.epoch);
-  const [busy, setBusy] = useState<string | null>(null);
   const d = dispatchStyle(data.dispatch.status);
   const own = data.source === "simfleet";
   // (20/10) Con Fenix/PMDG TechLog se puede ordenar siempre: si está cerrado
@@ -231,34 +329,11 @@ export function TechLogPanel({
     void loadPending();
   }, [loadPending, epoch]);
 
-  const run = async (busyKey: string, req: Omit<TechLogActionRequest, "registration">) => {
-    setBusy(busyKey);
-    try {
-      const request = { registration: data.registration, ...req };
-      const r = own ? await api.mxAction(request) : await api.techlogAction(request);
-      if (r.queued) {
-        pushToast({ kind: "info", title: t("techlog.queued.title"), message: waitText(r.message) });
-      } else {
-        pushToast({
-          kind: r.ok ? "success" : "error",
-          title: r.ok ? t("techlog.action.done") : t("techlog.action.refused"),
-          message: r.message || undefined,
-        });
-      }
-      onReload();
-      void loadPending();
-    } catch (e) {
-      pushToast({ kind: "error", title: t("techlog.action.refused"), message: actionError(String(e)) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  /** (24/10) Por qué espera una orden (código del backend). */
-  const waitText = (code?: string | null) =>
-    code === "sim_closed" || code === "not_loaded" || code === "not_parked"
-      ? t(`techlog.wait.${code}`)
-      : t("techlog.queued.detail");
+  const { busy, run } = useTechLogOrders(data, () => {
+    onReload();
+    void loadPending();
+  });
+  const waitText = orderWaitText;
 
   const cancelPending = async (id: number) => {
     try {
@@ -267,6 +342,26 @@ export function TechLogPanel({
       void loadPending();
     }
   };
+
+  // (03/11) Pestaña abierta del detalle.
+  const [detail, setDetail] = useState<MaintDetail | null>(null);
+  const [focusSystem, setFocusSystem] = useState<string | null>(null);
+  const counts = statusCounts(data);
+  const open = data.defects.filter((x) => x.status === "Open").length;
+  const deferred = data.defects.filter((x) => x.status === "Deferred").length;
+  const overdue = data.checks.filter((c) => c.overdue).length;
+  const lowLevels = data.consumables.filter((c) => c.status === "below_min" || c.status === "low").length;
+  const detailTabs: DetailTab[] = [
+    { id: "defects", label: t("techlog.card.defects"), badge: open > 0 ? open : undefined },
+    { id: "parts", label: t("techlog.card.parts"), badge: data.parts.length > 0 ? data.parts.length : undefined },
+    { id: "checks", label: t("techlog.checks.title"), badge: overdue > 0 ? overdue : undefined },
+    { id: "consumables", label: t("techlog.consumables.title") },
+    { id: "aircraft", label: t("techlog.card.aircraft") },
+    { id: "engines", label: t("tlv.engines") },
+    { id: "wheels", label: t("tlv.wheels") },
+    { id: "systems", label: t("techlog.card.systems") },
+    ...(!own && data.running && data.active ? [{ id: "readings", label: t("techlog.card.readings") }] : []),
+  ];
 
   const [launching, setLaunching] = useState(false);
   const launch = async () => {
@@ -323,10 +418,186 @@ export function TechLogPanel({
     </>
   );
 
+  // (03/11) Limpieza de vistas: el detalle vive en un modal con pestañas.
+  const defectsDetail = (
+    <Section
+      icon={<ShieldAlert className="h-4 w-4 text-rose-300" />}
+      title={t("techlog.defects.title", { n: data.defects.length })}
+      action={
+        data.defects.some((x) => x.status === "Open") ? (
+          <ActionBtn k="callMaintenance" label={t("techlog.call_maintenance")} req={{ action: "callMaintenance" }} tone="primary" />
+        ) : undefined
+      }
+    >
+      {data.defects.length === 0 ? (
+        <Empty icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} text={t("techlog.defects.none")} />
+      ) : (
+        <ul className="divide-y divide-sf-border/50">
+          {data.defects.map((x) => (
+            <li key={x.id} className="flex flex-wrap items-start gap-2 py-2">
+              <span
+                className={cn(
+                  "mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold",
+                  x.category === "NoGo"
+                    ? "bg-rose-500/20 text-rose-300"
+                    : x.status === "Deferred"
+                      ? "bg-amber-500/20 text-amber-300"
+                      : "bg-sf-raised text-sf-text",
+                )}
+              >
+                {x.category === "NoGo" ? "NO-GO" : x.category}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-sf-text">
+                  {x.title}
+                  {x.melId && <span className="ml-1.5 font-mono text-[10px] text-sf-muted">MEL {x.melId}</span>}
+                </div>
+                {x.detail && <div className="mt-0.5 text-[11px] text-sf-muted">{x.detail}</div>}
+                {x.report && (
+                  <div className="mt-0.5 text-[11px] text-sf-text/90">{t("techlog.defects.report", { text: x.report })}</div>
+                )}
+                <div className="mt-0.5 text-[10px] text-sf-muted">
+                  {x.status === "Deferred"
+                    ? t("techlog.defects.deferred_until", { d: fmtDate(x.deferredUntil) })
+                    : t("techlog.defects.raised", { d: fmtDate(x.raisedUtc) })}
+                  {x.restrictions && ` · ${x.restrictions}`}
+                  {x.partsExpectedUtc && ` · ${t("techlog.defects.parts_expected", { d: fmtDate(x.partsExpectedUtc) })}`}
+                </div>
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <ActionBtn k={`fix-${x.id}`} label={t("techlog.fix")} req={{ action: "fix", id: x.id }} what={x.title} />
+                {x.status === "Open" && x.canDefer && x.latestDeferral && (
+                  <ActionBtn
+                    k={`defer-${x.id}`}
+                    label={t("techlog.defer_until", { d: fmtDate(x.latestDeferral) })}
+                    req={{ action: "defer", id: x.id, until: x.latestDeferral }}
+                    what={x.title}
+                  />
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+  const partsDetail = (
+    <Section
+      icon={<Wrench className="h-4 w-4 text-amber-300" />}
+      title={t("techlog.parts.title", { n: data.parts.length })}
+      subtitle={t("techlog.parts.condition", {
+        good: data.condition.good,
+        low: data.condition.low,
+        failed: data.condition.failed,
+      })}
+    >
+      {data.parts.length === 0 ? (
+        <Empty icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} text={t("techlog.parts.none")} />
+      ) : (
+        <ul className="divide-y divide-sf-border/50">
+          {data.parts.map((p) => (
+            <li key={p.id} className="flex flex-wrap items-center gap-2 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-sf-text">
+                  {p.name}
+                  {p.status !== "Ok" && (
+                    <span className={cn("rounded px-1 text-[9px] font-bold uppercase", p.status === "Failed" ? "bg-rose-500/20 text-rose-300" : "bg-amber-500/20 text-amber-300")}>
+                      {t(p.status === "Failed" ? "techlog.parts.failed" : "techlog.parts.degraded")}
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-sf-muted">
+                  ATA {p.ata} · {p.system}
+                  {p.repairs > 0 && ` · ${t("techlog.parts.repairs", { n: p.repairs })}`}
+                </div>
+              </div>
+              <div className="flex w-32 items-center gap-1.5">
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-sf-raised">
+                  <div className={cn("h-full rounded-full", barColor(p.remainingPct))} style={{ width: `${Math.max(2, p.remainingPct)}%` }} />
+                </div>
+                <span className="w-9 text-right text-[11px] tabular-nums text-sf-muted">{Math.round(p.remainingPct)}%</span>
+              </div>
+              <div className="flex shrink-0 gap-1">{partActions(p)}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+  const consumablesDetail = (
+    <Section icon={<Droplets className="h-4 w-4 text-sky-300" />} title={t("techlog.consumables.title")}>
+      <ul className="grid gap-x-6 gap-y-2 lg:grid-cols-2">
+        {data.consumables.map((c) => {
+          const pct = c.capacity > 0 ? Math.min(100, (c.level / c.capacity) * 100) : 0;
+          return (
+            <li key={c.serviceKind} className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate text-sf-text">{c.name}</span>
+                  <span className={cn("tabular-nums", c.status === "below_min" ? "text-rose-300" : c.status === "low" ? "text-amber-300" : "text-sf-muted")}>
+                    {c.level.toLocaleString()} / {c.capacity.toLocaleString()} {c.unit}
+                  </span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-sf-raised">
+                  <div
+                    className={cn("h-full rounded-full", c.status === "below_min" ? "bg-rose-400" : c.status === "low" ? "bg-amber-400" : "bg-sky-400")}
+                    style={{ width: `${Math.max(2, pct)}%` }}
+                  />
+                </div>
+              </div>
+              {/* (23/10) Fenix TechLog 2.2: el aceite lo lleva el Fenix; rellenar no hace nada. */}
+              {c.followsSim ? (
+                <span
+                  title={t("techlog.consumables.follows_sim_hint")}
+                  className="shrink-0 rounded-md border border-sf-border px-2 py-1 text-[10px] text-sf-muted"
+                >
+                  {t("techlog.consumables.follows_sim")}
+                </span>
+              ) : (
+                <ActionBtn
+                  k={`svc-${c.serviceKind}`}
+                  label={c.fills ? t("techlog.empty") : t("techlog.fill")}
+                  req={{ action: "service", key: c.serviceKind }}
+                  what={c.name}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
+  );
+  const checksDetail = (
+    <Section icon={<ClipboardCheck className="h-4 w-4 text-brand-300" />} title={t("techlog.checks.title")}>
+      <ul className="divide-y divide-sf-border/50">
+        {data.checks.map((c) => (
+          <li key={c.key} className="flex items-center gap-2 py-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-sf-text">
+                {c.name}
+                {c.overdue && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-rose-500/20 px-1 text-[9px] font-bold uppercase text-rose-300">
+                    <AlertTriangle className="h-2.5 w-2.5" />
+                    {t("techlog.checks.overdue")}
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-sf-muted">
+                {t("techlog.checks.last", { d: fmtDate(c.lastDoneUtc) })}
+                {c.hoursLeft != null && !c.overdue && ` · ${t("techlog.checks.left", { h: Math.round(c.hoursLeft).toLocaleString() })}`}
+              </div>
+            </div>
+            <ActionBtn k={`chk-${c.key}`} label={t("techlog.checks.perform")} req={{ action: "check", key: c.key }} what={c.name} />
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Cabecera: app, conexión y despacho. */}
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-4">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sf-border bg-sf-bg/40 p-3">
         <span className={cn("rounded-lg px-3 py-1.5 font-mono text-xl font-bold ring-1", d.cls)}>{d.label}</span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -339,6 +610,7 @@ export function TechLogPanel({
           <p className="mt-1 text-[11px] text-sf-muted">
             {statusText(data)}
           </p>
+          <TechLogExtrasLine data={data} />
           {data.dispatch.reasons.length > 0 && (
             <ul className="mt-1.5 space-y-0.5 text-[11px] text-sf-text/90">
               {data.dispatch.reasons.slice(0, 4).map((r) => (
@@ -423,188 +695,150 @@ export function TechLogPanel({
         </Section>
       )}
 
-      {/* (26/10) Etapa 6: el avión, sus motores, ruedas y sistemas. */}
-      <TechLogStatus data={data} model={model} renderActions={partActions} />
+      {/* (23/10) TechLog 2.1: la cabina en vivo del Fenix cargado se mudó a
+          Cabina → Sistemas (01/11, como en TechLog). */}
+      {/* (23/10) TechLog 2.2: lecturas en vivo del Fenix. */}
 
-      {/* Defectos abiertos y diferidos. */}
-      <Section
-        icon={<ShieldAlert className="h-4 w-4 text-rose-300" />}
-        title={t("techlog.defects.title", { n: data.defects.length })}
-        action={
-          data.defects.some((x) => x.status === "Open") ? (
-            <ActionBtn k="callMaintenance" label={t("techlog.call_maintenance")} req={{ action: "callMaintenance" }} tone="primary" />
-          ) : undefined
-        }
-      >
-        {data.defects.length === 0 ? (
-          <Empty icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} text={t("techlog.defects.none")} />
-        ) : (
-          <ul className="divide-y divide-sf-border/50">
-            {data.defects.map((x) => (
-              <li key={x.id} className="flex flex-wrap items-start gap-2 py-2">
-                <span
-                  className={cn(
-                    "mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold",
-                    x.category === "NoGo"
-                      ? "bg-rose-500/20 text-rose-300"
-                      : x.status === "Deferred"
-                        ? "bg-amber-500/20 text-amber-300"
-                        : "bg-sf-raised text-sf-text",
-                  )}
-                >
-                  {x.category === "NoGo" ? "NO-GO" : x.category}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-medium text-sf-text">
-                    {x.title}
-                    {x.melId && <span className="ml-1.5 font-mono text-[10px] text-sf-muted">MEL {x.melId}</span>}
-                  </div>
-                  {x.detail && <div className="mt-0.5 text-[11px] text-sf-muted">{x.detail}</div>}
-                  <div className="mt-0.5 text-[10px] text-sf-muted">
-                    {x.status === "Deferred"
-                      ? t("techlog.defects.deferred_until", { d: fmtDate(x.deferredUntil) })
-                      : t("techlog.defects.raised", { d: fmtDate(x.raisedUtc) })}
-                    {x.restrictions && ` · ${x.restrictions}`}
-                  </div>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <ActionBtn k={`fix-${x.id}`} label={t("techlog.fix")} req={{ action: "fix", id: x.id }} what={x.title} />
-                  {x.status === "Open" && x.canDefer && x.latestDeferral && (
-                    <ActionBtn
-                      k={`defer-${x.id}`}
-                      label={t("techlog.defer_until", { d: fmtDate(x.latestDeferral) })}
-                      req={{ action: "defer", id: x.id, until: x.latestDeferral }}
-                      what={x.title}
-                    />
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      {/* Piezas gastadas / degradadas / falladas. */}
-      <Section
-        icon={<Wrench className="h-4 w-4 text-amber-300" />}
-        title={t("techlog.parts.title", { n: data.parts.length })}
-        subtitle={t("techlog.parts.condition", {
-          good: data.condition.good,
-          low: data.condition.low,
-          failed: data.condition.failed,
-        })}
-      >
-        {data.parts.length === 0 ? (
-          <Empty icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} text={t("techlog.parts.none")} />
-        ) : (
-          <ul className="divide-y divide-sf-border/50">
-            {data.parts.map((p) => (
-              <li key={p.id} className="flex flex-wrap items-center gap-2 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-sf-text">
-                    {p.name}
-                    {p.status !== "Ok" && (
-                      <span className={cn("rounded px-1 text-[9px] font-bold uppercase", p.status === "Failed" ? "bg-rose-500/20 text-rose-300" : "bg-amber-500/20 text-amber-300")}>
-                        {t(p.status === "Failed" ? "techlog.parts.failed" : "techlog.parts.degraded")}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-sf-muted">
-                    ATA {p.ata} · {p.system}
-                    {p.repairs > 0 && ` · ${t("techlog.parts.repairs", { n: p.repairs })}`}
-                  </div>
-                </div>
-                <div className="flex w-32 items-center gap-1.5">
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-sf-raised">
-                    <div className={cn("h-full rounded-full", barColor(p.remainingPct))} style={{ width: `${Math.max(2, p.remainingPct)}%` }} />
-                  </div>
-                  <span className="w-9 text-right text-[11px] tabular-nums text-sf-muted">{Math.round(p.remainingPct)}%</span>
-                </div>
-                <div className="flex shrink-0 gap-1">{partActions(p)}</div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {/* Consumibles. */}
-        <Section icon={<Droplets className="h-4 w-4 text-sky-300" />} title={t("techlog.consumables.title")}>
-          <ul className="space-y-2">
-            {data.consumables.map((c) => {
-              const pct = c.capacity > 0 ? Math.min(100, (c.level / c.capacity) * 100) : 0;
-              return (
-                <li key={c.serviceKind} className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate text-sf-text">{c.name}</span>
-                      <span className={cn("tabular-nums", c.status === "below_min" ? "text-rose-300" : c.status === "low" ? "text-amber-300" : "text-sf-muted")}>
-                        {c.level.toLocaleString()} / {c.capacity.toLocaleString()} {c.unit}
-                      </span>
-                    </div>
-                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-sf-raised">
-                      <div
-                        className={cn("h-full rounded-full", c.status === "below_min" ? "bg-rose-400" : c.status === "low" ? "bg-amber-400" : "bg-sky-400")}
-                        style={{ width: `${Math.max(2, pct)}%` }}
-                      />
-                    </div>
-                  </div>
-                  {/* (23/10) Fenix TechLog 2.2: el aceite lo lleva el Fenix; rellenar no hace nada. */}
-                  {c.followsSim ? (
-                    <span
-                      title={t("techlog.consumables.follows_sim_hint")}
-                      className="shrink-0 rounded-md border border-sf-border px-2 py-1 text-[10px] text-sf-muted"
-                    >
-                      {t("techlog.consumables.follows_sim")}
-                    </span>
-                  ) : (
-                    <ActionBtn
-                      k={`svc-${c.serviceKind}`}
-                      label={c.fills ? t("techlog.empty") : t("techlog.fill")}
-                      req={{ action: "service", key: c.serviceKind }}
-                      what={c.name}
-                    />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </Section>
-
-        {/* Checks. */}
-        <Section icon={<ClipboardCheck className="h-4 w-4 text-brand-300" />} title={t("techlog.checks.title")}>
-          <ul className="divide-y divide-sf-border/50">
-            {data.checks.map((c) => (
-              <li key={c.key} className="flex items-center gap-2 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-sf-text">
-                    {c.name}
-                    {c.overdue && (
-                      <span className="inline-flex items-center gap-0.5 rounded bg-rose-500/20 px-1 text-[9px] font-bold uppercase text-rose-300">
-                        <AlertTriangle className="h-2.5 w-2.5" />
-                        {t("techlog.checks.overdue")}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-sf-muted">
-                    {t("techlog.checks.last", { d: fmtDate(c.lastDoneUtc) })}
-                    {c.hoursLeft != null && !c.overdue && ` · ${t("techlog.checks.left", { h: Math.round(c.hoursLeft).toLocaleString() })}`}
-                  </div>
-                </div>
-                <ActionBtn k={`chk-${c.key}`} label={t("techlog.checks.perform")} req={{ action: "check", key: c.key }} what={c.name} />
-              </li>
-            ))}
-          </ul>
-        </Section>
+      {/* (03/11) Cada grupo es una tarjeta; su detalle se abre aparte. */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatusCard
+          icon={<ShieldAlert className="h-4 w-4 text-rose-300" />}
+          title={t("techlog.card.defects")}
+          value={open > 0 ? t("techlog.card.open_n", { n: open }) : t("techlog.card.none")}
+          detail={t("techlog.card.deferred_n", { n: deferred })}
+          tone={open > 0 ? "bad" : deferred > 0 ? "warn" : "ok"}
+          onClick={() => setDetail("defects")}
+        />
+        <StatusCard
+          icon={<Wrench className="h-4 w-4 text-amber-300" />}
+          title={t("techlog.card.parts")}
+          value={t("techlog.card.worn_n", { n: data.parts.length })}
+          detail={t("techlog.card.failed_n", { n: data.condition.failed })}
+          tone={data.condition.failed > 0 ? "bad" : data.parts.length > 0 ? "warn" : "ok"}
+          onClick={() => setDetail("parts")}
+        />
+        <StatusCard
+          icon={<ClipboardCheck className="h-4 w-4 text-brand-300" />}
+          title={t("techlog.checks.title")}
+          value={overdue > 0 ? t("techlog.card.overdue_n", { n: overdue }) : t("techlog.card.up_to_date")}
+          detail={t("techlog.card.checks_n", { n: data.checks.length })}
+          tone={overdue > 0 ? "bad" : "ok"}
+          onClick={() => setDetail("checks")}
+        />
+        <StatusCard
+          icon={<Droplets className="h-4 w-4 text-sky-300" />}
+          title={t("techlog.consumables.title")}
+          value={lowLevels > 0 ? t("techlog.card.low_n", { n: lowLevels }) : t("techlog.card.all_good")}
+          detail={t("techlog.card.levels_n", { n: data.consumables.length })}
+          tone={lowLevels > 0 ? "warn" : "ok"}
+          onClick={() => setDetail("consumables")}
+        />
+        <StatusCard
+          icon={<Plane className="h-4 w-4 text-sf-muted" />}
+          title={t("techlog.card.aircraft")}
+          value={t("techlog.card.hours", { n: Math.round(data.flightHours).toLocaleString() })}
+          detail={`${Math.round(data.cycles).toLocaleString()} ${t("techlog.cycles")}`}
+          onClick={() => setDetail("aircraft")}
+        />
+        <StatusCard
+          icon={<Fan className="h-4 w-4 text-sf-muted" />}
+          title={t("tlv.engines")}
+          value={t("techlog.card.ok_of", { ok: counts.enginesOk, n: counts.engines })}
+          detail={data.egtMarginC.length > 0 ? `EGT ${data.egtMarginC.map((m) => `${Math.round(m)}°`).join(" / ")}` : "—"}
+          tone={counts.enginesOk === counts.engines ? "ok" : "warn"}
+          onClick={() => setDetail("engines")}
+        />
+        <StatusCard
+          icon={<CircleDot className="h-4 w-4 text-sf-muted" />}
+          title={t("tlv.wheels")}
+          value={counts.tyres > 0 ? t(counts.wheelsOk ? "techlog.card.all_good" : "techlog.card.with_wear") : "—"}
+          detail={counts.wheelsMinPct != null ? t("techlog.card.min_pct", { p: Math.round(counts.wheelsMinPct) }) : "—"}
+          tone={counts.tyres === 0 ? undefined : counts.wheelsOk ? "ok" : "warn"}
+          onClick={() => setDetail("wheels")}
+        />
+        <StatusCard
+          icon={<Network className="h-4 w-4 text-sf-muted" />}
+          title={t("techlog.card.systems")}
+          value={t("techlog.card.parts_n", { n: counts.parts })}
+          detail={t("techlog.card.wear_n", { n: counts.worn })}
+          tone={counts.worn > 0 ? "warn" : "ok"}
+          onClick={() => setDetail("systems")}
+        />
       </div>
 
-      {/* (23/10) TechLog 2.1: cabina del Fenix cargado en el sim. */}
-      {!own && data.running && data.active && <CabinSection registration={data.registration} />}
-      {/* (23/10) TechLog 2.2: lecturas en vivo del Fenix. */}
-      {!own && data.running && data.active && <ReadingsSection registration={data.registration} />}
-
       <p className="text-[10px] text-sf-muted">{t("techlog.charges_note")}</p>
+
+      {detail && (
+        <DetailModal
+          title={t("techlog.card.title", { reg: data.registration })}
+          subtitle={[data.variant, data.engine].filter(Boolean).join(" · ")}
+          icon={<Wrench className="h-4 w-4" />}
+          tabs={detailTabs}
+          tab={detail}
+          onTab={(id) => {
+            setFocusSystem(null);
+            setDetail(id as MaintDetail);
+          }}
+          onClose={() => setDetail(null)}
+        >
+          {(detail === "aircraft" || detail === "engines" || detail === "wheels" || detail === "systems") && (
+            <TechLogStatus
+              data={data}
+              model={model}
+              renderActions={partActions}
+              view={detail}
+              focusSystem={focusSystem}
+              onGo={(view, system) => {
+                setFocusSystem(system ?? null);
+                setDetail(view);
+              }}
+            />
+          )}
+          {detail === "defects" && defectsDetail}
+          {detail === "parts" && partsDetail}
+          {detail === "consumables" && consumablesDetail}
+          {detail === "checks" && checksDetail}
+          {/* (23/10) TechLog 2.2: lecturas en vivo del Fenix. */}
+          {detail === "readings" && <ReadingsSection registration={data.registration} />}
+        </DetailModal>
+      )}
     </div>
+  );
+}
+
+const STATUS_TONE = { ok: "text-emerald-300", warn: "text-amber-300", bad: "text-rose-300" };
+
+/** (03/11) Tarjeta resumen de un grupo de mantenimiento. */
+function StatusCard({
+  icon,
+  title,
+  value,
+  detail,
+  tone,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  value: string;
+  detail: string;
+  tone?: keyof typeof STATUS_TONE;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="group flex min-w-0 flex-col rounded-xl border border-sf-border bg-sf-bg/40 p-3 text-left transition-colors hover:border-brand-500/40 hover:bg-sf-raised/40"
+    >
+      <span className="flex w-full items-center gap-2 text-xs font-semibold text-sf-text">
+        <span className="shrink-0">{icon}</span>
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+      </span>
+      <span className={cn("mt-2 truncate text-sm font-semibold", tone ? STATUS_TONE[tone] : "text-sf-text")}>{value}</span>
+      <span className="mt-0.5 flex w-full items-center gap-1 text-[11px] text-sf-muted">
+        <span className="min-w-0 flex-1 truncate">{detail}</span>
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-sf-muted/60 group-hover:text-sf-text" />
+      </span>
+    </button>
   );
 }
 
@@ -671,7 +905,7 @@ const CABIN_DOORS = ["1L", "1R", "2L", "2R", "3L", "3R", "4L", "4R"];
  * Fenix CARGADO, más el pre-select de agua y las luces de cabina. TechLog la
  * refresca cada ~15 s; aquí igual. Con TechLog < 2.1 no aparece.
  */
-function CabinSection({ registration }: { registration: string }) {
+export function CabinSection({ registration }: { registration: string }) {
   const pushToast = useToastStore((s) => s.push);
   const [cab, setCab] = useState<TechLogCabin | null | undefined>(undefined);
   const [busy, setBusy] = useState<string | null>(null);
@@ -942,7 +1176,7 @@ function CabinSection({ registration }: { registration: string }) {
   );
 }
 
-function Section({
+export function Section({
   icon,
   title,
   subtitle,
@@ -968,7 +1202,7 @@ function Section({
   );
 }
 
-function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
+export function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
     <div className="flex items-center gap-2 py-2 text-xs text-sf-muted">
       {icon}
@@ -1016,15 +1250,19 @@ export function TechLogFlightCard({
   const warnings = data.events.filter((e) => e.severity !== "Info");
   const score = data.score != null ? Math.round(data.score) : null;
   // (26/10) Etapa 6: el recuadro lleva al Mantenimiento del avión en el Hangar.
+  // (01/11) Etapa 5a: a su informe completo en Mantenimiento → Vuelos
+  // (02/11, 5b: también los del Tech Log propio).
   const reg = flight.aircraftRegistration;
-  const open = reg ? () => useAppStore.getState().requestHangarFocus(reg) : undefined;
+  const open = reg
+    ? () => useAppStore.getState().requestHangarFocus(reg, { sub: "flights", techlogFlightId: data.flightId })
+    : undefined;
   return (
     <div
       role={open ? "button" : undefined}
       tabIndex={open ? 0 : undefined}
       onClick={open}
       onKeyDown={(e) => open && (e.key === "Enter" || e.key === " ") && open()}
-      title={open ? t("techlog.flight.open_hangar") : undefined}
+      title={open ? t("techlog.flight.full_report_hint") : undefined}
       className={cn(
         "rounded-lg border border-sf-border bg-sf-surface px-3 py-2.5",
         open && "cursor-pointer transition-colors hover:border-brand-500/50 hover:bg-sf-raised/40",
@@ -1054,7 +1292,7 @@ export function TechLogFlightCard({
         )}
         {open && (
           <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 text-[10px] text-brand-300">
-            {t("techlog.flight.open_hangar_short")}
+            {t("techlog.flight.full_report")}
             <ChevronRight className="h-3 w-3" />
           </span>
         )}

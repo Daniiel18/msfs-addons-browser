@@ -14,13 +14,14 @@ pub async fn start_download(
     source: String,
     method: DownloadMethod,
     #[allow(non_snake_case)] addon_simulator: Option<String>,
+    replaces: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<DownloadJob, String> {
     let addon_simulator = addon_simulator.unwrap_or_default();
     cmd_log!(
         "start_download",
-        "addon={} title={:?} sim={:?} source={} method={:?} url={}",
-        addon_id, addon_title, addon_simulator, source, method.kind, method.url
+        "addon={} title={:?} sim={:?} source={} method={:?} url={} replaces={:?}",
+        addon_id, addon_title, addon_simulator, source, method.kind, method.url, replaces
     );
     let result = state
         .downloads
@@ -30,6 +31,7 @@ pub async fn start_download(
             source.clone(),
             method.clone(),
             addon_simulator,
+            replaces,
         )
         .await
         .map_err(|e| {
@@ -86,11 +88,16 @@ pub async fn clear_download(id: String, state: tauri::State<'_, AppState>) -> Re
 /// procesa (extraer → listo para el usuario → instalado / guardado / error),
 /// para verlo en el panel de Descargas. `key` es la ventana de hoster
 /// (`hoster-dl-<job>`) o el id del job (descargas de flightsim.to).
+/// (02/11) Con «installed», `packages` son las carpetas que quedaron en
+/// Community: se apunta qué versión del catálogo se instaló en cada una.
+/// (04/11) Y si la descarga sustituía a otra carpeta, ahora se quita. Con
+/// «installed», `message` es lo que no se pudo instalar: entonces no se quita.
 #[tauri::command]
 pub async fn download_job_status(
     key: String,
     status: String,
     message: Option<String>,
+    packages: Option<Vec<String>>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     use crate::download::manager::HosterStatus;
@@ -100,10 +107,23 @@ pub async fn download_job_status(
         "ready" => HosterStatus::Ready,
         "installed" => HosterStatus::Installed,
         "saved" => HosterStatus::Saved,
-        "failed" => HosterStatus::Failed(message.unwrap_or_default()),
+        "failed" => HosterStatus::Failed(message.clone().unwrap_or_default()),
         "cancelled" => HosterStatus::Cancelled,
         other => return Err(format!("estado desconocido: {other}")),
     };
     state.downloads.hoster_status(&id, st).await;
+    if status == "installed" {
+        if let Some(job) = state.downloads.job(&id).await {
+            let packages = packages.unwrap_or_default();
+            crate::updates::record_installed_packages(
+                &state.db,
+                &job.addon_id,
+                Some(&job.source),
+                &packages,
+            )
+            .await;
+            state.downloads.finish_replace(&id, &packages, message).await;
+        }
+    }
     Ok(())
 }

@@ -245,7 +245,7 @@ pub fn fsto_embed_nav(app: tauri::AppHandle, action: String) -> Result<(), Strin
             .map_err(|e| e.to_string()),
         other => {
             let u: tauri::Url = other.parse().map_err(|e| format!("{e}"))?;
-            if u.host_str().is_some_and(|h| h.ends_with("flightsim.to")) {
+            if u.host_str().is_some_and(|h| h == "flightsim.to" || h.ends_with(".flightsim.to")) {
                 wv.navigate(u).map_err(|e| e.to_string())
             } else {
                 Err("sólo URLs de flightsim.to".into())

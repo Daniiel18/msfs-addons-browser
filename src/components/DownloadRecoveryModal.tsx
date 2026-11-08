@@ -19,10 +19,10 @@ export function DownloadRecoveryModal() {
   const [showWhy, setShowWhy] = useState(false);
 
   if (!recovery) return null;
-  const { addonId, addonTitle, source, addonSimulator, methods, reason } = recovery;
+  const { addonId, addonTitle, source, addonSimulator, methods, reason, replaces } = recovery;
 
   const pick = (method: DownloadMethod) => {
-    void start({ addonId, addonTitle, source, method, addonSimulator, allMethods: methods });
+    void start({ addonId, addonTitle, source, method, addonSimulator, allMethods: methods, replaces });
     dismiss();
   };
 

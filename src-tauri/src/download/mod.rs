@@ -71,6 +71,10 @@ pub struct DownloadJob {
     /// `livery::ResumeSpec`). Sólo para el backend.
     #[serde(skip)]
     pub resume: Option<String>,
+    /// (04/11) Carpeta de Community que esta descarga sustituye (Reinstalar y
+    /// Actualizar). Sigue ahí hasta que lo nuevo esté instalado.
+    #[serde(default)]
+    pub replaces: Option<String>,
 }
 
 impl DownloadJob {

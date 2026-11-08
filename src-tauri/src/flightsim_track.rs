@@ -275,7 +275,17 @@ pub async fn check_updates(db: &SqlitePool, http: &reqwest::Client) -> Vec<Fligh
         let latest_link = meta.as_ref().and_then(|m| m.link.clone());
         // Update genuino: el catálogo avanzó su `updatedAt` respecto al baseline.
         let has_update = match &account {
-            Some(acct) => acct.contains_key(&file_id),
+            Some(acct) => match acct.get(&file_id) {
+                Some(item) => match (&known_version, &item.latest_version) {
+                    (Some(kv), Some(lv)) if kv == lv => false,
+                    (Some(_), Some(_)) => true,
+                    _ => match (parse_iso(known_updated.as_deref()), parse_iso(latest_updated.as_deref())) {
+                        (Some(base), Some(cur)) => cur > base,
+                        _ => true,
+                    },
+                },
+                None => false,
+            },
             None => match (
                 parse_iso(known_updated.as_deref()),
                 parse_iso(latest_updated.as_deref()),

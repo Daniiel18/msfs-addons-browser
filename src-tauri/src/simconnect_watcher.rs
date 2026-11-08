@@ -305,14 +305,9 @@ async fn latest_recent_simbrief(
     // status volvía a mostrar la ruta vieja con fase PRE-FLIGHT en el
     // panel del mapa y el badge del header (bug reportado).
     let rows = sqlx::query_as::<_, crate::simbrief::SimBriefFlight>(
-        r#"
-        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
-               origin_icao, origin_name, origin_lat, origin_lon,
-               destination_icao, destination_name, destination_lat, destination_lon,
-               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg,
-               COALESCE(route_fixes, '[]') AS route_fixes
+        &format!(
+            r#"
+        SELECT {cols}
         FROM simbrief_flights sf
         WHERE generated_at IS NOT NULL
           AND CAST(generated_at AS INTEGER) > strftime('%s', 'now', '-6 hours')
@@ -330,6 +325,8 @@ async fn latest_recent_simbrief(
         ORDER BY CAST(generated_at AS INTEGER) DESC
         LIMIT 20
         "#,
+            cols = crate::simbrief::OFP_COLUMNS,
+        ),
     )
     .fetch_all(pool)
     .await?;
@@ -784,6 +781,11 @@ mod windows_simconnect {
     /// acepta variables `L:` por SimConnect, sólo se pierde esta.
     const DEFINE_ID_FBW_PB: u32 = 7;
     const REQUEST_ID_FBW_PB: u32 = 7;
+    /// (02/11) Etapa 5b — interruptores estándar del Cockpit propio.
+    const DEFINE_ID_COCKPIT: u32 = 8;
+    const REQUEST_ID_COCKPIT: u32 = 8;
+    /// Primer id de evento de cliente (Cockpit propio).
+    const COCKPIT_EVENT_BASE: u32 = 9000;
     /// -1 = sin dato, 0 = suelto, 1 = puesto.
     static FBW_PARK_BRAKE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
     /// El avión cargado es un FlyByWire (por su título).
@@ -805,6 +807,9 @@ mod windows_simconnect {
     /// ID local arbitrario para el evento "Pause" — sólo nosotros
     /// usamos esta ID dentro del proceso, no choca con nada.
     const EVENT_ID_PAUSE: u32 = 100;
+    /// (02/11) Evento "Sim": 1 = vuelo cargado, 0 = en el menú (secuencia de
+    /// arranque: pasos que esperan al avión cargado).
+    const EVENT_ID_SIM: u32 = 101;
     /// Definición de campos para los parkings de un AIRPORT (v0.1.26).
     /// AddToFacilityDefinition se llama una vez con esta ID; MSFS la
     /// recuerda y la usa para todas las RequestFacilityData siguientes.
@@ -865,6 +870,18 @@ mod windows_simconnect {
         /// Touchdown completado, taxiando al gate. El vuelo sigue
         /// abierto en DB. Espera engine shutdown (o timeout idle).
         Landed,
+    }
+
+    /// (05/11) Primera fase al conectar. «En el aire» solo se cree si la
+    /// posición es de verdad: cargando, MSFS 2024 deja el avión en (0, 90) a
+    /// 101.932 ft y 533 kt, y eso abría un vuelo fantasma que «aterrizaba» a
+    /// 0 fpm al aparecer el avión en su sitio. Sigue sin fase hasta entonces.
+    fn phase_on_connect(on_ground: bool, position_seems_real: bool) -> FlightPhase {
+        match (on_ground, position_seems_real) {
+            (true, _) => FlightPhase::OnGround,
+            (false, true) => FlightPhase::Airborne,
+            (false, false) => FlightPhase::Disconnected,
+        }
     }
 
     /// Estado pendiente de una request de gate via Facility Data
@@ -1044,7 +1061,57 @@ mod windows_simconnect {
         }
     }
 
+    /// (02/11) Etapa 5b — manda las órdenes del Cockpit propio: cada evento
+    /// se asocia una vez por conexión y va al avión del usuario.
+    fn send_cockpit_commands(
+        lib: &sc::SimConnectLib,
+        handle: sc::HANDLE,
+        events: &mut std::collections::HashMap<&'static str, u32>,
+    ) {
+        let cmds = crate::cockpit_std::take_queue();
+        if cmds.is_empty() {
+            return;
+        }
+        let (Some(map), Some(transmit)) = (lib.MapClientEventToSimEvent, lib.TransmitClientEvent) else {
+            tracing::warn!(target: "cockpit", "esta SimConnect.dll no deja mandar eventos: {} orden(es) perdidas", cmds.len());
+            return;
+        };
+        for (name, data) in cmds {
+            let id = match events.get(name) {
+                Some(id) => *id,
+                None => {
+                    let id = COCKPIT_EVENT_BASE + events.len() as u32;
+                    let cname = sc::cstr(name);
+                    let hr = unsafe { map(handle, id, cname.as_ptr()) };
+                    if !sc::succeeded(hr) {
+                        tracing::warn!(target: "cockpit", "MapClientEventToSimEvent {name} falló (0x{hr:08x})");
+                        continue;
+                    }
+                    events.insert(name, id);
+                    id
+                }
+            };
+            let hr = unsafe {
+                transmit(
+                    handle,
+                    SIMCONNECT_OBJECT_ID_USER,
+                    id,
+                    data,
+                    sc::SIMCONNECT_GROUP_PRIORITY_HIGHEST,
+                    sc::SIMCONNECT_EVENT_FLAG_GROUPID_IS_PRIORITY,
+                )
+            };
+            if sc::succeeded(hr) {
+                tracing::info!(target: "cockpit", "evento {name} ({data})");
+            } else {
+                tracing::warn!(target: "cockpit", "TransmitClientEvent {name} falló (0x{hr:08x})");
+            }
+        }
+    }
+
     fn mark_disconnected(app: &AppHandle, state: &SharedState) {
+        crate::cockpit_std::disconnected();
+        crate::launch_flow::sim_disconnected();
         // Spinlock breve sobre el lock async — el thread blocking
         // no puede await, así que `try_lock` en un loop corto. Si
         // el lock sigue ocupado tras 50 intentos, dejamos pasar
@@ -1629,6 +1696,53 @@ mod windows_simconnect {
             tracing::info!(target: "simconnect", "Tech Log: flujos MX / MX_BRAKES / MX_WARN / FBW_PB registrados");
         }
 
+        // (02/11) Etapa 5b — Cockpit propio: interruptores estándar cada
+        // segundo (aparte: si alguno no existe, sólo se pierde esto).
+        {
+            let mut ok = true;
+            for (name, unit) in crate::cockpit_std::sim_vars() {
+                let (cname, cunit) = (sc::cstr(name), sc::cstr(unit));
+                let hr = unsafe {
+                    (lib.AddToDataDefinition)(
+                        handle,
+                        DEFINE_ID_COCKPIT,
+                        cname.as_ptr(),
+                        cunit.as_ptr(),
+                        SIMCONNECT_DATATYPE_FLOAT64,
+                        0.0,
+                        u32::MAX,
+                    )
+                };
+                note_sent(lib, handle, &format!("AddToDataDefinition[COCKPIT] '{name}'"));
+                if !sc::succeeded(hr) {
+                    tracing::warn!(target: "simconnect", "AddToDataDefinition COCKPIT '{name}' falló (0x{hr:08x}); Cockpit propio sin lectura");
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                let hr = unsafe {
+                    (lib.RequestDataOnSimObject)(
+                        handle,
+                        REQUEST_ID_COCKPIT,
+                        DEFINE_ID_COCKPIT,
+                        SIMCONNECT_OBJECT_ID_USER,
+                        SIMCONNECT_PERIOD_SECOND,
+                        SIMCONNECT_DATA_REQUEST_FLAG_DEFAULT,
+                        0,
+                        0,
+                        0,
+                    )
+                };
+                note_sent(lib, handle, "RequestDataOnSimObject[COCKPIT]");
+                if !sc::succeeded(hr) {
+                    tracing::warn!(target: "simconnect", "RequestDataOnSimObject COCKPIT falló (0x{hr:08x})");
+                }
+            }
+        }
+        // Eventos ya asociados en esta conexión (nombre → id).
+        let mut cockpit_events: std::collections::HashMap<&'static str, u32> = std::collections::HashMap::new();
+
         // (v0.1.25) Subscribe al evento "Pause" para no contar el
         // tiempo pausado dentro del block-time del vuelo. El evento
         // dispara con dwData = 1 al pausar y 0 al despausar.
@@ -1650,6 +1764,11 @@ mod windows_simconnect {
             );
         } else {
             tracing::info!(target: "simconnect", "evento 'Pause' suscrito OK");
+        }
+        let event_sim_name = sc::cstr("Sim");
+        let hr = unsafe { (lib.SubscribeToSystemEvent)(handle, EVENT_ID_SIM, event_sim_name.as_ptr()) };
+        if !sc::succeeded(hr) {
+            tracing::warn!(target: "simconnect", "SubscribeToSystemEvent('Sim') falló (0x{hr:08x})");
         }
 
         // (v0.1.26 / refactor v3.0.0) Define una vez los campos de
@@ -2121,6 +2240,8 @@ mod windows_simconnect {
         }
 
         loop {
+            // (02/11) Órdenes pendientes del Cockpit propio.
+            send_cockpit_commands(lib, handle, &mut cockpit_events);
             let mut p_data: *mut sc::SIMCONNECT_RECV = ptr::null_mut();
             let mut cb_data: u32 = 0;
             let hr = unsafe {
@@ -2240,16 +2361,26 @@ mod windows_simconnect {
                         } else if !paused {
                             if let Some(start) = paused_since.take() {
                                 let secs = start.elapsed().as_secs();
-                                paused_seconds_total =
-                                    paused_seconds_total.saturating_add(secs);
+                                let has_flight = current_flight_id
+                                    .lock()
+                                    .ok()
+                                    .and_then(|g| *g)
+                                    .is_some();
+                                if has_flight {
+                                    paused_seconds_total =
+                                        paused_seconds_total.saturating_add(secs);
+                                }
                                 tracing::info!(
                                     target: "simconnect",
-                                    "sim DESPAUSADO — esta pausa {}s, total acumulado {}s",
+                                    "sim DESPAUSADO — esta pausa {}s, total acumulado {}s (contado={})",
                                     secs,
-                                    paused_seconds_total
+                                    paused_seconds_total,
+                                    has_flight
                                 );
                             }
                         }
+                    } else if evt.uEventID == EVENT_ID_SIM {
+                        crate::launch_flow::sim_event(evt.dwData == 1);
                     }
                 }
                 SIMCONNECT_RECV_ID_SIMOBJECT_DATA => {
@@ -2456,6 +2587,23 @@ mod windows_simconnect {
                         continue;
                     }
 
+                    // (02/11) Etapa 5b — interruptores del Cockpit propio.
+                    if request_id == REQUEST_ID_COCKPIT {
+                        let base = unsafe {
+                            let header_size =
+                                std::mem::size_of::<sc::SIMCONNECT_RECV_SIMOBJECT_DATA>();
+                            (p_data as *const u8).add(header_size - 4)
+                        };
+                        let n = crate::cockpit_std::sim_vars().len();
+                        if !in_replay_mode && !base.is_null() && cb_data as usize >= n * 8 {
+                            let values: Vec<f64> = (0..n)
+                                .map(|i| unsafe { std::ptr::read_unaligned(base.add(i * 8) as *const f64) })
+                                .collect();
+                            crate::cockpit_std::on_snapshot(&values);
+                        }
+                        continue;
+                    }
+
                     // (19/10) Etapa 3A — flujos del Tech Log propio.
                     if request_id == REQUEST_ID_MX
                         || request_id == REQUEST_ID_MX_BRAKES
@@ -2594,6 +2742,8 @@ mod windows_simconnect {
                         // (v6.2.2) Publica el avión REAL (matrícula + aerolínea,
                         // ya extraídas con smart_*) en el status compartido para
                         // Crew VS — la ficha usa esto, no el OFP de SimBrief.
+                        // (02/11) Cockpit propio: qué avión está cargado.
+                        crate::cockpit_std::set_aircraft(registration.clone());
                         if let Ok(mut guard) = state.try_lock() {
                             guard.status.aircraft_registration = registration.clone();
                             guard.status.aircraft_airline = airline.clone();
@@ -2851,8 +3001,7 @@ mod windows_simconnect {
                     {
                         let m_lat = data.latitude_deg;
                         let m_lon = data.longitude_deg;
-                        let m_pos_real =
-                            m_lat.abs() > 0.01 || m_lon.abs() > 0.01;
+                        let m_pos_real = !crate::flight_log::is_limbo(m_lat, m_lon);
                         let m_stationary = m_pos_real
                             && data.ground_velocity_kt < 1.0
                             && (matches!(phase, FlightPhase::OnGround)
@@ -2965,13 +3114,13 @@ mod windows_simconnect {
                         // pax, ATC, etc. Trigger:
                         //   · phase = OnGround
                         //   · gs < 1 kt (avión parado)
-                        //   · posición real (no (0,0) de carga)
+                        //   · posición real (no la de carga)
                         //   · aún no hemos pedido para este aeropuerto
                         //     (o han pasado >15min desde la última)
                         let lat = data.latitude_deg;
                         let lon = data.longitude_deg;
                         let gs = data.ground_velocity_kt;
-                        let pos_real = lat.abs() > 0.01 || lon.abs() > 0.01;
+                        let pos_real = !crate::flight_log::is_limbo(lat, lon);
                         if matches!(phase, FlightPhase::OnGround)
                             && gs < 1.0
                             && pos_real
@@ -3732,9 +3881,12 @@ mod windows_simconnect {
             *n2_seen_running = true;
         }
 
-        // Update max altitude tracking.
+        // Update max altitude tracking (solo en fases con vuelo activo;
+        // muestras de carga/menú pueden dar altitudes irreales).
         let alt_int = alt as i64;
-        if alt_int > *max_alt_ft {
+        if matches!(*phase, FlightPhase::BlockOut | FlightPhase::Airborne | FlightPhase::Landed)
+            && alt_int > *max_alt_ft
+        {
             let prev = *max_alt_ft;
             *max_alt_ft = alt_int;
             // (fix) Throttle de escritura: sólo persistimos al CRUZAR cada banda
@@ -3863,14 +4015,12 @@ mod windows_simconnect {
             }
         }
 
-        // (v1.1.1) Guard de posición — MSFS reporta el avión en
-        // (0, 0) durante el splash/menú/carga antes de que cargue
-        // el escenario. Sin esto, el watcher disparaba OUT con
-        // origin=(0,0) y registraba un "vuelo fantasma" cada vez
-        // que abrías el sim. Posiciones reales de aviación siempre
-        // están a >0.01° del meridiano cero × ecuador (no hay
-        // aeropuertos en el océano Atlántico ecuatorial).
-        let position_seems_real = lat.abs() > 0.01 || lon.abs() > 0.01;
+        // (v1.1.1) Guard de posición — MSFS reporta el avión en una
+        // posición de carga durante el splash/menú/carga antes de que
+        // cargue el escenario. Sin esto, el watcher disparaba OUT con
+        // ese origen y registraba un "vuelo fantasma" cada vez que
+        // abrías el sim. Ver `flight_log::is_limbo`.
+        let position_seems_real = !crate::flight_log::is_limbo(lat, lon);
 
         // State machine completa OOOI (v0.1.23):
         //
@@ -3907,7 +4057,7 @@ mod windows_simconnect {
             && *engines_off_ticks >= ENGINES_OFF_GRACE_TICKS;
         let landed_should_finish = matches!(*phase, FlightPhase::Landed)
             && (engines_shutdown
-                || *idle_ticks_in_landed >= LANDED_IDLE_TIMEOUT_TICKS);
+                || (*idle_ticks_in_landed >= LANDED_IDLE_TIMEOUT_TICKS && parking_brake_set));
         // Cancelar BlockOut: si el usuario suelta el freno por error
         // y luego vuelve a frenar + apagar motores sin haber despegado,
         // volvemos a OnGround sin haber cerrado fila (cierra como
@@ -3925,8 +4075,7 @@ mod windows_simconnect {
             *airborne_confirmed = false;
         }
         let new_phase = match (*phase, on_ground, gs) {
-            (FlightPhase::Disconnected, true, _) => FlightPhase::OnGround,
-            (FlightPhase::Disconnected, false, _) => FlightPhase::Airborne,
+            (FlightPhase::Disconnected, ground, _) => phase_on_connect(ground, position_seems_real),
             // (v2.2.0) OUT — Flight Time arranca cuando el avión SE MUEVE
             // con motores encendidos. Esto distingue del towing de GSX
             // (motores apagados + movimiento = NO contar) y del pushback
@@ -3954,8 +4103,11 @@ mod windows_simconnect {
             {
                 FlightPhase::Airborne
             }
-            // ON — touchdown REAL: sólo si el avión llegó a volar (>100ft AGL).
-            (FlightPhase::Airborne, true, gs) if gs < 50.0 && *airborne_confirmed => {
+            // ON — touchdown REAL: sólo si el avión llegó a volar (>100ft AGL)
+            // y la posición no es limbo (menú/carga).
+            (FlightPhase::Airborne, true, gs)
+                if gs < 50.0 && *airborne_confirmed && position_seems_real =>
+            {
                 FlightPhase::Landed
             }
             // (v6.2.35 fix) Bache en el takeoff roll: el avión dejó el suelo un
@@ -4121,12 +4273,7 @@ mod windows_simconnect {
                     // frenar y apagar motores sin volar. Esto NO es un
                     // vuelo — es lo típico tras ver un replay o reposicionar
                     // el avión en el gate para cambiar de aeronave o
-                    // empezar otro vuelo. Antes lo cerrábamos como "vuelo
-                    // vacío" (destino = origen) y quedaba un fantasma en el
-                    // FlightBook. Ahora BORRAMOS la fila: un vuelo que nunca
-                    // estuvo en el aire no cuenta. Los vuelos REALES se
-                    // cierran por la rama (Landed → OnGround), nunca por
-                    // aquí, así que esto jamás borra un vuelo de verdad.
+                    // empezar otro vuelo.
                     let id_opt = current_flight_id
                         .lock()
                         .ok()
@@ -4134,23 +4281,52 @@ mod windows_simconnect {
                     if let Some(id) = id_opt {
                         let pool_c = pool.clone();
                         let app_c = app.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                crate::flight_log::delete_entry(&pool_c, id).await
-                            {
-                                tracing::error!(
-                                    target: "simconnect",
-                                    "delete_entry (cancel OUT sin despegar) falló: {e:#}"
-                                );
-                            } else {
-                                tracing::info!(
-                                    target: "simconnect",
-                                    "BLOCK-OUT CANCELADO — flight_log id={} BORRADO (nunca despegó: replay/reposición en gate)",
-                                    id
-                                );
-                                let _ = app_c.emit("flightlog://changed", ());
-                            }
-                        });
+                        if *max_alt_ft > 0 {
+                            // Vuelo restaurado tras reconexión que SÍ voló:
+                            // cerrar como partial en vez de borrar.
+                            tokio::spawn(async move {
+                                let r = sqlx::query(
+                                    "UPDATE flight_log SET ended_at = COALESCE(last_position_at, datetime('now')), \
+                                     status = 'partial', partial_ack = 0 WHERE id = ?1 AND ended_at IS NULL"
+                                )
+                                .bind(id)
+                                .execute(&pool_c)
+                                .await;
+                                match r {
+                                    Ok(_) => {
+                                        tracing::info!(
+                                            target: "simconnect",
+                                            "BLOCK-OUT tras restore — flight_log id={} cerrado como PARTIAL (max_alt > 0)",
+                                            id
+                                        );
+                                        let _ = app_c.emit("flightlog://changed", ());
+                                    }
+                                    Err(e) => tracing::error!(
+                                        target: "simconnect",
+                                        "close partial (restore) falló: {e:#}"
+                                    ),
+                                }
+                            });
+                        } else {
+                            // Nunca voló — borrar la fila fantasma.
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    crate::flight_log::delete_entry(&pool_c, id).await
+                                {
+                                    tracing::error!(
+                                        target: "simconnect",
+                                        "delete_entry (cancel OUT sin despegar) falló: {e:#}"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        target: "simconnect",
+                                        "BLOCK-OUT CANCELADO — flight_log id={} BORRADO (nunca despegó)",
+                                        id
+                                    );
+                                    let _ = app_c.emit("flightlog://changed", ());
+                                }
+                            });
+                        }
                         *engines_seen_running = false;
                     }
                 }
@@ -4460,9 +4636,7 @@ mod windows_simconnect {
                     // y con posición plausible (evita basura de menús /
                     // lat-lon 0,0). No crea filas en DB — sólo memoria.
                     if on_ground
-                        && lat.is_finite()
-                        && lon.is_finite()
-                        && !(lat.abs() < 0.01 && lon.abs() < 0.01)
+                        && !crate::flight_log::is_limbo(lat, lon)
                     {
                         const PREDEP_BUFFER_CAP: usize = 240; // ~40min @ 10s
                         let now_ts = chrono::Utc::now()
@@ -5943,4 +6117,54 @@ mod windows_simconnect {
     // sin cambiar el call site externo.
     #[allow(dead_code)]
     fn _force_imports(_a: &TokioMutex<()>, _b: *mut c_void) {}
+
+    #[cfg(test)]
+    mod connect_tests {
+        use super::*;
+
+        #[test]
+        fn a_real_position_starts_where_the_plane_is() {
+            assert_eq!(phase_on_connect(true, true), FlightPhase::OnGround);
+            assert_eq!(phase_on_connect(false, true), FlightPhase::Airborne);
+        }
+
+        /// Lo de la prueba real: en el aire, 533 kt, en la posición de carga.
+        #[test]
+        fn the_loading_position_never_opens_a_flight() {
+            assert_eq!(phase_on_connect(false, false), FlightPhase::Disconnected);
+        }
+
+        #[test]
+        fn on_the_ground_it_stays_as_before_even_while_loading() {
+            assert_eq!(phase_on_connect(true, false), FlightPhase::OnGround);
+        }
+    }
+}
+
+#[cfg(test)]
+mod ofp_tests {
+    use super::*;
+
+    /// (04/11) Con un OFP reciente la lectura debe funcionar: sin filas no
+    /// se decodifica nada y una columna que falte no se nota.
+    #[tokio::test]
+    async fn a_recent_ofp_can_be_read() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO simbrief_flights (ofp_id, pilot_id, origin_icao, origin_lat, origin_lon,
+                 destination_icao, destination_lat, destination_lon, generated_at, fetched_at, alternate_icaos)
+             VALUES ('1', '7', 'KJFK', 40.6, -73.8, 'CYYZ', 43.7, -79.6,
+                 CAST(strftime('%s', 'now') AS TEXT), datetime('now'), '[\"CYOW\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let ofp = latest_recent_simbrief(&pool, Some("KJFK")).await.unwrap().expect("OFP");
+        assert_eq!(ofp.alternate_icaos, vec!["CYOW"]);
+    }
 }

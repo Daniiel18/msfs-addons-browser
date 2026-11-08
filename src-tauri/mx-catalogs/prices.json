@@ -61,6 +61,10 @@
     "DENT_COWL": 500
   },
   "parts": {
+    "SEAT_RECLINE": { "usd": 600, "wide": 600, "mh": 0.5, "src": "est", "note": "(02/11) actuador de reclinado de asiento de pasajero" },
+    "SEAT_TRAY": { "usd": 250, "wide": 250, "mh": 0.3, "src": "est", "note": "(02/11) mesa de asiento de pasajero" },
+    "SEAT_BELT": { "usd": 150, "wide": 150, "mh": 0.2, "src": "est", "note": "(02/11) cinturón de asiento de pasajero" },
+    "SEAT_LIGHT": { "usd": 150, "wide": 150, "mh": 0.3, "src": "est", "note": "(02/11) luz de lectura de pasajero" },
     "AEVC": { "usd": 15000, "src": "est" },
     "AVNCS_COND_VALVE": { "usd": 6000, "src": "est" },
     "CARGO_HOT_AIR": { "usd": 6000, "src": "est" },

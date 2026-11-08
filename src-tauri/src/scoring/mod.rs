@@ -902,8 +902,8 @@ pub async fn finalize_after_finish(
 }
 
 fn grade_for_percentage(p: f32) -> String {
-    match p as i32 {
-        95..=200 => "A",
+    match p.round() as i32 {
+        95..=100 => "A",
         85..=94 => "B",
         70..=84 => "C",
         50..=69 => "D",

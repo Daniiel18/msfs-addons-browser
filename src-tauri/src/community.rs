@@ -100,6 +100,13 @@ pub fn detect_community_folder() -> anyhow::Result<Option<CommunityInfo>> {
 /// ruta que el usuario movió/borró. El caller (`uninstall_by_folder`)
 /// filtra por este flag para evitar tocar paths inválidos.
 pub fn detect_all_community_folders() -> anyhow::Result<Vec<CommunityInfo>> {
+    if let Some(dir) = crate::test_env::community_override() {
+        return Ok(vec![CommunityInfo {
+            exists: dir.is_dir(),
+            path: dir.to_string_lossy().into_owned(),
+            variant: if crate::sim::is_2024() { "steam-2024" } else { "steam-2020" },
+        }]);
+    }
     let mut out = Vec::new();
     for (cfg, variant) in find_all_user_cfgs() {
         match read_packages_path(&cfg) {
@@ -134,6 +141,33 @@ pub fn detect_all_community_folders() -> anyhow::Result<Vec<CommunityInfo>> {
     Ok(out)
 }
 
+/// (05/11) `Community2024` de cada MSFS 2024 instalado: MSFS 2024 también lee
+/// esa carpeta, que queda al lado de `Community`. Va aparte de
+/// [`detect_all_community_folders`] porque nada se instala ahí: solo se lee y se
+/// gestiona lo que ya tengas. En pruebas, la de `SIMFLEET_COMMUNITY_DIR` más «2024».
+pub fn secondary_community_folders() -> Vec<PathBuf> {
+    if let Some(dir) = crate::test_env::community_override() {
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+            return Vec::new();
+        };
+        let extra = dir.with_file_name(format!("{name}2024"));
+        return if extra.is_dir() { vec![extra] } else { Vec::new() };
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    for (cfg, variant) in find_all_user_cfgs() {
+        if !matches!(variant, MsfsVariant::MsStore2024 | MsfsVariant::Steam2024) {
+            continue;
+        }
+        if let Ok(Some(path)) = read_packages_path(&cfg) {
+            let extra = path.join("Community2024");
+            if extra.is_dir() && !out.contains(&extra) {
+                out.push(extra);
+            }
+        }
+    }
+    out
+}
+
 /// (v5.3.4) ¿Qué versiones de MSFS están instaladas? Devuelve
 /// `(tiene_2020, tiene_2024)` según qué variantes tienen `UserCfg.opt`.
 /// El splash lo usa para preguntar la versión SOLO cuando hay ambas.
@@ -147,6 +181,21 @@ pub fn detect_installed_sims() -> (bool, bool) {
         }
     }
     (has_2020, has_2024)
+}
+
+/// (02/11) Variantes de MSFS instaladas, en orden de preferencia — la
+/// secuencia de arranque elige cuál abrir.
+pub fn installed_variants() -> Vec<MsfsVariant> {
+    find_all_user_cfgs().into_iter().map(|(_, v)| v).collect()
+}
+
+/// (06/11) `UserCfg.opt` del simulador elegido.
+pub fn active_user_cfg() -> Option<PathBuf> {
+    let want_2024 = crate::sim::is_2024();
+    find_all_user_cfgs()
+        .into_iter()
+        .find(|(_, v)| matches!(v, MsfsVariant::MsStore2024 | MsfsVariant::Steam2024) == want_2024)
+        .map(|(path, _)| path)
 }
 
 /// Lista todas las rutas a `UserCfg.opt` de cada variante MSFS
@@ -326,6 +375,10 @@ fn read_packages_path(cfg: &Path) -> anyhow::Result<Option<PathBuf>> {
 ///     marketplace en la versión MS Store, nunca Community.
 pub fn extra_install_locations() -> Vec<(&'static str, PathBuf)> {
     let mut out: Vec<(&'static str, PathBuf)> = Vec::new();
+
+    if crate::test_env::is_active() {
+        return out;
+    }
 
     if let Some(docs) = dirs_documents() {
         out.push(("documents-msfs-sceneries", docs.join("MSFS Sceneries")));

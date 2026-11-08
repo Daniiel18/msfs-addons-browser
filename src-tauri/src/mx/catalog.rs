@@ -271,13 +271,19 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn component(&self, key: &str) -> Option<&CompDef> {
-        self.components.iter().find(|c| c.key == key)
+        self.components
+            .iter()
+            .find(|c| c.key == key)
+            .or_else(|| seat_defs().iter().find(|c| c.key == key))
     }
     pub fn consumable(&self, key: &str) -> Option<&ConsDef> {
         self.consumables.iter().find(|c| c.key == key)
     }
     pub fn mel_item(&self, id: &str) -> Option<&MelItem> {
-        self.mel.iter().find(|m| m.id == id)
+        self.mel
+            .iter()
+            .find(|m| m.id == id)
+            .or_else(|| seat_mel().iter().find(|m| m.id == id))
     }
     pub fn variant(&self, v: &str) -> VariantLimits {
         self.limits
@@ -303,6 +309,131 @@ impl Catalog {
         }
         self.cabin.rows.get(variant).copied().unwrap_or(0.0) * self.cabin.seat_letters.len() as f64
     }
+}
+
+// ---------------------------------------------------------------------------
+// (02/11) Etapa 5b — asientos de pasajero (Cabina propia)
+// ---------------------------------------------------------------------------
+
+/// Piezas de cada asiento. Su vida es en ciclos OCUPADOS: sólo se gastan en
+/// los vuelos en que el asiento va ocupado. Al final de su vida el asiento
+/// queda bloqueado (defecto con su ítem MEL) hasta cambiarla.
+pub const SEAT_KEYS: [&str; 4] = ["SEAT_RECLINE", "SEAT_TRAY", "SEAT_BELT", "SEAT_LIGHT"];
+
+pub fn seat_defs() -> &'static [CompDef] {
+    static DEFS: OnceLock<Vec<CompDef>> = OnceLock::new();
+    DEFS.get_or_init(|| {
+        let d = |key: &str, name: &str, ata: i64, life: f64, mel: &str, symptom: &str| CompDef {
+            key: key.into(),
+            name: name.into(),
+            ata,
+            system: "Passenger seats".into(),
+            basis: Some("seatCycles".into()),
+            life,
+            kind: Some("seat".into()),
+            mel: mel.into(),
+            symptom: Some(symptom.into()),
+            ..Default::default()
+        };
+        vec![
+            d("SEAT_RECLINE", "Seat {pos} recline", 25, 6000.0, "25-21-01", "Seat {pos} does not recline"),
+            d("SEAT_TRAY", "Seat {pos} tray table", 25, 8000.0, "25-21-02", "Seat {pos} tray table does not latch"),
+            d("SEAT_BELT", "Seat {pos} seat belt", 25, 10000.0, "25-21-03", "Seat {pos} seat belt buckle worn"),
+            d("SEAT_LIGHT", "Seat {pos} reading light", 33, 5000.0, "33-21-01", "Seat {pos} reading light inoperative"),
+        ]
+    })
+}
+
+/// Ítems MEL de los asientos: categoría D, el asiento no se vende.
+pub fn seat_mel() -> &'static [MelItem] {
+    static MEL: OnceLock<Vec<MelItem>> = OnceLock::new();
+    MEL.get_or_init(|| {
+        let m = |id: &str, title: &str, ata: i64| MelItem {
+            id: id.into(),
+            title: title.into(),
+            ata,
+            category: "d".into(),
+            fix_hours: Some(0.5),
+        };
+        vec![
+            m("25-21-01", "Passenger seat {pos} recline inoperative, seat blocked", 25),
+            m("25-21-02", "Passenger seat {pos} tray table inoperative, seat blocked", 25),
+            m("25-21-03", "Passenger seat {pos} seat belt unserviceable, seat blocked", 25),
+            m("33-21-01", "Passenger reading light {pos} inoperative, seat blocked", 33),
+        ]
+    })
+}
+
+/// Pasillos de una fila de `n` asientos (índice de la letra tras la que va):
+/// 2-2, 3-3, 2-4-2, 3-3-3, 3-4-3.
+pub fn aisle_breaks(n: usize) -> Vec<usize> {
+    match n {
+        0..=6 => vec![n.div_ceil(2)],
+        7 => vec![2, 5],
+        8 => vec![2, 6],
+        9 => vec![3, 6],
+        _ => vec![3, n - 3],
+    }
+}
+
+/// Plazas que dice el título ("… (189Seats)", "178 Seat").
+fn seats_in_title(title: &str) -> Option<f64> {
+    let t = title.to_lowercase();
+    let i = t.find("seat")?;
+    let digits: String = t[..i]
+        .trim_end()
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.parse::<f64>().ok().filter(|n| (20.0..=900.0).contains(n))
+}
+
+/// Cabina de pasajeros de un avión: (filas, letras por fila). `None` para
+/// cargueros y aviones pequeños (sin plano).
+pub fn seat_layout(p: &Profile, title: Option<&str>) -> Option<(u32, String)> {
+    let t = title.unwrap_or("").to_lowercase();
+    let freighter = ["freighter", "cargo", "777f", "77f", "-f)", " f "]
+        .iter()
+        .any(|k| t.contains(k))
+        || p.variant.ends_with('F');
+    let small = [
+        "cessna", "piper", "cirrus", "diamond", "beech", "bonanza", "baron", "king air", "tbm", "pc-12", "pc12",
+        "citation", "learjet", "phenom", "hondajet", "kodiak", "caravan", "icon a5", "extra 3", "pitts", "glider",
+        "helicopter", "bell ", "airbus h1", "robinson", "cub", "savage", "zlin", "vision jet", "pilatus",
+    ]
+    .iter()
+    .any(|k| t.contains(k));
+    if freighter || small {
+        return None;
+    }
+    let cat = catalog(p.family);
+    let from_title = seats_in_title(&t);
+    let (letters, seats) = match p.family {
+        Family::A320 | Family::B737 => ("ABCDEF", from_title.unwrap_or_else(|| cat.seats(&p.variant))),
+        Family::B777 => ("ABCDEFGHJK", from_title.unwrap_or_else(|| cat.seats(&p.variant))),
+        Family::AWide if p.variant.starts_with("A350") => ("ABCDEFGHK", from_title.unwrap_or_else(|| cat.seats(&p.variant))),
+        Family::AWide => ("ABCDEFGH", from_title.unwrap_or_else(|| cat.seats(&p.variant))),
+        Family::Generic => {
+            let (_, guess) = crate::airline_economy::classify(title);
+            let seats = from_title.unwrap_or(guess as f64);
+            let letters = if seats <= 100.0 {
+                "ABCD"
+            } else if seats <= 230.0 {
+                "ABCDEF"
+            } else {
+                "ABCDEFGHK"
+            };
+            (letters, seats)
+        }
+    };
+    if seats < 20.0 {
+        return None;
+    }
+    Some(((seats / letters.len() as f64).ceil() as u32, letters.to_string()))
 }
 
 pub fn catalog(f: Family) -> &'static Catalog {
@@ -415,6 +546,27 @@ mod tests {
             assert!(!c.limits.checks.is_empty(), "{} checks", f.id());
             assert!(c.mel_item("05-51-01").is_some(), "{} MEL", f.id());
         }
+    }
+
+    /// (02/11) Cabinas: pasillos, plazas del título y cargueros sin plano.
+    #[test]
+    fn cabin_layouts() {
+        let d = |t: &str| {
+            let p = detect_profile(&[Some(t)]);
+            seat_layout(&p, Some(t))
+        };
+        assert_eq!(d("iFly 737-MAX8 WestJet 'Blue Jays' C-GORP (189Seats)"), Some((32, "ABCDEF".into())));
+        assert_eq!(d("iFly 737-MAX8 AeroMexico XA-MAG (178Seat)"), Some((30, "ABCDEF".into())));
+        assert_eq!(d("Fenix A319 CFM Delta N320NB"), Some((24, "ABCDEF".into())));
+        assert_eq!(d("PMDG 777-300ER Air Canada").map(|l| l.1.len()), Some(10));
+        assert_eq!(d("iniBuilds A350-900 Air France").map(|l| l.1.len()), Some(9));
+        assert_eq!(d("PMDG 777F FedEx"), None);
+        assert_eq!(d("Cessna 172 Skyhawk"), None);
+        assert_eq!(d("CRJ900 Scandinavian Airlines EI-FPN").map(|l| l.1), Some("ABCD".into()));
+        assert_eq!(aisle_breaks(6), vec![3]);
+        assert_eq!(aisle_breaks(10), vec![3, 7]);
+        assert!(catalog(Family::A320).component("SEAT_LIGHT").is_some_and(|c| c.kind() == "seat"));
+        assert!(catalog(Family::Generic).mel_item("25-21-01").is_some());
     }
 
     #[test]

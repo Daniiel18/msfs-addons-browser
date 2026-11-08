@@ -41,6 +41,18 @@ pub struct RouteFix {
     pub is_sid_star: bool,
 }
 
+/// (04/11) Columnas de `SimBriefFlight`, una sola vez para todas las consultas
+/// que lo leen: una columna que falte hace fallar la lectura, y sólo cuando
+/// hay un OFP que leer.
+pub const OFP_COLUMNS: &str = "ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
+               origin_icao, origin_name, origin_lat, origin_lon,
+               destination_icao, destination_name, destination_lat, destination_lon,
+               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
+               pax_count, cargo_kg, fuel_burn_kg, units,
+               aircraft_reg, plan_ramp_kg,
+               COALESCE(route_fixes, '[]') AS route_fixes,
+               COALESCE(alternate_icaos, '[]') AS alternate_icaos";
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct SimBriefFlight {
@@ -95,6 +107,11 @@ pub struct SimBriefFlight {
     #[serde(default)]
     #[sqlx(json)]
     pub route_fixes: Vec<RouteFix>,
+    /// (03/11) Aeropuertos alternativos del plan, en orden. Columna JSON, como
+    /// `route_fixes`: las filas anteriores a la 082 devuelven lista vacía.
+    #[serde(default)]
+    #[sqlx(json)]
+    pub alternate_icaos: Vec<String>,
 }
 
 /// Resultado del refresh manual: cuántos OFPs nuevos se añadieron
@@ -174,6 +191,22 @@ pub async fn refresh_latest(
     .await?;
     let already_known = existing.is_some();
 
+    store_flight(pool, &flight).await?;
+
+    // (v4.20.0) Higiene del caché en cada refresh — best-effort.
+    if let Err(e) = cleanup_stale_ofps(pool).await {
+        tracing::debug!(target: "simbrief", "cleanup tras refresh falló: {e:#}");
+    }
+
+    Ok(SimBriefRefreshResult {
+        added: if already_known { 0 } else { 1 },
+        already_known,
+        flight: Some(flight),
+    })
+}
+
+/// Guarda un OFP. Si ya estaba, sólo completa lo que antes faltaba.
+async fn store_flight(pool: &SqlitePool, flight: &SimBriefFlight) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         INSERT INTO simbrief_flights (
@@ -182,9 +215,9 @@ pub async fn refresh_latest(
             destination_icao, destination_name, destination_lat, destination_lon,
             route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
             pax_count, cargo_kg, fuel_burn_kg, units,
-            aircraft_reg, plan_ramp_kg, route_fixes
+            aircraft_reg, plan_ramp_kg, route_fixes, alternate_icaos
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'), ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
         ON CONFLICT(ofp_id) DO UPDATE SET
             fetched_at   = datetime('now'),
             pax_count    = COALESCE(excluded.pax_count, simbrief_flights.pax_count),
@@ -193,7 +226,8 @@ pub async fn refresh_latest(
             units        = COALESCE(excluded.units, simbrief_flights.units),
             aircraft_reg = COALESCE(excluded.aircraft_reg, simbrief_flights.aircraft_reg),
             plan_ramp_kg = COALESCE(excluded.plan_ramp_kg, simbrief_flights.plan_ramp_kg),
-            route_fixes  = COALESCE(NULLIF(excluded.route_fixes, '[]'), simbrief_flights.route_fixes)
+            route_fixes  = COALESCE(NULLIF(excluded.route_fixes, '[]'), simbrief_flights.route_fixes),
+            alternate_icaos = COALESCE(NULLIF(excluded.alternate_icaos, '[]'), simbrief_flights.alternate_icaos)
         "#,
     )
     .bind(&flight.ofp_id)
@@ -220,19 +254,10 @@ pub async fn refresh_latest(
     .bind(&flight.aircraft_reg)
     .bind(flight.plan_ramp_kg)
     .bind(serde_json::to_string(&flight.route_fixes).unwrap_or_else(|_| "[]".to_string()))
+    .bind(serde_json::to_string(&flight.alternate_icaos).unwrap_or_else(|_| "[]".to_string()))
     .execute(pool)
     .await?;
-
-    // (v4.20.0) Higiene del caché en cada refresh — best-effort.
-    if let Err(e) = cleanup_stale_ofps(pool).await {
-        tracing::debug!(target: "simbrief", "cleanup tras refresh falló: {e:#}");
-    }
-
-    Ok(SimBriefRefreshResult {
-        added: if already_known { 0 } else { 1 },
-        already_known,
-        flight: Some(flight),
-    })
+    Ok(())
 }
 
 /// (v4.20.0) Limpieza automática del caché de OFPs: borra los planes con
@@ -265,17 +290,14 @@ pub async fn cleanup_stale_ofps(pool: &SqlitePool) -> anyhow::Result<u64> {
 
 pub async fn list_flights(pool: &SqlitePool) -> anyhow::Result<Vec<SimBriefFlight>> {
     let rows = sqlx::query_as::<_, SimBriefFlight>(
-        r#"
-        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
-               origin_icao, origin_name, origin_lat, origin_lon,
-               destination_icao, destination_name, destination_lat, destination_lon,
-               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg,
-               COALESCE(route_fixes, '[]') AS route_fixes
+        &format!(
+            r#"
+        SELECT {cols}
         FROM simbrief_flights
         ORDER BY COALESCE(generated_at, fetched_at) DESC
         "#,
+            cols = OFP_COLUMNS,
+        ),
     )
     .fetch_all(pool)
     .await?;
@@ -299,14 +321,9 @@ pub async fn find_recent_for_origin(
     within_hours: i64,
 ) -> anyhow::Result<Option<SimBriefFlight>> {
     let row = sqlx::query_as::<_, SimBriefFlight>(
-        r#"
-        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
-               origin_icao, origin_name, origin_lat, origin_lon,
-               destination_icao, destination_name, destination_lat, destination_lon,
-               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg,
-               COALESCE(route_fixes, '[]') AS route_fixes
+        &format!(
+            r#"
+        SELECT {cols}
         FROM simbrief_flights
         WHERE UPPER(origin_icao) = UPPER(?1)
           AND (
@@ -316,6 +333,8 @@ pub async fn find_recent_for_origin(
         ORDER BY CAST(generated_at AS INTEGER) DESC
         LIMIT 1
         "#,
+            cols = OFP_COLUMNS,
+        ),
     )
     .bind(origin_icao)
     .bind(within_hours)
@@ -398,14 +417,9 @@ pub async fn score_simbrief_candidates(
     // desliga (clear flight_number/callsign), emite Ambiguous, toast
     // re-aparece, click no hace nada (link rechazado por ended_at).
     let mut rows = sqlx::query_as::<_, SimBriefFlight>(
-        r#"
-        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
-               origin_icao, origin_name, origin_lat, origin_lon,
-               destination_icao, destination_name, destination_lat, destination_lon,
-               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg,
-               COALESCE(route_fixes, '[]') AS route_fixes
+        &format!(
+            r#"
+        SELECT {cols}
         FROM simbrief_flights
         WHERE UPPER(origin_icao) = UPPER(?1)
           AND (
@@ -421,6 +435,8 @@ pub async fn score_simbrief_candidates(
         ORDER BY CAST(generated_at AS INTEGER) DESC
         LIMIT 10
         "#,
+            cols = OFP_COLUMNS,
+        ),
     )
     .bind(origin_icao)
     .bind(within_hours)
@@ -849,6 +865,23 @@ static TAG_NOTAMDREC: Lazy<Regex> = Lazy::new(|| tag_re("notamdrec"));
 static TAG_NAVLOG: Lazy<Regex> = Lazy::new(|| tag_re("navlog"));
 static TAG_FIX: Lazy<Regex> = Lazy::new(|| tag_re("fix"));
 
+/// (03/11) Alternativos del OFP: un bloque `<alternate>` por cada uno. SimBrief
+/// deja el bloque con el código vacío cuando el plan no tiene alternativo.
+pub fn parse_alternates(xml: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for caps in TAG_ALTERNATE.captures_iter(xml) {
+        let Some(icao) = caps.get(1).and_then(|m| inner_tag(m.as_str(), "icao_code")) else {
+            continue;
+        };
+        let icao = icao.trim().to_ascii_uppercase();
+        let valid = (3..=4).contains(&icao.len()) && icao.chars().all(|c| c.is_ascii_alphanumeric());
+        if valid && icao != "ZZZZ" && !out.contains(&icao) {
+            out.push(icao);
+        }
+    }
+    out
+}
+
 /// Extrae los `<fix>` del bloque `<navlog>` del OFP. Cada fix con su
 /// ident, tipo, lat/lon y etapa. Degradación elegante: si falta lat/lon
 /// el fix se omite; si no hay navlog devuelve lista vacía.
@@ -1018,6 +1051,7 @@ pub fn parse_ofp_xml(xml: &str, pilot_id: &str) -> Option<SimBriefFlight> {
         aircraft_reg,
         plan_ramp_kg,
         route_fixes: parse_navlog(xml),
+        alternate_icaos: parse_alternates(xml),
     })
 }
 
@@ -1242,6 +1276,54 @@ mod tests {
     }
 
     #[test]
+    fn alternates_come_from_their_own_blocks() {
+        let xml = "<OFP><alternate><icao_code>cyul</icao_code></alternate>\
+                   <alternate><icao_code>CYOW</icao_code></alternate>\
+                   <alternate><icao_code></icao_code></alternate>\
+                   <alternate><icao_code>CYUL</icao_code></alternate>\
+                   <fuel><alternate_burn>100</alternate_burn></fuel></OFP>";
+        assert_eq!(parse_alternates(xml), vec!["CYUL", "CYOW"]);
+        assert!(parse_alternates("<OFP></OFP>").is_empty());
+    }
+
+    /// Un OFP guardado antes de la 082 se completa al volver a pedirlo, y un
+    /// pedido sin alternativo no borra el que ya estaba.
+    #[tokio::test]
+    async fn the_alternate_is_saved_and_filled_in_later() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let read = || async {
+            let (raw,): (Option<String>,) = sqlx::query_as("SELECT alternate_icaos FROM simbrief_flights")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            raw
+        };
+
+        let mut flight = ofp_for("1", "BEL341", "EBBR");
+        store_flight(&pool, &flight).await.unwrap();
+        assert_eq!(read().await.as_deref(), Some("[]"));
+
+        flight.alternate_icaos = vec!["EHAM".into()];
+        store_flight(&pool, &flight).await.unwrap();
+        assert_eq!(read().await.as_deref(), Some(r#"["EHAM"]"#));
+
+        flight.alternate_icaos = Vec::new();
+        store_flight(&pool, &flight).await.unwrap();
+        assert_eq!(read().await.as_deref(), Some(r#"["EHAM"]"#));
+        sqlx::query("UPDATE simbrief_flights SET alternate_icaos = NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let flights = list_flights(&pool).await.unwrap();
+        assert!(flights.iter().all(|f| f.alternate_icaos.is_empty()));
+    }
+
+    #[test]
     fn parses_navlog_fixes() {
         let f = parse_ofp_xml(SAMPLE_XML, "50956").expect("parse should succeed");
         assert_eq!(f.route_fixes.len(), 3, "deben parsearse 3 fixes");
@@ -1323,6 +1405,7 @@ mod tests {
             aircraft_reg: None,
             plan_ramp_kg: None,
             route_fixes: Vec::new(),
+            alternate_icaos: Vec::new(),
         }
     }
 

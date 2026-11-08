@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// Si el repo se mueve, esta constante se actualiza y se compila.
 const OWNER_REPO: &str = "Daniiel18/msfs-addons-browser";
 
-const UA: &str = "SimFleet/3.0 (+https://github.com/Daniiel18/msfs-addons-browser)";
+const UA: &str = "SimFleet/9.0 (+https://github.com/Daniiel18/msfs-addons-browser)";
 
 /// Tiempo máximo aceptable para que la consulta de versión bloquee la
 /// pantalla de inicio. Subido de 8s → 20s en v0.1.12 porque algunos
@@ -166,6 +166,37 @@ pub async fn check_latest(http: &reqwest::Client) -> anyhow::Result<Option<Updat
         notes_markdown: release.body.unwrap_or_default(),
         published_at: release.published_at,
     }))
+}
+
+/// Obtiene un release específico por su tag (p. ej. "v8.4.1").
+/// Devuelve la URL del asset Windows y la URL de la release page.
+pub async fn fetch_release_by_tag(
+    http: &reqwest::Client,
+    tag: &str,
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/tags/{}",
+        OWNER_REPO, tag
+    );
+    tracing::info!(target: "updater", "rollback: querying {}", url);
+
+    let resp = http
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", UA)
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        tracing::warn!(target: "updater", "rollback: github returned {}", resp.status());
+        return Ok(None);
+    }
+
+    let release: GhRelease = resp.json().await?;
+    let asset_url = pick_windows_asset(&release.assets);
+    Ok(Some((release.html_url, asset_url)))
 }
 
 /// Elige el asset Windows preferido. **Orden importa**:

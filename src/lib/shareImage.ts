@@ -17,7 +17,7 @@ export async function svgToPngBlob(
   // (v7.4.2) Fondo OPACO bajo el SVG: un PNG con píxeles transparentes
   // (p.ej. esquinas redondeadas) sale con esquinas blancas/grises al
   // pegarlo en WhatsApp/Discord.
-  background = "#0b1220",
+  background = "#141416",
 ): Promise<Blob> {
   const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);

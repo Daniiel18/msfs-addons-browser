@@ -229,7 +229,7 @@ fn open_flight_start(app: &tauri::AppHandle) -> Option<i64> {
     let pool = state.db.clone();
     let started: Option<String> = tauri::async_runtime::block_on(async move {
         sqlx::query_as::<_, (String,)>(
-            "SELECT started_at FROM flight_log WHERE status = 'open' \
+            "SELECT started_at FROM flight_log WHERE status IS NULL \
              ORDER BY id DESC LIMIT 1",
         )
         .fetch_optional(&pool)

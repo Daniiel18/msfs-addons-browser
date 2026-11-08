@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   AvailableUpdate,
+  BrokenLink,
   CommunityPackage,
   ToggleReport,
 } from "../lib/types";
@@ -42,6 +43,8 @@ interface CommunityState {
   scanning: boolean;
   refreshing: boolean;
   lastScanError: string | null;
+  /** (05/11) Enlaces de Community cuya carpeta real ya no existe. */
+  brokenLinks: BrokenLink[];
   lastRefreshError: string | null;
 
   bootstrap: () => Promise<void>;
@@ -68,6 +71,8 @@ interface CommunityState {
    *  para todos los folders que el backend reporta como cambiados. */
   setEnabled: (folderName: string, enabled: boolean) => Promise<ToggleReport>;
   /** (v4.25.0) Toggle masivo — Enable All / Disable All. */
+  /** (04/11) Estrellas de un addon (`null` las quita). */
+  setRating: (folderName: string, stars: number | null) => Promise<void>;
   setManyEnabled: (
     folderNames: string[],
     enabled: boolean,
@@ -92,6 +97,7 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
   scanning: false,
   refreshing: false,
   lastScanError: null,
+  brokenLinks: [],
   lastRefreshError: null,
 
   /**
@@ -112,9 +118,9 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
   async scanFromFS() {
     set({ scanning: true, lastScanError: null });
     try {
-      await api.scanCommunity();
+      const report = await api.scanCommunity();
       const pkgs = await api.listCommunityPackages();
-      set({ packages: pkgs });
+      set({ packages: pkgs, brokenLinks: report.brokenLinks ?? [] });
     } catch (e) {
       set({ lastScanError: String(e) });
       throw e;
@@ -151,12 +157,12 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
     if (get().scanning) return;
     set({ scanning: true, lastScanError: null });
     try {
-      await api.scanCommunity();
+      const report = await api.scanCommunity();
       const [pkgs, updates] = await Promise.all([
         api.listCommunityPackages(),
         api.listAvailableUpdates(),
       ]);
-      set({ packages: pkgs, updates });
+      set({ packages: pkgs, updates, brokenLinks: report.brokenLinks ?? [] });
     } catch (e) {
       set({ lastScanError: String(e) });
     } finally {
@@ -197,6 +203,19 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       ),
     }));
     return report;
+  },
+
+  async setRating(folderName, stars) {
+    const before = get().packages;
+    const mark = (list: CommunityPackage[]) =>
+      list.map((p) => (p.folderName === folderName ? { ...p, rating: stars } : p));
+    set({ packages: mark(before) });
+    try {
+      await api.addonSetRating(folderName, stars);
+    } catch (e) {
+      console.warn("setRating falló:", e);
+      set({ packages: before });
+    }
   },
 
   async setManyEnabled(folderNames, enabled) {

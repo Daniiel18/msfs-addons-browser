@@ -137,6 +137,7 @@ export function NotificationsBell() {
   const maintAlertsAll = useMaintAlertsStore((s) => s.alerts);
   const maintDismissed = useMaintAlertsStore((s) => s.dismissed);
   const maintDismiss = useMaintAlertsStore((s) => s.dismiss);
+  const maintDismissAll = useMaintAlertsStore((s) => s.dismissAll);
   const openEconomy = useAppStore((s) => s.openEconomy);
   useEffect(() => {
     maintStart();
@@ -530,7 +531,22 @@ export function NotificationsBell() {
 
               {/* Flota y vuelos: mantenimiento y Crew VS. */}
               {fleetCount > 0 && (
-                <Group title={t("notifications.group.fleet")} count={fleetCount}>
+                <Group
+                  title={t("notifications.group.fleet")}
+                  count={fleetCount}
+                  action={
+                    maintAlerts.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => maintDismissAll(maintAlerts)}
+                        title={t("notifications.clear_maint_hint")}
+                        className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+                      >
+                        {t("notifications.clear_maint")}
+                      </button>
+                    ) : null
+                  }
+                >
                   {maintAlerts.map((a) => {
                     const due = a.severity === "due";
                     return (
@@ -726,12 +742,24 @@ const TONES: Record<Tone, { tile: string; stripe: string }> = {
   rose: { tile: "bg-rose-500/15 text-rose-300 ring-rose-500/25", stripe: "before:bg-rose-400" },
 };
 
-function Group({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+function Group({
+  title,
+  count,
+  action,
+  children,
+}: {
+  title: string;
+  count: number;
+  /** (8.4.x) Botón a la derecha de la cabecera (p. ej. «Limpiar»). */
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <section>
       <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sf-text/80">
         {title}
         <span className="rounded bg-sf-raised px-1.5 py-px text-[10px] tabular-nums text-sf-muted">{count}</span>
+        {action}
       </h3>
       <ul className="space-y-2">{children}</ul>
     </section>

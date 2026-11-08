@@ -142,7 +142,7 @@ function toneFor(t: DerivedType): {
     default:
       return {
         bg: "from-slate-800 via-slate-900 to-slate-950",
-        glow: "bg-[radial-gradient(circle_at_50%_30%,rgba(148,163,184,0.18),transparent_60%)]",
+        glow: "bg-[radial-gradient(circle_at_50%_30%,rgba(161, 161, 166,0.18),transparent_60%)]",
         silhouette: "text-slate-300/25",
       };
   }

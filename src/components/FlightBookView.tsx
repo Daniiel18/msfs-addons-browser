@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { getActiveLocale, t } from "../lib/i18n";
+import { countryName } from "../lib/countryName";
 import {
   AlertCircle,
   ArrowLeft,
@@ -36,7 +37,10 @@ import { TechLogFlightCard } from "./TechLogPanel";
 import { useTechLogStore } from "../stores/useTechLogStore";
 import { AirlineLogo } from "./AirlineLogo";
 import { icaoToName, canonicalAirlineKey } from "../lib/airlineCodes";
-import { Pencil, Minimize2, Maximize2 } from "lucide-react";
+import { Pencil, Minimize2, Maximize2, PlayCircle } from "lucide-react";
+import { ClipPlayerModal } from "./ClipPlayerModal";
+import { DetailModal } from "./DetailModal";
+import { clipForFlight, useLandingClipsStore } from "../stores/useLandingClipsStore";
 
 // (v4.24.2) Persistencia del colapso del sidebar de vuelos. El
 // FlightBook se DESMONTA al cambiar de pestaña (App.tsx lo renderiza
@@ -135,17 +139,6 @@ export function FlightBookView() {
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // (Rediseño F4) Filtro rápido por año sobre la lista (null = todos).
   const [yearFilter, setYearFilter] = useState<number | null>(null);
-  // (Rediseño F4) Ancho del área lista+mapa: con espacio suficiente el
-  // detalle del vuelo se acopla como columna fija a la derecha del mapa
-  // (en vez de flotar encima y tapar la ruta).
-  const [gridEl, setGridEl] = useState<HTMLDivElement | null>(null);
-  const [gridWidth, setGridWidth] = useState(0);
-  useEffect(() => {
-    if (!gridEl) return;
-    const ro = new ResizeObserver(([e]) => setGridWidth(e.contentRect.width));
-    ro.observe(gridEl);
-    return () => ro.disconnect();
-  }, [gridEl]);
   const [showShare, setShowShare] = useState(false);
   const [exportingWeb, setExportingWeb] = useState(false);
   const pushExportToast = useToastStore((s) => s.push);
@@ -483,18 +476,16 @@ export function FlightBookView() {
   // detalle de un vuelo viejo al clickearlo (el LiveFlightPanel del
   // mapa ya cubre el vuelo en curso). El Overview de stats se mantiene
   // únicamente cuando el sim no está conectado.
-  // (Rediseño F4) Acoplar el detalle como columna fija sólo si al mapa le
-  // quedan ~420px (lista 300 + detalle 360 + separaciones).
-  const dockDetail = !!selectedFlight && gridWidth >= 1100;
+  // (8.4.x) Lo en vivo vive en «En vuelo»: aquí el resumen se ve siempre.
   const overlayKind: "selected" | "stats" | "none" = selectedFlight
-    ? dockDetail
-      ? "none"
-      : "selected"
-    : inFlight || status?.simconnectConnected
-      ? "none"
-      : completed.length > 0
-        ? "stats"
-        : "none";
+    ? "selected"
+    : completed.length > 0
+      ? "stats"
+      : "none";
+  // (8.4.x) Vuelo en curso → barrita que lleva a «En vuelo».
+  const liveNow = !!inFlight || (!!status?.simconnectConnected && status.currentLat != null);
+  const liveFrom = status?.originIcao ?? status?.currentAirportIcao ?? inFlight?.originIcao ?? null;
+  const liveTo = status?.destinationIcao ?? inFlight?.destinationIcao ?? null;
 
   return (
     <section className="flex h-full flex-col gap-3 overflow-hidden">
@@ -562,6 +553,24 @@ export function FlightBookView() {
         </div>
       </header>
 
+      {/* (8.4.x) Vuelo en curso: se sigue en la pantalla «En vuelo». */}
+      {liveNow && (
+        <button
+          type="button"
+          onClick={() => useAppStore.getState().setView("inflight")}
+          className="flex shrink-0 items-center gap-3 rounded-xl border border-rose-500/25 bg-rose-500/5 px-4 py-2 text-left transition-colors hover:border-rose-400/50"
+        >
+          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-rose-400" />
+          <span className="text-sm font-semibold text-sf-text">{t("fb.live_bar.title")}</span>
+          {(liveFrom || liveTo) && (
+            <span className="font-mono text-xs text-sf-muted">
+              {liveFrom ?? "····"} → {liveTo ?? "····"}
+            </span>
+          )}
+          <span className="ml-auto text-xs font-medium text-brand-300">{t("fb.live_bar.open")} →</span>
+        </button>
+      )}
+
       {showShare && selectedFlight && (
         <ShareCardModal
           title={t("share.flight.title")}
@@ -602,15 +611,8 @@ export function FlightBookView() {
       {/* (Rediseño F6) Columnas desde md (768px): con la ventana mínima
           (960px) lista y mapa van lado a lado; antes se apilaban y el mapa
           quedaba sin altura. */}
-      <div
-        ref={setGridEl}
-        className={`grid min-h-0 flex-1 grid-cols-1 gap-3 ${
-          // (23/10) Lista de 300 → 240 px (filas de 2 líneas): el mapa gana ancho.
-          dockDetail
-            ? "md:grid-cols-[240px_minmax(0,1fr)_360px]"
-            : "md:grid-cols-[240px_minmax(0,1fr)]"
-        }`}
-      >
+      {/* (23/10) Lista de 300 → 240 px (filas de 2 líneas): el mapa gana ancho. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-[240px_minmax(0,1fr)]">
         {/* SIDEBAR — lista compacta de vuelos con filtro sticky arriba. */}
         <aside className="flex min-h-0 flex-col rounded-2xl border border-sf-border bg-sf-surface">
           <div className="sticky top-0 z-10 flex items-center gap-2 rounded-t-2xl border-b border-sf-border bg-sf-surface/80 px-3 py-2 backdrop-blur">
@@ -685,40 +687,46 @@ export function FlightBookView() {
         <div className="flex min-h-0 flex-col gap-2">
           {/* (v3.26.0 P7.10) Veredicto de daños/forzado del vuelo.
               (19/10) Aviones con TechLog: manda el veredicto de TechLog. */}
-          {selectedFlightId != null &&
-            (selectedFlight && techlogManaged(selectedFlight.aircraftRegistration) ? (
-              <TechLogFlightCard flight={selectedFlight} />
-            ) : selectedFlight ? (
-              // (19/10) Etapa 3B: Tech Log de SimFleet; los vuelos anteriores
-              // al sistema siguen con el veredicto viejo.
-              <TechLogFlightCard
-                flight={selectedFlight}
-                own
-                fallback={<DamageBadge flightId={selectedFlightId} />}
-              />
-            ) : (
-              <DamageBadge flightId={selectedFlightId} />
-            ))}
-          {/* (v3.6.3 fix J5) Tabs (Checklist / Weather / NOTAMs) SOLO
-              con vuelo seleccionado. Antes siempre se renderizaban —
-              el usuario no podía hacer nada útil con ellos sin un
-              vuelo activo. */}
+          {/* (03/11) Veredicto y pestañas en una sola fila, sobre el mapa. */}
           {selectedFlightId != null && (
-            <DetailActionsBar
-              selectedFlightId={selectedFlightId}
-              selectedFlightSource={selectedFlight?.source ?? null}
-              onToggleChecklist={() => setChecklistOpen((v) => !v)}
-              checklistOpen={checklistOpen && selectedFlightId != null}
-              onToggleVs={() => setVsOpen((v) => !v)}
-              vsOpen={vsOpen && selectedFlightId != null}
-              vsHasSnapshot={vsSnapshotExists}
-            />
+            <div className="flex shrink-0 items-start gap-2">
+              <div className="min-w-0 flex-1">
+                {selectedFlight && techlogManaged(selectedFlight.aircraftRegistration) ? (
+                  <TechLogFlightCard flight={selectedFlight} />
+                ) : selectedFlight ? (
+                  // (19/10) Etapa 3B: Tech Log de SimFleet; los vuelos anteriores
+                  // al sistema siguen con el veredicto viejo.
+                  <TechLogFlightCard
+                    flight={selectedFlight}
+                    own
+                    fallback={<DamageBadge flightId={selectedFlightId} />}
+                  />
+                ) : (
+                  <DamageBadge flightId={selectedFlightId} />
+                )}
+              </div>
+              {/* (v3.6.3 fix J5) Tabs (Checklist / Weather / NOTAMs) SOLO
+                  con vuelo seleccionado. Antes siempre se renderizaban —
+                  el usuario no podía hacer nada útil con ellos sin un
+                  vuelo activo. */}
+              <DetailActionsBar
+                selectedFlightId={selectedFlightId}
+                selectedFlightSource={selectedFlight?.source ?? null}
+                onToggleChecklist={() => setChecklistOpen((v) => !v)}
+                checklistOpen={checklistOpen && selectedFlightId != null}
+                onToggleVs={() => setVsOpen((v) => !v)}
+                vsOpen={vsOpen && selectedFlightId != null}
+                vsHasSnapshot={vsSnapshotExists}
+              />
+            </div>
           )}
           <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-sf-border bg-sf-bg/40">
             <div className="absolute inset-0">
+              {/* (8.4.x) Sin lo en vivo: está en la pantalla «En vuelo». */}
               <RoutesMapView
                 height="100%"
                 selectedFlightId={selectedFlightId}
+                showLive={false}
               />
             </div>
 
@@ -764,29 +772,14 @@ export function FlightBookView() {
                     layout
                     transition={{ duration: 0.28, ease: [0.4, 0, 0.2, 1] }}
                     className={`pointer-events-auto w-full ${
-                      overlayKind === "stats" ? "max-w-[260px]" : "max-w-[420px]"
+                      overlayKind === "stats" ? "max-w-[260px]" : "max-w-[360px]"
                     }`}
-                    style={
-                      overlayKind === "selected" && !panelCollapsed
-                        ? { height: "100%" }
-                        : undefined
-                    }
                   >
                     <motion.div
                       layout
-                      className={`overflow-hidden rounded-2xl border border-sf-border/70 bg-slate-950/75 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur-xl ${
-                        overlayKind === "selected" && !panelCollapsed
-                          ? "flex h-full flex-col"
-                          : ""
-                      }`}
+                      className="overflow-hidden rounded-2xl border border-sf-border/70 bg-sf-bg/85 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur-xl"
                     >
-                      <div
-                        className={`p-3 ${
-                          overlayKind === "selected" && !panelCollapsed
-                            ? "min-h-0 flex-1 overflow-y-auto"
-                            : ""
-                        }`}
-                      >
+                      <div className="p-3">
                     {overlayKind === "selected" && selectedFlight && (
                       <SelectedFlightPanel
                         entry={selectedFlight}
@@ -806,19 +799,6 @@ export function FlightBookView() {
           </div>
         </div>
 
-        {/* (Rediseño F4) Detalle del vuelo acoplado como columna fija. */}
-        {dockDetail && selectedFlight && (
-          <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-sf-border/80 bg-sf-surface">
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <SelectedFlightPanel
-                entry={selectedFlight}
-                collapsed={false}
-                collapsible={false}
-                onToggleCollapse={() => {}}
-              />
-            </div>
-          </aside>
-        )}
       </div>
 
       {/* (v3.2.0) Modal de confirmación de borrado. Estético en vez
@@ -959,20 +939,6 @@ function DeleteFlightModal({
  *  Cada bloque es una card independiente con borde redondeado, shadow
  *  sutil y padding generoso. AnimatePresence + motion.div para
  *  microanimaciones al cambiar de vuelo seleccionado. */
-// (v4.11.0) ISO-2 → nombre de país legible con la API nativa del
-// navegador (sin dataset extra). Usa el locale actual (es/en).
-let REGION_DN: Intl.DisplayNames | null | undefined;
-function countryName(iso?: string | null): string | null {
-  if (!iso) return null;
-  try {
-    if (REGION_DN === undefined) {
-      REGION_DN = new Intl.DisplayNames(undefined, { type: "region" });
-    }
-    return REGION_DN?.of(iso.toUpperCase()) ?? iso;
-  } catch {
-    return iso;
-  }
-}
 
 /** "Ciudad, País" a partir del AirportBrief (omite lo que falte). */
 function airportSubtitle(a?: AirportBrief): string | null {
@@ -1030,6 +996,15 @@ function SelectedFlightPanel({
   const reload = useFlightLogStore((s) => s.reload);
   // (v3.28.0 P7.11) Formateadores de unidades reactivos.
   const u = useUnits();
+  // (8.4.x) Video del aterrizaje de este vuelo (si se grabó).
+  const startClips = useLandingClipsStore((s) => s.start);
+  const clips = useLandingClipsStore((s) => s.clips);
+  useEffect(() => startClips(), [startClips]);
+  const clip = useMemo(() => clipForFlight(clips, entry), [clips, entry]);
+  const [playing, setPlaying] = useState(false);
+  // (03/11) El detalle completo, en un modal.
+  const [full, setFull] = useState(false);
+  useEffect(() => setFull(false), [entry.id]);
 
   // (v4.11.0) Resuelve nombre/ciudad/país de origen y destino por ICAO.
   const [airports, setAirports] = useState<Record<string, AirportBrief>>({});
@@ -1056,6 +1031,34 @@ function SelectedFlightPanel({
     };
   }, [entry.originIcao, entry.destinationIcao]);
 
+  // (03/11) Lo esencial sobre el mapa. El FPM, como en el detalle: sólo vuelos
+  // en vivo, siempre negativo y con la escala de color de aviación.
+  const fpm = entry.source === "simconnect" && entry.landingFpm !== null ? -Math.abs(entry.landingFpm) : null;
+  const facts: { label: string; value: string; tone?: string }[] = [
+    { label: t("fb.route.distance"), value: u.fmt.distance(entry.distanceNm) },
+    { label: t("fb.times.block"), value: entry.flightTimeS !== null ? formatHM(entry.flightTimeS) : "—" },
+    {
+      label: t("fb.block.touchdown"),
+      value: fpm !== null ? u.fmt.vs(fpm) : "—",
+      tone:
+        fpm === null
+          ? undefined
+          : fpm > -100
+            ? "text-cyan-300"
+            : fpm > -300
+              ? "text-emerald-300"
+              : fpm > -400
+                ? "text-amber-300"
+                : "text-rose-400",
+    },
+    {
+      label: t("fb.load.passengers"),
+      value: entry.passengers != null ? entry.passengers.toLocaleString("en-US") : "—",
+    },
+    { label: t("fb.short.fuel"), value: u.fmt.weight(entry.fuelUsedKg) },
+    { label: t("fb.short.gates"), value: `${gateOnly(entry.departureGate)} → ${gateOnly(entry.arrivalGate)}` },
+  ];
+
   // (v3.3.0) Re-renderiza con animación al cambiar de vuelo.
   return (
     <AnimatePresence mode="wait">
@@ -1068,9 +1071,9 @@ function SelectedFlightPanel({
         className="space-y-3"
       >
         {/* HEADER — Card prominente con ruta y aerolínea. */}
-        <div className="rounded-xl border border-brand-500/30 bg-gradient-to-br from-brand-500/[0.12] to-brand-500/[0.03] p-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-brand-300">
+        <div className="rounded-xl border border-brand-500/30 bg-gradient-to-br from-brand-500/[0.12] to-brand-500/[0.03] p-3">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <div className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] font-semibold uppercase tracking-wide text-brand-300">
               <PlaneLanding className="h-3 w-3" />
               {t("fb.selected_flight")}
             </div>
@@ -1138,11 +1141,11 @@ function SelectedFlightPanel({
               tracking-tight. Es el elemento más prominente del panel,
               lo PRIMERO que el usuario ve al abrir un vuelo. */}
           <div className="flex items-baseline gap-3 font-mono">
-            <span className="text-4xl font-black tracking-tight text-sf-text">
+            <span className="text-3xl font-black tracking-tight text-sf-text">
               {entry.originIcao ?? "?"}
             </span>
-            <span className="text-2xl text-brand-300">→</span>
-            <span className="text-4xl font-black tracking-tight text-sf-text">
+            <span className="text-xl text-brand-300">→</span>
+            <span className="text-3xl font-black tracking-tight text-sf-text">
               {entry.destinationIcao ?? "?"}
             </span>
           </div>
@@ -1159,283 +1162,342 @@ function SelectedFlightPanel({
           </div>
         </div>
 
-        {/* (v3.6.1 fix I6) Cuando el panel está colapsado, sólo se ve
-            la card del header — el resto del mapa queda libre para que
-            el usuario examine la trayectoria. */}
+        {/* (03/11) Limpieza de vistas: sobre el mapa, lo esencial; el resto
+            se abre aparte y el mapa queda a la vista. */}
         {collapsed ? null : (
-        <>
-        {/* BLOQUE 1 — Route */}
-        <DetailBlock title={t("fb.block.route")} icon="route">
-          <BlockRow label={t("fb.route.origin")} value={
-            <AirportCell
-              icao={entry.originIcao ?? "?"}
-              airport={
-                entry.originIcao ? airports[entry.originIcao] : undefined
-              }
-              fallbackName={entry.originName}
-            />
-          } />
-          <BlockRow label={t("fb.route.destination")} value={
-            <AirportCell
-              icao={entry.destinationIcao ?? "?"}
-              airport={
-                entry.destinationIcao
-                  ? airports[entry.destinationIcao]
-                  : undefined
-              }
-              fallbackName={entry.destinationName}
-            />
-          } />
-          <BlockRow label={t("fb.route.distance")} value={u.fmt.distance(entry.distanceNm)} />
-          {/* (v3.4.0) Gates SIEMPRE visibles aún sin datos —
-              el usuario pidió que el panel de detalle muestre los gates
-              de salida y llegada obligatoriamente. Cuando el watcher no
-              los capturó renderizamos "—" en lugar de ocultar la fila.
-              Eso preserva la simetría de bloques y deja claro qué
-              campos NO se capturaron. */}
-          <BlockRow
-            label={t("fb.route.dep_gate")}
-            value={
-              entry.departureGate ? (
-                <span className="font-mono text-sm font-semibold text-emerald-100">
-                  {shortGate(entry.departureGate)}
-                </span>
-              ) : (
-                <span className="text-sf-muted/70">—</span>
-              )
-            }
-          />
-          <BlockRow
-            label={t("fb.route.arr_gate")}
-            value={
-              entry.arrivalGate ? (
-                <span className="font-mono text-sm font-semibold text-emerald-100">
-                  {shortGate(entry.arrivalGate)}
-                </span>
-              ) : (
-                <span className="text-sf-muted/70">—</span>
-              )
-            }
-          />
-        </DetailBlock>
-
-        {/* BLOQUE 2 — Times. (v3.5.0) Rediseñado para mostrar la
-            timeline visual entre OUT (block-out) e IN (block-in) con
-            una barra horizontal que representa la duración del vuelo.
-            Los times aparecen anclados a los extremos de la barra. */}
-        <DetailBlock title={t("fb.block.times")} icon="times">
-          <FlightTimeline
-            outIso={entry.startedAt}
-            inIso={entry.endedAt}
-            outLabel={t("fb.times.out")}
-            inLabel={t("fb.times.in")}
-          />
-          <BlockRow
-            label={t("fb.times.block")}
-            value={
-              <span className="font-mono font-semibold text-sf-text">
-                {entry.flightTimeS !== null
-                  ? formatHM(entry.flightTimeS)
-                  : "—"}
-              </span>
-            }
-          />
-          <BlockRow
-            label={t("fb.times.paused")}
-            value={
-              entry.pausedSeconds > 0 ? (
-                <span className="font-mono text-[11px] text-sf-muted">
-                  {formatHM(entry.pausedSeconds)}
-                </span>
-              ) : (
-                <span className="text-sf-muted/70">—</span>
-              )
-            }
-          />
-        </DetailBlock>
-
-        {/* BLOQUE 3 — Load (SimBrief) */}
-        <DetailBlock title={t("fb.block.load")} icon="load">
-          <BlockRow
-            label={t("fb.load.passengers")}
-            value={
-              entry.passengers != null
-                ? entry.passengers.toLocaleString("en-US")
-                : "—"
-            }
-          />
-          <BlockRow
-            label={t("fb.load.cargo")}
-            value={u.fmt.weight(entry.cargoKg)}
-          />
-          <BlockRow
-            label={t("fb.load.fuel_used")}
-            value={u.fmt.weight(entry.fuelUsedKg)}
-          />
-        </DetailBlock>
-
-        {/* BLOQUE 4 — Aircraft. (v3.5.0 → v3.5.1) Layout vertical:
-            foto grande del avión arriba (full width del block, aspect
-            3:2 que es el ratio nativo de las fotos de planespotters),
-            campos debajo. Cuando no hay matrícula válida la silueta
-            SVG ocupa el mismo espacio. */}
-        <DetailBlock title={t("fb.block.aircraft")} icon="aircraft">
-          <div className="space-y-3">
-            <AircraftThumb
-              type={entry.aircraftAtcType}
-              title={entry.aircraftTitle}
-              airline={
-                entry.aircraftAirline ??
-                icaoToName(entry.airlineIcao) ??
-                entry.airlineIcao
-              }
-              registration={entry.aircraftRegistration}
-            />
-            <div className="space-y-1.5">
-              <BlockRow
-                label={t("fb.aircraft.type")}
-                value={entry.aircraftAtcType ?? "—"}
-              />
-              <BlockRow
-                label={t("fb.aircraft.model")}
-                value={entry.aircraftModel ?? "—"}
-              />
-              <BlockRow
-                label={t("fb.aircraft.airline")}
-                value={
-                  entry.aircraftAirline ??
-                  icaoToName(entry.airlineIcao) ??
-                  entry.airlineIcao ??
-                  "—"
-                }
-              />
-              <BlockRow
-                label={t("fb.aircraft.registration")}
-                value={entry.aircraftRegistration ?? "—"}
-              />
-              <BlockRow
-                label={t("fb.aircraft.title")}
-                value={entry.aircraftTitle ?? "—"}
-              />
+          <>
+            <div className="grid grid-cols-3 gap-1.5">
+              {facts.map((f) => (
+                <div key={f.label} className="min-w-0 rounded-lg border border-sf-border/70 bg-sf-surface/80 px-2.5 py-1.5">
+                  <div className="truncate text-[10px] text-sf-muted">{f.label}</div>
+                  <div className={`truncate font-mono text-xs font-semibold ${f.tone ?? "text-sf-text"}`}>{f.value}</div>
+                </div>
+              ))}
             </div>
-          </div>
-        </DetailBlock>
-
-        {/* (v3.6.7 fix N1) Para vuelos IMPORTADOS (source != simconnect)
-            mostramos un badge "Imported flight" en vez de las peak
-            metrics. El sampling de VAS-ACARS no permite calcular FPM
-            con la precisión que reportan los VA platforms; preferible
-            ser honesto y NO mostrar datos imprecisos.
-            Para vuelos volados en vivo (SimConnect), las peak metrics
-            sí son precisas (capturadas en tiempo real con simvars). */}
-        {entry.source !== "simconnect" ? (
-          <div className="flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/5 px-4 py-2.5 text-[11px]">
-            <span className="inline-flex items-center gap-1.5 font-medium text-sky-200">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-400" />
-              {t("fb.imported_flight.badge")}
-            </span>
-            <span className="text-sf-muted">
-              {t("fb.imported_flight.detail")}
-            </span>
-          </div>
-        ) : (
-          (entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
-              <span className="text-sf-muted">{t("fb.block.peak")}:</span>
-              {entry.maxAltitudeFt !== null && (
-                <span className="font-mono text-sf-text">
-                  <span className="text-sf-muted">ALT</span>{" "}
-                  {u.fmt.altitude(entry.maxAltitudeFt)}
-                </span>
-              )}
-              {entry.maxGroundSpeedKt !== null && (
-                <span className="font-mono text-sf-text">
-                  <span className="text-sf-muted">GS</span>{" "}
-                  {u.fmt.speed(entry.maxGroundSpeedKt)}
-                </span>
-              )}
-            </div>
-          )
-        )}
-        {/* Touchdown rate sólo para vuelos en vivo (SimConnect) — ahí
-            el valor viene del simvar PLANE TOUCHDOWN NORMAL VELOCITY
-            que es preciso. Para imports VAS-ACARS no se muestra.
-            (v4.0.0 — P6.3 fix) Quitado el filtro `< 0`. El backend
-            ahora garantiza que solo persiste valores negativos
-            válidos en el watcher (fix en simconnect_watcher.rs). El
-            usuario reportó que el FPM estaba en los logs pero no se
-            pintaba — causa: valores positivos del simvar (bounce o
-            modelado dudoso) pasaban el filtro `!== null` pero
-            fallaban el `< 0` del frontend. */}
-        {entry.source === "simconnect" && entry.landingFpm !== null && (() => {
-          // (v4.0.0 — P6.3 iter 2) **Force-negate** el FPM en el
-          // render. El simvar `PLANE TOUCHDOWN NORMAL VELOCITY` a
-          // veces reporta valores positivos en aviones de terceros
-          // o con bounces. La convención de aviación es siempre
-          // mostrar el touchdown rate como NEGATIVO (descenso).
-          // LandingToast hace lo mismo — siempre muestra valores
-          // negativos en su UI aunque el simvar diga otra cosa.
-          //
-          // Esto también arregla los vuelos VIEJOS donde el backend
-          // pre-v3.10.0 guardó valores positivos por el bug del
-          // filtro `abs()`. Force-negate en el render sin tocar la DB.
-          const fpm = -Math.abs(entry.landingFpm);
-          // (v4.0.0 P7.6b) Escala de aviación real:
-          //   > -100  → cyan (flotado / float landing)
-          //   -100..-299 → verde (aterrizaje óptimo)
-          //   -300..-399 → amarillo (duro / al límite)
-          //   ≤ -400  → rojo (peligroso / estructural)
-          const color =
-            fpm > -100
-              ? "text-cyan-300"
-              : fpm > -300
-                ? "text-emerald-300"
-                : fpm > -400
-                  ? "text-amber-300"
-                  : "text-rose-400 font-semibold";
-          return (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
-              <span className="text-sf-muted">{t("fb.block.touchdown")}:</span>
-              <span className={`font-mono ${color}`}>
-                {u.fmt.vs(fpm)}
-              </span>
-              {entry.bounced && (
-                <span
-                  className="rounded-md border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300"
-                  title={t("fb.block.bounce_tooltip")}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setFull(true)}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-brand-500/40 bg-brand-500/10 px-3 py-1.5 text-xs font-medium text-brand-200 hover:bg-brand-500/20"
+              >
+                <Maximize2 className="h-3 w-3" />
+                {t("fb.detail.see_all")}
+              </button>
+              {clip && (
+                <button
+                  type="button"
+                  onClick={() => setPlaying(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sf-border bg-sf-surface/80 px-3 py-1.5 text-xs font-medium text-sf-text hover:border-brand-500/40"
                 >
-                  ↑ {t("fb.block.bounce_detected")}
-                </span>
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  {t("fb.clip.button")}
+                </button>
               )}
             </div>
-          );
-        })()}
+          </>
+        )}
+        {playing && clip && (
+          <ClipPlayerModal
+            clip={clip}
+            title={`${entry.originIcao ?? "?"} → ${entry.destinationIcao ?? "?"}`}
+            onClose={() => setPlaying(false)}
+          />
+        )}
 
-        {/* (v4.0.0 P7.4b) Temperatura máxima de frenos — solo si el
-            puente LVar de MobiFlight la capturó (FBW A32NX, etc.).
-            Ausente en la gran mayoría de vuelos. */}
-        {entry.maxBrakeTempC != null && entry.maxBrakeTempC > 0 && (() => {
-          const c = entry.maxBrakeTempC;
-          // Escala orientativa de frenos de airliner:
-          //   < 200°C  → verde (normal)
-          //   200-349  → amarillo (caliente, normal tras frenado fuerte)
-          //   ≥ 350°C  → rojo (muy caliente / posible overheat)
-          const color =
-            c < 200
-              ? "text-emerald-300"
-              : c < 350
-                ? "text-amber-300"
-                : "text-rose-400 font-semibold";
-          return (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
-              <span className="text-sf-muted">
-                {t("fb.block.brake_temp")}:
-              </span>
-              <span className={`font-mono ${color}`}>{u.fmt.temp(c)}</span>
+        {full && (
+          <DetailModal
+            title={`${entry.originIcao ?? "?"} → ${entry.destinationIcao ?? "?"}`}
+            subtitle={`${cleanAircraftLabel(entry.aircraftAtcType ?? entry.aircraftTitle)} · ${formatDate(entry.startedAt)}`}
+            icon={<PlaneLanding className="h-4 w-4" />}
+            onClose={() => setFull(false)}
+          >
+            <div className="grid items-start gap-3 lg:grid-cols-3">
+              <div className="space-y-3">
+                {/* BLOQUE 1 — Route */}
+                <DetailBlock title={t("fb.block.route")} icon="route">
+                  <BlockRow label={t("fb.route.origin")} value={
+                    <AirportCell
+                      icao={entry.originIcao ?? "?"}
+                      airport={
+                        entry.originIcao ? airports[entry.originIcao] : undefined
+                      }
+                      fallbackName={entry.originName}
+                    />
+                  } />
+                  <BlockRow label={t("fb.route.destination")} value={
+                    <AirportCell
+                      icao={entry.destinationIcao ?? "?"}
+                      airport={
+                        entry.destinationIcao
+                          ? airports[entry.destinationIcao]
+                          : undefined
+                      }
+                      fallbackName={entry.destinationName}
+                    />
+                  } />
+                  <BlockRow label={t("fb.route.distance")} value={u.fmt.distance(entry.distanceNm)} />
+                  {/* (v3.4.0) Gates SIEMPRE visibles aún sin datos —
+                      el usuario pidió que el panel de detalle muestre los gates
+                      de salida y llegada obligatoriamente. Cuando el watcher no
+                      los capturó renderizamos "—" en lugar de ocultar la fila.
+                      Eso preserva la simetría de bloques y deja claro qué
+                      campos NO se capturaron. */}
+                  <BlockRow
+                    label={t("fb.route.dep_gate")}
+                    value={
+                      entry.departureGate ? (
+                        <span className="font-mono text-sm font-semibold text-emerald-100">
+                          {shortGate(entry.departureGate)}
+                        </span>
+                      ) : (
+                        <span className="text-sf-muted/70">—</span>
+                      )
+                    }
+                  />
+                  <BlockRow
+                    label={t("fb.route.arr_gate")}
+                    value={
+                      entry.arrivalGate ? (
+                        <span className="font-mono text-sm font-semibold text-emerald-100">
+                          {shortGate(entry.arrivalGate)}
+                        </span>
+                      ) : (
+                        <span className="text-sf-muted/70">—</span>
+                      )
+                    }
+                  />
+                </DetailBlock>
+
+                {/* BLOQUE 2 — Times. (v3.5.0) Rediseñado para mostrar la
+                    timeline visual entre OUT (block-out) e IN (block-in) con
+                    una barra horizontal que representa la duración del vuelo.
+                    Los times aparecen anclados a los extremos de la barra. */}
+                <DetailBlock title={t("fb.block.times")} icon="times">
+                  <FlightTimeline
+                    outIso={entry.startedAt}
+                    inIso={entry.endedAt}
+                    outLabel={t("fb.times.out")}
+                    inLabel={t("fb.times.in")}
+                  />
+                  <BlockRow
+                    label={t("fb.times.block")}
+                    value={
+                      <span className="font-mono font-semibold text-sf-text">
+                        {entry.flightTimeS !== null
+                          ? formatHM(entry.flightTimeS)
+                          : "—"}
+                      </span>
+                    }
+                  />
+                  <BlockRow
+                    label={t("fb.times.paused")}
+                    value={
+                      entry.pausedSeconds > 0 ? (
+                        <span className="font-mono text-[11px] text-sf-muted">
+                          {formatHM(entry.pausedSeconds)}
+                        </span>
+                      ) : (
+                        <span className="text-sf-muted/70">—</span>
+                      )
+                    }
+                  />
+                </DetailBlock>
+
+              </div>
+              <div className="space-y-3">
+                {/* BLOQUE 3 — Load (SimBrief) */}
+                <DetailBlock title={t("fb.block.load")} icon="load">
+                  <BlockRow
+                    label={t("fb.load.passengers")}
+                    value={
+                      entry.passengers != null
+                        ? entry.passengers.toLocaleString("en-US")
+                        : "—"
+                    }
+                  />
+                  <BlockRow
+                    label={t("fb.load.cargo")}
+                    value={u.fmt.weight(entry.cargoKg)}
+                  />
+                  <BlockRow
+                    label={t("fb.load.fuel_used")}
+                    value={u.fmt.weight(entry.fuelUsedKg)}
+                  />
+                </DetailBlock>
+
+                {/* (v3.6.7 fix N1) Para vuelos IMPORTADOS (source != simconnect)
+                    mostramos un badge "Imported flight" en vez de las peak
+                    metrics. El sampling de VAS-ACARS no permite calcular FPM
+                    con la precisión que reportan los VA platforms; preferible
+                    ser honesto y NO mostrar datos imprecisos.
+                    Para vuelos volados en vivo (SimConnect), las peak metrics
+                    sí son precisas (capturadas en tiempo real con simvars). */}
+                {entry.source !== "simconnect" ? (
+                  <div className="flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/5 px-4 py-2.5 text-[11px]">
+                    <span className="inline-flex items-center gap-1.5 font-medium text-sky-200">
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-400" />
+                      {t("fb.imported_flight.badge")}
+                    </span>
+                    <span className="text-sf-muted">
+                      {t("fb.imported_flight.detail")}
+                    </span>
+                  </div>
+                ) : (
+                  (entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
+                      <span className="text-sf-muted">{t("fb.block.peak")}:</span>
+                      {entry.maxAltitudeFt !== null && (
+                        <span className="font-mono text-sf-text">
+                          <span className="text-sf-muted">ALT</span>{" "}
+                          {u.fmt.altitude(entry.maxAltitudeFt)}
+                        </span>
+                      )}
+                      {entry.maxGroundSpeedKt !== null && (
+                        <span className="font-mono text-sf-text">
+                          <span className="text-sf-muted">GS</span>{" "}
+                          {u.fmt.speed(entry.maxGroundSpeedKt)}
+                        </span>
+                      )}
+                    </div>
+                  )
+                )}
+                {/* Touchdown rate sólo para vuelos en vivo (SimConnect) — ahí
+                    el valor viene del simvar PLANE TOUCHDOWN NORMAL VELOCITY
+                    que es preciso. Para imports VAS-ACARS no se muestra.
+                    (v4.0.0 — P6.3 fix) Quitado el filtro `< 0`. El backend
+                    ahora garantiza que solo persiste valores negativos
+                    válidos en el watcher (fix en simconnect_watcher.rs). El
+                    usuario reportó que el FPM estaba en los logs pero no se
+                    pintaba — causa: valores positivos del simvar (bounce o
+                    modelado dudoso) pasaban el filtro `!== null` pero
+                    fallaban el `< 0` del frontend. */}
+                {entry.source === "simconnect" && entry.landingFpm !== null && (() => {
+                  // (v4.0.0 — P6.3 iter 2) **Force-negate** el FPM en el
+                  // render. El simvar `PLANE TOUCHDOWN NORMAL VELOCITY` a
+                  // veces reporta valores positivos en aviones de terceros
+                  // o con bounces. La convención de aviación es siempre
+                  // mostrar el touchdown rate como NEGATIVO (descenso).
+                  // LandingToast hace lo mismo — siempre muestra valores
+                  // negativos en su UI aunque el simvar diga otra cosa.
+                  //
+                  // Esto también arregla los vuelos VIEJOS donde el backend
+                  // pre-v3.10.0 guardó valores positivos por el bug del
+                  // filtro `abs()`. Force-negate en el render sin tocar la DB.
+                  const fpm = -Math.abs(entry.landingFpm);
+                  // (v4.0.0 P7.6b) Escala de aviación real:
+                  //   > -100  → cyan (flotado / float landing)
+                  //   -100..-299 → verde (aterrizaje óptimo)
+                  //   -300..-399 → amarillo (duro / al límite)
+                  //   ≤ -400  → rojo (peligroso / estructural)
+                  const color =
+                    fpm > -100
+                      ? "text-cyan-300"
+                      : fpm > -300
+                        ? "text-emerald-300"
+                        : fpm > -400
+                          ? "text-amber-300"
+                          : "text-rose-400 font-semibold";
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
+                      <span className="text-sf-muted">{t("fb.block.touchdown")}:</span>
+                      <span className={`font-mono ${color}`}>
+                        {u.fmt.vs(fpm)}
+                      </span>
+                      {entry.bounced && (
+                        <span
+                          className="rounded-md border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300"
+                          title={t("fb.block.bounce_tooltip")}
+                        >
+                          ↑ {t("fb.block.bounce_detected")}
+                        </span>
+                      )}
+                      {clip && (
+                        <button
+                          type="button"
+                          onClick={() => setPlaying(true)}
+                          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-brand-500/40 bg-brand-500/10 px-2.5 py-1 text-[11px] font-medium text-brand-200 hover:bg-brand-500/20"
+                        >
+                          <PlayCircle className="h-3.5 w-3.5" />
+                          {t("fb.clip.button")}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
+                {/* (v4.0.0 P7.4b) Temperatura máxima de frenos — solo si el
+                    puente LVar de MobiFlight la capturó (FBW A32NX, etc.).
+                    Ausente en la gran mayoría de vuelos. */}
+                {entry.maxBrakeTempC != null && entry.maxBrakeTempC > 0 && (() => {
+                  const c = entry.maxBrakeTempC;
+                  // Escala orientativa de frenos de airliner:
+                  //   < 200°C  → verde (normal)
+                  //   200-349  → amarillo (caliente, normal tras frenado fuerte)
+                  //   ≥ 350°C  → rojo (muy caliente / posible overheat)
+                  const color =
+                    c < 200
+                      ? "text-emerald-300"
+                      : c < 350
+                        ? "text-amber-300"
+                        : "text-rose-400 font-semibold";
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
+                      <span className="text-sf-muted">
+                        {t("fb.block.brake_temp")}:
+                      </span>
+                      <span className={`font-mono ${color}`}>{u.fmt.temp(c)}</span>
+                    </div>
+                  );
+                })()}
+              </div>
+              {/* BLOQUE 4 — Aircraft. (v3.5.0 → v3.5.1) Layout vertical:
+                  foto grande del avión arriba (full width del block, aspect
+                  3:2 que es el ratio nativo de las fotos de planespotters),
+                  campos debajo. Cuando no hay matrícula válida la silueta
+                  SVG ocupa el mismo espacio. */}
+              <DetailBlock title={t("fb.block.aircraft")} icon="aircraft">
+                <div className="space-y-3">
+                  <AircraftThumb
+                    type={entry.aircraftAtcType}
+                    title={entry.aircraftTitle}
+                    airline={
+                      entry.aircraftAirline ??
+                      icaoToName(entry.airlineIcao) ??
+                      entry.airlineIcao
+                    }
+                    registration={entry.aircraftRegistration}
+                  />
+                  <div className="space-y-1.5">
+                    <BlockRow
+                      label={t("fb.aircraft.type")}
+                      value={entry.aircraftAtcType ?? "—"}
+                    />
+                    <BlockRow
+                      label={t("fb.aircraft.model")}
+                      value={entry.aircraftModel ?? "—"}
+                    />
+                    <BlockRow
+                      label={t("fb.aircraft.airline")}
+                      value={
+                        entry.aircraftAirline ??
+                        icaoToName(entry.airlineIcao) ??
+                        entry.airlineIcao ??
+                        "—"
+                      }
+                    />
+                    <BlockRow
+                      label={t("fb.aircraft.registration")}
+                      value={entry.aircraftRegistration ?? "—"}
+                    />
+                    <BlockRow
+                      label={t("fb.aircraft.title")}
+                      value={entry.aircraftTitle ?? "—"}
+                    />
+                  </div>
+                </div>
+              </DetailBlock>
+
             </div>
-          );
-        })()}
-        </>
+          </DetailModal>
         )}
       </motion.div>
     </AnimatePresence>
@@ -2051,19 +2113,8 @@ function DetailActionsBar({
     if (t.key === "vs" && !isSimflownFlight) return false;
     return true;
   });
-  // Grid responsive: el ancho de los tabs se ajusta según cuántos
-  // sobreviven el filtrado. Para VAS imports queda 1 (NOTAMs); para
-  // vuelos SimFleet quedan 3 (Checklist + Weather + NOTAMs).
-  const gridCols =
-    tabs.length >= 4
-      ? "grid-cols-4"
-      : tabs.length === 3
-        ? "grid-cols-3"
-        : tabs.length === 2
-          ? "grid-cols-2"
-          : "grid-cols-1";
   return (
-    <div className={`grid ${gridCols} gap-1.5`}>
+    <div className="flex shrink-0 gap-1.5">
       {tabs.map((tab) => (
         <button
           key={tab.label}
@@ -2080,7 +2131,7 @@ function DetailActionsBar({
                   ? t("fb.checklist.disabled.tooltip")
                   : t("fb.tabs.coming_soon", { feature: tab.label })
           }
-          className={`relative flex flex-col items-center gap-1 rounded-xl border px-2 py-2 text-[11px] font-medium ring-1 transition-all ${
+          className={`relative inline-flex items-center gap-1.5 rounded-lg border py-1.5 pl-2.5 pr-5 text-[11px] font-medium ring-1 transition-all ${
             tab.active
               ? tab.key === "vs"
                 ? "border-fuchsia-500/60 bg-fuchsia-500/15 text-fuchsia-100 ring-fuchsia-500/30"
@@ -2239,6 +2290,11 @@ function CompactFlightRow({
 /** Acorta el formato del gate fallback. Devuelve el string original
  *  cuando ya viene en un formato corto ("Stand · ...") o cuando no
  *  matchea ningún patrón conocido. */
+/** Sólo el número de puerta: la tarjeta corta ya dice «Puertas». */
+function gateOnly(gate: string | null): string {
+  return gate ? shortGate(gate).replace(/^gate\s*/i, "") : "—";
+}
+
 function shortGate(gate: string): string {
   // Nuevo formato: "Stand · 320° 280m de EBBR" — ya es corto.
   if (gate.startsWith("Stand")) return gate;
@@ -2378,6 +2434,7 @@ function AirlineTagFilter() {
           e.currentTarget.scrollLeft += e.deltaY;
         }
       }}
+      style={{ scrollbarWidth: "none" }}
       className="flex w-full items-center gap-2 overflow-x-auto rounded-2xl border border-sf-border/50 bg-slate-950/70 px-2.5 py-2 shadow-lg ring-1 ring-sf-border/50 backdrop-blur-md [scrollbar-width:thin]"
     >
       {/* (v4.21.0) Chips rediseñados: cada uno con borde + fondo propio
@@ -2584,7 +2641,7 @@ function ChecklistWidget({
 
   return (
     <div
-      className={`pointer-events-auto absolute z-30 rounded-2xl border border-sf-border/80 bg-slate-950/85 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur-xl transition-all ${
+      className={`pointer-events-auto absolute z-30 rounded-2xl border border-sf-border/80 bg-sf-bg/90 shadow-2xl ring-1 ring-sf-border/70 backdrop-blur-xl transition-all ${
         expanded
           ? "inset-3 flex flex-col"
           : "right-3 top-16 flex max-h-[60vh] w-[340px] flex-col"

@@ -22,7 +22,7 @@ const TONE_FILL: Record<Tone, string> = {
   worn: "#a8b934",
   degraded: "#f0a020",
   failed: "#e5484d",
-  none: "#334155",
+  none: "#3a3a3c",
 };
 const TONE_TEXT: Record<Tone, string> = {
   ok: "text-emerald-300",
@@ -422,12 +422,12 @@ function AircraftDiagram({
           width={w}
           height={18}
           rx={9}
-          fill="#0f172a"
-          stroke={active ? "#e2e8f0" : "#475569"}
+          fill="#1c1c1e"
+          stroke={active ? "#e0e0e4" : "#5a5a5f"}
           strokeWidth={active ? 1.6 : 1}
         />
         <circle cx={x - w / 2 + 10} cy={y} r={3.5} fill={TONE_FILL[tone === "none" ? "ok" : tone]} />
-        <text x={x - w / 2 + 18} y={y + 3.5} fontSize={10} fontFamily="ui-monospace, monospace" fontWeight={600} fill="#e2e8f0">
+        <text x={x - w / 2 + 18} y={y + 3.5} fontSize={10} fontFamily="ui-monospace, monospace" fontWeight={600} fill="#e0e0e4">
           {label}
         </text>
       </g>
@@ -438,7 +438,7 @@ function AircraftDiagram({
     <svg viewBox="0 0 400 440" className="mx-auto h-auto w-full max-w-[420px]" role="img" aria-label={t("tlv.aircraft")}>
       {/* Alas y estabilizadores */}
       {([-1, 1] as const).map((side) => (
-        <g key={side} fill="#1e2533" stroke="#56627a" strokeWidth={1.2} strokeLinejoin="round">
+        <g key={side} fill="#262628" stroke="#68686e" strokeWidth={1.2} strokeLinejoin="round">
           <path d={surface(CX + (side * s.w) / 2, s.wing, side)} />
           <path d={surface(CX + (side * s.w) / 2 * 0.8, s.stab, side)} />
         </g>
@@ -452,17 +452,17 @@ function AircraftDiagram({
             width={e.w}
             height={e.h}
             rx={e.w / 2.4}
-            fill="#1e2533"
-            stroke={engineSel === e.n ? "#e2e8f0" : "#56627a"}
+            fill="#262628"
+            stroke={engineSel === e.n ? "#e0e0e4" : "#68686e"}
             strokeWidth={1.2}
           />
-          {e.prop && <line x1={e.x - 22} x2={e.x + 22} y1={e.y - 3} y2={e.y - 3} stroke="#56627a" strokeWidth={2} />}
+          {e.prop && <line x1={e.x - 22} x2={e.x + 22} y1={e.y - 3} y2={e.y - 3} stroke="#68686e" strokeWidth={2} />}
         </g>
       ))}
       {/* Fuselaje */}
-      <path d={fuselagePath(s)} fill="#151b26" stroke="#56627a" strokeWidth={1.4} />
+      <path d={fuselagePath(s)} fill="#1c1c1e" stroke="#68686e" strokeWidth={1.4} />
       {/* Deriva (vista desde arriba: una línea) */}
-      <line x1={CX} x2={CX} y1={s.stab.rootLead - 24} y2={s.bottom - 6} stroke="#56627a" strokeWidth={2.5} strokeLinecap="round" />
+      <line x1={CX} x2={CX} y1={s.stab.rootLead - 24} y2={s.bottom - 6} stroke="#68686e" strokeWidth={2.5} strokeLinecap="round" />
       {/* Cabina */}
       <path
         d={`M ${CX - s.w * 0.28} ${s.top + s.nose * 0.55} Q ${CX} ${s.top + s.nose * 0.3} ${CX + s.w * 0.28} ${s.top + s.nose * 0.55} L ${CX + s.w * 0.24} ${s.top + s.nose * 0.68} Q ${CX} ${s.top + s.nose * 0.55} ${CX - s.w * 0.24} ${s.top + s.nose * 0.68} Z`}
@@ -479,9 +479,9 @@ function AircraftDiagram({
           <circle cx={m.x} cy={m.y} r={11} fill={TONE_FILL[m.tone]} opacity={0.22}>
             <animate attributeName="r" values="9;13;9" dur="2s" repeatCount="indefinite" />
           </circle>
-          <circle cx={m.x} cy={m.y} r={6.5} fill={TONE_FILL[m.tone]} stroke="#0f172a" strokeWidth={1.2} />
+          <circle cx={m.x} cy={m.y} r={6.5} fill={TONE_FILL[m.tone]} stroke="#1c1c1e" strokeWidth={1.2} />
           {m.items.length > 1 && (
-            <text x={m.x} y={m.y + 3} textAnchor="middle" fontSize={8} fontWeight={700} fill="#0f172a">
+            <text x={m.x} y={m.y + 3} textAnchor="middle" fontSize={8} fontWeight={700} fill="#1c1c1e">
               {m.items.length}
             </text>
           )}
@@ -513,11 +513,11 @@ function EgtGauge({ value }: { value: number | undefined }) {
   const c = 2 * Math.PI * r;
   const arc = c * 0.75;
   const frac = value == null ? 0 : Math.max(0, Math.min(1, value / 90));
-  const color = value == null ? "#475569" : value > 25 ? "#2f8f5f" : value > 10 ? "#f0a020" : "#e5484d";
+  const color = value == null ? "#5a5a5f" : value > 25 ? "#2f8f5f" : value > 10 ? "#f0a020" : "#e5484d";
   return (
     <svg viewBox="0 0 70 64" className="h-16 w-[70px] shrink-0">
       <g transform="rotate(135 35 34)">
-        <circle cx={35} cy={34} r={r} fill="none" stroke="#273142" strokeWidth={6} strokeDasharray={`${arc} ${c}`} strokeLinecap="round" />
+        <circle cx={35} cy={34} r={r} fill="none" stroke="#3a3a3c" strokeWidth={6} strokeDasharray={`${arc} ${c}`} strokeLinecap="round" />
         <circle
           cx={35}
           cy={34}
@@ -529,10 +529,10 @@ function EgtGauge({ value }: { value: number | undefined }) {
           strokeLinecap="round"
         />
       </g>
-      <text x={35} y={36} textAnchor="middle" fontSize={13} fontWeight={700} fill="#e2e8f0">
+      <text x={35} y={36} textAnchor="middle" fontSize={13} fontWeight={700} fill="#e0e0e4">
         {value == null ? "—" : `${Math.round(value)}°`}
       </text>
-      <text x={35} y={48} textAnchor="middle" fontSize={7} fill="#94a3b8">
+      <text x={35} y={48} textAnchor="middle" fontSize={7} fill="#a1a1a6">
         {t("tlv.egt_margin")}
       </text>
     </svg>
@@ -612,15 +612,15 @@ function EngineCard({
       <svg viewBox="0 0 470 128" className="mt-1 h-auto w-full">
         <path
           d="M 8 18 Q 4 64 8 110 L 300 104 Q 420 92 462 70 L 462 58 Q 420 36 300 24 Z"
-          fill="#151b26"
-          stroke="#56627a"
+          fill="#1c1c1e"
+          stroke="#68686e"
           strokeWidth={1.4}
         />
         {SECTIONS.map((sec) => {
           const ps = bySection(sec);
           const tn: Tone = ps.length ? worst(ps.map(partTone)) : "none";
           return (
-            <path key={sec} d={SECTION_GEOM[sec].path} fill={TONE_FILL[tn]} stroke="#0f172a" strokeWidth={1}>
+            <path key={sec} d={SECTION_GEOM[sec].path} fill={TONE_FILL[tn]} stroke="#1c1c1e" strokeWidth={1}>
               <title>
                 {[t(`tlv.sec.${sec}`), ...ps.map((p) => `${p.name} · ${pct(p.remainingPct)}`)].join("\n")}
               </title>
@@ -684,11 +684,11 @@ function Tyre({ p, brake }: { p: TechLogPart; brake?: TechLogPart }) {
         <defs>
           <pattern id={`tread-${p.id}`} width="28" height="5" patternUnits="userSpaceOnUse">
             <rect width="28" height="5" fill={TONE_FILL[tn]} />
-            <line x1="0" y1="4.5" x2="28" y2="4.5" stroke="#0f172a" strokeOpacity={0.35} strokeWidth={1} />
+            <line x1="0" y1="4.5" x2="28" y2="4.5" stroke="#1c1c1e" strokeOpacity={0.35} strokeWidth={1} />
           </pattern>
         </defs>
-        <rect x={1} y={1} width={26} height={40} rx={6} fill={`url(#tread-${p.id})`} stroke="#0f172a" strokeOpacity={0.5} />
-        <text x={14} y={25} textAnchor="middle" fontSize={9} fontWeight={700} fill="#f8fafc">
+        <rect x={1} y={1} width={26} height={40} rx={6} fill={`url(#tread-${p.id})`} stroke="#1c1c1e" strokeOpacity={0.5} />
+        <text x={14} y={25} textAnchor="middle" fontSize={9} fontWeight={700} fill="#f5f5f7">
           {tyreLabel(p)}
         </text>
       </svg>
@@ -745,22 +745,45 @@ function WheelsBrakes({ parts }: { parts: TechLogPart[] }) {
 // Vista completa
 // ---------------------------------------------------------------------------
 
+export type TechLogStatusView = "aircraft" | "engines" | "wheels" | "systems";
+
+/** (03/11) Cifras de las tarjetas de Estado. */
+export function statusCounts(data: TechLogAircraft) {
+  const parts = data.allParts ?? data.parts;
+  const engines = [...new Set(parts.map(engineOf).filter((n): n is number => n != null))];
+  const wheels = parts.filter((p) => isTyre(p) || isBrake(p));
+  return {
+    parts: parts.length,
+    worn: parts.filter((p) => partTone(p) !== "ok").length,
+    engines: engines.length,
+    enginesOk: engines.filter((n) => parts.every((p) => engineOf(p) !== n || partTone(p) === "ok")).length,
+    tyres: parts.filter(isTyre).length,
+    wheelsOk: wheels.every((p) => partTone(p) === "ok"),
+    wheelsMinPct: wheels.length > 0 ? Math.min(...wheels.map((p) => p.remainingPct)) : null,
+  };
+}
+
 export function TechLogStatus({
   data,
   model,
   renderActions,
+  view,
+  focusSystem,
+  onGo,
 }: {
   data: TechLogAircraft;
   /** Modelo o título del avión (para elegir la silueta). */
   model?: string | null;
   /** Botones de mantenimiento de una pieza (los mismos de la lista del Hangar). */
   renderActions: (p: TechLogPart) => ReactNode;
+  /** (03/11) Qué parte se ve: cada una es una pestaña del detalle. */
+  view: TechLogStatusView;
+  /** Sistema a abrir al llegar a «Sistemas». */
+  focusSystem?: string | null;
+  onGo: (view: TechLogStatusView, system?: string) => void;
 }) {
   const parts = data.allParts ?? data.parts;
   const kind = silhouetteFor(data.variant, model);
-  // La disposición depende del ancho del panel (el Hangar es más estrecho
-  // que la ventana): ancho → como TechLog (avión | motores y ruedas);
-  // medio → avión | ruedas y motores debajo; estrecho → todo apilado.
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(1200);
   useEffect(() => {
@@ -770,12 +793,11 @@ export function TechLogStatus({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const layout = width >= 1150 ? "wide" : width >= 640 ? "medium" : "narrow";
   // Cada motor necesita ~380 px para que se lean sus secciones.
-  const engineArea = layout === "wide" ? (width * 7) / 12 : width;
-  const engineCols = engineArea >= 780 ? 2 : 1;
+  const engineCols = width >= 780 ? 2 : 1;
   const [engineSel, setEngineSel] = useState<number | null>(null);
-  const [system, setSystem] = useState<string | null>(null);
+  const [system, setSystem] = useState<string | null>(focusSystem ?? null);
+  useEffect(() => setSystem(focusSystem ?? null), [focusSystem]);
   const [query, setQuery] = useState("");
   const systems = useMemo(() => groupSystems(parts), [parts]);
   const engineCount = Math.max(
@@ -792,6 +814,7 @@ export function TechLogStatus({
   const found = q ? parts.filter((p) => `${p.name} ${p.system} ${p.position ?? ""}`.toLowerCase().includes(q)) : [];
 
   const openSystem = (id: string) => {
+    if (view !== "systems") return onGo("systems", id);
     setSystem(id);
     requestAnimationFrame(() => document.getElementById("tlv-system-detail")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   };
@@ -809,26 +832,23 @@ export function TechLogStatus({
           <h3 className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
             {[data.variant, data.engine, data.registration].filter(Boolean).join(" · ")}
           </h3>
-          <div className="flex flex-1 items-center py-2">
+          <div className="mt-2 grid items-center gap-4 md:grid-cols-[minmax(0,1fr)_16rem]">
             <AircraftDiagram
               kind={kind}
               data={data}
               parts={parts}
               engineSel={engineSel}
-              onEngine={(n) => {
-                setEngineSel(n === engineSel ? null : n);
-                document.getElementById(`tlv-engine-${n}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-              }}
+              onEngine={() => onGo("engines")}
               onSystem={openSystem}
             />
-          </div>
-          <div className="grid grid-cols-3 gap-1.5">
-            {counters.map((c) => (
-              <div key={c.label} className="rounded-lg border border-sf-border/70 bg-sf-raised/40 px-2 py-1.5">
-                <div className="text-[9px] uppercase tracking-wide text-sf-muted">{c.label}</div>
-                <div className="font-mono text-sm font-semibold text-sf-text">{c.value}</div>
-              </div>
-            ))}
+            <div className="grid grid-cols-2 gap-1.5">
+              {counters.map((c) => (
+                <div key={c.label} className="rounded-lg border border-sf-border/70 bg-sf-raised/40 px-2 py-1.5">
+                  <div className="text-[9px] uppercase tracking-wide text-sf-muted">{c.label}</div>
+                  <div className="font-mono text-sm font-semibold text-sf-text">{c.value}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
   );
@@ -856,36 +876,15 @@ export function TechLogStatus({
             </div>
           </section>
   );
-  const wheelsPanel = <WheelsBrakes parts={parts} />;
 
   return (
     <div ref={boxRef} className="space-y-4">
-      {layout === "wide" ? (
-        <div className="grid grid-cols-[minmax(0,5fr)_minmax(0,7fr)] gap-4">
-          {aircraftPanel}
-          <div className="space-y-4">
-            {enginesPanel}
-            {wheelsPanel}
-          </div>
-        </div>
-      ) : layout === "medium" ? (
-        <>
-          <div className={cn("grid gap-4", parts.some(isTyre) ? "grid-cols-2" : "grid-cols-1")}>
-            {aircraftPanel}
-            {wheelsPanel}
-          </div>
-          {enginesPanel}
-        </>
-      ) : (
-        <>
-          {aircraftPanel}
-          {enginesPanel}
-          {wheelsPanel}
-        </>
-      )}
+      {view === "aircraft" && aircraftPanel}
+      {view === "engines" && enginesPanel}
+      {view === "wheels" && <WheelsBrakes parts={parts} />}
 
       {/* Sistemas */}
-      <section className="rounded-xl border border-sf-border bg-sf-bg/40 p-4">
+      {view === "systems" && <section className="rounded-xl border border-sf-border bg-sf-bg/40 p-4">
         <header className="mb-3 flex flex-wrap items-center gap-2">
           <h3 className="text-[11px] font-semibold uppercase tracking-wide text-sf-muted">
             {t("tlv.systems", { n: String(parts.length) })}
@@ -989,7 +988,7 @@ export function TechLogStatus({
             </ul>
           </div>
         )}
-      </section>
+      </section>}
     </div>
   );
 }

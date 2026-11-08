@@ -10,6 +10,10 @@ export function openInFlightsimTab(url: string) {
   useAppStore.getState().openFlightsimTab();
 }
 
+/** (03/11) Búsqueda de liveries en flightsim.to (por matrícula). */
+export const liverySearchUrl = (term: string) =>
+  `https://flightsim.to/search?q=${encodeURIComponent(term)}&cat=liveries`;
+
 /** Búsqueda de perfiles GSX de un ICAO en flightsim.to. */
 export const gsxSearchUrl = (icao: string) =>
   `https://flightsim.to/miscellaneous/gsx-pro?q=${encodeURIComponent(icao)}`;

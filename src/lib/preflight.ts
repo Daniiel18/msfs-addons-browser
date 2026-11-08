@@ -1,4 +1,7 @@
+import { sceneriesFor, type NeedRow } from "./dispatch";
+import { gsxStatusFor } from "./gsxStatus";
 import type {
+  GsxLocalProfile,
   AiracUpdateInfo,
   AircraftLocation,
   AvailableUpdate,
@@ -29,11 +32,13 @@ export type CheckStatus = "ok" | "warn" | "info";
 /** Acción sugerida por un check con problema. La ejecuta el modal. */
 export type PreflightAction =
   | { kind: "search"; icao: string }
+  // (03/11) Etapa 8: buscar en flightsim.to la livery que falta.
+  | { kind: "livery-search"; registration: string }
   | { kind: "enable"; folderName: string }
   | { kind: "gsx"; icao: string }
   | { kind: "gsx-update"; icao: string; link: string }
   | { kind: "airac" }
-  | { kind: "hangar"; registration: string }
+  | { kind: "hangar"; registration: string; sub?: "status" | "cockpit" | "cabin" | "flights" }
   // (v8.3 · Etapa 6.1) Traslado del avión al origen del plan.
   | { kind: "ferry"; registration: string; toIcao: string; model: string | null; cost: string; duration: string }
   | { kind: "ferry-cancel"; id: number; toIcao: string }
@@ -90,6 +95,14 @@ export interface PreflightInput {
   maintenance?: PreflightMaintenance | null;
   /** (v8.3) Dónde está el avión del plan y cuánto costaría trasladarlo. */
   fleet?: PreflightFleet | null;
+  /** (03/11) La livery con la matrícula del OFP. */
+  livery?: NeedRow | null;
+  /** (05/11) Aeropuertos con más de un escenario encendido. */
+  duplicates?: Map<string, CommunityPackage[]>;
+  /** (05/11) Aeropuertos que trae detallados el propio simulador. */
+  simAirports?: Set<string>;
+  /** (05/11) Perfiles GSX del disco. */
+  gsxProfiles?: GsxLocalProfile[];
 }
 
 export interface PreflightFleet {
@@ -133,6 +146,8 @@ export interface PreflightMaintenance {
   /** "GO" | "GO_MEL" | "NO_GO" */
   status: string;
   reasons: string[];
+  /** (01/11) Etapa 5a: plazas y asientos bloqueados ("12C"…). */
+  seats?: { total: number; blocked: string[] } | null;
 }
 
 /** (v6.2.37 B3) ¿Es `iso` del "día" del vuelo? Robusto ante zonas
@@ -266,6 +281,26 @@ export function computePreflight(input: PreflightInput): PreflightResult {
     }
   }
 
+  // 1b'. (01/11) Etapa 5a: asientos bloqueados frente a los pasajeros del OFP
+  // (decisión del usuario: aviso si el OFP lleva más que los libres).
+  const seats = mx?.seats;
+  if (mx && seats && seats.total > 0 && seats.blocked.length > 0) {
+    const free = Math.max(0, seats.total - seats.blocked.length);
+    const pax = plan?.paxCount ?? null;
+    const over = pax != null && pax > free;
+    checks.push({
+      id: "seats",
+      status: over ? "warn" : "ok",
+      titleKey: over ? "preflight.check.seats_over" : "preflight.check.seats_ok",
+      titleArgs: { n: String(seats.blocked.length), pax: String(pax ?? 0), free: String(free) },
+      detailKey: "preflight.check.seats_detail",
+      detailArgs: { seats: seats.blocked.slice(0, 8).join(", "), app: mx.appName, total: String(seats.total) },
+      ...(over
+        ? { action: { kind: "hangar" as const, registration: mx.registration, sub: "cabin" as const }, actionKey: "preflight.action.cabin" }
+        : {}),
+    });
+  }
+
   // 1c. (v8.3) Ubicación del avión: si está en otro aeropuerto que el origen,
   // se ofrece el traslado (si vuela igual, se cobra al cerrar el vuelo).
   const fl = input.fleet;
@@ -362,10 +397,7 @@ export function computePreflight(input: PreflightInput): PreflightResult {
   }
 
   const findScenery = (icao: string): CommunityPackage | undefined => {
-    const u = icao.toUpperCase();
-    const matches = packages.filter(
-      (p) => (p.icao ?? "").toUpperCase() === u && !p.isLibraryPack,
-    );
+    const matches = sceneriesFor(icao, packages);
     // Preferimos uno activo; si todos están desactivados, devolvemos el
     // primero para poder ofrecer "activar".
     return matches.find((p) => p.enabled !== false) ?? matches[0];
@@ -392,6 +424,15 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         titleKey: `preflight.check.${leg}_bypass`,
         titleArgs: { icao },
         bypassIcao: icao.toUpperCase(),
+      });
+    } else if (!pkg && input.simAirports?.has(icao.toUpperCase())) {
+      checks.push({
+        id: `${leg}_scn`,
+        status: "info",
+        titleKey: `preflight.check.${leg}_sim`,
+        titleArgs: { icao },
+        action: { kind: "search", icao },
+        actionKey: "preflight.action.download",
       });
     } else if (!pkg) {
       checks.push({
@@ -436,6 +477,17 @@ export function computePreflight(input: PreflightInput): PreflightResult {
       });
     }
 
+    const duplicate = bypass.has(icao.toUpperCase()) ? undefined : input.duplicates?.get(icao.toUpperCase());
+    if (duplicate) {
+      checks.push({
+        id: `${leg}_dup`,
+        status: "warn",
+        titleKey: "preflight.check.duplicate",
+        titleArgs: { icao, names: duplicate.map((p) => p.title).join(" · ") },
+        detailKey: "preflight.check.duplicate_hint",
+      });
+    }
+
     // (v6.2.34) GSX: si usas GSX y tienes el escenario instalado pero NO
     // hay perfil GSX para este aeropuerto, ofrecemos buscarlo/descargarlo.
     // Es informativo (no bloquea "listo"), y no aplica si vas por defecto.
@@ -456,6 +508,26 @@ export function computePreflight(input: PreflightInput): PreflightResult {
       });
     }
 
+    // (05/11) Perfil repetido o que cita a otro escenario.
+    if (gsxEnabled && !bypass.has(icao.toUpperCase())) {
+      const gsx = gsxStatusFor(icao, sceneriesFor(icao, packages), input.gsxProfiles ?? []);
+      if (gsx.status === "duplicate") {
+        checks.push({
+          id: `${leg}_gsx_dup`,
+          status: "info",
+          titleKey: "preflight.check.gsx_duplicate",
+          titleArgs: { icao, n: String(gsx.profiles.length) },
+        });
+      } else if (gsx.status === "other_scenery") {
+        checks.push({
+          id: `${leg}_gsx_other`,
+          status: "info",
+          titleKey: "preflight.check.gsx_other",
+          titleArgs: { icao, dev: gsx.otherDev ?? "" },
+        });
+      }
+    }
+
     // (v6.2.44) GSX: perfil instalado PERO con update disponible en
     // flightsim.to → info con link para re-descargar la versión nueva.
     const gsxUpd = gsxUpdatesMap.get(icao.toUpperCase());
@@ -474,6 +546,58 @@ export function computePreflight(input: PreflightInput): PreflightResult {
         titleArgs: { icao, version: gsxUpd.latestVersion ?? "?" },
         action: { kind: "gsx-update", icao, link: gsxUpd.link },
         actionKey: "preflight.action.gsx_update",
+      });
+    }
+  }
+
+  // (03/11) Etapa 8: el alternativo es informativo. No tener su escenario no
+  // cuenta como punto a revisar; tenerlo apagado ofrece activarlo.
+  if (route?.fromPlan) {
+    for (const icao of plan?.alternateIcaos ?? []) {
+      const pkg = findScenery(icao);
+      checks.push(
+        !pkg
+          ? { id: `alt_${icao}`, status: "info", titleKey: "preflight.check.alt_default", titleArgs: { icao } }
+          : pkg.enabled === false
+            ? {
+                id: `alt_${icao}`,
+                status: "info",
+                titleKey: "preflight.check.alt_disabled",
+                titleArgs: { icao },
+                action: { kind: "enable", folderName: pkg.folderName },
+                actionKey: "preflight.action.enable",
+              }
+            : { id: `alt_${icao}`, status: "ok", titleKey: "preflight.check.alt_ok", titleArgs: { icao } },
+      );
+    }
+  }
+
+  // (03/11) Etapa 8: la livery del OFP. Nunca impide volar.
+  const livery = route?.fromPlan ? input.livery : null;
+  if (livery?.code) {
+    const reg = livery.code;
+    const titleArgs = { reg };
+    if (livery.status === "on") {
+      checks.push({ id: "livery", status: "ok", titleKey: "preflight.check.livery_ok", titleArgs });
+    } else if (livery.status === "turns_on" && livery.pkg) {
+      checks.push({
+        id: "livery",
+        status: "info",
+        titleKey: "preflight.check.livery_disabled",
+        titleArgs,
+        action: { kind: "enable", folderName: livery.pkg.folderName },
+        actionKey: "preflight.action.enable",
+      });
+    } else if (livery.status === "other") {
+      checks.push({ id: "livery", status: "info", titleKey: "preflight.check.livery_other", titleArgs });
+    } else {
+      checks.push({
+        id: "livery",
+        status: "info",
+        titleKey: "preflight.check.livery_missing",
+        titleArgs,
+        action: { kind: "livery-search", registration: reg },
+        actionKey: "preflight.action.search_flightsim",
       });
     }
   }

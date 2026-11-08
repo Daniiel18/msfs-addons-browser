@@ -26,6 +26,8 @@ export type DownloadRecovery = {
   addonSimulator?: string;
   methods: DownloadMethod[];
   reason: string;
+  /** (04/11) Lo que la descarga sustituía: se conserva al cambiar de enlace. */
+  replaces?: string | null;
 };
 
 /** (v7.1) Métodos por addon guardados al iniciar una descarga, para reofrecer
@@ -88,6 +90,9 @@ interface DownloadsState {
     allMethods?: DownloadMethod[];
     /** (v8.3) Notas de instalación de la ficha (aerohub). */
     notes?: string | null;
+    /** (04/11) Carpeta instalada que esto sustituye al terminar (Reinstalar y
+     *  Actualizar). Nada se borra antes. */
+    replaces?: string | null;
   }) => Promise<void>;
   /** (v7.1) Estado del modal de recuperación tras fallo de torrent. */
   recovery: DownloadRecovery | null;
@@ -212,7 +217,18 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
         .getState()
         .rescan()
         .catch((e) => console.warn("community rescan failed:", e));
-    } else if (job.phase === "error" && prev?.phase !== "error") {
+    }
+    // (04/11) Lo nuevo quedó instalado, pero lo sustituido sigue ahí.
+    if (job.phase === "completed" && job.replaces && job.error && prev?.error !== job.error) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("toast.download.replace_failed"),
+        message: job.error,
+        onClick: () => useDownloadsStore.getState().openPanelAt("active"),
+        ttlMs: null,
+      });
+    }
+    if (job.phase === "error" && prev?.phase !== "error") {
       // (v7.1) Si el que falló fue un TORRENT (típicamente sin seeds o timeout)
       // y tenemos los métodos del addon, reofrecemos los mirrors en un modal en
       // vez de dejar al usuario en un callejón sin salida. Si no, toast normal.
@@ -232,6 +248,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
             addonSimulator: meta.addonSimulator,
             methods: meta.methods,
             reason: job.error ?? "",
+            replaces: job.replaces,
           },
         });
       } else {
@@ -253,7 +270,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     }
   },
 
-  async start({ addonId, addonTitle, source, method, addonSimulator, allMethods, notes }) {
+  async start({ addonId, addonTitle, source, method, addonSimulator, allMethods, notes, replaces }) {
     // Intentionally do NOT auto-open the panel here. The button in the
     // header has a live badge count, and surprising the user with a
     // full-screen scrim on every click is worse UX than letting them
@@ -265,7 +282,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
     }
     set({ recovery: null });
     try {
-      const job = await api.startDownload({ addonId, addonTitle, source, method, addonSimulator });
+      const job = await api.startDownload({ addonId, addonTitle, source, method, addonSimulator, replaces });
       if (notes) jobNotes.set(job.id, notes);
       // Ensure the store has the initial state even if the event for
       // "queued" beat us (race between invoke-return and event-emit).
@@ -337,6 +354,7 @@ export const useDownloadsStore = create<DownloadsState>((set, get) => ({
       addonSimulator: addon.simulator,
       allMethods: addon.downloadMethods,
       notes: addon.notes,
+      replaces: job.replaces,
     });
     await get().clear(job.id);
   },

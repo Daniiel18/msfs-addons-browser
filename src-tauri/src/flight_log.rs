@@ -160,16 +160,16 @@ pub async fn start_flight(
     aircraft_atc: Option<&str>,
 ) -> anyhow::Result<i64> {
     let nearest = nearest_airport_with_coords(pool, lat, lon).await?;
-    // (v1.1.1) Defensa contra "vuelos fantasma" cuando MSFS reporta
-    // posición (0, 0) durante el splash/menú antes de que el
-    // escenario cargue. Si Y no hay airport cercano (esa zona del
-    // Atlántico ecuatorial no tiene ninguno), rechazamos la creación.
+    // (v1.1.1) Defensa contra "vuelos fantasma" cuando MSFS reporta una
+    // posición de carga durante el splash/menú antes de que el escenario
+    // cargue. Si Y no hay airport cercano (en esos puntos del océano no hay
+    // ninguno), rechazamos la creación.
     // El state machine del watcher YA filtra esto upstream, pero
     // esta guard cubre cualquier camino que llegue aquí (ej. el
     // comando debug_seed_flight_log o llamadas manuales).
-    if nearest.is_none() && lat.abs() < 0.01 && lon.abs() < 0.01 {
+    if nearest.is_none() && is_limbo(lat, lon) {
         anyhow::bail!(
-            "posición (0, 0) sin airport cercano — probablemente MSFS aún cargando el escenario, vuelo no creado"
+            "posición de carga ({lat:.4}, {lon:.4}) sin airport cercano — probablemente MSFS aún cargando el escenario, vuelo no creado"
         );
     }
     let started_at = chrono::Utc::now()
@@ -394,7 +394,7 @@ pub async fn finish_flight(
             distance_nm          = ?6,
             flight_time_s        = ?7,
             max_altitude_ft      = COALESCE(?8, max_altitude_ft),
-            landing_fpm          = ?9,
+            landing_fpm          = COALESCE(?9, landing_fpm),
             max_ground_speed_kt  = ?10,
             max_true_airspeed_kt = ?11,
             arrival_gate         = COALESCE(arrival_gate, ?12),
@@ -527,7 +527,7 @@ pub async fn update_entry(
     if callsign.is_some() {
         sets.push("callsign = ?");
     }
-    if airline_from_callsign.is_some() {
+    if callsign.is_some() {
         sets.push("airline_icao = ?");
     }
     if sets.is_empty() {
@@ -570,11 +570,12 @@ pub async fn update_entry(
     if let Some(v) = flight_number {
         q = q.bind(v);
     }
+    let update_airline = callsign.is_some();
     if let Some(v) = callsign {
         q = q.bind(v);
     }
-    if let Some(v) = airline_from_callsign {
-        q = q.bind(v);
+    if update_airline {
+        q = q.bind(airline_from_callsign);
     }
     q = q.bind(id);
     q.execute(pool).await?;
@@ -890,10 +891,11 @@ pub async fn finalize_landed_open_flights(pool: &SqlitePool) -> anyhow::Result<u
             destination_lon = COALESCE(destination_lon, last_position_lon),
             flight_time_s = COALESCE(
                 flight_time_s,
-                CAST(
+                MAX(0, CAST(
                     strftime('%s', COALESCE(last_position_at, datetime('now')))
-                    - strftime('%s', started_at) AS INTEGER
-                )
+                    - strftime('%s', started_at)
+                    - COALESCE(paused_seconds, 0) AS INTEGER
+                ))
             )
         WHERE ended_at IS NULL
           AND landing_fpm IS NOT NULL
@@ -917,7 +919,14 @@ pub async fn close_flight_as_partial(pool: &SqlitePool, id: i64) -> anyhow::Resu
             status          = 'partial',
             partial_ack     = 0,
             destination_lat = COALESCE(destination_lat, last_position_lat),
-            destination_lon = COALESCE(destination_lon, last_position_lon)
+            destination_lon = COALESCE(destination_lon, last_position_lon),
+            flight_time_s   = COALESCE(flight_time_s,
+                MAX(0, CAST(
+                    strftime('%s', COALESCE(last_position_at, datetime('now')))
+                    - strftime('%s', started_at)
+                    - COALESCE(paused_seconds, 0) AS INTEGER
+                ))
+            )
         WHERE id = ?1
           AND ended_at IS NULL
         "#,
@@ -2393,15 +2402,28 @@ pub async fn pilot_profile(pool: &SqlitePool) -> anyhow::Result<PilotProfile> {
     }
 }
 
+/// (05/11) ¿Es una posición de mentira? Mientras carga, MSFS deja el avión en
+/// (0, 0) y MSFS 2024 además en (0, 90), allí a 101.932 ft y 533 kt. En esos
+/// puntos del océano no hay ningún aeropuerto. Sin dato tampoco vale.
+pub fn is_limbo(lat: f64, lon: f64) -> bool {
+    !lat.is_finite()
+        || !lon.is_finite()
+        || (lat.abs() < 0.01 && (lon.abs() < 0.01 || (lon - 90.0).abs() < 0.01))
+}
+
 /// (v1.1.1) Borra "vuelos fantasma" creados por bugs de versiones
-/// anteriores cuando MSFS reportaba el avión en world origin (0, 0)
+/// anteriores cuando MSFS reportaba el avión en una posición de carga
 /// durante el splash. Sólo borra filas con origen claramente
 /// imposible — no toca historiales reales.
 ///
 /// Criterios (OR):
 ///   1. `|origin_lat| < 0.01 && |origin_lon| < 0.01` — world origin,
-///      no hay aeropuertos ahí (Golfo de Guinea océano).
-///   2. `origin_icao IS NULL AND distance_nm < 2 AND flight_time_s < 60` —
+///      no hay aeropuertos ahí (Golfo de Guinea océano). Los imports del
+///      logbook de MSFS se salvan: traen (0, 0) de relleno.
+///   2. (05/11) Origen en (0, 90), la posición de carga de MSFS 2024, terminado
+///      y de menos de 15 min. El avión «aterrizaba» al aparecer en su sitio y
+///      el vuelo quedaba abierto: si luego se voló de verdad, se conserva.
+///   3. `origin_icao IS NULL AND distance_nm < 2 AND flight_time_s < 60` —
 ///      "vuelo" microscópico sin aeropuerto que detectamos como junk.
 ///
 /// Devuelve cuántas filas se borraron. La cascada elimina también
@@ -2427,6 +2449,12 @@ const JUNK_WHERE: &str = r#"
         WHERE (
                 source IS NOT 'msfs-logbook'
                 AND ABS(origin_lat) < 0.01 AND ABS(origin_lon) < 0.01
+              )
+           OR (
+                source IS NOT 'msfs-logbook'
+                AND ABS(origin_lat) < 0.01 AND ABS(origin_lon - 90) < 0.01
+                AND ended_at IS NOT NULL
+                AND COALESCE(flight_time_s, 0) < 900
               )
            OR (
                 origin_icao IS NULL
@@ -2521,6 +2549,72 @@ mod tests {
     fn haversine_zero_for_same_point() {
         let d = haversine_nm(40.0, -73.0, 40.0, -73.0);
         assert!(d < 0.0001);
+    }
+}
+
+#[cfg(test)]
+mod limbo_tests {
+    use super::*;
+
+    #[test]
+    fn the_loading_positions_are_not_real() {
+        assert!(is_limbo(0.0, 0.0));
+        assert!(is_limbo(-2.1556896488427017e-7, 90.00032277330374), "la de MSFS 2024");
+        assert!(is_limbo(f64::NAN, 10.0));
+        assert!(is_limbo(10.0, f64::INFINITY));
+    }
+
+    #[test]
+    fn real_positions_are_kept() {
+        assert!(!is_limbo(51.1283, -114.0094), "CYYC");
+        assert!(!is_limbo(0.0, 89.9), "cerca del punto pero no en él");
+        assert!(!is_limbo(0.02, 90.0));
+        assert!(!is_limbo(0.0, -90.0));
+        assert!(!is_limbo(0.04, 32.44), "Entebbe, casi en el ecuador");
+    }
+
+    async fn flight(pool: &SqlitePool, lat: f64, lon: f64, icao: Option<&str>, source: &str, secs: i64) -> i64 {
+        sqlx::query(
+            "INSERT INTO flight_log (started_at, ended_at, origin_lat, origin_lon, origin_icao, flight_time_s, source)
+             VALUES ('2026-11-05T04:37:04Z', '2026-11-05T04:42:20Z', ?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(lat)
+        .bind(lon)
+        .bind(icao)
+        .bind(secs)
+        .bind(source)
+        .execute(pool)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    /// El vuelo 290 de la prueba real: origen en la posición de carga, sin
+    /// aeropuertos y con 316 s, así que el otro criterio no lo atrapaba. Uno
+    /// largo desde ahí es un vuelo de verdad que arrancó con el fallo: se queda.
+    #[tokio::test]
+    async fn the_startup_cleanup_removes_only_the_loading_ghost() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let ghost = flight(&pool, -2.1556896488427017e-7, 90.00032277330374, None, "simconnect", 316).await;
+        let normal = flight(&pool, 45.3225, -75.6692, Some("CYOW"), "simconnect", 316).await;
+        let imported = flight(&pool, 0.0, 90.0, Some("KJFK"), "msfs-logbook", 316).await;
+        let equator = flight(&pool, 0.04, 32.44, Some("HUEN"), "simconnect", 316).await;
+        let flown = flight(&pool, -2.1556896488427017e-7, 90.00032277330374, None, "simconnect", 14_100).await;
+
+        assert_eq!(delete_junk_flights(&pool).await.unwrap(), 1);
+
+        let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM flight_log ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(!left.contains(&ghost));
+        assert_eq!(left, vec![normal, imported, equator, flown]);
     }
 }
 

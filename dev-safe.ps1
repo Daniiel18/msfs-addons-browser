@@ -11,6 +11,9 @@
 #   · Google Drive: msfs-addons-data.PRUEBAS.json  · Supabase: tablas *_test
 #   · Autoarranque: «SimFleet Pruebas»  · Clips: Videos\SimFleet Landings - PRUEBAS
 # NO aislados (a propósito): la carpeta Community real, SimConnect y Discord.
+# Para probar encendidos en lote (Enfocar, conjuntos) sin tocar la real:
+#   $env:SIMFLEET_COMMUNITY_DIR = "<carpeta con una copia sin contenido>"
+# Para que la secuencia de arranque abra el simulador de verdad: $env:SIMFLEET_REAL_SIM = "1"
 #
 # SimConnect (FlightBook / Best Landings) está ACTIVO por defecto.
 # Uso:  .\dev-safe.ps1               (SimConnect activo)

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 
-use super::catalog::{catalog, detect_profile, Catalog, CompDef, Family, Profile};
+use super::catalog::{aisle_breaks, catalog, detect_profile, seat_defs, seat_layout, Catalog, CompDef, Family, Profile, SEAT_KEYS};
 use super::recorder::{Effect, FlightEvent, FlightRecord, LandingRec, Target};
 use crate::airline_economy::normalize_reg;
 use crate::techlog::{
@@ -180,7 +180,7 @@ async fn rates(pool: &SqlitePool) -> Rates {
 }
 
 fn remaining(c: &Comp, def: &CompDef, a: &Airframe, r: &Rates, now: DateTime<Utc>) -> f64 {
-    if def.kind() == "wear" {
+    if matches!(def.kind(), "wear" | "seat") {
         return (100.0 - c.wear).clamp(0.0, 100.0);
     }
     let rate = if def.kind() == "cabin" { r.cabin } else { r.life };
@@ -194,7 +194,7 @@ fn remaining(c: &Comp, def: &CompDef, a: &Airframe, r: &Rates, now: DateTime<Utc
 
 /// Fija el % restante de una pieza (reparación) moviendo su base.
 fn set_remaining(c: &mut Comp, def: &CompDef, a: &Airframe, r: &Rates, pct: f64, now: DateTime<Utc>) {
-    if def.kind() == "wear" {
+    if matches!(def.kind(), "wear" | "seat") {
         c.wear = 100.0 - pct;
         return;
     }
@@ -206,7 +206,7 @@ fn set_remaining(c: &mut Comp, def: &CompDef, a: &Airframe, r: &Rates, pct: f64,
 
 /// Consume una fracción de vida (abuso).
 fn consume(c: &mut Comp, def: &CompDef, r: &Rates, share: f64) {
-    if def.kind() == "wear" {
+    if matches!(def.kind(), "wear" | "seat") {
         c.wear = (c.wear + share * 100.0).min(100.0);
     } else {
         let rate = if def.kind() == "cabin" { r.cabin } else { r.life };
@@ -397,12 +397,105 @@ async fn profile_for(pool: &SqlitePool, reg: &str, hint: Option<&str>) -> (Profi
 }
 
 async fn ensure_airframe(pool: &SqlitePool, reg: &str, profile: Option<Profile>, hint: Option<&str>) -> Result<Airframe> {
-    if let Some(a) = load_airframe(pool, reg).await? {
-        return Ok(a);
+    let a = match load_airframe(pool, reg).await? {
+        Some(a) => a,
+        None => {
+            let (detected, title) = profile_for(pool, reg, hint).await;
+            let p = profile.unwrap_or(detected);
+            create_airframe(pool, reg, &p, title.as_deref()).await?
+        }
+    };
+    ensure_seats(pool, &a).await?;
+    Ok(a)
+}
+
+/// (02/11) Etapa 5b — asientos de pasajero del avión (Cabina propia), una
+/// sola vez. Empiezan con un desgaste repartido, como un avión en servicio
+/// (decisión del usuario): cada pieza de cada asiento, distinto y fijo.
+async fn ensure_seats(pool: &SqlitePool, a: &Airframe) -> Result<()> {
+    let have: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM mx_component WHERE registration = ?1
+           AND key IN ('SEAT_RECLINE', 'SEAT_TRAY', 'SEAT_BELT', 'SEAT_LIGHT')",
+    )
+    .bind(&a.reg)
+    .fetch_one(pool)
+    .await?;
+    if have > 0 {
+        return Ok(());
     }
-    let (detected, title) = profile_for(pool, reg, hint).await;
-    let p = profile.unwrap_or(detected);
-    create_airframe(pool, reg, &p, title.as_deref()).await
+    let title: Option<String> = sqlx::query_scalar("SELECT title FROM mx_airframe WHERE registration = ?1")
+        .bind(&a.reg)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    let p = Profile { family: a.family, variant: a.variant.clone(), engine: a.engine.clone() };
+    let Some((rows, letters)) = seat_layout(&p, title.as_deref()) else {
+        return Ok(());
+    };
+    let now = Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await?;
+    for row in 1..=rows {
+        for l in letters.chars() {
+            let pos = format!("{row}{l}");
+            for def in seat_defs() {
+                let life = (def.life * life_factor(&a.reg, &def.key, &pos, 0) * 10.0).round() / 10.0;
+                let wear = (unit(&a.reg, &def.key, &pos, 0, "seat-age") * 990.0).round() / 10.0;
+                sqlx::query(
+                    "INSERT OR IGNORE INTO mx_component (registration, key, position, serial, installed_at, basis_at_install, life, wear)
+                     VALUES (?1,?2,?3,0,?4,0,?5,?6)",
+                )
+                .bind(&a.reg)
+                .bind(&def.key)
+                .bind(&pos)
+                .bind(&now)
+                .bind(life)
+                .bind(wear)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+    }
+    tx.commit().await?;
+    tracing::info!(target: "mx", "{}: cabina de {} filas ({letters}) en el Tech Log", a.reg, rows);
+    Ok(())
+}
+
+/// (02/11) Asientos que ocupa un vuelo: sus pasajeros (o el 80 % si no hay
+/// dato) entre los no bloqueados, primero ventanilla y pasillo y, entre
+/// iguales, distintos en cada vuelo.
+fn occupy_seats(reg: &str, flight_id: i64, comps: &[Comp], pax: Option<i64>) -> Vec<String> {
+    let mut seats: Vec<String> = comps.iter().filter(|c| c.key == "SEAT_RECLINE").map(|c| c.pos.clone()).collect();
+    if seats.is_empty() {
+        return seats;
+    }
+    let mut letters: Vec<char> = seats.iter().filter_map(|s| s.chars().last()).collect();
+    letters.sort_unstable();
+    letters.dedup();
+    let breaks = aisle_breaks(letters.len());
+    let rank = |seat: &str| -> u8 {
+        let l = seat.chars().last().unwrap_or('A');
+        let i = letters.iter().position(|x| *x == l).unwrap_or(0);
+        if i == 0 || i + 1 == letters.len() {
+            0
+        } else if breaks.iter().any(|b| i + 1 == *b || i == *b) {
+            1
+        } else {
+            2
+        }
+    };
+    // `None` es no saberlo; 0 es un vuelo vacío (posicionamiento).
+    let want = pax
+        .map(|p| p.max(0) as usize)
+        .unwrap_or(((seats.len() as f64) * 0.8).round() as usize);
+    let blocked: std::collections::HashSet<&str> = comps
+        .iter()
+        .filter(|c| SEAT_KEYS.contains(&c.key.as_str()) && c.status == "Failed")
+        .map(|c| c.pos.as_str())
+        .collect();
+    seats.retain(|s| !blocked.contains(s.as_str()));
+    seats.sort_by_cached_key(|s| (rank(s), (unit(reg, s, "", flight_id, "seat-pick") * 1e9) as u64));
+    seats.truncate(want);
+    seats
 }
 
 /// Abre un defecto (salvo que ya haya uno abierto/diferido igual). Devuelve su id.
@@ -687,6 +780,31 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
         c.apu_starts += rec.apu_starts as f64;
     }
 
+    // 1b) (02/11) Asientos: sólo se gastan los ocupados.
+    let flight_pax: Option<i64> = sqlx::query_scalar("SELECT passengers FROM flight_log WHERE id = ?1")
+        .bind(rec.flight_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+    let occupied = occupy_seats(&reg, rec.flight_id, &comps, flight_pax);
+    if !occupied.is_empty() {
+        let set: std::collections::HashSet<&str> = occupied.iter().map(String::as_str).collect();
+        for c in comps
+            .iter_mut()
+            .filter(|c| SEAT_KEYS.contains(&c.key.as_str()) && set.contains(c.pos.as_str()))
+        {
+            if c.status != "Failed" && c.life > 0.0 {
+                c.wear = (c.wear + 100.0 * r.cabin / c.life).min(100.0);
+            }
+        }
+        for seat in &occupied {
+            *a.counters.wear_extra.entry(format!("SeatCycles:{seat}")).or_default() += 1.0;
+        }
+        wear.add("Passenger seats occupied".into(), occupied.len() as f64, "seats");
+    }
+
     // 2) Margen EGT por despegue (TOGA gasta más que FLEX).
     let flex = rec.takeoffs.saturating_sub(rec.toga_takeoffs) as f64;
     for (i, m) in a.egt.iter_mut().enumerate() {
@@ -816,7 +934,7 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
         let Some(def) = cat.component(&c.key) else { continue };
         let rem = remaining(c, def, &a, &r, now);
         if rem <= 0.0 {
-            failures.push((idx, if def.kind() == "wear" { "worn to limits".into() } else { "end of its life".into() }));
+            failures.push((idx, if matches!(def.kind(), "wear" | "seat") { "worn to limits".into() } else { "end of its life".into() }));
         }
     }
     for (idx, why) in failures {
@@ -825,7 +943,16 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
         let (mel, source) = match c.key.as_str() {
             "TYRE_MAIN" => ("32-41-01", "Wear"),
             "TYRE_NOSE" => ("32-41-02", "Wear"),
-            _ => (def.mel.as_str(), if def.kind() == "wear" { "Wear" } else if def.kind() == "cabin" { "Cabin" } else { "Life" }),
+            _ => (
+                def.mel.as_str(),
+                if def.kind() == "wear" {
+                    "Wear"
+                } else if matches!(def.kind(), "cabin" | "seat") {
+                    "Cabin"
+                } else {
+                    "Life"
+                },
+            ),
         };
         let detail = format!(
             "{}: {why}.",
@@ -837,6 +964,13 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
         let pos = (!c.pos.is_empty()).then_some(c.pos.as_str());
         c.defect_id = raise(pool, cat, &reg, mel, pos, source, Some(&c.key), &detail, Some(rec.flight_id)).await?;
         c.status = "Failed".into();
+        // (02/11) Asiento: se bloquea y su defecto queda diferido bajo la MEL
+        // (no deja el avión en NO-GO).
+        if def.kind() == "seat" {
+            if let Some(id) = c.defect_id {
+                defer_defect(pool, &a, id).await?;
+            }
+        }
         events.push(FlightEvent { phase: "FLIGHT".into(), kind: "DEFECT".into(), severity: "Warning".into(), text: format!("{} failed: {why}", def.name_for(&c.pos)) });
     }
     for c in comps.iter_mut() {
@@ -933,8 +1067,9 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
             .iter()
             .filter_map(|c| {
                 let b = before_comps.iter().find(|b| b.id == c.id)?;
-                let changed = b.basis_at_install != c.basis_at_install
-                    || b.wear != c.wear
+                // (02/11) Un asiento sólo va aquí si falló; su uso, en `seats`.
+                let seat = SEAT_KEYS.contains(&c.key.as_str());
+                let changed = (!seat && (b.basis_at_install != c.basis_at_install || b.wear != c.wear))
                     || b.status != c.status
                     || b.defect_id != c.defect_id;
                 changed.then(|| PartUndo {
@@ -953,6 +1088,7 @@ pub async fn commit_flight(pool: &SqlitePool, mut rec: FlightRecord, landing_fpm
                 })
             })
             .collect(),
+        seats: SeatUndo { occupied, rate: r.cabin },
     };
     sqlx::query(
         "INSERT OR REPLACE INTO mx_flight (flight_id, registration, summary, events, wear, dispatch_violation, created_at, undo) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -987,6 +1123,15 @@ struct FlightUndo {
     egt_before: Vec<f64>,
     egt_after: Vec<f64>,
     parts: Vec<PartUndo>,
+    /// (02/11) Asientos que ocupó el vuelo y el ritmo de cabina de entonces.
+    seats: SeatUndo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SeatUndo {
+    occupied: Vec<String>,
+    rate: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1039,7 +1184,7 @@ fn undo_counters(cur: &mut Counters, before: &Counters, after: &Counters) {
 /// abiertos. Los defectos que abrió y siguen abiertos o diferidos se borran;
 /// lo ya reparado queda como historial. `false` si el vuelo no tenía registro.
 pub async fn revert_flight(pool: &SqlitePool, flight_id: i64) -> Result<bool> {
-    let Some(row) = sqlx::query("SELECT registration, undo FROM mx_flight WHERE flight_id = ?1")
+    let Some(row) = sqlx::query("SELECT registration, undo, created_at FROM mx_flight WHERE flight_id = ?1")
         .bind(flight_id)
         .fetch_optional(pool)
         .await?
@@ -1047,6 +1192,7 @@ pub async fn revert_flight(pool: &SqlitePool, flight_id: i64) -> Result<bool> {
         return Ok(false);
     };
     let reg: String = row.try_get("registration")?;
+    let created: String = row.try_get("created_at").unwrap_or_default();
     let undo: Option<FlightUndo> = row
         .try_get::<Option<String>, _>("undo")
         .ok()
@@ -1083,6 +1229,28 @@ pub async fn revert_flight(pool: &SqlitePool, flight_id: i64) -> Result<bool> {
                     c.defect_id = p.defect_before;
                 }
                 save_component(pool, c).await?;
+            }
+            // (02/11) Asientos ocupados: lo que gastó el vuelo (los que
+            // fallaron ya vuelven arriba; los cambiados después, no se tocan).
+            if !u.seats.occupied.is_empty() && u.seats.rate > 0.0 {
+                let in_parts: std::collections::HashSet<(&str, &str)> =
+                    u.parts.iter().map(|p| (p.key.as_str(), p.pos.as_str())).collect();
+                let replaced: Vec<i64> = sqlx::query_scalar(
+                    "SELECT id FROM mx_component WHERE registration = ?1 AND installed_at > ?2
+                       AND key IN ('SEAT_RECLINE', 'SEAT_TRAY', 'SEAT_BELT', 'SEAT_LIGHT')",
+                )
+                .bind(&reg)
+                .bind(&created)
+                .fetch_all(pool)
+                .await?;
+                let occupied: std::collections::HashSet<&str> = u.seats.occupied.iter().map(String::as_str).collect();
+                for c in comps.iter_mut().filter(|c| SEAT_KEYS.contains(&c.key.as_str()) && occupied.contains(c.pos.as_str())) {
+                    if in_parts.contains(&(c.key.as_str(), c.pos.as_str())) || replaced.contains(&c.id) || c.life <= 0.0 {
+                        continue;
+                    }
+                    c.wear = (c.wear - 100.0 * u.seats.rate / c.life).max(0.0);
+                    save_component(pool, c).await?;
+                }
             }
         }
     }
@@ -1189,6 +1357,10 @@ async fn check_states(pool: &SqlitePool, a: &Airframe) -> Result<Vec<CheckState>
 /// Checks vencidos → defecto NO-GO; diferidos que llegan a su fecha → los
 /// arregla mantenimiento (y se cobra), como en TechLog.
 async fn housekeeping(pool: &SqlitePool, a: &Airframe) -> Result<()> {
+    let managed = crate::techlog::managed_registrations().await;
+    if managed.contains_key(&crate::techlog::normalize_reg(&a.reg)) {
+        return Ok(());
+    }
     let cat = a.cat();
     for st in check_states(pool, a).await? {
         if st.overdue {
@@ -1533,7 +1705,24 @@ pub async fn action(pool: &SqlitePool, req: TlActionRequest) -> Result<TlActionR
         "service" => {
             let kind = req.key.clone().ok_or_else(|| anyhow!("falta el servicio"))?;
             let cost = service(pool, &mut a, &kind).await?;
-            (true, format!("Serviced ({cost:.0} USD)."))
+            // (8.4.x) Si GSX ya cobró este servicio en esta escala, el del
+            // Tech Log se reembolsa al momento (y se dice).
+            let component = format!("mx:service:{kind}");
+            let refunded = cost > 0.0
+                && crate::service_refunds::svc_of_charge(&component).is_some()
+                && match crate::service_refunds::reconcile_from_db(pool).await {
+                    Ok(o) => o.refunded.iter().any(|(r, c, _)| r == &a.reg && c == &component),
+                    Err(e) => {
+                        tracing::warn!(target: "mx", "reembolso de {component}: {e:#}");
+                        false
+                    }
+                };
+            let cost = format!("{cost:.0}");
+            if refunded {
+                (true, crate::tr!("mx.servicedRefundedGsx", cost = cost))
+            } else {
+                (true, crate::tr!("mx.serviced", cost = cost))
+            }
         }
         "check" => {
             let key = req.key.clone().ok_or_else(|| anyhow!("falta el check"))?;
@@ -1617,13 +1806,21 @@ fn consumable_views(a: &Airframe) -> Vec<TlConsumable> {
     out
 }
 
-/// Estado del avión en el Tech Log propio (lo crea nuevo si no existe).
+/// Estado del avión en el Tech Log propio. Solo crea el airframe si
+/// `title_hint` confirma que el avión existe (lo pasa el frontend con
+/// datos de vuelo).
 pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Option<&str>) -> Result<Option<TechLogAircraft>> {
     let reg = normalize_reg(registration);
     if reg.is_empty() {
         return Ok(None);
     }
-    let a = ensure_airframe(pool, &reg, None, title_hint).await?;
+    let a = match load_airframe(pool, &reg).await? {
+        Some(a) => a,
+        None => match title_hint {
+            Some(_) => ensure_airframe(pool, &reg, None, title_hint).await?,
+            None => return Ok(None),
+        },
+    };
     housekeeping(pool, &a).await?;
     let cat = a.cat();
     let r = rates(pool).await;
@@ -1658,6 +1855,8 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
                 failure: None,
                 placard: None,
                 restrictions: None,
+                report: None,
+                parts_expected_utc: None,
             }
         })
         .collect();
@@ -1668,6 +1867,9 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
     let mut all_parts = Vec::new();
     for c in &comps {
         let Some(def) = cat.component(&c.key) else { continue };
+        if def.kind() == "seat" {
+            continue;
+        }
         let rem = remaining(c, def, &a, &r, now);
         condition.count(&c.status, rem < worn_below, rem);
         all_parts.push(TlPart {
@@ -1760,6 +1962,7 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
         last_seen_utc: last_seen,
         order_wait: None,
         pending_work: None,
+        extras: None,
     }))
 }
 
@@ -1820,6 +2023,234 @@ pub async fn flight_view(pool: &SqlitePool, flight_id: i64) -> Result<Option<Tec
     }))
 }
 
+/// (02/11) Etapa 5b — plano de la Cabina propia: cada asiento con sus
+/// piezas (las rotas lo bloquean) y los equipos de cabina (galleys, baños,
+/// asientos de tripulación, luces…). `None` si el Tech Log no tiene el avión.
+pub async fn cabin_view(pool: &SqlitePool, registration: &str) -> Result<Option<crate::techlog_pages::TlCabinPlan>> {
+    use crate::techlog_pages::{TlCabinPlan, TlFitting, TlSeat, TlSeatItem};
+    let reg = normalize_reg(registration);
+    let Some(a) = load_airframe(pool, &reg).await? else { return Ok(None) };
+    ensure_seats(pool, &a).await?;
+    let cat = a.cat();
+    let r = rates(pool).await;
+    let now = Utc::now();
+    let steps = &cat.limits.common.repair_to_pct;
+    let worn_below = cat.limits.common.worn_below_pct;
+    let comps = load_components(pool, &reg).await?;
+
+    let mut seats: std::collections::BTreeMap<(u32, char), TlSeat> = std::collections::BTreeMap::new();
+    let mut fittings: Vec<TlFitting> = Vec::new();
+    for c in &comps {
+        let Some(def) = cat.component(&c.key) else { continue };
+        let rem = remaining(c, def, &a, &r, now);
+        match def.kind() {
+            "seat" => {
+                let digits: String = c.pos.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+                let (Ok(row), Some(letter)) = (digits.parse::<u32>(), c.pos.chars().last()) else { continue };
+                let seat = seats.entry((row, letter)).or_insert_with(|| TlSeat {
+                    seat: c.pos.clone(),
+                    row: row as i64,
+                    letter: letter.to_string(),
+                    cycles: a.counters.wear_extra.get(&format!("SeatCycles:{}", c.pos)).copied().unwrap_or(0.0),
+                    ..Default::default()
+                });
+                seat.worst_remaining_pct = Some(seat.worst_remaining_pct.map_or(rem, |w: f64| w.min(rem)));
+                if c.status == "Failed" {
+                    seat.blocked = true;
+                    seat.broken.push(def.name_for(&c.pos));
+                    seat.broken_keys.push(c.key.clone());
+                }
+                seat.items.push(TlSeatItem {
+                    id: c.id,
+                    key: c.key.clone(),
+                    remaining_pct: (rem * 10.0).round() / 10.0,
+                    status: c.status.clone(),
+                });
+            }
+            "cabin" => {
+                let span = if c.life > 0.0 { c.life / r.cabin } else { 0.0 };
+                fittings.push(TlFitting {
+                    id: c.id,
+                    key: c.key.clone(),
+                    name: def.name_for(&c.pos),
+                    position: (!c.pos.is_empty()).then(|| c.pos.clone()),
+                    ata: def.ata,
+                    system: def.system.clone(),
+                    kind: "Cabin".into(),
+                    basis: def.basis().to_string(),
+                    life: (span * 10.0).round() / 10.0,
+                    used: ((span * (1.0 - rem / 100.0)) * 10.0).round() / 10.0,
+                    remaining_pct: (rem * 10.0).round() / 10.0,
+                    status: c.status.clone(),
+                    defect_id: c.defect_id,
+                    mel: Some(def.mel.clone()).filter(|m| !m.is_empty()),
+                    repairs: c.repairs,
+                    repairs_left: Some((steps.len() as i64 - c.repairs).max(0)),
+                    repair_to_pct: steps.get(c.repairs as usize).copied(),
+                    worn: rem < worn_below,
+                    work: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    let mut letters: Vec<char> = seats.keys().map(|(_, l)| *l).collect();
+    letters.sort_unstable();
+    letters.dedup();
+    let rows = seats.keys().map(|(r, _)| *r).max().unwrap_or(0);
+    let seats: Vec<TlSeat> = seats.into_values().collect();
+    let blocked_seats = seats.iter().filter(|s| s.blocked).count() as i64;
+    Ok(Some(TlCabinPlan {
+        rows: rows as i64,
+        letters: letters.into_iter().collect(),
+        seats,
+        fittings,
+        blocked_seats,
+    }))
+}
+
+/// Estado de una pieza para el informe: "good" | "low" | "failed".
+fn stage_of(status: &str, rem: f64) -> &'static str {
+    if status == "Failed" || rem <= 0.0 {
+        "failed"
+    } else if status == "Degraded" || rem <= DEGRADED_AT_PCT {
+        "low"
+    } else {
+        "good"
+    }
+}
+
+/// (02/11) Etapa 5b — informe de vida de las piezas de un vuelo (antes y
+/// después), como el de TechLog. Se rehace con su registro (`undo`) y las
+/// piezas actuales: en vuelos antiguos con piezas cambiadas después es una
+/// aproximación. Los asientos no entran (van en Cabina).
+pub async fn flight_report(pool: &SqlitePool, flight_id: i64) -> Result<Option<crate::techlog_pages::TlReport>> {
+    use crate::techlog_pages::{TlReport, TlReportCounts, TlReportGroup, TlReportItem};
+    let Some(row) = sqlx::query("SELECT registration, undo, created_at FROM mx_flight WHERE flight_id = ?1")
+        .bind(flight_id)
+        .fetch_optional(pool)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let reg: String = row.try_get("registration").unwrap_or_default();
+    let Some(undo) = row
+        .try_get::<Option<String>, _>("undo")
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str::<FlightUndo>(&s).ok())
+    else {
+        return Ok(None);
+    };
+    let Some(a) = load_airframe(pool, &reg).await? else { return Ok(None) };
+    let cat = a.cat();
+    let r = rates(pool).await;
+    let at = row
+        .try_get::<String, _>("created_at")
+        .ok()
+        .as_deref()
+        .and_then(parse_any_utc)
+        .unwrap_or_else(Utc::now);
+    let mut before_a = a.clone();
+    before_a.counters = undo.counters_before.clone();
+    let mut after_a = a.clone();
+    after_a.counters = undo.counters_after.clone();
+
+    struct Line {
+        name: String,
+        system: String,
+        before: f64,
+        after: f64,
+        stage_before: &'static str,
+        stage_after: &'static str,
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    for c in load_components(pool, &reg).await? {
+        let Some(def) = cat.component(&c.key) else { continue };
+        if def.kind() == "seat" {
+            continue;
+        }
+        let (mut cb, mut ca) = (c.clone(), c.clone());
+        if let Some(u) = undo.parts.iter().find(|p| p.key == c.key && p.pos == c.pos && p.serial == c.serial) {
+            cb.basis_at_install = u.basis_before;
+            cb.wear = u.wear_before;
+            cb.status = u.status_before.clone();
+            ca.basis_at_install = u.basis_after;
+            ca.wear = u.wear_after;
+            ca.status = u.status_after.clone();
+        }
+        let before = remaining(&cb, def, &before_a, &r, at);
+        let after = remaining(&ca, def, &after_a, &r, at);
+        lines.push(Line {
+            name: def.name_for(&c.pos),
+            system: def.system.clone(),
+            before,
+            after,
+            stage_before: stage_of(&cb.status, before),
+            stage_after: stage_of(&ca.status, after),
+        });
+    }
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    let count = |pick: fn(&Line) -> &'static str| {
+        let mut n = TlReportCounts::default();
+        for l in &lines {
+            match pick(l) {
+                "failed" => n.failed += 1,
+                "low" => n.low += 1,
+                _ => n.good += 1,
+            }
+        }
+        n
+    };
+    let avg = |pick: fn(&Line) -> f64| (lines.iter().map(pick).sum::<f64>() / lines.len() as f64 * 10.0).round() / 10.0;
+    let used = |l: &Line| (l.before - l.after).max(0.0);
+    let mut groups: HashMap<String, (i64, f64, f64)> = HashMap::new();
+    for l in &lines {
+        let g = groups.entry(l.system.clone()).or_default();
+        g.0 += 1;
+        g.1 += used(l);
+        g.2 = g.2.max(used(l));
+    }
+    let mut groups: Vec<TlReportGroup> = groups
+        .into_iter()
+        .map(|(name, (parts, sum, max))| TlReportGroup {
+            name,
+            parts,
+            used_pct: (sum / parts.max(1) as f64 * 1000.0).round() / 1000.0,
+            max_used_pct: (max * 1000.0).round() / 1000.0,
+        })
+        .collect();
+    groups.sort_by(|a, b| b.used_pct.total_cmp(&a.used_pct));
+    let item = |l: &Line| TlReportItem {
+        item: l.name.clone(),
+        left_pct: (l.after * 10.0).round() / 10.0,
+        used_pct: (used(l) * 1000.0).round() / 1000.0,
+        stage: l.stage_after.into(),
+    };
+    let mut aged: Vec<&Line> = lines.iter().filter(|l| used(l) > 0.0005).collect();
+    aged.sort_by(|a, b| used(b).total_cmp(&used(a)));
+    let rank = |s: &str| match s {
+        "failed" => 2,
+        "low" => 1,
+        _ => 0,
+    };
+    Ok(Some(TlReport {
+        before: count(|l| l.stage_before),
+        after: count(|l| l.stage_after),
+        health_before: avg(|l| l.before),
+        health_after: avg(|l| l.after),
+        groups,
+        aged_most: aged.iter().take(6).map(|l| item(l)).collect(),
+        crossed: lines
+            .iter()
+            .filter(|l| rank(l.stage_after) > rank(l.stage_before))
+            .map(item)
+            .collect(),
+    }))
+}
+
 /// Fecha/hora en RFC 3339 o en el formato SQLite "AAAA-MM-DD HH:MM:SS" (UTC).
 fn parse_any_utc(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
@@ -1866,7 +2297,7 @@ pub async fn set_wear_rates(pool: &SqlitePool, life: f64, cabin: f64) -> Result<
         let cat = a.cat();
         for mut c in load_components(pool, &reg).await? {
             let Some(def) = cat.component(&c.key) else { continue };
-            if def.kind() == "wear" {
+            if matches!(def.kind(), "wear" | "seat") {
                 continue;
             }
             let rem = remaining(&c, def, &a, &old, now);
@@ -1888,8 +2319,12 @@ pub async fn nightly(pool: &SqlitePool) -> Result<usize> {
     let regs: Vec<String> = sqlx::query_scalar("SELECT registration FROM mx_airframe")
         .fetch_all(pool)
         .await?;
+    let managed = crate::techlog::managed_registrations().await;
     let mut served = 0;
     for reg in regs {
+        if managed.contains_key(&crate::techlog::normalize_reg(&reg)) {
+            continue;
+        }
         let (level, _, _) = crate::aircraft_maintenance::airline_for_registration(pool, &reg).await;
         if level < 2 || in_flight(pool, &reg).await {
             continue;
@@ -1964,7 +2399,7 @@ pub async fn alerts(pool: &SqlitePool) -> Result<Vec<crate::aircraft_maintenance
             continue;
         }
         let title: Option<String> = row.try_get("title").ok().flatten();
-        let Some(mut v) = aircraft_view(pool, &reg, None).await? else { continue };
+        let Some(mut v) = aircraft_view(pool, &reg, title.as_deref()).await? else { continue };
         // (23/10) Avisos de la campana en el idioma de la app.
         crate::tl_i18n::localize_aircraft(&mut v);
         let mut soon: Vec<String> = Vec::new();
@@ -2067,13 +2502,29 @@ mod tests {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
         let wears = |pool: SqlitePool| async move {
-            let rows: Vec<(i64, f64, f64, String)> =
-                sqlx::query_as("SELECT id, wear, basis_at_install, status FROM mx_component ORDER BY id")
-                    .fetch_all(&pool)
-                    .await
-                    .unwrap();
+            let rows: Vec<(i64, f64, f64, String)> = sqlx::query_as(
+                "SELECT id, wear, basis_at_install, status FROM mx_component
+                 WHERE key NOT IN ('SEAT_RECLINE', 'SEAT_TRAY', 'SEAT_BELT', 'SEAT_LIGHT') ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
             rows
         };
+        // (02/11) Los asientos empiezan con desgaste repartido: se miran aparte.
+        let seat_wears = |pool: SqlitePool| async move {
+            let rows: Vec<(i64, f64)> = sqlx::query_as(
+                "SELECT id, wear FROM mx_component
+                 WHERE key IN ('SEAT_RECLINE', 'SEAT_TRAY', 'SEAT_BELT', 'SEAT_LIGHT') ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            rows
+        };
+        aircraft_view(&pool, "EC-TST", Some("Boeing 737-8")).await.unwrap();
+        let seats0 = seat_wears(pool.clone()).await;
+        assert!(seats0.len() > 700, "cabina del 737-8: {} piezas de asiento", seats0.len());
         // Vuelo 1: aterrizaje duro + VMO (defectos NO-GO, desgaste fuerte).
         commit_flight(
             &pool,
@@ -2114,6 +2565,7 @@ mod tests {
         .await
         .unwrap();
         let after2 = wears(pool.clone()).await;
+        let seats2 = seat_wears(pool.clone()).await;
 
         // Se borra el vuelo 1 (el de en medio): se resta SÓLO lo suyo.
         sqlx::query("DELETE FROM flight_log WHERE id = 1").execute(&pool).await.unwrap();
@@ -2134,6 +2586,15 @@ mod tests {
             assert!((r.1 - expected).abs() < 1e-6, "pieza {}: {} vs {}", r.0, r.1, expected);
             assert_eq!(r.3, "Ok", "pieza {} sigue {}", r.0, r.3);
         }
+        // Asientos: queda su desgaste inicial más lo del vuelo 2.
+        let seats1 = seat_wears(pool.clone()).await;
+        let (mut used1, mut used2) = (0, 0);
+        for ((s0, s2), sr) in seats0.iter().zip(&seats2).zip(&seats1) {
+            assert!(sr.1 <= s2.1 + 1e-9 && sr.1 >= s0.1 - 1e-9, "asiento {}: {} fuera de [{}, {}]", sr.0, sr.1, s0.1, s2.1);
+            used1 += (s2.1 - sr.1 > 1e-9) as i32;
+            used2 += (sr.1 - s0.1 > 1e-9) as i32;
+        }
+        assert!(used1 > 0 && used2 > 0, "el vuelo 1 y el 2 ocuparon asientos ({used1}, {used2})");
 
         // Y borrando también el vuelo 2 el avión vuelve a estar como nuevo.
         sqlx::query("DELETE FROM flight_log WHERE id = 2").execute(&pool).await.unwrap();
@@ -2142,6 +2603,10 @@ mod tests {
         assert!(v.flight_hours.abs() < 1e-9 && v.cycles == 0.0);
         assert!(v.defects.iter().all(|d| d.mel_id.as_deref().is_some_and(|m| m.starts_with("05-20"))), "{:?}", v.defects);
         assert!(wears(pool.clone()).await.iter().all(|r| r.1.abs() < 1e-6 && r.3 == "Ok"));
+        // Y los asientos, exactamente como empezaron.
+        for (s0, s) in seats0.iter().zip(seat_wears(pool.clone()).await.iter()) {
+            assert!((s0.1 - s.1).abs() < 1e-6, "asiento {}: {} vs {}", s.0, s.1, s0.1);
+        }
     }
 
     #[tokio::test]

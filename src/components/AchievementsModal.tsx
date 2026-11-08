@@ -71,7 +71,7 @@ function AchievementCard({ a }: { a: AchievementProgress }) {
                 backgroundColor:
                   a.tier != null && i <= a.tier
                     ? TIERS[Math.min(i, TIERS.length - 1)].ring
-                    : "#1e293b",
+                    : "#2c2c2e",
               }}
             />
           ))}

@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import {
   ArrowLeft,
+  ChevronRight,
   TrendingUp,
   TrendingDown,
   Plane,
@@ -40,6 +41,7 @@ import { api, isTauri } from "../lib/tauri";
 import { t } from "../lib/i18n";
 import { useAppStore } from "../stores/useAppStore";
 import { AirlineLogo } from "./AirlineLogo";
+import { DetailModal } from "./DetailModal";
 import { MaintenanceModal } from "./AircraftMaintenance";
 import { FleetPanel } from "./FleetPanel";
 
@@ -87,9 +89,9 @@ function marginPct(led: AirlineLedger): number {
 /** Estilo del badge de posición en el ranking (oro/plata/bronce + resto). */
 function rankBadge(rank: number): { background: string; color: string } {
   if (rank === 1) return { background: "#fbbf24", color: "#1c1917" };
-  if (rank === 2) return { background: "#cbd5e1", color: "#0f172a" };
+  if (rank === 2) return { background: "#c4c4c8", color: "#1c1c1e" };
   if (rank === 3) return { background: "#d97706", color: "#fff7ed" };
-  return { background: "#334155", color: "#cbd5e1" };
+  return { background: "#3a3a3c", color: "#c4c4c8" };
 }
 
 /** Color + etiqueta de satisfacción (0-100). La marca el FPM de aterrizaje. */
@@ -113,7 +115,7 @@ const COST_COLORS = {
   catering: "#f59e0b",
   handling: "#a855f7",
   maintenance: "#14b8a6",
-  fees: "#64748b",
+  fees: "#7a7a80",
   // (v8.3) Traslados (vuelos de posicionamiento).
   ferry: "#0ea5e9",
   // (v8.3 · 6.2c) Costos fijos de la flota (operación autónoma).
@@ -214,8 +216,8 @@ export function EconomyView() {
   }, [focus, list]);
 
   return (
-    <div className="h-full overflow-y-auto pr-1">
-      <header className="mb-4">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="mb-3 shrink-0">
         <h1 className="text-xl font-semibold tracking-tight text-sf-text">
           {t("economy.title")}
         </h1>
@@ -285,18 +287,20 @@ function Overview({
   }, [list, sort]);
 
   return (
-    <>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       <GlobalSummary list={list} />
       {list.length >= 2 && <RankingStrip list={list} onSelect={onSelect} />}
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="text-xs text-sf-muted">
+      {/* (03/11) Una fila por aerolínea; la lista se desplaza por dentro. */}
+      <section className="flex min-h-[220px] flex-1 flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-surface">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-sf-border px-3 py-2">
+        <span className="text-xs font-semibold text-sf-text">
           {t("economy.overview.count", { n: list.length })}
         </span>
         <span className="ml-auto text-[11px] text-sf-muted/70">
           {t("economy.click_hint")}
         </span>
-        <div className="flex items-center gap-1 rounded-lg bg-sf-surface/70 p-0.5 ring-1 ring-sf-border">
+        <div className="flex items-center gap-1 rounded-lg bg-sf-bg/60 p-0.5 ring-1 ring-sf-border">
           {(["net", "balance", "satisfaction"] as SortKey[]).map((k) => (
             <button
               key={k}
@@ -314,22 +318,28 @@ function Overview({
       </div>
 
       {notFound && (
-        <div className="mb-3 rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-300/90">
+        <div className="shrink-0 border-b border-amber-900/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-300/90">
           {t("economy.not_found")}
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className={`${AIRLINE_COLS} shrink-0 border-b border-sf-border bg-sf-raised/40 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-sf-muted`}>
+        <span />
+        <span>{t("economy.table.airline")}</span>
+        <span className="text-right">{t("economy.sort.balance")}</span>
+        <span className="text-right">{t("economy.sort.net")}</span>
+        <span className="text-right">{t("economy.sort.satisfaction")}</span>
+        <span className="text-right">{t("economy.kpi.flights")}</span>
+        <span className="truncate text-right">{t("economy.table.traffic")}</span>
+        <span className="text-right">{t("economy.kpi.margin")}</span>
+      </div>
+      <div className="min-h-0 flex-1 divide-y divide-sf-border/50 overflow-y-auto">
         {sorted.map((led, i) => (
-          <AirlineCard
-            key={led.key}
-            led={led}
-            rank={i + 1}
-            onClick={() => onSelect(led)}
-          />
+          <AirlineRow key={led.key} led={led} rank={i + 1} onClick={() => onSelect(led)} />
         ))}
       </div>
-    </>
+      </section>
+    </div>
   );
 }
 
@@ -337,6 +347,7 @@ function Overview({
  *  costes, resultado, saldo) + desglose de costes por categoría. Todo sale
  *  del mismo ledger que las tarjetas; no hay datos nuevos. */
 function GlobalSummary({ list }: { list: AirlineLedger[] }) {
+  const [breakdown, setBreakdown] = useState(false);
   const s = useMemo(() => {
     const z = {
       revenue: 0, costs: 0, net: 0, balance: 0,
@@ -372,17 +383,19 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
   const costTotal = costs.reduce((a, c) => a + c.value, 0);
 
   return (
-    <section className="mb-5 space-y-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <section className="shrink-0 space-y-3">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <SummaryKpi
           icon={<TrendingUp className="h-5 w-5" />}
           label={t("economy.revenue.heading")}
-          value={usdFull.format(s.revenue)}
+          value={usdCompact.format(s.revenue)}
+          title={usdFull.format(s.revenue)}
         />
         <SummaryKpi
           icon={<TrendingDown className="h-5 w-5" />}
           label={t("economy.costs.heading")}
-          value={usdFull.format(s.costs)}
+          value={usdCompact.format(s.costs)}
+          title={usdFull.format(s.costs)}
         />
         <SummaryKpi
           icon={<Percent className="h-5 w-5" />}
@@ -394,20 +407,41 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
         <SummaryKpi
           icon={<Landmark className="h-5 w-5" />}
           label={t("economy.summary.balance")}
-          value={usdFull.format(s.balance)}
+          value={usdCompact.format(s.balance)}
+          title={usdFull.format(s.balance)}
           hint={t("economy.overview.count", { n: list.length })}
         />
       </div>
 
       {costTotal > 0 && (
-        <div className="rounded-xl border border-sf-border/80 bg-sf-surface p-4">
-          <div className="mb-3 flex items-baseline justify-between gap-2">
-            <h2 className="text-sm font-semibold text-sf-text">
-              {t("economy.summary.cost_breakdown")}
-            </h2>
-            <span className="text-xs tabular-nums text-sf-muted">{usdFull.format(costTotal)}</span>
-          </div>
-          <div className="flex h-2.5 overflow-hidden rounded-full bg-sf-bg">
+        <button
+          onClick={() => setBreakdown(true)}
+          className="flex w-full items-center gap-3 rounded-xl border border-sf-border/80 bg-sf-surface px-3 py-2 text-left transition-colors hover:border-brand-500/40 hover:bg-sf-raised"
+        >
+          <span className="shrink-0 text-xs font-semibold text-sf-text">{t("economy.summary.cost_breakdown")}</span>
+          <span className="flex h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-sf-bg">
+            {costs.map((c) => (
+              <span
+                key={c.key}
+                style={{ width: `${(c.value / costTotal) * 100}%`, background: c.color }}
+                title={`${c.name}: ${usdFull.format(c.value)}`}
+              />
+            ))}
+          </span>
+          <span className="shrink-0 text-xs tabular-nums text-sf-muted" title={usdFull.format(costTotal)}>
+            {usdCompact.format(costTotal)}
+          </span>
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-sf-muted/70" />
+        </button>
+      )}
+      {breakdown && (
+        <DetailModal
+          title={t("economy.summary.cost_breakdown")}
+          subtitle={usdFull.format(costTotal)}
+          icon={<TrendingDown className="h-4 w-4" />}
+          onClose={() => setBreakdown(false)}
+        >
+          <div className="flex h-3 overflow-hidden rounded-full bg-sf-bg">
             {costs.map((c) => (
               <div
                 key={c.key}
@@ -416,7 +450,7 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
               />
             ))}
           </div>
-          <ul className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+          <ul className="mt-4 grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-2">
             {costs.map((c) => (
               <li key={c.key} className="flex items-center gap-2 text-[13px]">
                 <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: c.color }} />
@@ -424,13 +458,13 @@ function GlobalSummary({ list }: { list: AirlineLedger[] }) {
                 <span className="w-10 shrink-0 text-right text-xs tabular-nums text-sf-muted">
                   {((c.value / costTotal) * 100).toFixed(0)}%
                 </span>
-                <span className="w-24 shrink-0 text-right text-xs tabular-nums text-sf-text">
+                <span className="w-28 shrink-0 text-right text-xs tabular-nums text-sf-text">
                   {usdFull.format(c.value)}
                 </span>
               </li>
             ))}
           </ul>
-        </div>
+        </DetailModal>
       )}
     </section>
   );
@@ -441,25 +475,28 @@ function SummaryKpi({
   label,
   value,
   hint,
+  title,
   valueClass = "text-sf-text",
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   hint?: string;
+  /** La cifra exacta (al pasar el ratón). */
+  title?: string;
   valueClass?: string;
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-sf-border/80 bg-sf-surface p-4">
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sf-raised text-brand-300">
+    <div title={title} className="flex items-center gap-3 rounded-xl border border-sf-border/80 bg-sf-surface px-3 py-2">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sf-raised text-brand-300">
         {icon}
       </div>
       <div className="min-w-0">
-        <div className="truncate text-[13px] font-medium text-sf-muted">{label}</div>
-        <div className={`mt-0.5 truncate text-2xl font-semibold tabular-nums ${valueClass}`}>
-          {value}
+        <div className="truncate text-xs font-medium text-sf-muted">{label}</div>
+        <div className="flex items-baseline gap-2">
+          <span className={`shrink-0 text-lg font-semibold tabular-nums ${valueClass}`}>{value}</span>
+          {hint && <span className="truncate text-[11px] text-sf-muted">{hint}</span>}
         </div>
-        {hint && <div className="mt-0.5 truncate text-xs text-sf-muted">{hint}</div>}
       </div>
     </div>
   );
@@ -520,17 +557,13 @@ function RankingStrip({
   }, [list]);
 
   return (
-    <div className="mb-3">
-      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sf-muted">
-        <Trophy className="h-3.5 w-3.5 text-amber-400" />
-        {t("economy.rank.heading")}
-      </h2>
+    <div className="shrink-0" title={t("economy.rank.heading")}>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((it) => (
           <button
             key={it.key}
             onClick={() => onSelect(it.led)}
-            className="flex items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface p-3 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
+            className="flex items-center gap-3 rounded-xl border border-sf-border bg-sf-surface px-3 py-2 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
           >
             <span
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
@@ -559,132 +592,83 @@ function RankingStrip({
   );
 }
 
-function AirlineCard({
+/** Columnas de la tabla de aerolíneas (cabecera y filas, alineadas). */
+const AIRLINE_COLS =
+  "grid grid-cols-[1.75rem_minmax(0,1.7fr)_5.5rem_6.5rem_minmax(0,1fr)_4.25rem_5.5rem_3.75rem] items-center gap-3";
+
+/** (03/11) Una fila por aerolínea: lo mismo que tenía su tarjeta. */
+function AirlineRow({
   led,
   rank,
   onClick,
 }: {
   led: AirlineLedger;
-  rank?: number;
+  rank: number;
   onClick: () => void;
 }) {
   const profit = led.net >= 0;
-  const margin = led.revenue > 0 ? (led.net / led.revenue) * 100 : 0;
+  const margin = marginPct(led);
   const tot = totals(led);
   const sat = led.satisfaction;
   const tier = sat != null ? satTier(sat) : null;
-
+  const kind = airlineKind(led);
   return (
     <button
       onClick={onClick}
-      className="group relative flex flex-col gap-3 rounded-2xl border border-sf-border bg-sf-surface p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
+      className={`${AIRLINE_COLS} w-full px-3 py-1.5 text-left transition-colors hover:bg-sf-raised/60`}
     >
-      {rank != null && (
-        <span
-          className="absolute -left-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold shadow ring-2 ring-slate-950"
-          style={rankBadge(rank)}
-        >
-          {rank}
+      <span
+        className="flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold"
+        style={rankBadge(rank)}
+      >
+        {rank}
+      </span>
+      <span className="flex min-w-0 items-center gap-2.5">
+        <AirlineLogo icao={led.icao} name={led.name} size={28} />
+        <span className="min-w-0">
+          <span className="block truncate text-[13px] font-semibold text-sf-text">{led.name}</span>
+          <span className="block truncate text-[10px] font-medium" style={{ color: kind.color }}>
+            {kind.label}
+          </span>
         </span>
-      )}
-      <div className="flex items-center gap-3">
-        <AirlineLogo icao={led.icao} name={led.name} size={40} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-sf-text">
-            {led.name}
-          </div>
+      </span>
+      <span className="truncate text-right text-[13px] font-semibold tabular-nums text-sf-text">
+        {usdCompact.format(led.balance)}
+      </span>
+      <span
+        className={`flex items-center justify-end gap-1 truncate text-[13px] font-semibold tabular-nums ${
+          profit ? "text-emerald-400" : "text-red-400"
+        }`}
+        title={t(profit ? "economy.market.profit" : "economy.market.loss")}
+      >
+        {profit ? <TrendingUp className="h-3 w-3 shrink-0" /> : <TrendingDown className="h-3 w-3 shrink-0" />}
+        {fmtSigned(led.net)}
+      </span>
+      <span className="min-w-0" title={tier ? tier.label : t("economy.sat.nodata")}>
+        <span className="mb-1 block text-right text-[11px] font-semibold tabular-nums" style={{ color: tier?.color }}>
+          {tier ? `${Math.round(sat!)}%` : "—"}
+        </span>
+        <span className="block h-1 w-full overflow-hidden rounded-full bg-sf-raised">
           <span
-            className="text-[10px] font-medium"
-            style={{ color: airlineKind(led).color }}
-          >
-            {airlineKind(led).label}
-          </span>
-        </div>
-        <span
-          className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-            profit
-              ? "bg-emerald-500/15 text-emerald-300"
-              : "bg-red-500/15 text-red-300"
-          }`}
-        >
-          {profit ? (
-            <TrendingUp className="h-3 w-3" />
-          ) : (
-            <TrendingDown className="h-3 w-3" />
-          )}
-          {profit ? t("economy.market.profit") : t("economy.market.loss")}
-        </span>
-      </div>
-
-      <div className="flex items-end justify-between">
-        <div>
-          <div className="text-[10px] uppercase tracking-wide text-sf-muted">
-            {t("economy.kpi.balance")}
-          </div>
-          <div className="text-lg font-bold text-sf-text">
-            {usdCompact.format(led.balance)}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wide text-sf-muted">
-            {t("economy.kpi.net")}
-          </div>
-          <div
-            className={`text-sm font-semibold ${
-              profit ? "text-emerald-400" : "text-red-400"
-            }`}
-          >
-            {fmtSigned(led.net)}
-          </div>
-        </div>
-      </div>
-
-      {/* Satisfacción */}
-      <div>
-        <div className="mb-1 flex items-center justify-between text-[10px]">
-          <span className="flex items-center gap-1 text-sf-muted">
-            <Smile className="h-3 w-3" />
-            {t("economy.kpi.satisfaction")}
-          </span>
-          {tier ? (
-            <span style={{ color: tier.color }} className="font-semibold">
-              {Math.round(sat!)}% · {tier.label}
-            </span>
-          ) : (
-            <span className="text-sf-muted/70">{t("economy.sat.nodata")}</span>
-          )}
-        </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-sf-raised">
-          <div
-            className="h-full rounded-full"
-            style={{
-              width: `${sat ?? 0}%`,
-              background: tier?.color ?? "#475569",
-            }}
+            className="block h-full rounded-full"
+            style={{ width: `${sat ?? 0}%`, background: tier?.color ?? "#5a5a5f" }}
           />
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3 text-[11px] text-sf-muted">
-        {/* (v8.3) Totales: tus vuelos + reales; carga en las de carga. */}
-        <span className="flex items-center gap-1" title={t("economy.card.flights_hint")}>
-          <Plane className="h-3 w-3" /> {intFmt.format(tot.flights)}
         </span>
-        {!led.cargo && (
-          <span className="flex items-center gap-1" title={t("economy.card.pax_hint")}>
-            <Users className="h-3 w-3" /> {intFmt.format(tot.pax)}
-          </span>
-        )}
-        {(led.cargo || tot.cargoKg > 0) && (
-          <span className="flex items-center gap-1" title={t("economy.card.cargo_hint")}>
-            <Package className="h-3 w-3" /> {fmtCargo(tot.cargoKg)}
-          </span>
-        )}
-        <span className="ml-auto font-medium text-sf-muted">
-          {margin >= 0 ? "+" : ""}
-          {margin.toFixed(0)}% {t("economy.kpi.margin").toLowerCase()}
-        </span>
-      </div>
+      </span>
+      {/* (v8.3) Totales: tus vuelos + reales; carga en las de carga. */}
+      <span className="truncate text-right text-xs tabular-nums text-sf-muted" title={t("economy.card.flights_hint")}>
+        {intFmt.format(tot.flights)}
+      </span>
+      <span
+        className="truncate text-right text-xs tabular-nums text-sf-muted"
+        title={t(led.cargo ? "economy.card.cargo_hint" : "economy.card.pax_hint")}
+      >
+        {led.cargo ? fmtCargo(tot.cargoKg) : intFmt.format(tot.pax)}
+      </span>
+      <span className="truncate text-right text-xs font-medium tabular-nums text-sf-muted">
+        {margin >= 0 ? "+" : ""}
+        {margin.toFixed(0)}%
+      </span>
     </button>
   );
 }
@@ -706,8 +690,10 @@ function AirlineDetail({
 }) {
   const [modal, setModal] = useState<"maintenance" | "services" | null>(null);
   const [maintReg, setMaintReg] = useState<string | null>(null);
+  const [curveVer, setCurveVer] = useState(0);
   // (v8.3 · Etapa 6.2b) Pestañas del detalle: resumen económico / flota real.
-  const [tab, setTab] = useState<"summary" | "fleet">("summary");
+  // (03/11) Cuentas: la curva, los ingresos y los costes, aparte.
+  const [tab, setTab] = useState<"summary" | "accounts" | "fleet">("summary");
 
   // Si venimos del Hangar con una matrícula, abre directo el mantenimiento.
   useEffect(() => {
@@ -752,20 +738,20 @@ function AirlineDetail({
   ].filter((d) => d.value > 0);
 
   return (
-    <div className="space-y-4">
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-xs font-medium text-sf-muted hover:text-sf-text"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" />
-        {t("economy.back")}
-      </button>
-
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* Cabecera */}
-      <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-sf-border bg-sf-surface p-4">
-        <AirlineLogo icao={led.icao} name={led.name} size={56} />
+      <div className="flex shrink-0 flex-wrap items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface px-3 py-2">
+        <button
+          onClick={onBack}
+          title={t("economy.back")}
+          className="flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-medium text-sf-muted hover:bg-sf-raised hover:text-sf-text"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {t("economy.back")}
+        </button>
+        <AirlineLogo icao={led.icao} name={led.name} size={36} />
         <div className="min-w-0">
-          <h2 className="text-lg font-bold text-sf-text">{led.name}</h2>
+          <h2 className="text-sm font-bold text-sf-text">{led.name}</h2>
           <div className="mt-0.5 flex items-center gap-2 text-[11px]">
             <span
               className="rounded-full px-2 py-0.5 font-medium"
@@ -792,8 +778,8 @@ function AirlineDetail({
       </div>
 
       {/* (v8.3) Pestañas: Resumen | Flota */}
-      <div className="flex gap-1 rounded-xl border border-sf-border bg-sf-surface p-1">
-        {(["summary", "fleet"] as const).map((k) => (
+      <div className="flex shrink-0 gap-1 rounded-xl border border-sf-border bg-sf-surface p-1">
+        {(["summary", "accounts", "fleet"] as const).map((k) => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -803,20 +789,22 @@ function AirlineDetail({
                 : "text-sf-muted hover:bg-sf-raised hover:text-sf-text"
             }`}
           >
-            {t(k === "summary" ? "economy.tab.summary" : "economy.tab.fleet")}
+            {t(`economy.tab.${k}`)}
           </button>
         ))}
       </div>
 
-      {tab === "fleet" ? (
-        <FleetPanel icao={led.icao} />
-      ) : (
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+      {tab === "fleet" && <FleetPanel icao={led.icao} />}
+      {tab === "summary" && (
       <>
       {/* (v6.1) Gestión de la aerolínea — el ecosistema */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <button
           onClick={() => setModal("maintenance")}
-          className="flex items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface p-4 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70"
+          className={`flex items-center gap-3 rounded-2xl border border-sf-border bg-sf-surface p-3 text-left transition-colors hover:border-brand-500/50 hover:bg-sf-surface/70 ${
+            led.cargo ? "sm:col-span-2" : ""
+          }`}
         >
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-300">
             <Wrench className="h-5 w-5" />
@@ -831,7 +819,7 @@ function AirlineDetail({
           </div>
         </button>
         {!led.cargo && (
-          <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
+          <div className="rounded-2xl border border-sf-border bg-sf-surface p-3">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/15 text-sky-300">
                 <ConciergeBell className="h-5 w-5" />
@@ -850,7 +838,7 @@ function AirlineDetail({
                 </div>
               </div>
             </div>
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="mt-2 flex flex-wrap gap-1.5">
               {SERVICES.filter((s) => autoServiceKeys(led).includes(s.key)).map((s) => (
                 <span
                   key={s.key}
@@ -866,7 +854,7 @@ function AirlineDetail({
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi
           icon={<Landmark className="h-4 w-4" />}
           label={t("economy.kpi.valuation")}
@@ -922,53 +910,31 @@ function AirlineDetail({
           value={usdCompact.format(led.fleetValue)}
           hint={t("economy.kpi.fleet.hint", { n: String(led.fleetSize) })}
         />
+        {/* Satisfacción del pasajero: la octava cifra. */}
+        <Kpi
+          icon={<Smile className="h-4 w-4" />}
+          label={t("economy.kpi.satisfaction")}
+          value={tier ? `${Math.round(sat!)}% · ${tier.label}` : "—"}
+          valueStyle={tier ? { color: tier.color } : undefined}
+          hint={
+            tier
+              ? led.avgLandingFpm != null
+                ? t("economy.satisfaction.avgfpm", { fpm: Math.round(led.avgLandingFpm) })
+                : undefined
+              : t("economy.satisfaction.nodata")
+          }
+          title={t("economy.satisfaction.hint")}
+        />
       </div>
 
       {/* (v8.3 · 6.2c) Operación autónoma con vuelos reales (OpenSky). */}
       {led.icao && <AutoOpsCard led={led} />}
-
+      </>
+      )}
+      {tab === "accounts" && (
+      <>
       {/* Histórico del saldo (banco a lo largo del tiempo) */}
-      <BalanceHistoryCard led={led} />
-
-      {/* Satisfacción del pasajero */}
-      <div className="rounded-2xl border border-sf-border bg-sf-surface p-4">
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-sf-text">
-          <Smile className="h-4 w-4 text-brand-400" />
-          {t("economy.kpi.satisfaction")}
-        </h3>
-        {tier ? (
-          <>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold" style={{ color: tier.color }}>
-                {Math.round(sat!)}%
-              </span>
-              <span className="text-sm font-medium" style={{ color: tier.color }}>
-                {tier.label}
-              </span>
-              {led.avgLandingFpm != null && (
-                <span className="ml-auto text-xs text-sf-muted">
-                  {t("economy.satisfaction.avgfpm", {
-                    fpm: Math.round(led.avgLandingFpm),
-                  })}
-                </span>
-              )}
-            </div>
-            <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-sf-raised">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{ width: `${sat}%`, background: tier.color }}
-              />
-            </div>
-            <p className="mt-2 text-xs text-sf-muted">
-              {t("economy.satisfaction.hint")}
-            </p>
-          </>
-        ) : (
-          <p className="py-6 text-center text-sm text-sf-muted">
-            {t("economy.satisfaction.nodata")}
-          </p>
-        )}
-      </div>
+      <BalanceHistoryCard led={led} version={curveVer} />
 
       {/* Ingresos vs Costes */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -987,6 +953,7 @@ function AirlineDetail({
       </div>
       </>
       )}
+      </div>
 
       {modal === "maintenance" && (
         <MaintenanceModal
@@ -995,6 +962,7 @@ function AirlineDetail({
           onClose={() => {
             setModal(null);
             setMaintReg(null);
+            setCurveVer((v) => v + 1);
           }}
           onChanged={onChanged}
         />
@@ -1057,7 +1025,7 @@ function AutoOpsCard({ led }: { led: AirlineLedger }) {
 }
 
 /** (v6.1) Curva del saldo ("banco") a lo largo del tiempo, vuelo a vuelo. */
-function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
+function BalanceHistoryCard({ led, version = 0 }: { led: AirlineLedger; version?: number }) {
   const [pts, setPts] = useState<BalancePoint[] | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -1072,7 +1040,7 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
     return () => {
       alive = false;
     };
-  }, [led.key]);
+  }, [led.key, version]);
 
   const data = useMemo(
     () =>
@@ -1125,15 +1093,15 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
         <span className="text-xs text-sf-muted">{t("economy.history.hint")}</span>
       </div>
       {loading ? (
-        <div className="flex h-56 items-center justify-center text-sm text-sf-muted">
+        <div className="flex h-44 items-center justify-center text-sm text-sf-muted">
           {t("economy.history.loading")}
         </div>
       ) : data.length < 2 ? (
-        <div className="flex h-56 items-center justify-center px-6 text-center text-sm text-sf-muted">
+        <div className="flex h-44 items-center justify-center px-6 text-center text-sm text-sf-muted">
           {t("economy.history.nodata")}
         </div>
       ) : (
-        <div className="h-56 w-full">
+        <div className="h-44 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
               <defs>
@@ -1142,17 +1110,17 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
                   <stop offset="100%" stopColor={stroke} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#2c2c2e" vertical={false} />
               <XAxis
                 dataKey="dateLabel"
-                tick={{ fill: "#64748b", fontSize: 11 }}
-                axisLine={{ stroke: "#1e293b" }}
+                tick={{ fill: "#7a7a80", fontSize: 11 }}
+                axisLine={{ stroke: "#2c2c2e" }}
                 tickLine={false}
                 minTickGap={28}
               />
               <YAxis
                 domain={domain}
-                tick={{ fill: "#64748b", fontSize: 11 }}
+                tick={{ fill: "#7a7a80", fontSize: 11 }}
                 axisLine={false}
                 tickLine={false}
                 width={64}
@@ -1160,7 +1128,7 @@ function BalanceHistoryCard({ led }: { led: AirlineLedger }) {
               />
               <ReferenceLine
                 y={led.valuation}
-                stroke="#475569"
+                stroke="#5a5a5f"
                 strokeDasharray="4 4"
               />
               <Tooltip content={<BalanceTooltip />} />
@@ -1219,7 +1187,7 @@ function BalanceTooltip({ active, payload }: any) {
 function PurchaseDot(props: any) {
   const { cx, cy, payload, index } = props;
   if (payload?.kind !== "purchase" || cx == null || cy == null) return <g key={index} />;
-  return <circle key={index} cx={cx} cy={cy} r={4} fill="#f87171" stroke="#0f172a" strokeWidth={1.5} />;
+  return <circle key={index} cx={cx} cy={cy} r={4} fill="#f87171" stroke="#1c1c1e" strokeWidth={1.5} />;
 }
 
 function Kpi({
@@ -1227,22 +1195,30 @@ function Kpi({
   label,
   value,
   hint,
+  title,
   valueClass = "text-sf-text",
+  valueStyle,
 }: {
   icon?: React.ReactNode;
   label: string;
   value: string;
   hint?: string;
+  title?: string;
   valueClass?: string;
+  valueStyle?: React.CSSProperties;
 }) {
   return (
-    <div className="rounded-xl border border-sf-border bg-sf-bg/40 p-3">
+    <div title={title} className="min-w-0 rounded-xl border border-sf-border bg-sf-bg/40 px-3 py-2">
       <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-sf-muted">
-        {icon}
-        {label}
+        <span className="shrink-0">{icon}</span>
+        <span className="truncate">{label}</span>
       </div>
-      <div className={`mt-1 text-lg font-bold ${valueClass}`}>{value}</div>
-      {hint && <div className="text-[10px] text-sf-muted/70">{hint}</div>}
+      <div className={`mt-0.5 truncate text-base font-bold ${valueClass}`} style={valueStyle}>
+        {value}
+      </div>
+      <div className="min-h-[14px] truncate text-[10px] text-sf-muted/70" title={hint}>
+        {hint}
+      </div>
     </div>
   );
 }
@@ -1292,8 +1268,8 @@ function BreakdownCard({
                 <Tooltip
                   formatter={(v) => usdFull.format(Number(v))}
                   contentStyle={{
-                    background: "#020617",
-                    border: "1px solid #334155",
+                    background: "#0e0e10",
+                    border: "1px solid #3a3a3c",
                     borderRadius: 8,
                     fontSize: 12,
                   }}

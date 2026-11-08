@@ -898,6 +898,21 @@ async fn purge_cloud_snapshot(
         }
         report.file_deleted = true;
     }
+    // Subir un snapshot vacío para que otras máquinas no resuciten datos
+    // desde su caché local al sincronizar.
+    let empty = serde_json::json!({
+        "version": 1,
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "flight_log": [],
+        "flight_log_track": [],
+        "settings": [],
+        "flight_log_score_item": [],
+        "flight_log_phase": [],
+        "ledger": { "charges": [], "gsx_lines": [], "policies": [], "transfers": [] },
+        "deleted": []
+    });
+    let content = serde_json::to_string(&empty)?;
+    create_sync_file(http, access_token, &content, None).await?;
     Ok(report)
 }
 
@@ -1987,6 +2002,50 @@ async fn merge_for_upload(pool: &SqlitePool, mut merged: Snapshot) -> anyhow::Re
         }
     }
 
+    // 3b. Actualizar vuelos que YA están en la nube si la versión local
+    //     tiene más datos (status partial→completed, endedAt, landingFpm).
+    {
+        let mut cloud_by_key: HashMap<String, usize> = HashMap::new();
+        for (i, row) in merged.flight_log.iter().enumerate() {
+            let (ik, sk) = snapshot_flight_keys(row);
+            if let Some(k) = ik {
+                cloud_by_key.insert(k, i);
+            }
+            cloud_by_key.insert(sk, i);
+        }
+        for frow in &local.flight_log {
+            let (ik, sk) = snapshot_flight_keys(frow);
+            let idx = ik.and_then(|k| cloud_by_key.get(&k)).or_else(|| cloud_by_key.get(&sk));
+            let Some(&ci) = idx else { continue };
+            let cloud = &merged.flight_log[ci];
+            let local_status = json_str(frow, "status").unwrap_or_default();
+            let cloud_status = json_str(cloud, "status").unwrap_or_default();
+            let local_ended = frow.get("endedAt").and_then(|v| v.as_str()).is_some();
+            let cloud_ended = cloud.get("endedAt").and_then(|v| v.as_str()).is_some();
+            let local_fpm = frow.get("landingFpm").and_then(|v| v.as_i64()).is_some();
+            let cloud_fpm = cloud.get("landingFpm").and_then(|v| v.as_i64()).is_some();
+            let should_update =
+                (local_status == "completed" && cloud_status == "partial")
+                || (local_ended && !cloud_ended)
+                || (local_fpm && !cloud_fpm);
+            if should_update {
+                let mut updated = cloud.clone();
+                if let (Some(lo), Some(uo)) = (frow.as_object(), updated.as_object_mut()) {
+                    for key in &["status", "endedAt", "landingFpm", "maxAltitudeFt",
+                                 "maxGroundSpeedKt", "destinationIcao", "destinationLat",
+                                 "destinationLon", "distanceNm", "score", "grade"] {
+                        if let Some(v) = lo.get(*key) {
+                            if !v.is_null() {
+                                uo.insert((*key).to_string(), v.clone());
+                            }
+                        }
+                    }
+                }
+                merged.flight_log[ci] = updated;
+            }
+        }
+    }
+
     // 4. Añadimos SOLO los vuelos locales que no están en la nube. Cada
     //    vuelo nuevo recibe un id fresco (sin colisión) y sus tracks /
     //    fases / score-items se remapean a ese id. Los vuelos que ya están
@@ -2100,7 +2159,14 @@ pub async fn upload_all(
     // La bajada interna del snapshot remoto (para mergear) NO emite
     // progreso — así la barra de "Subir" solo muestra la fase de subida.
     let cloud: Snapshot = match download_sync_file(http, &access_token, None, crate::test_env::sync_upload_file_name()).await? {
-        Some(t) => serde_json::from_str(&t).unwrap_or_default(),
+        Some(t) => match serde_json::from_str(&t) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(target: "cloud", "snapshot remoto ilegible ({e}); se conserva tal cual");
+                emit_transfer_progress(app, "upload", 0, 0, true);
+                return Ok(UploadReport::default());
+            }
+        },
         None => Snapshot::default(),
     };
 

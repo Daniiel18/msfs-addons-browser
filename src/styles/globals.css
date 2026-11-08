@@ -27,12 +27,16 @@
  */
 :root {
   color-scheme: dark;
-  --sf-bg: 11 16 32;          /* #0B1020 fondo de la app */
-  --sf-surface: 18 27 43;     /* #121B2B paneles / sidebar */
-  --sf-raised: 25 36 56;      /* #192438 hover / elevado */
-  --sf-border: 34 48 74;      /* #22304A bordes suaves */
-  --sf-text: 228 234 243;     /* #E4EAF3 texto principal */
-  --sf-muted: 143 158 180;    /* #8F9EB4 texto secundario */
+  /* (8.4.x) Grafito neutro (paleta de Bob Dispatcher) con el turquesa de
+     marca como acento. Antes: azul marino #0B1020 / #121B2B / #22304A. */
+  --sf-bg: 28 28 30;          /* #1C1C1E fondo del contenido */
+  --sf-sidebar: 35 35 37;     /* #232325 barra lateral y barra superior */
+  --sf-surface: 44 44 46;     /* #2C2C2E tarjetas / paneles */
+  --sf-raised: 58 58 60;      /* #3A3A3C hover / elevado */
+  --sf-border: 255 255 255;   /* bordes: blanco translúcido… */
+  --sf-border-alpha: 0.1;     /* …al 10 %, se ve igual sobre cualquier fondo */
+  --sf-text: 237 237 240;     /* #EDEDF0 texto principal */
+  --sf-muted: 161 161 166;    /* #A1A1A6 texto secundario */
   --sf-accent: 53 205 178;    /* #35CDB2 acento */
   --sf-warning: 240 180 91;   /* #F0B45B advertencia */
 }
@@ -40,9 +44,11 @@
 html.light {
   color-scheme: light;
   --sf-bg: 243 246 250;
+  --sf-sidebar: 255 255 255;
   --sf-surface: 255 255 255;
   --sf-raised: 235 240 246;
   --sf-border: 213 221 232;
+  --sf-border-alpha: 1;
   --sf-text: 15 23 42;
   --sf-muted: 91 107 130;
   --sf-accent: 20 144 124;
@@ -463,11 +469,11 @@ html.light input::placeholder {
 }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.2);
+  background: rgba(161, 161, 166, 0.22);
   border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.35);
+  background: rgba(161, 161, 166, 0.38);
 }
 
 /* Disable text selection on non-content chrome */
@@ -560,4 +566,18 @@ html.light input::placeholder {
 }
 .gear-blink {
   animation: gear-blink 1.1s ease-in-out infinite;
+}
+
+/* (05/11) Globo de los aeropuertos del simulador: MapLibre lo trae blanco y la
+   letra hereda el color del tema. */
+.sf-map-popup .maplibregl-popup-content {
+  background: rgb(var(--sf-raised));
+  color: rgb(var(--sf-text));
+  border: 1px solid rgb(var(--sf-border));
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.sf-map-popup .maplibregl-popup-tip {
+  display: none;
 }

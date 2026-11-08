@@ -8,6 +8,7 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  Plane,
   Radio,
   Settings,
   Wallet,
@@ -20,6 +21,7 @@ import { cn } from "../lib/cn";
 import { t } from "../lib/i18n";
 import { BrandMark } from "./BrandMark";
 import { useFstoEmbedStore } from "./FlightsimEmbed";
+import { friendFlying, useCrewLiveStore } from "../stores/useCrewLiveStore";
 
 /**
  * (Rediseño F1) Menú lateral principal — reemplaza a las pestañas
@@ -76,6 +78,8 @@ const GROUPS: NavGroup[] = [
     id: "ops",
     labelKey: "nav.group.flight_ops",
     items: [
+      // (8.4.x) Vuelo en vivo, plan del día y el otro piloto.
+      { key: "inflight", labelKey: "nav.inflight", icon: Plane, tourId: "nav-inflight", target: { kind: "view", view: "inflight" } },
       { key: "flightbook", labelKey: "nav.flightbook", icon: BookOpen, tourId: "nav-flightbook", target: { kind: "view", view: "flightbook" } },
       { key: "hangar", labelKey: "nav.hangar", icon: Warehouse, tourId: "nav-hangar", target: { kind: "view", view: "hangar" } },
       { key: "economy", labelKey: "nav.economy", icon: Wallet, tourId: "nav-economy", target: { kind: "view", view: "economy" } },
@@ -126,6 +130,20 @@ export function Sidebar({ safeMode }: SidebarProps) {
   const view = useAppStore((s) => s.view);
   const setView = useAppStore((s) => s.setView);
   const openEconomy = useAppStore((s) => s.openEconomy);
+  // (8.4.x) Marca «EN VIVO» de «En vuelo»: tu vuelo o, si no, el del otro piloto.
+  const simStatus = useFlightLogStore((s) => s.status);
+  const mateAt = useCrewLiveStore((s) => s.friendPosAt);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 10_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const liveMark: "self" | "mate" | null =
+    simStatus?.simconnectConnected && simStatus.currentLat != null
+      ? "self"
+      : friendFlying(mateAt, nowTick)
+        ? "mate"
+        : null;
 
   const [pinnedExpanded, setPinnedExpanded] = useState(readExpandedPref);
   const [narrow, setNarrow] = useState(isNarrow);
@@ -224,7 +242,7 @@ export function Sidebar({ safeMode }: SidebarProps) {
         // (19/10) Superpuesto sobre el contenido → oculta flightsim.to embebido.
         data-sf-overlay={overlay ? "" : undefined}
         className={cn(
-          "flex h-full flex-col overflow-hidden border-r border-sf-border/70 bg-sf-surface transition-[width] duration-200 ease-out",
+          "flex h-full flex-col overflow-hidden border-r border-sf-border/70 bg-sf-sidebar transition-[width] duration-200 ease-out",
           expanded ? "w-sidebar-expanded" : "w-sidebar-collapsed",
           overlay && "absolute inset-y-0 left-0 shadow-2xl shadow-black/40",
         )}
@@ -244,7 +262,7 @@ export function Sidebar({ safeMode }: SidebarProps) {
             {/* (19/10) Logo nuevo (monograma S), el mismo del icono de la app. */}
             <BrandMark className="h-7 w-7 rounded-lg ring-1 ring-brand-500/30" />
             {!expanded && safeMode && (
-              <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-rose-400 ring-2 ring-sf-surface" />
+              <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-rose-400 ring-2 ring-sf-sidebar" />
             )}
           </div>
           {expanded && (
@@ -280,6 +298,7 @@ export function Sidebar({ safeMode }: SidebarProps) {
                         expanded={expanded}
                         active={isActive(item)}
                         tourId={item.tourId}
+                        live={item.key === "inflight" ? liveMark : null}
                         onClick={() => activate(item)}
                         onShowTip={(el) => showTip(el, label)}
                         onHideTip={hideTip}
@@ -334,6 +353,7 @@ function SidebarButton({
   active,
   tourId,
   ariaExpanded,
+  live,
   onClick,
   onShowTip,
   onHideTip,
@@ -343,6 +363,8 @@ function SidebarButton({
   expanded: boolean;
   active: boolean;
   tourId?: string;
+  /** (8.4.x) «EN VIVO»: tu vuelo ("self", rojo) o sólo el del otro piloto ("mate", fucsia). */
+  live?: "self" | "mate" | null;
   ariaExpanded?: boolean;
   onClick: () => void;
   onShowTip: (el: HTMLElement) => void;
@@ -376,6 +398,25 @@ function SidebarButton({
       )}
       <Icon className={cn("h-[18px] w-[18px] shrink-0", active && "text-brand-300")} />
       {expanded && <span className="truncate">{label}</span>}
+      {live && expanded && (
+        <span
+          className={cn(
+            "ml-auto inline-flex items-center gap-1 rounded px-1.5 py-px text-[9px] font-bold uppercase tracking-wider ring-1",
+            live === "self" ? "bg-rose-500/15 text-rose-300 ring-rose-500/30" : "bg-fuchsia-500/15 text-fuchsia-300 ring-fuchsia-500/30",
+          )}
+        >
+          <span className={cn("h-1.5 w-1.5 animate-pulse rounded-full", live === "self" ? "bg-rose-400" : "bg-fuchsia-400")} />
+          {t("inflight.live")}
+        </span>
+      )}
+      {live && !expanded && (
+        <span
+          className={cn(
+            "absolute right-2 top-2 h-2 w-2 animate-pulse rounded-full ring-2 ring-sf-sidebar",
+            live === "self" ? "bg-rose-400" : "bg-fuchsia-400",
+          )}
+        />
+      )}
     </button>
   );
 }

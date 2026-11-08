@@ -156,6 +156,106 @@ pub async fn gsx_list_installed_icaos() -> Result<Vec<String>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// (05/11) Un perfil GSX del disco.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GsxLocalProfile {
+    pub icao: String,
+    pub file: String,
+    pub path: String,
+    /// Autor del perfil (`creator` de `[general]`).
+    pub creator: Option<String>,
+    /// Desarrollador de escenario que nombra el archivo, según el catálogo.
+    pub scenery_dev: Option<String>,
+}
+
+/// El autor que declara el `.ini`.
+fn profile_creator(content: &str) -> Option<String> {
+    content
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with("[gate"))
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let value = value.trim();
+            (key.trim().eq_ignore_ascii_case("creator") && !value.is_empty()).then(|| value.to_string())
+        })
+}
+
+/// Nombre de un desarrollador para buscarlo en un archivo: «Flightbeam Studios»
+/// aparece como `flightbeam`.
+fn dev_key(dev: &str) -> String {
+    let key = crate::updates::canon_dev(dev);
+    for suffix in ["studios", "studio", "simulations", "simulation", "designs", "design"] {
+        if let Some(short) = key.strip_suffix(suffix) {
+            if short.len() >= 4 {
+                return short.to_string();
+            }
+        }
+    }
+    key
+}
+
+/// El desarrollador de `devs` que nombra el archivo, si alguno lo hace. El ICAO
+/// del principio no cuenta. El nombre más largo gana.
+fn named_dev(file_stem: &str, icao: &str, devs: &[String]) -> Option<String> {
+    let name = file_stem
+        .get(..icao.len())
+        .filter(|start| start.eq_ignore_ascii_case(icao))
+        .map_or(file_stem, |start| &file_stem[start.len()..]);
+    let rest = crate::updates::canon_dev(name);
+    let mut keyed: Vec<(String, &String)> = devs.iter().map(|d| (dev_key(d), d)).collect();
+    keyed.sort_by_key(|(key, _)| std::cmp::Reverse(key.len()));
+    keyed
+        .into_iter()
+        .find(|(key, _)| key.len() >= 4 && rest.contains(key.as_str()))
+        .map(|(_, dev)| dev.clone())
+}
+
+/// (05/11) Perfiles del disco, con su autor y el escenario que nombran.
+#[tauri::command]
+pub async fn gsx_local_profiles(state: tauri::State<'_, AppState>) -> Result<Vec<GsxLocalProfile>, String> {
+    let devs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT icao, developer FROM addons WHERE icao IS NOT NULL AND developer IS NOT NULL",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut by_icao: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (icao, dev) in devs {
+        by_icao.entry(icao.to_ascii_uppercase()).or_default().push(dev);
+    }
+    tokio::task::spawn_blocking(move || {
+        let folder = gsx_profiles_folder().ok_or_else(|| crate::tr!("gsx.resolveAppdataFailed"))?;
+        if !folder.is_dir() {
+            return Ok::<Vec<GsxLocalProfile>, String>(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&folder).map_err(|e| e.to_string())?.flatten() {
+            let path = entry.path();
+            let is_ini = path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("ini"));
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()).filter(|_| is_ini && path.is_file()) else {
+                continue;
+            };
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let Some(icao) = leading_icao_from_filename(stem).or_else(|| icao_from_afcad_path(&content)) else {
+                continue;
+            };
+            let scenery_dev = by_icao.get(&icao).and_then(|devs| named_dev(stem, &icao, devs));
+            out.push(GsxLocalProfile {
+                creator: profile_creator(&content),
+                scenery_dev,
+                file: entry.file_name().to_string_lossy().into_owned(),
+                path: path.to_string_lossy().into_owned(),
+                icao,
+            });
+        }
+        out.sort_by(|a, b| (&a.icao, &a.file).cmp(&(&b.icao, &b.file)));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// (v6.2.44) Aviso de update de un perfil GSX instalado. El badge del
 /// mapa pasa a ámbar y el pre-vuelo lo indica, con link para re-descargar.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -502,6 +602,17 @@ fn install_from_rar(src: &Path, dest_folder: &Path) -> Result<GsxInstallReport, 
             Ok(None) => break,
             Err(e) => return Err(crate::tr!("gsx.rarReadError", e = e)),
         };
+        if crate::drop_install::rar_entry_path_is_unsafe(&header.entry().filename) {
+            tracing::warn!(
+                target: "gsx",
+                "entrada RAR con ruta insegura omitida: {}",
+                header.entry().filename.display()
+            );
+            iter = header
+                .skip()
+                .map_err(|e| crate::tr!("gsx.rarReadError", e = e))?;
+            continue;
+        }
         iter = header
             .extract_with_base(temp.path())
             .map_err(|e| crate::tr!("gsx.rarExtractError", e = e))?;
@@ -640,4 +751,48 @@ fn icao_from_afcad_path(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod local_profile_tests {
+    use super::*;
+
+    fn devs(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_file_name_can_tell_which_scenery_a_profile_is_for() {
+        let known = devs(&["Simaddons", "Roman Design"]);
+        assert_eq!(named_dev("cyow-Simaddons-Montreuil", "CYOW", &known).as_deref(), Some("Simaddons"));
+        assert_eq!(named_dev("cyow-Roman-Design-v2", "CYOW", &known).as_deref(), Some("Roman Design"));
+        assert_eq!(named_dev("cyow-ee7mjp", "CYOW", &known), None, "nombre sin pista");
+        assert_eq!(
+            named_dev("Simaddons-Ottawa", "CYOW", &known).as_deref(),
+            Some("Simaddons"),
+            "el ICAO salió de dentro del perfil: el nombre va entero"
+        );
+    }
+
+    #[test]
+    fn studio_words_and_punctuation_do_not_hide_a_developer() {
+        assert_eq!(
+            named_dev("ksfo-flightbeam-v3", "KSFO", &devs(&["Flightbeam Studios"])).as_deref(),
+            Some("Flightbeam Studios")
+        );
+        assert_eq!(named_dev("efhk-MKStudios-GSX", "EFHK", &devs(&["MK–STUDIOS"])).as_deref(), Some("MK–STUDIOS"));
+    }
+
+    #[test]
+    fn short_names_and_the_icao_do_not_count() {
+        assert_eq!(named_dev("kjfk-abc-test", "KJFK", &devs(&["ABC"])), None, "demasiado corto");
+        assert_eq!(named_dev("orbx-profile", "ORBX", &devs(&["Orbx"])), None, "el ICAO del principio no cuenta");
+    }
+
+    #[test]
+    fn the_creator_comes_from_the_general_section() {
+        let ini = "[general]\ncreator = MontreuilSimulations\nmsfs2024only = 0\n\n[gate 1]\ncreator = otro\n";
+        assert_eq!(profile_creator(ini).as_deref(), Some("MontreuilSimulations"));
+        assert_eq!(profile_creator("[general]\ncreator =\n[gate 1]\n"), None);
+    }
 }

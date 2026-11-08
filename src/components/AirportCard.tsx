@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { api, isTauri } from "../lib/tauri";
 import { getActiveLocale, t } from "../lib/i18n";
+import { countryName } from "../lib/countryName";
 import { cn } from "../lib/cn";
 import { GSX_KIND_COLORS } from "../lib/gsxKinds";
 import { gsxSearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
@@ -812,15 +813,3 @@ function fmtDay(iso: string): string {
     : d.toLocaleDateString(getActiveLocale(), { day: "numeric", month: "short", year: "numeric" });
 }
 
-let REGION_DN: Intl.DisplayNames | null | undefined;
-function countryName(iso?: string | null): string | null {
-  if (!iso) return null;
-  try {
-    if (REGION_DN === undefined) {
-      REGION_DN = new Intl.DisplayNames([getActiveLocale()], { type: "region" });
-    }
-    return REGION_DN?.of(iso.toUpperCase()) ?? iso;
-  } catch {
-    return iso;
-  }
-}

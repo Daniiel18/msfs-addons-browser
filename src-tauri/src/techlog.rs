@@ -5,6 +5,11 @@
 //! Hangar, deja de aplicarles su propio desgaste y cobra en Finanzas lo que
 //! TechLog hace (servicios, reparaciones, reemplazos, defectos, checks).
 //!
+//! (06/11) TechLog 1.2 une las dos apps en una (`localhost:7720`, una sola base
+//! con la `family` de cada avión). `TlSource` sigue siendo la familia: con el
+//! unificado instalado todas las fuentes apuntan a esa app y cada una filtra
+//! sus aviones. Las apps antiguas quedan de respaldo.
+//!
 //! Dos caminos de lectura:
 //!   · EN VIVO (TechLog abierto): su API local (`localhost:7733` Fenix,
 //!     `localhost:7755` PMDG). Desde loopback no pide PIN; las acciones (POST)
@@ -43,33 +48,58 @@ pub enum TlSource {
     Pmdg,
     /// (19/10) Etapa 3: Tech Log propio de SimFleet (resto de aviones).
     Simfleet,
+    /// (06/11) Otra familia del TechLog unificado (FSL y las que vengan).
+    Other,
 }
 
 impl TlSource {
-    pub const ALL: [TlSource; 2] = [TlSource::Fenix, TlSource::Pmdg];
+    pub const ALL: [TlSource; 3] = [TlSource::Fenix, TlSource::Pmdg, TlSource::Other];
 
     pub fn id(self) -> &'static str {
         match self {
             TlSource::Fenix => "fenix",
             TlSource::Pmdg => "pmdg",
             TlSource::Simfleet => "simfleet",
+            TlSource::Other => "other",
         }
     }
-    pub fn app_name(self) -> &'static str {
+    /// Familia de un avión del TechLog unificado (`fenix-a32x`, `pmdg-737`…).
+    pub fn of_family(family: &str) -> TlSource {
+        let family = family.trim().to_ascii_lowercase();
+        if family.starts_with("fenix") {
+            TlSource::Fenix
+        } else if family.starts_with("pmdg") {
+            TlSource::Pmdg
+        } else {
+            TlSource::Other
+        }
+    }
+    /// Nombre de la app de esta familia antes de unificarse.
+    fn legacy_name(self) -> &'static str {
         match self {
             TlSource::Fenix => "Fenix TechLog",
             TlSource::Pmdg => "PMDG TechLog",
             TlSource::Simfleet => "SimFleet Tech Log",
+            TlSource::Other => UNIFIED_NAME,
         }
+    }
+    pub fn app_name(self) -> &'static str {
+        if unified_for(self).is_some() {
+            return UNIFIED_NAME;
+        }
+        self.legacy_name()
     }
     pub fn port(self) -> u16 {
         if let Some(p) = test_override(self, "PORT").and_then(|p| p.parse().ok()) {
             return p;
         }
+        if unified_for(self).is_some() {
+            return UNIFIED_PORT;
+        }
         match self {
             TlSource::Fenix => 7733,
             TlSource::Pmdg => 7755,
-            TlSource::Simfleet => 0,
+            TlSource::Simfleet | TlSource::Other => 0,
         }
     }
     pub fn base_url(self) -> String {
@@ -80,6 +110,7 @@ impl TlSource {
             "fenix" => Some(TlSource::Fenix),
             "pmdg" => Some(TlSource::Pmdg),
             "simfleet" => Some(TlSource::Simfleet),
+            "other" => Some(TlSource::Other),
             _ => None,
         }
     }
@@ -88,43 +119,117 @@ impl TlSource {
 /// (20/10) Sólo en el entorno de pruebas: `SIMFLEET_TECHLOG_<FENIX|PMDG>_DIR`,
 /// `_PORT` y `_ARGS` apuntan a una COPIA de TechLog (otra carpeta, otro
 /// puerto, p. ej. `--offline`) para probar sin tocar la instalación real.
-/// La instancia principal los ignora.
+/// La instancia principal los ignora. (06/11) Con el unificado en pruebas,
+/// `SIMFLEET_TECHLOG_UNIFIED_*`.
 fn test_override(source: TlSource, what: &str) -> Option<String> {
     if !crate::test_env::is_active() {
         return None;
     }
-    std::env::var(format!("SIMFLEET_TECHLOG_{}_{what}", source.id().to_uppercase()))
+    let who = if unified_for(source).is_some() { "UNIFIED".to_string() } else { source.id().to_uppercase() };
+    test_var(&who, what)
+}
+
+fn test_var(who: &str, what: &str) -> Option<String> {
+    std::env::var(format!("SIMFLEET_TECHLOG_{who}_{what}"))
         .ok()
         .filter(|v| !v.trim().is_empty())
+}
+
+const UNIFIED_NAME: &str = "TechLog";
+const UNIFIED_PORT: u16 = 7720;
+
+/// ¿Es la carpeta del TechLog unificado? Sólo él separa el catálogo por
+/// familias, con lo común en `catalog/common`.
+fn is_unified(dir: &Path) -> bool {
+    dir.join("catalog").join("common").is_dir()
+}
+
+/// (06/11) Carpeta del TechLog unificado, si está instalado. Manda sobre las
+/// apps antiguas. Se mira cada minuto: lo pregunta cada `port()` y `app_name()`.
+fn unified_dir() -> Option<PathBuf> {
+    // Las pruebas de Rust nunca dependen de lo instalado en el PC.
+    if cfg!(test) {
+        return None;
+    }
+    // En el entorno de pruebas, sólo una COPIA en otro puerto: la app real no
+    // se toca nunca desde ahí.
+    if crate::test_env::is_active() {
+        let dir = PathBuf::from(test_var("UNIFIED", "DIR")?);
+        let port: u16 = test_var("UNIFIED", "PORT")?.parse().ok()?;
+        return (port != UNIFIED_PORT && is_unified(&dir)).then_some(dir);
+    }
+    static CACHE: OnceLock<RwLock<(Option<Instant>, Option<PathBuf>)>> = OnceLock::new();
+    let cell = CACHE.get_or_init(|| RwLock::new((None, None)));
+    if let Ok(g) = cell.read() {
+        if g.0.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return g.1.clone();
+        }
+    }
+    let found = find_unified();
+    if let Ok(mut g) = cell.write() {
+        *g = (Some(Instant::now()), found.clone());
+    }
+    found
+}
+
+fn find_unified() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(p) = registry_install_location(UNIFIED_NAME) {
+        if is_unified(&p) {
+            return Some(p);
+        }
+    }
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+    let p = local.join("Programs").join(UNIFIED_NAME);
+    is_unified(&p).then_some(p)
+}
+
+/// El unificado, para las fuentes que atiende (no el Tech Log de SimFleet).
+fn unified_for(source: TlSource) -> Option<PathBuf> {
+    (source != TlSource::Simfleet).then(unified_dir).flatten()
+}
+
+/// Ejecutable del TechLog unificado (secuencias de arranque).
+pub(crate) fn unified_exe() -> Option<PathBuf> {
+    exe_path(TlSource::Fenix, &unified_dir()?)
 }
 
 /// Carpeta de instalación de una app TechLog: la del desinstalador de Windows
 /// (si el usuario eligió otra) o la de por defecto.
 pub fn install_dir(source: TlSource) -> Option<PathBuf> {
+    if let Some(dir) = unified_for(source) {
+        return Some(dir);
+    }
+    if source == TlSource::Other {
+        return None;
+    }
     if let Some(dir) = test_override(source, "DIR") {
         let p = PathBuf::from(dir);
         return p.join("catalog").is_dir().then_some(p);
     }
     #[cfg(windows)]
-    if let Some(p) = registry_install_location(source.app_name()) {
+    if let Some(p) = registry_install_location(source.legacy_name()) {
         if p.join("catalog").is_dir() {
             return Some(p);
         }
     }
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-    let p = local.join("Programs").join(source.app_name());
+    let p = local.join("Programs").join(source.legacy_name());
     p.join("catalog").is_dir().then_some(p)
 }
 
 /// `techlog.db`: en la carpeta de instalación (`data\`) o, en builds antiguas
 /// de PMDG TechLog, en `%LOCALAPPDATA%\PMDG TechLog\data`.
-fn db_path(source: TlSource, dir: &Path) -> Option<PathBuf> {
+pub(crate) fn db_path(source: TlSource, dir: &Path) -> Option<PathBuf> {
     let p = dir.join("data").join("techlog.db");
     if p.is_file() {
         return Some(p);
     }
+    if is_unified(dir) {
+        return None;
+    }
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-    let p = local.join(source.app_name()).join("data").join("techlog.db");
+    let p = local.join(source.legacy_name()).join("data").join("techlog.db");
     p.is_file().then_some(p)
 }
 
@@ -204,8 +309,12 @@ fn registry_install_location(display_name: &str) -> Option<PathBuf> {
 /// comparten matrícula (`G-FENX-A320-CFM` → `GFENX`).
 pub fn normalize_reg(reg: &str) -> String {
     let parts: Vec<&str> = reg.trim().split('-').collect();
+    let engine_suffixes = [
+        "CFM", "IAE", "LEAP", "PW", "GE", "RR", "GENX", "GE90",
+        "TRENT", "PW1100G", "PW1500G", "CF6", "CF34", "PW4000",
+    ];
     let base = if parts.len() >= 3
-        && matches!(parts[parts.len() - 1].to_ascii_uppercase().as_str(), "CFM" | "IAE")
+        && engine_suffixes.contains(&parts[parts.len() - 1].to_ascii_uppercase().as_str())
     {
         parts[..parts.len() - 2].join("-")
     } else {
@@ -243,7 +352,7 @@ pub async fn airframe_list() -> Vec<TlAirframeInfo> {
         let Some(dir) = install_dir(source) else { continue };
         let Some(db) = db_path(source, &dir) else { continue };
         if let Ok(mut conn) = open_snapshot(source, &db).await {
-            if let Ok(afs) = db_airframes(&mut conn).await {
+            if let Ok(afs) = airframes_of(&mut conn, source).await {
                 out.extend(afs.into_iter().map(|a| TlAirframeInfo {
                     registration: a.registration,
                     variant: a.variant,
@@ -260,6 +369,38 @@ pub async fn airframe_list() -> Vec<TlAirframeInfo> {
 // ---------------------------------------------------------------------------
 // Catálogo (sólo lo que hace falta para leer la base sin TechLog)
 // ---------------------------------------------------------------------------
+
+/// (06/11) Datos del TechLog unificado. Los que sólo da su API llegan con el
+/// avión activo y TechLog abierto.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlExtras {
+    /// "Fenix A320", "PMDG 737"…
+    pub family_label: Option<String>,
+    /// "pilot" | "airline".
+    pub maintenance_by: Option<String>,
+    pub fuel_factor_pct: Option<f64>,
+    /// Código para SimBrief ("P02").
+    pub simbrief_factor: Option<String>,
+    pub systems_fh_per_failure: Option<f64>,
+    pub cabin_fh_per_failure: Option<f64>,
+}
+
+/// Nombre de la familia con TechLog cerrado (abierto, lo da su API).
+fn family_label(family: &str) -> Option<String> {
+    let f = family.to_ascii_lowercase();
+    let label = match f.as_str() {
+        "fenix-a32x" => "Fenix A320",
+        "pmdg-737" => "PMDG 737",
+        "pmdg-777" => "PMDG 777",
+        "fsl-a32x" => "FSL A321neo",
+        "aerosoft-a346" => "Aerosoft A346",
+        "inibuilds-a350" => "iniBuilds A350",
+        "inibuilds-a340" => "iniBuilds A340",
+        _ => return None,
+    };
+    Some(label.to_string())
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -471,7 +612,12 @@ fn oil_follows_sim(source: TlSource, dir: &Path) -> bool {
     if source != TlSource::Fenix {
         return false;
     }
-    let v: Value = read_jsonc(&dir.join("catalog").join("fenix-datarefs.json"));
+    // (06/11) El unificado lo lleva en la carpeta de la familia.
+    let root = dir.join("catalog");
+    let path = [root.join("fenix").join("fenix-datarefs.json"), root.join("fenix-datarefs.json")]
+        .into_iter()
+        .find(|p| p.is_file());
+    let v: Value = path.map(|p| read_jsonc(&p)).unwrap_or(Value::Null);
     v.pointer("/datarefs/oil1Qt")
         .and_then(|x| x.as_str())
         .is_some_and(|s| !s.trim().is_empty())
@@ -482,21 +628,40 @@ fn is_777(variant: &str) -> bool {
     variant.trim().starts_with("777")
 }
 
-/// Carpeta de catálogo de un avión: PMDG TechLog 0.2 trae el del 777 aparte
-/// (`catalog/b777`: sus piezas, MEL, límites y fallos).
-fn catalog_dir(dir: &Path, variant: &str) -> PathBuf {
-    let root = dir.join("catalog");
-    let b777 = root.join("b777");
-    if is_777(variant) && b777.join("components.json").is_file() {
-        b777
-    } else {
-        root
-    }
+/// (06/11) ¿Es un A340 o un A350? TechLog 1.2 prepara esas familias y sólo
+/// trae el catálogo del A350.
+fn is_wide_airbus(variant: &str) -> bool {
+    let v = variant.trim().to_ascii_uppercase();
+    v.starts_with("A34") || v.starts_with("A35")
 }
 
-fn catalog_for(dir: &Path, variant: &str) -> Catalog {
+/// Carpeta de catálogo de un avión: PMDG TechLog 0.2 trae el del 777 aparte
+/// (`catalog/b777`: sus piezas, MEL, límites y fallos). (06/11) El unificado
+/// tiene una carpeta por familia; las apps antiguas lo llevan en la raíz. FSL
+/// no trae catálogo propio en 1.2.0: se lee con el de la familia A320.
+fn catalog_dir(dir: &Path, source: TlSource, variant: &str) -> PathBuf {
+    let root = dir.join("catalog");
+    let folders: &[&str] = if is_777(variant) {
+        &["b777"]
+    } else if is_wide_airbus(variant) {
+        &["a350"]
+    } else {
+        match source {
+            TlSource::Pmdg => &["pmdg737"],
+            TlSource::Fenix | TlSource::Simfleet => &["fenix"],
+            TlSource::Other => &["fsl", "fenix"],
+        }
+    };
+    folders
+        .iter()
+        .map(|f| root.join(f))
+        .find(|p| p.join("components.json").is_file())
+        .unwrap_or(root)
+}
+
+fn catalog_for(dir: &Path, source: TlSource, variant: &str) -> Catalog {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, Catalog)>>> = OnceLock::new();
-    let cat_dir = catalog_dir(dir, variant);
+    let cat_dir = catalog_dir(dir, source, variant);
     let stamp = std::fs::metadata(cat_dir.join("components.json"))
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -511,9 +676,15 @@ fn catalog_for(dir: &Path, variant: &str) -> Catalog {
     let comps: ComponentsFile = read_jsonc(&cat_dir.join("components.json"));
     let limits: LimitsFile = read_jsonc(&cat_dir.join("limits.json"));
     let mel: MelFile = read_jsonc(&cat_dir.join("mel.json"));
-    // El del 777 no trae repuestos propios: los del catálogo general.
-    let spares_dir = if cat_dir.join("spares.json").is_file() { cat_dir.clone() } else { dir.join("catalog") };
-    let spares: SparesFile = read_jsonc(&spares_dir.join("spares.json"));
+    // El del 777 no trae repuestos propios: los del catálogo general
+    // (`catalog/common` en el unificado).
+    let root = dir.join("catalog");
+    let spares = [cat_dir.clone(), root.clone(), root.join("common")]
+        .into_iter()
+        .map(|d| d.join("spares.json"))
+        .find(|p| p.is_file())
+        .map(|p| read_jsonc::<SparesFile>(&p))
+        .unwrap_or_default();
     let cat = Catalog {
         components: comps.components,
         consumables: comps.consumables,
@@ -536,48 +707,92 @@ fn file_sig(p: &Path) -> Option<(u64, SystemTime)> {
     Some((m.len(), m.modified().ok()?))
 }
 
+async fn open_copy(copy: &Path) -> Result<SqliteConnection, sqlx::Error> {
+    SqliteConnectOptions::new()
+        .filename(copy)
+        .create_if_missing(false)
+        .disable_statement_logging()
+        .connect()
+        .await
+}
+
 /// Copia `techlog.db` (+ `-wal`) a `%TEMP%\simfleet-techlog\<fuente>\` si
 /// cambió desde la última copia, y abre la COPIA. El `-shm` no se copia:
 /// SQLite lo reconstruye y así nunca arrastramos un índice a medio escribir.
-async fn open_snapshot(source: TlSource, db: &Path) -> Result<SqliteConnection> {
-    static SIGS: OnceLock<Mutex<HashMap<TlSource, String>>> = OnceLock::new();
+pub(crate) async fn open_snapshot(source: TlSource, db: &Path) -> Result<SqliteConnection> {
+    // Copia vigente de cada fuente y el estado de la base del que salió.
+    static CURRENT: OnceLock<Mutex<HashMap<TlSource, (String, PathBuf)>>> = OnceLock::new();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Una copia a la vez.
+    static BUSY: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let _busy = BUSY.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     let wal = PathBuf::from(format!("{}-wal", db.display()));
     let sig = format!("{:?}|{:?}", file_sig(db), file_sig(&wal));
     // En tests, carpeta propia: no pisar la copia que use la app abierta. Y una
     // por base: las pruebas corren a la vez en el mismo proceso (una con una
     // base de prueba, otra leyendo qué matrículas lleva TechLog).
-    let dir = if cfg!(test) {
+    let base = if cfg!(test) {
         let tag = db.display().to_string().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
         std::env::temp_dir().join(format!("simfleet-techlog-test-{}-{tag:08x}", std::process::id()))
     } else {
         std::env::temp_dir().join("simfleet-techlog")
     }
     .join(source.id());
-    std::fs::create_dir_all(&dir)?;
-    let copy = dir.join("techlog.db");
-    let sigs = SIGS.get_or_init(|| Mutex::new(HashMap::new()));
-    let fresh = sigs
-        .lock()
-        .map(|g| g.get(&source).map(|s| s == &sig).unwrap_or(false))
-        .unwrap_or(false);
-    if !fresh || !copy.is_file() {
-        let _ = std::fs::remove_file(dir.join("techlog.db-shm"));
-        let _ = std::fs::remove_file(dir.join("techlog.db-wal"));
+    let current = CURRENT.get_or_init(|| Mutex::new(HashMap::new()));
+    let cached = current.lock().ok().and_then(|g| {
+        if let Some((_, c)) = g.get(&source).filter(|(s, c)| *s == sig && c.is_file()) {
+            return Some(c.clone());
+        }
+        g.values().find(|(s, c)| *s == sig && c.is_file()).map(|(_, c)| c.clone())
+    });
+    if let Some(copy) = cached {
+        return Ok(open_copy(&copy).await?);
+    }
+    // (07/11) Cada copia va a su carpeta: la anterior puede seguir abierta y
+    // sobrescribirla le rompía la lectura. Además la base y su WAL se copian en
+    // dos pasos y, si TechLog escribe entre uno y otro, sale incoherente: se
+    // comprueba antes de usarla y se repite.
+    const TRIES: u32 = 5;
+    for attempt in 1..=TRIES {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = base.join(format!("{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let copy = dir.join("techlog.db");
         std::fs::copy(db, &copy).with_context(|| format!("copiando {}", db.display()))?;
         if wal.is_file() {
-            std::fs::copy(&wal, dir.join("techlog.db-wal"))?;
+            if let Err(e) = std::fs::copy(&wal, dir.join("techlog.db-wal")) {
+                tracing::debug!(target: "techlog", "WAL de {}: {e}", source.id());
+            }
         }
-        if let Ok(mut g) = sigs.lock() {
-            g.insert(source, sig);
+        let mut conn = open_copy(&copy).await?;
+        let check: Result<String, _> = sqlx::query_scalar("PRAGMA quick_check(1)").fetch_one(&mut conn).await;
+        if check.as_deref().is_ok_and(|c| c == "ok") {
+            if let Ok(mut g) = current.lock() {
+                g.insert(source, (sig, copy));
+            }
+            drop_old_copies(&base, &dir);
+            return Ok(conn);
         }
+        conn.close().await.ok();
+        let _ = std::fs::remove_dir_all(&dir);
+        tracing::debug!(target: "techlog", "copia de {} incoherente (intento {attempt})", source.id());
+        tokio::time::sleep(Duration::from_millis(40)).await;
     }
-    let conn = SqliteConnectOptions::new()
-        .filename(&copy)
-        .create_if_missing(false)
-        .disable_statement_logging()
-        .connect()
-        .await?;
-    Ok(conn)
+    Err(anyhow!("copia de {} incoherente", db.display()))
+}
+
+/// Las copias anteriores. Las más recientes se dejan: alguien puede seguir
+/// leyéndolas y caen en una pasada siguiente.
+fn drop_old_copies(base: &Path, keep: &Path) {
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let age = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        if path == keep || age.is_none_or(|a| a < Duration::from_secs(5)) {
+            continue;
+        }
+        let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +828,10 @@ pub struct TlDefect {
     pub failure: Option<String>,
     pub placard: Option<String>,
     pub restrictions: Option<String>,
+    /// (06/11) TechLog 1.2: informe escrito del defecto.
+    pub report: Option<String>,
+    /// (06/11) TechLog 1.2: cuándo llega el repuesto (sólo en vivo).
+    pub parts_expected_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -763,6 +982,9 @@ pub struct TechLogAircraft {
     /// (24/10) Trabajo en curso en TechLog (tiempos realistas): se cobra al
     /// terminar.
     pub pending_work: Option<String>,
+    /// (06/11) Lo que añade el TechLog unificado. `None` en las apps antiguas
+    /// y en el Tech Log de SimFleet.
+    pub extras: Option<TlExtras>,
 }
 
 // ---------------------------------------------------------------------------
@@ -828,7 +1050,7 @@ fn engine_index(position: Option<&str>) -> usize {
         .unwrap_or(1)
 }
 
-fn opt_str(row: &sqlx::sqlite::SqliteRow, col: &str) -> Option<String> {
+pub(crate) fn opt_str(row: &sqlx::sqlite::SqliteRow, col: &str) -> Option<String> {
     row.try_get::<Option<String>, _>(col)
         .ok()
         .flatten()
@@ -864,6 +1086,9 @@ fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
 /// Registro de avión leído de la base.
 struct DbAirframe {
     id: i64,
+    /// (06/11) `fenix-a32x`, `pmdg-737`… Las apps antiguas no la llevan.
+    family: Option<String>,
+    created_utc: Option<String>,
     registration: String,
     variant: String,
     engine: String,
@@ -896,6 +1121,8 @@ async fn db_airframes(conn: &mut SqliteConnection) -> Result<Vec<DbAirframe>> {
                 .unwrap_or_default();
             DbAirframe {
                 id: r.try_get("id").unwrap_or(0),
+                family: opt_str(r, "family"),
+                created_utc: opt_str(r, "created_utc"),
                 registration: opt_str(r, "registration").unwrap_or_default(),
                 variant: opt_str(r, "variant").unwrap_or_default(),
                 engine: opt_str(r, "engine").unwrap_or_default(),
@@ -909,15 +1136,41 @@ async fn db_airframes(conn: &mut SqliteConnection) -> Result<Vec<DbAirframe>> {
         .collect())
 }
 
-async fn wear_rates(conn: &mut SqliteConnection) -> (f64, f64) {
+/// (06/11) Texto del informe de un defecto. TechLog lo guarda como JSON y no
+/// documenta su forma: se muestran sus textos, sea cual sea la estructura.
+fn report_text(report: &Value) -> Option<String> {
+    fn collect<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+        match v {
+            Value::String(s) if !s.trim().is_empty() => out.push(s.trim()),
+            Value::Array(a) => a.iter().for_each(|x| collect(x, out)),
+            Value::Object(o) => o.values().for_each(|x| collect(x, out)),
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    collect(report, &mut parts);
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// (06/11) Los aviones de una fuente: el unificado guarda todas las familias
+/// en una base; en una app antigua son todos suyos.
+async fn airframes_of(conn: &mut SqliteConnection, source: TlSource) -> Result<Vec<DbAirframe>> {
+    let mut all = db_airframes(conn).await?;
+    all.retain(|a| a.family.as_deref().is_none_or(|f| TlSource::of_family(f) == source));
+    Ok(all)
+}
+
+async fn settings_json(conn: &mut SqliteConnection) -> Value {
     let raw: Option<String> = sqlx::query_scalar("SELECT value FROM setting WHERE key='settings'")
         .fetch_optional(&mut *conn)
         .await
         .ok()
         .flatten();
-    let v: Value = raw
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null);
+    raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null)
+}
+
+async fn wear_rates(conn: &mut SqliteConnection) -> (f64, f64) {
+    let v = settings_json(conn).await;
     (
         v.get("wearRate").and_then(|x| x.as_f64()).unwrap_or(3.0),
         v.get("cabinWearRate").and_then(|x| x.as_f64()).unwrap_or(2.0),
@@ -931,7 +1184,7 @@ async fn aircraft_from_db(
     reg_norm: &str,
 ) -> Result<Option<TechLogAircraft>> {
     let mut conn = open_snapshot(source, db).await?;
-    let airframes = db_airframes(&mut conn).await?;
+    let airframes = airframes_of(&mut conn, source).await?;
     let Some(a) = airframes
         .into_iter()
         .find(|a| normalize_reg(&a.registration) == reg_norm)
@@ -939,8 +1192,16 @@ async fn aircraft_from_db(
         conn.close().await.ok();
         return Ok(None);
     };
-    let cat = catalog_for(dir, &a.variant);
+    let cat = catalog_for(dir, source, &a.variant);
     let (rate, cabin_rate) = wear_rates(&mut conn).await;
+    let extras = match a.family.as_deref() {
+        Some(family) => Some(TlExtras {
+            family_label: family_label(family),
+            maintenance_by: s(&settings_json(&mut conn).await, "maintenanceBy"),
+            ..TlExtras::default()
+        }),
+        None => None,
+    };
     let now = Utc::now();
 
     // Defectos abiertos y diferidos.
@@ -970,6 +1231,11 @@ async fn aircraft_from_db(
                 failure: opt_str(r, "active_failure").or_else(|| opt_str(r, "deferred_failure")),
                 placard: opt_str(r, "placard"),
                 restrictions: opt_str(r, "restrictions"),
+                report: opt_str(r, "report")
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .as_ref()
+                    .and_then(report_text),
+                parts_expected_utc: None,
             }
         })
         .collect();
@@ -1146,6 +1412,7 @@ async fn aircraft_from_db(
         condition,
         consumables,
         checks,
+        extras,
         last_seen_utc: a.last_seen_utc,
         order_wait: Some("sim_closed".into()),
         pending_work: None,
@@ -1167,7 +1434,7 @@ fn http() -> &'static reqwest::Client {
     })
 }
 
-async fn api_get(source: TlSource, path: &str) -> Result<Value> {
+pub(crate) async fn api_get(source: TlSource, path: &str) -> Result<Value> {
     let r = http()
         .get(format!("{}{path}", source.base_url()))
         .timeout(Duration::from_secs(4))
@@ -1177,7 +1444,18 @@ async fn api_get(source: TlSource, path: &str) -> Result<Value> {
     Ok(r.json().await?)
 }
 
-async fn api_post(source: TlSource, path: &str, body: Option<Value>) -> Result<(bool, String)> {
+/// (01/11) Texto plano de la API (registro de un vuelo).
+pub(crate) async fn api_get_text(source: TlSource, path: &str) -> Result<String> {
+    let r = http()
+        .get(format!("{}{path}", source.base_url()))
+        .timeout(Duration::from_secs(6))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(r.text().await?)
+}
+
+pub(crate) async fn api_post(source: TlSource, path: &str, body: Option<Value>) -> Result<(bool, String)> {
     let mut req = http()
         .post(format!("{}{path}", source.base_url()))
         .header("X-TechLog", "1");
@@ -1197,8 +1475,14 @@ async fn api_post(source: TlSource, path: &str, body: Option<Value>) -> Result<(
     Ok((ok, msg))
 }
 
+/// (06/11) La ventana del unificado contesta `{"engine":false}` mientras su
+/// motor no ha arrancado: sin él aún no hay estado, órdenes ni eventos.
+fn ping_ready(ping: &Value) -> bool {
+    ping.get("engine").and_then(|x| x.as_bool()) != Some(false)
+}
+
 pub async fn is_running(source: TlSource) -> bool {
-    api_get(source, "/api/ping").await.is_ok()
+    api_get(source, "/api/ping").await.is_ok_and(|ping| ping_ready(&ping))
 }
 
 fn s(v: &Value, k: &str) -> Option<String> {
@@ -1240,6 +1524,8 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
             failure: s(d, "fenixFailureName").or_else(|| s(d, "fenixFailure")),
             placard: s(d, "placard"),
             restrictions: s(d, "restrictions"),
+            report: d.get("report").and_then(report_text),
+            parts_expected_utc: s(d, "partsExpectedUtc"),
         })
         .collect();
     let mut condition = TlCondition::default();
@@ -1361,6 +1647,17 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
         condition,
         consumables,
         checks,
+        extras: s(&af, "family").map(|family| TlExtras {
+            family_label: s(&af, "familyLabel").or_else(|| family_label(&family)),
+            maintenance_by: state
+                .get("airlineMaintenance")
+                .and_then(|x| x.as_bool())
+                .map(|by_airline| if by_airline { "airline" } else { "pilot" }.to_string()),
+            fuel_factor_pct: af.pointer("/performance/fuelFactorPct").and_then(|x| x.as_f64()),
+            simbrief_factor: af.get("performance").and_then(|p| s(p, "simBrief")),
+            systems_fh_per_failure: state.pointer("/reliability/systemsFhPerFailure").and_then(|x| x.as_f64()),
+            cabin_fh_per_failure: state.pointer("/reliability/cabinFhPerFailure").and_then(|x| x.as_f64()),
+        }),
         last_seen_utc: None,
         order_wait: match readiness_of(state, &normalize_reg(&s(&af, "registration").unwrap_or_default())) {
             Readiness::Ready => None,
@@ -1374,7 +1671,7 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
 async fn db_stats(source: TlSource, dir: &Path, reg_norm: &str) -> Option<TlStats> {
     let db = db_path(source, dir)?;
     let mut conn = open_snapshot(source, &db).await.ok()?;
-    let a = db_airframes(&mut conn)
+    let a = airframes_of(&mut conn, source)
         .await
         .ok()?
         .into_iter()
@@ -1392,6 +1689,16 @@ async fn db_stats(source: TlSource, dir: &Path, reg_norm: &str) -> Option<TlStat
     ))
 }
 
+/// Matrícula (normalizada) del avión activo de TechLog, si es de esta fuente:
+/// el unificado da uno solo para todas las familias.
+fn active_reg(source: TlSource, state: &Value) -> Option<String> {
+    let af = state.get("airframe")?;
+    if s(af, "family").is_some_and(|f| TlSource::of_family(&f) != source) {
+        return None;
+    }
+    s(af, "registration").map(|r| normalize_reg(&r))
+}
+
 /// Estado TechLog de una matrícula (en vivo si es el avión activo de un
 /// TechLog abierto; si no, desde su base en solo lectura). `None` si ninguna
 /// app TechLog conoce ese avión.
@@ -1406,11 +1713,7 @@ pub async fn aircraft(registration: &str) -> Result<Option<TechLogAircraft>> {
         let mut live_state = None;
         if running {
             if let Ok(state) = api_get(source, "/api/state").await {
-                let active_reg = state
-                    .get("airframe")
-                    .and_then(|a| s(a, "registration"))
-                    .map(|r| normalize_reg(&r));
-                if active_reg.as_deref() == Some(reg.as_str()) {
+                if active_reg(source, &state).as_deref() == Some(reg.as_str()) {
                     let mut a = aircraft_live(source, &state).await?;
                     // (26/10) Sin contadores en la API: los de su base.
                     if a.stats.eng_hours.is_empty() {
@@ -1484,17 +1787,13 @@ fn parse_cabin(v: &Value) -> TlCabin {
 
 /// App TechLog abierta cuyo avión ACTIVO es esta matrícula (la cabina es la
 /// del avión cargado en el sim: nunca se cambia de avión para esto).
-async fn active_source_for(reg: &str) -> Option<TlSource> {
+pub(crate) async fn active_source_for(reg: &str) -> Option<TlSource> {
     for source in TlSource::ALL {
         if install_dir(source).is_none() || !is_running(source).await {
             continue;
         }
         let Ok(state) = api_get(source, "/api/state").await else { continue };
-        let active = state
-            .get("airframe")
-            .and_then(|a| s(a, "registration"))
-            .map(|r| normalize_reg(&r));
-        if active.as_deref() == Some(reg) {
+        if active_reg(source, &state).as_deref() == Some(reg) {
             return Some(source);
         }
     }
@@ -1634,7 +1933,7 @@ pub async fn managed_registrations() -> HashMap<String, TlSource> {
         let Some(dir) = install_dir(source) else { continue };
         let Some(db) = db_path(source, &dir) else { continue };
         if let Ok(mut conn) = open_snapshot(source, &db).await {
-            if let Ok(afs) = db_airframes(&mut conn).await {
+            if let Ok(afs) = airframes_of(&mut conn, source).await {
                 for a in afs {
                     let r = normalize_reg(&a.registration);
                     if !r.is_empty() {
@@ -1701,9 +2000,9 @@ pub struct TlActionResult {
 /// Ejecutable de la app (el mismo que lanza su `.bat`).
 fn exe_path(source: TlSource, dir: &Path) -> Option<PathBuf> {
     let name = match source {
-        TlSource::Fenix => "TechLog.exe",
-        TlSource::Pmdg => "PMDGTechLog.exe",
         TlSource::Simfleet => return None,
+        TlSource::Pmdg if !is_unified(dir) => "PMDGTechLog.exe",
+        TlSource::Fenix | TlSource::Pmdg | TlSource::Other => "TechLog.exe",
     };
     [dir.join("app").join(name), dir.join(name)].into_iter().find(|p| p.is_file())
 }
@@ -2046,12 +2345,16 @@ pub(crate) fn part_cost_by_ata(ata: Option<i64>, common: &[i64], rare: &[i64]) -
 }
 
 /// (24/10) Flota de precios de un avión de TechLog. (25/10) PMDG TechLog
-/// 0.2 lleva también el 777: precios de fuselaje ancho.
+/// 0.2 lleva también el 777: precios de fuselaje ancho. (06/11) Igual el A340
+/// y el A350 del unificado; FSL es de pasillo único, como el A320.
 fn fleet_of(source: TlSource, variant: &str) -> crate::maint_prices::Fleet {
+    use crate::maint_prices::Fleet;
+    if is_777(variant) || is_wide_airbus(variant) {
+        return Fleet::Widebody;
+    }
     match source {
-        TlSource::Pmdg if is_777(variant) => crate::maint_prices::Fleet::Widebody,
-        TlSource::Pmdg => crate::maint_prices::Fleet::B737,
-        TlSource::Fenix | TlSource::Simfleet => crate::maint_prices::Fleet::A320,
+        TlSource::Pmdg => Fleet::B737,
+        TlSource::Fenix | TlSource::Simfleet | TlSource::Other => Fleet::A320,
     }
 }
 
@@ -2154,15 +2457,20 @@ pub async fn sync_charges(pool: &SqlitePool, source: TlSource) -> Result<u64> {
     let Some(db) = db_path(source, &dir) else { return Ok(0) };
     // (24/10) Trabajo en curso (tiempos realistas): se cobra cuando TechLog
     // lo termine, no al empezar.
+    let mut busy_reg: Option<String> = None;
     if is_running(source).await {
         if let Ok(state) = api_get(source, "/api/state").await {
-            if let Some(work) = s(&state, "pendingWork").filter(|w| !w.trim().is_empty()) {
-                tracing::debug!(target: "techlog", "{}: cobros en espera, trabajo en curso ({work})", source.id());
-                return Ok(0);
+            if s(&state, "pendingWork").filter(|w| !w.trim().is_empty()).is_some() {
+                if let Some(af) = state.get("airframe") {
+                    if let Some(r) = s(af, "registration").filter(|r| !r.is_empty()) {
+                        busy_reg = Some(normalize_reg(&r));
+                        tracing::debug!(target: "techlog", "{}: cobros pospuestos solo para {r} (trabajo en curso)", source.id());
+                    }
+                }
             }
         }
     }
-    sync_charges_at(pool, source, &dir, &db).await
+    sync_charges_at(pool, source, &dir, &db, busy_reg.as_deref()).await
 }
 
 /// (24/10) Un evento con fecha futura es trabajo que TechLog guardó con su
@@ -2171,18 +2479,39 @@ fn not_done_yet(at: &str) -> bool {
     DateTime::parse_from_rfc3339(at).is_ok_and(|t| t.with_timezone(&Utc) > Utc::now() + chrono::Duration::minutes(1))
 }
 
-async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &Path) -> Result<u64> {
+/// (06/11) Cuándo trajo TechLog el historial de las apps antiguas: la fecha
+/// de su último `data/import-done-*.json`. `None`: nunca importó nada.
+fn import_cutoff(dir: &Path) -> Option<DateTime<Utc>> {
+    std::fs::read_dir(dir.join("data"))
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+            name.starts_with("import-done-") && name.ends_with(".json")
+        })
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .max()
+        .map(DateTime::<Utc>::from)
+}
+
+async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &Path, skip_reg: Option<&str>) -> Result<u64> {
     let mut conn = open_snapshot(source, db).await?;
-    let airframes = db_airframes(&mut conn).await?;
+    let airframes = airframes_of(&mut conn, source).await?;
     let now = Utc::now().to_rfc3339();
     let mut charged = 0u64;
+    let unified = is_unified(dir);
+    let tag = if unified { format!("u1-{}", source.id()) } else { source.id().to_string() };
+    let cutoff = if unified { import_cutoff(dir) } else { None };
     for a in &airframes {
         let reg = normalize_reg(&a.registration);
         if reg.is_empty() {
             continue;
         }
+        if skip_reg.is_some_and(|sr| sr == reg) {
+            continue;
+        }
         // (25/10) Cada avión con el catálogo y los precios de su tipo (777).
-        let cat = catalog_for(dir, &a.variant);
+        let cat = catalog_for(dir, source, &a.variant);
         let fleet = fleet_of(source, &a.variant);
         let mut events: Vec<ChargeEvent> = Vec::new();
         for r in sqlx::query("SELECT * FROM servicing WHERE airframe_id = ?1")
@@ -2214,7 +2543,7 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
                 .execute(pool)
                 .await?
                 .rows_affected();
-                let key = format!("svc:{}:{}:{id}", source.id(), a.id);
+                let key = format!("svc:{tag}:{}:{id}", a.id);
                 if removed > 0 {
                     sqlx::query("UPDATE techlog_seen SET cost = 0 WHERE event_key = ?1")
                         .bind(&key)
@@ -2231,7 +2560,7 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
                 continue;
             }
             events.push(ChargeEvent {
-                key: format!("svc:{}:{}:{id}", source.id(), a.id),
+                key: format!("svc:{tag}:{}:{id}", a.id),
                 component,
                 basis,
                 at,
@@ -2247,11 +2576,12 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
             let Some(basis) = defect_basis(&cat, &r) else { continue };
             let id: i64 = r.try_get("id").unwrap_or(0);
             let title = opt_str(&r, "title").unwrap_or_default();
+            let rect_at = opt_str(&r, "rectified_utc").unwrap_or_else(|| now.clone());
             events.push(ChargeEvent {
-                key: format!("def:{}:{}:{id}", source.id(), a.id),
+                key: format!("def:{tag}:{}:{id}:{rect_at}", a.id),
                 component: format!("techlog:defect:{}", title),
                 basis,
-                at: opt_str(&r, "rectified_utc").unwrap_or_else(|| now.clone()),
+                at: rect_at,
             });
         }
         for r in sqlx::query("SELECT * FROM check_record WHERE airframe_id = ?1")
@@ -2262,25 +2592,27 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
             let key = opt_str(&r, "key").unwrap_or_default();
             let Some(done) = opt_str(&r, "last_done_utc") else { continue };
             events.push(ChargeEvent {
-                key: format!("chk:{}:{}:{key}:{done}", source.id(), a.id),
+                key: format!("chk:{tag}:{}:{key}:{done}", a.id),
                 component: format!("techlog:check:{key}"),
                 basis: Basis::Check(key.clone()),
                 at: done,
             });
         }
 
-        let baseline_key = format!("baseline:{}:{reg}", source.id());
+        let baseline_key = format!("baseline:{tag}:{reg}");
         let has_baseline: Option<String> =
             sqlx::query_scalar("SELECT event_key FROM techlog_seen WHERE event_key = ?1")
                 .bind(&baseline_key)
                 .fetch_optional(pool)
                 .await?;
         let first_time = has_baseline.is_none();
-        let mult = if first_time {
-            1.0
-        } else {
-            crate::aircraft_maintenance::level_mult_for_registration(pool, &reg).await
-        };
+        let mult = crate::aircraft_maintenance::level_mult_for_registration(pool, &reg).await;
+        // (07/11) Un avión creado después de importar estrena sus checks con su
+        // fecha de creación: eso no es trabajo hecho, su historial llega hasta ahí.
+        let history_until = cutoff.map(|c| {
+            let born = a.created_utc.as_deref().and_then(parse_utc);
+            born.map_or(c, |b| c.max(b + chrono::Duration::minutes(1)))
+        });
         let seen: HashSet<String> = sqlx::query_scalar("SELECT event_key FROM techlog_seen WHERE registration = ?1")
             .bind(&reg)
             .fetch_all(pool)
@@ -2290,10 +2622,13 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
         // Tarifa de la región donde está el avión: sólo si hay algo nuevo.
         let mut rate: Option<f64> = None;
         for e in &events {
-            if seen.contains(&e.key) || (!first_time && not_done_yet(&e.at)) {
+            // Historial: lo que la primera pasada apunta sin cobrar. Con el
+            // unificado, sólo hasta la importación: lo posterior es trabajo real.
+            let history = first_time && history_until.is_none_or(|c| parse_utc(&e.at).is_none_or(|t| t <= c));
+            if seen.contains(&e.key) || (!history && not_done_yet(&e.at)) {
                 continue;
             }
-            let cost = if first_time {
+            let cost = if history {
                 0.0
             } else {
                 let r = match rate {
@@ -2312,7 +2647,7 @@ async fn sync_charges_at(pool: &SqlitePool, source: TlSource, dir: &Path, db: &P
             .bind(&now)
             .execute(pool)
             .await?;
-            if res.rows_affected() == 0 || first_time || cost <= 0.0 {
+            if res.rows_affected() == 0 || history || cost <= 0.0 {
                 continue;
             }
             sqlx::query(
@@ -2418,7 +2753,7 @@ pub async fn reprice_history(pool: &SqlitePool) -> Result<usize> {
         };
         let (conn, variants) = cats.get_mut(&source).expect("base abierta");
         let variant = variants.get(&reg).cloned().unwrap_or_default();
-        let cat = &catalog_for(&dir, &variant);
+        let cat = &catalog_for(&dir, source, &variant);
         let basis = match label {
             "check" => Some(Basis::Check(detail.to_string())),
             "part_replace" | "part_repair" => Some(Basis::Part {
@@ -2526,7 +2861,7 @@ pub async fn flight_for(
         let Some(dir) = install_dir(source) else { continue };
         let Some(db) = db_path(source, &dir) else { continue };
         let mut conn = open_snapshot(source, &db).await?;
-        let afs = db_airframes(&mut conn).await?;
+        let afs = airframes_of(&mut conn, source).await?;
         let Some(a) = afs.iter().find(|a| normalize_reg(&a.registration) == reg) else {
             conn.close().await.ok();
             continue;
@@ -2618,7 +2953,10 @@ pub struct TlAppStatus {
 pub async fn status() -> Vec<TlAppStatus> {
     let managed = managed_registrations().await;
     let mut out = Vec::new();
-    for source in TlSource::ALL {
+    // El unificado es una sola app; las antiguas, una por familia.
+    let unified = unified_dir().is_some();
+    let sources = if unified { &TlSource::ALL[..1] } else { &TlSource::ALL[..2] };
+    for &source in sources {
         let installed = install_dir(source).is_some();
         out.push(TlAppStatus {
             source,
@@ -2626,10 +2964,31 @@ pub async fn status() -> Vec<TlAppStatus> {
             installed,
             running: installed && is_running(source).await,
             tablet_url: format!("{}/", source.base_url()),
-            airframes: managed.values().filter(|s| **s == source).count(),
+            airframes: managed.values().filter(|s| unified || **s == source).count(),
         });
     }
     out
+}
+
+/// Fuentes que atiende el hilo de `source`: con el unificado sólo hay una app
+/// y un `/api/events`, así que el primer hilo las lleva todas y los demás esperan.
+fn watched_by(source: TlSource) -> Vec<TlSource> {
+    match unified_for(source) {
+        Some(_) if source == TlSource::ALL[0] => TlSource::ALL.to_vec(),
+        Some(_) => Vec::new(),
+        None => vec![source],
+    }
+}
+
+async fn sync_all(pool: &SqlitePool, sources: &[TlSource]) -> u64 {
+    let mut charged = 0;
+    for &source in sources {
+        match sync_charges(pool, source).await {
+            Ok(n) => charged += n,
+            Err(e) => tracing::debug!(target: "techlog", "cobros {}: {e}", source.id()),
+        }
+    }
+    charged
 }
 
 /// Hilo de fondo por app TechLog: cuando está abierta escucha su SSE
@@ -2645,18 +3004,15 @@ pub fn spawn_watchers(app: tauri::AppHandle, pool: SqlitePool) {
             tokio::time::sleep(Duration::from_secs(20)).await;
             let mut last_sync = Instant::now() - Duration::from_secs(3600);
             loop {
-                if install_dir(source).is_none() {
+                let sources = watched_by(source);
+                if sources.is_empty() || install_dir(source).is_none() {
                     tokio::time::sleep(Duration::from_secs(300)).await;
                     continue;
                 }
                 if last_sync.elapsed() >= Duration::from_secs(60) {
                     last_sync = Instant::now();
-                    match sync_charges(&pool, source).await {
-                        Ok(n) if n > 0 => {
-                            let _ = app.emit("techlog://changed", source.id());
-                        }
-                        Ok(_) => {}
-                        Err(e) => tracing::debug!(target: "techlog", "sync {}: {e}", source.id()),
+                    if sync_all(&pool, &sources).await > 0 {
+                        let _ = app.emit("techlog://changed", source.id());
                     }
                 }
                 if !is_running(source).await {
@@ -2664,7 +3020,7 @@ pub fn spawn_watchers(app: tauri::AppHandle, pool: SqlitePool) {
                     continue;
                 }
                 // TechLog abierto: escuchamos sus eventos hasta que se cierre.
-                if let Err(e) = listen_events(&app, &pool, source, &mut last_sync).await {
+                if let Err(e) = listen_events(&app, &pool, source, &sources, &mut last_sync).await {
                     tracing::debug!(target: "techlog", "SSE {} cerrado: {e}", source.id());
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -2677,6 +3033,7 @@ async fn listen_events(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     source: TlSource,
+    sources: &[TlSource],
     last_sync: &mut Instant,
 ) -> Result<()> {
     // Sin timeout global: el stream es largo. Cliente propio para no heredar
@@ -2692,7 +3049,9 @@ async fn listen_events(
     let _ = app.emit("techlog://changed", source.id());
     invalidate_managed();
     // (20/10) Al abrirse, lo que hubiera en cola.
-    drain_queue(app, pool, source).await;
+    for &s in sources {
+        drain_queue(app, pool, s).await;
+    }
     let mut last_queue = Instant::now();
     let mut queue_due = false;
     let mut buf = String::new();
@@ -2725,9 +3084,7 @@ async fn listen_events(
             let _ = app.emit("techlog://changed", source.id());
             if last_sync.elapsed() >= Duration::from_secs(5) {
                 *last_sync = Instant::now();
-                if let Err(e) = sync_charges(pool, source).await {
-                    tracing::debug!(target: "techlog", "cobros {}: {e}", source.id());
-                }
+                sync_all(pool, sources).await;
             }
             // Puede haber cambiado el avión activo (cargaste el de una orden en cola).
             queue_due = true;
@@ -2735,7 +3092,9 @@ async fn listen_events(
         if queue_due && last_queue.elapsed() >= Duration::from_secs(20) {
             queue_due = false;
             last_queue = Instant::now();
-            drain_queue(app, pool, source).await;
+            for &s in sources {
+                drain_queue(app, pool, s).await;
+            }
         }
     }
 }
@@ -2758,9 +3117,9 @@ mod tests {
         std::fs::write(root.join("catalog/components.json"), r#"{"components":[{"key":"BRAKE","name":"Brake {pos}","ata":32,"positions":["1"]}],"consumables":[]}"#).unwrap();
         std::fs::write(root.join("catalog/b777/components.json"), r#"// del 777
 {"components":[{"key":"RAT","name":"Ram air turbine","ata":29}],"consumables":[]}"#).unwrap();
-        assert_eq!(catalog_for(&root, "777-300ER").key_by_name("Ram air turbine").as_deref(), Some("RAT"));
-        assert_eq!(catalog_for(&root, "737-800").key_by_name("Brake 1").as_deref(), Some("BRAKE"));
-        assert!(catalog_for(&root, "737-800").key_by_name("Ram air turbine").is_none());
+        assert_eq!(catalog_for(&root, TlSource::Pmdg, "777-300ER").key_by_name("Ram air turbine").as_deref(), Some("RAT"));
+        assert_eq!(catalog_for(&root, TlSource::Pmdg, "737-800").key_by_name("Brake 1").as_deref(), Some("BRAKE"));
+        assert!(catalog_for(&root, TlSource::Pmdg, "737-800").key_by_name("Ram air turbine").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2771,8 +3130,8 @@ mod tests {
     fn pmdg_777_real_catalog() {
         use crate::maint_prices::{part, Fleet};
         let dir = install_dir(TlSource::Pmdg).expect("PMDG TechLog instalado");
-        let cat = catalog_for(&dir, "777-300ER");
-        let b737 = catalog_for(&dir, "737-800");
+        let cat = catalog_for(&dir, TlSource::Pmdg, "777-300ER");
+        let b737 = catalog_for(&dir, TlSource::Pmdg, "737-800");
         println!("777: {} piezas, {} consumibles, {} MEL, {} checks; 737: {} piezas",
             cat.components.len(), cat.consumables.len(), cat.mel.len(), cat.limits.checks.len(), b737.components.len());
         assert!(cat.components.len() > 100 && !cat.mel.is_empty() && !cat.limits.checks.is_empty());
@@ -2918,7 +3277,7 @@ mod tests {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
         // 1ª pasada: historial registrado, nada cobrado.
-        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db).await.unwrap(), 0);
+        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db, None).await.unwrap(), 0);
         // Mantenimiento nuevo en TechLog.
         for sql in [
             "INSERT INTO servicing (airframe_id, utc, kind, before, after) VALUES (1, '2026-10-02T10:00:00Z', 'Replaced: Brake 2', 5, 100)",
@@ -2936,7 +3295,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db).await.unwrap(), 4);
+        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db, None).await.unwrap(), 4);
         let rows: Vec<(String, f64)> =
             sqlx::query_as("SELECT component, cost FROM maintenance_log ORDER BY component")
                 .fetch_all(&pool)
@@ -2955,8 +3314,310 @@ mod tests {
             ]
         );
         // 3ª pasada: nada nuevo → nada cobrado.
-        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db).await.unwrap(), 0);
+        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db, None).await.unwrap(), 0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// (06/11) TechLog unificado: una carpeta por familia, lo común aparte, y
+    /// el historial importado no se vuelve a cobrar.
+    #[test]
+    fn the_unified_techlog_splits_families_and_catalogs() {
+        use crate::maint_prices::Fleet;
+        assert_eq!(TlSource::of_family("fenix-a32x"), TlSource::Fenix);
+        assert_eq!(TlSource::of_family("PMDG-737"), TlSource::Pmdg);
+        assert_eq!(TlSource::of_family("pmdg-777"), TlSource::Pmdg);
+        assert_eq!(TlSource::of_family("fsl-a32x"), TlSource::Other);
+        assert_eq!(TlSource::of_family("inibuilds-a350"), TlSource::Other);
+        assert_eq!(family_label("fsl-a32x").as_deref(), Some("FSL A321neo"));
+        assert_eq!(family_label("nueva-familia"), None);
+        assert_eq!(fleet_of(TlSource::Other, "A321neo"), Fleet::A320);
+        assert_eq!(fleet_of(TlSource::Other, "A350-900"), Fleet::Widebody);
+        assert_eq!(fleet_of(TlSource::Other, "A340-600"), Fleet::Widebody);
+        assert_eq!(fleet_of(TlSource::Pmdg, "777-300ER"), Fleet::Widebody);
+
+        let root = std::env::temp_dir().join(format!("simfleet-tl-unified-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["common", "fenix", "pmdg737", "b777"] {
+            std::fs::create_dir_all(root.join("catalog").join(dir)).unwrap();
+        }
+        let part = |key: &str| format!(r#"{{"components":[{{"key":"{key}","name":"{key}","ata":32}}],"consumables":[]}}"#);
+        std::fs::write(root.join("catalog/fenix/components.json"), part("FENIX")).unwrap();
+        std::fs::write(root.join("catalog/pmdg737/components.json"), part("B737")).unwrap();
+        std::fs::write(root.join("catalog/b777/components.json"), part("B777")).unwrap();
+        std::fs::write(root.join("catalog/common/spares.json"), r#"{"commonAta":[32],"rareAta":[72]}"#).unwrap();
+        std::fs::write(
+            root.join("catalog/fenix/fenix-datarefs.json"),
+            r#"{"datarefs":{"oil1Qt":"aircraft.engines.1.oil.quantity"}}"#,
+        )
+        .unwrap();
+        assert!(is_unified(&root));
+        let key = |source, variant| catalog_for(&root, source, variant).components[0].key.clone();
+        assert_eq!(key(TlSource::Fenix, "A320"), "FENIX");
+        assert_eq!(key(TlSource::Pmdg, "737-800"), "B737");
+        assert_eq!(key(TlSource::Pmdg, "777-300ER"), "B777");
+        // FSL no trae catálogo propio: el de la familia A320.
+        assert_eq!(key(TlSource::Other, "A321neo"), "FENIX");
+        assert_eq!(catalog_for(&root, TlSource::Fenix, "A320").spares.common_ata, vec![32]);
+        assert!(oil_follows_sim(TlSource::Fenix, &root));
+        assert!(!oil_follows_sim(TlSource::Pmdg, &root));
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(root.join("app/TechLog.exe"), "").unwrap();
+        assert_eq!(exe_path(TlSource::Pmdg, &root), Some(root.join("app").join("TechLog.exe")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_window_alone_is_not_a_running_techlog() {
+        assert!(!ping_ready(&serde_json::json!({ "ok": true, "engine": false })));
+        assert!(ping_ready(&serde_json::json!({ "ok": true, "app": "TechLog", "version": "1.2.0" })));
+        assert!(ping_ready(&serde_json::json!({ "ok": true, "engine": true })));
+    }
+
+    #[test]
+    fn a_defect_report_shows_its_texts_whatever_its_shape() {
+        use serde_json::json;
+        assert_eq!(report_text(&json!(null)), None);
+        assert_eq!(report_text(&json!({})), None);
+        assert_eq!(report_text(&json!({ "hours": 2 })), None);
+        assert_eq!(report_text(&json!(" Vibración en rodaje ")).as_deref(), Some("Vibración en rodaje"));
+        assert_eq!(
+            report_text(&json!({ "lines": ["Inspeccionado", ""], "by": { "name": "Línea" } })).as_deref(),
+            Some("Línea · Inspeccionado"),
+        );
+    }
+
+    #[test]
+    fn the_active_airframe_belongs_to_its_family() {
+        let state = serde_json::json!({ "airframe": { "registration": "PH-BCL", "family": "pmdg-737" } });
+        assert_eq!(active_reg(TlSource::Pmdg, &state).as_deref(), Some("PHBCL"));
+        assert_eq!(active_reg(TlSource::Fenix, &state), None);
+        // Las apps antiguas no dicen la familia: su avión activo es suyo.
+        let old = serde_json::json!({ "airframe": { "registration": "G-FBIG" } });
+        assert_eq!(active_reg(TlSource::Fenix, &old).as_deref(), Some("GFBIG"));
+    }
+
+    /// (06/11) Al pasar al unificado: lo importado queda como historial sin
+    /// cobrar aunque tenga ids nuevos, lo hecho después se cobra una vez y cada
+    /// familia ve sólo sus aviones.
+    #[tokio::test]
+    async fn the_unified_techlog_charges_from_the_import_on() {
+        let root = std::env::temp_dir().join(format!("simfleet-tl-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("catalog/common")).unwrap();
+        std::fs::create_dir_all(root.join("catalog/fenix")).unwrap();
+        std::fs::create_dir_all(root.join("catalog/pmdg737")).unwrap();
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        let comps = r#"{"components":[{"key":"BRAKE","name":"Brake {pos}","ata":32,"kind":"wear","positions":["1","2"],"life":0}],"consumables":[]}"#;
+        std::fs::write(root.join("catalog/fenix/components.json"), comps).unwrap();
+        std::fs::write(root.join("catalog/pmdg737/components.json"), comps).unwrap();
+        std::fs::write(root.join("catalog/common/spares.json"), r#"{"commonAta":[32],"rareAta":[72]}"#).unwrap();
+        let done = root.join("data/import-done-20261010-120000.json");
+        std::fs::write(&done, "{}").unwrap();
+        let import: DateTime<Utc> = "2026-10-10T12:00:00Z".parse().unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&done)
+            .unwrap()
+            .set_modified(import.into())
+            .unwrap();
+        assert_eq!(import_cutoff(&root), Some(import));
+
+        let db = root.join("data/techlog.db");
+        let mut tl = SqliteConnectOptions::new()
+            .filename(&db)
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE airframe (id INTEGER PRIMARY KEY, family TEXT, created_utc TEXT, registration TEXT, variant TEXT, engine TEXT, maintenance TEXT, counters TEXT, consumables TEXT, health TEXT, last_seen_utc TEXT)",
+            "CREATE TABLE servicing (id INTEGER PRIMARY KEY, airframe_id INTEGER, utc TEXT, kind TEXT, before REAL, after REAL, unit TEXT)",
+            "CREATE TABLE defect (id INTEGER PRIMARY KEY, airframe_id INTEGER, title TEXT, mel_id TEXT, rectified_utc TEXT, rectified_how TEXT)",
+            "CREATE TABLE check_record (airframe_id INTEGER, key TEXT, last_done_utc TEXT, last_done_fh REAL, last_done_fc REAL)",
+            "INSERT INTO airframe (id, family, registration, variant, engine) VALUES (1, 'fenix-a32x', 'EC-FNX', 'A320', 'CFM'), (7, 'pmdg-737', 'PH-BCL', '737-800', 'CFM')",
+            // Importado: ids distintos a los que SimFleet ya vio.
+            "INSERT INTO servicing (id, airframe_id, utc, kind, before, after) VALUES (40, 1, '2026-10-01T10:00:00Z', 'Replaced: Brake 1', 0, 100)",
+            "INSERT INTO servicing (id, airframe_id, utc, kind, before, after) VALUES (41, 7, '2026-10-01T11:00:00Z', 'Replaced: Brake 1', 0, 100)",
+            // Hecho después de importar, antes de que SimFleet lo vea.
+            "INSERT INTO servicing (id, airframe_id, utc, kind, before, after) VALUES (42, 1, '2026-10-12T10:00:00Z', 'Replaced: Brake 2', 0, 100)",
+        ] {
+            sqlx::query(sql).execute(&mut tl).await.unwrap();
+        }
+        tl.close().await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE techlog_seen (event_key TEXT PRIMARY KEY, source TEXT NOT NULL, registration TEXT NOT NULL, cost REAL NOT NULL, seen_at TEXT NOT NULL)",
+            "CREATE TABLE maintenance_log (id INTEGER PRIMARY KEY, registration TEXT, component TEXT, cost REAL, serviced_at TEXT)",
+            // Lo que SimFleet ya llevaba de la app antigua.
+            "INSERT INTO techlog_seen VALUES ('baseline:fenix:ECFNX', 'fenix', 'ECFNX', 0, '2026-10-01T00:00:00Z')",
+            "INSERT INTO techlog_seen VALUES ('svc:fenix:1:3', 'fenix', 'ECFNX', 48000, '2026-10-01T00:00:00Z')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        assert_eq!(sync_charges_at(&pool, TlSource::Fenix, &root, &db, None).await.unwrap(), 1);
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT registration, component FROM maintenance_log").fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![("ECFNX".to_string(), "techlog:part_replace:Brake 2".to_string())]);
+        // Otra pasada, y la familia PMDG: nada más que cobrar.
+        assert_eq!(sync_charges_at(&pool, TlSource::Fenix, &root, &db, None).await.unwrap(), 0);
+        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db, None).await.unwrap(), 0);
+        assert_eq!(sync_charges_at(&pool, TlSource::Other, &root, &db, None).await.unwrap(), 0);
+        let baselines: Vec<String> =
+            sqlx::query_scalar("SELECT event_key FROM techlog_seen WHERE event_key LIKE 'baseline:u1-%' ORDER BY 1")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(baselines, vec!["baseline:u1-fenix:ECFNX", "baseline:u1-pmdg:PHBCL"]);
+
+        // Y a partir de ahí, como siempre: lo nuevo se cobra una vez. Un avión
+        // creado después de importar estrena sus checks sin cobrarlos; lo que
+        // se le hace más tarde sí se cobra, aunque SimFleet lo vea por primera vez.
+        let mut tl = SqliteConnectOptions::new().filename(&db).connect().await.unwrap();
+        for sql in [
+            "INSERT INTO servicing (id, airframe_id, utc, kind, before, after) VALUES (43, 7, '2026-10-13T10:00:00Z', 'Replaced: Brake 2', 0, 100)",
+            "INSERT INTO airframe (id, family, created_utc, registration, variant, engine) VALUES (9, 'fenix-a32x', '2026-10-15T08:00:00.1234567+00:00', 'N538AV', 'A320', 'CFM')",
+            "INSERT INTO check_record VALUES (9, 'DAILY', '2026-10-15T08:00:00.1234567+00:00', 0, 0)",
+            "INSERT INTO check_record VALUES (9, 'C', '2026-10-15T08:00:00.1234567+00:00', 0, 0)",
+            "INSERT INTO servicing (id, airframe_id, utc, kind, before, after) VALUES (44, 9, '2026-10-16T08:00:00Z', 'Replaced: Brake 1', 0, 100)",
+        ] {
+            sqlx::query(sql).execute(&mut tl).await.unwrap();
+        }
+        tl.close().await.unwrap();
+        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db, None).await.unwrap(), 1);
+        assert_eq!(sync_charges_at(&pool, TlSource::Pmdg, &root, &db, None).await.unwrap(), 0);
+        assert_eq!(sync_charges_at(&pool, TlSource::Fenix, &root, &db, None).await.unwrap(), 1);
+        let new: Vec<String> = sqlx::query_scalar("SELECT component FROM maintenance_log WHERE registration = 'N538AV'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(new, vec!["techlog:part_replace:Brake 1"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// (07/11) Una copia incoherente no llega a leerse: se repite con la base
+    /// sana y, si no se puede, se avisa en vez de devolver datos rotos.
+    #[tokio::test]
+    async fn a_torn_copy_is_not_used() {
+        let root = std::env::temp_dir().join(format!("simfleet-tl-torn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("techlog.db");
+        let mut tl = SqliteConnectOptions::new().filename(&db).create_if_missing(true).connect().await.unwrap();
+        sqlx::query("CREATE TABLE airframe (id INTEGER PRIMARY KEY, registration TEXT)").execute(&mut tl).await.unwrap();
+        sqlx::query("INSERT INTO airframe VALUES (1, 'EC-TST')").execute(&mut tl).await.unwrap();
+        tl.close().await.unwrap();
+        let mut conn = open_snapshot(TlSource::Other, &db).await.unwrap();
+        let reg: String = sqlx::query_scalar("SELECT registration FROM airframe").fetch_one(&mut conn).await.unwrap();
+        assert_eq!(reg, "EC-TST");
+        // Renovar la copia no toca a quien sigue leyendo la anterior.
+        let mut tl = SqliteConnectOptions::new().filename(&db).connect().await.unwrap();
+        sqlx::query("UPDATE airframe SET registration = 'EC-NEW'").execute(&mut tl).await.unwrap();
+        tl.close().await.unwrap();
+        let mut newer = open_snapshot(TlSource::Other, &db).await.unwrap();
+        let reg: String = sqlx::query_scalar("SELECT registration FROM airframe").fetch_one(&mut newer).await.unwrap();
+        assert_eq!(reg, "EC-NEW");
+        let reg: String = sqlx::query_scalar("SELECT registration FROM airframe").fetch_one(&mut conn).await.unwrap();
+        assert_eq!(reg, "EC-TST");
+        newer.close().await.unwrap();
+        conn.close().await.unwrap();
+        // Una base dañada (cabecera bien, páginas pisadas) no se da por buena.
+        let mut bytes = std::fs::read(&db).unwrap();
+        bytes[100..].fill(0xFF);
+        std::fs::write(&db, bytes).unwrap();
+        assert!(open_snapshot(TlSource::Other, &db).await.is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Sin marca de importación (instalación nueva) todo es historial.
+    #[tokio::test]
+    async fn no_import_means_everything_is_history() {
+        let root = std::env::temp_dir().join(format!("simfleet-tl-noimport-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("catalog/common")).unwrap();
+        std::fs::create_dir_all(root.join("catalog/fenix")).unwrap();
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(
+            root.join("catalog/fenix/components.json"),
+            r#"{"components":[{"key":"BRAKE","name":"Brake {pos}","ata":32,"kind":"wear","positions":["1"],"life":0}],"consumables":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(import_cutoff(&root), None);
+        let db = root.join("data/techlog.db");
+        let mut tl = SqliteConnectOptions::new()
+            .filename(&db)
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE airframe (id INTEGER PRIMARY KEY, family TEXT, registration TEXT, variant TEXT, engine TEXT)",
+            "CREATE TABLE servicing (id INTEGER PRIMARY KEY, airframe_id INTEGER, utc TEXT, kind TEXT, before REAL, after REAL, unit TEXT)",
+            "CREATE TABLE defect (id INTEGER PRIMARY KEY, airframe_id INTEGER, title TEXT, mel_id TEXT, rectified_utc TEXT, rectified_how TEXT)",
+            "CREATE TABLE check_record (airframe_id INTEGER, key TEXT, last_done_utc TEXT, last_done_fh REAL, last_done_fc REAL)",
+            "INSERT INTO airframe (id, family, registration, variant, engine) VALUES (1, 'fenix-a32x', 'EC-NEW', 'A320', 'CFM')",
+            "INSERT INTO servicing (airframe_id, utc, kind, before, after) VALUES (1, '2026-10-12T10:00:00Z', 'Replaced: Brake 1', 0, 100)",
+        ] {
+            sqlx::query(sql).execute(&mut tl).await.unwrap();
+        }
+        tl.close().await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE techlog_seen (event_key TEXT PRIMARY KEY, source TEXT NOT NULL, registration TEXT NOT NULL, cost REAL NOT NULL, seen_at TEXT NOT NULL)",
+            "CREATE TABLE maintenance_log (id INTEGER PRIMARY KEY, registration TEXT, component TEXT, cost REAL, serviced_at TEXT)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        assert_eq!(sync_charges_at(&pool, TlSource::Fenix, &root, &db, None).await.unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Con el TechLog unificado instalado (sólo lee): sus catálogos cargan con
+    /// las estructuras de SimFleet y cada pieza tiene precio.
+    #[test]
+    #[ignore]
+    fn unified_real_catalogs() {
+        use crate::maint_prices::{part, Fleet};
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap();
+        let dir = local.join("Programs").join(UNIFIED_NAME);
+        assert!(is_unified(&dir), "TechLog 1.2 instalado");
+        for (source, variant, fleet) in [
+            (TlSource::Fenix, "A320", Fleet::A320),
+            (TlSource::Pmdg, "737-800", Fleet::B737),
+            (TlSource::Pmdg, "777-300ER", Fleet::Widebody),
+            (TlSource::Other, "A350-900", Fleet::Widebody),
+            (TlSource::Other, "A321neo", Fleet::A320),
+        ] {
+            let cat = catalog_for(&dir, source, variant);
+            let missing: Vec<&str> = cat
+                .components
+                .iter()
+                .map(|c| c.key.as_str())
+                .filter(|k| part(k, fleet).is_none())
+                .collect();
+            println!(
+                "{variant}: {} piezas, {} consumibles, {} MEL, {} checks, repuestos {}/{}; sin precio {}: {:?}",
+                cat.components.len(),
+                cat.consumables.len(),
+                cat.mel.len(),
+                cat.limits.checks.len(),
+                cat.spares.common_ata.len(),
+                cat.spares.rare_ata.len(),
+                missing.len(),
+                &missing[..missing.len().min(12)],
+            );
+            assert!(cat.components.len() > 50 && !cat.mel.is_empty() && !cat.limits.checks.is_empty());
+            assert!(!cat.spares.common_ata.is_empty());
+        }
+        assert!(oil_follows_sim(TlSource::Fenix, &dir));
     }
 
     #[test]
@@ -2977,6 +3638,8 @@ mod tests {
             failure: None,
             placard: None,
             restrictions: None,
+            report: None,
+            parts_expected_utc: None,
         };
         assert_eq!(dispatch_of(&[]).status, "GO");
         assert_eq!(dispatch_of(&[mk("Deferred", "C")]).status, "GO_MEL");

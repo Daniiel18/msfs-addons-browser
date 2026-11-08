@@ -188,18 +188,15 @@ pub async fn link_simbrief_ofp(
 ) -> Result<LinkOutcome, String> {
     use tauri::Emitter;
     let ofp = sqlx::query_as::<_, SimBriefFlight>(
-        r#"
-        SELECT ofp_id, pilot_id, flight_number, callsign, aircraft_icao,
-               origin_icao, origin_name, origin_lat, origin_lon,
-               destination_icao, destination_name, destination_lat, destination_lon,
-               route, distance_nm, est_time_enroute_s, generated_at, fetched_at,
-               pax_count, cargo_kg, fuel_burn_kg, units,
-               aircraft_reg, plan_ramp_kg,
-               COALESCE(route_fixes, '[]') AS route_fixes
+        &format!(
+            r#"
+        SELECT {cols}
         FROM simbrief_flights
         WHERE ofp_id = ?1
         LIMIT 1
         "#,
+            cols = crate::simbrief::OFP_COLUMNS,
+        ),
     )
     .bind(&ofp_id)
     .fetch_optional(&state.db)

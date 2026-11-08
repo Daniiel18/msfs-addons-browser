@@ -32,6 +32,14 @@
     "% worn": "% de desgaste",
     "h": "h",
 
+    "Seat {pos} recline": "Reclinado del asiento {pos}",
+    "Seat {pos} tray table": "Mesa del asiento {pos}",
+    "Seat {pos} seat belt": "Cinturón del asiento {pos}",
+    "Seat {pos} reading light": "Luz de lectura del asiento {pos}",
+    "Passenger seats": "Asientos de pasajero",
+    "Passenger seats occupied": "Asientos de pasajero ocupados",
+    "seats": "asientos",
+
     "Engine {pos} workload": "Carga de trabajo del motor {pos}",
 
     "Engines": "Motores",
@@ -743,6 +751,14 @@
     "superseded by the failure": "reemplazado por la falla"
   },
   "sentences": [
+    ["Seat {pos} does not recline: worn to limits.", "El asiento {pos} no se reclina: desgastado al límite."],
+    ["Seat {pos} tray table does not latch: worn to limits.", "La mesa del asiento {pos} no se traba: desgastada al límite."],
+    ["Seat {pos} seat belt buckle worn: worn to limits.", "Hebilla del cinturón del asiento {pos} gastada: desgastada al límite."],
+    ["Seat {pos} reading light inoperative: worn to limits.", "Luz de lectura del asiento {pos} inoperativa: desgastada al límite."],
+    ["Passenger seat {pos} recline inoperative, seat blocked", "Reclinado del asiento {pos} inoperativo, asiento bloqueado"],
+    ["Passenger seat {pos} tray table inoperative, seat blocked", "Mesa del asiento {pos} inoperativa, asiento bloqueado"],
+    ["Passenger seat {pos} seat belt unserviceable, seat blocked", "Cinturón del asiento {pos} no apto, asiento bloqueado"],
+    ["Passenger reading light {pos} inoperative, seat blocked", "Luz de lectura del asiento {pos} inoperativa, asiento bloqueado"],
     ["MMO exceeded: M{a} (limit M{b}): beyond the dive speed, elevator flutter damage", "MMO excedido: M{a} (límite M{b}): por encima de la velocidad de picado, daño por flameo en el timón de profundidad"],
     ["VMO exceeded: {a} kt (limit {b}): beyond the dive speed, elevator flutter damage", "VMO excedida: {a} kt (límite {b}): por encima de la velocidad de picado, daño por flameo en el timón de profundidad"],
     ["MMO exceeded: M{a} (limit M{b})", "MMO excedido: M{a} (límite M{b})"],

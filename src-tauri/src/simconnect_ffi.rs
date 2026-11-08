@@ -380,6 +380,24 @@ pub type FnSetClientData = unsafe extern "system" fn(
 /// último paquete enviado. Permite construir un mapa sendID→llamada y así
 /// resolver las `EXCEPTION ... sendID=N` del sim a la petición EXACTA que
 /// falló (antes el DATA_ERROR era anónimo).
+/// (02/11) Etapa 5b — eventos de cliente (Cockpit propio): asocia un id
+/// nuestro a un evento del simulador ("NAV_LIGHTS_SET") y lo manda.
+pub type FnMapClientEventToSimEvent =
+    unsafe extern "system" fn(hSimConnect: HANDLE, EventID: DWORD, EventName: *const c_char) -> HRESULT;
+
+pub type FnTransmitClientEvent = unsafe extern "system" fn(
+    hSimConnect: HANDLE,
+    ObjectID: DWORD,
+    EventID: DWORD,
+    dwData: DWORD,
+    GroupID: DWORD,
+    Flags: DWORD,
+) -> HRESULT;
+
+/// Grupo de máxima prioridad y su flag (el evento va directo al avión).
+pub const SIMCONNECT_GROUP_PRIORITY_HIGHEST: DWORD = 1;
+pub const SIMCONNECT_EVENT_FLAG_GROUPID_IS_PRIORITY: DWORD = 0x10;
+
 pub type FnGetLastSentPacketID =
     unsafe extern "system" fn(hSimConnect: HANDLE, pdwSendID: *mut DWORD) -> HRESULT;
 
@@ -406,6 +424,9 @@ pub struct SimConnectLib {
     pub SetClientData: Option<FnSetClientData>,
     /// (v6.2.24) Para mapear sendID→llamada en las EXCEPTION.
     pub GetLastSentPacketID: Option<FnGetLastSentPacketID>,
+    /// (02/11) Etapa 5b — mover interruptores (Cockpit propio).
+    pub MapClientEventToSimEvent: Option<FnMapClientEventToSimEvent>,
+    pub TransmitClientEvent: Option<FnTransmitClientEvent>,
 }
 
 #[cfg(target_os = "windows")]
@@ -582,6 +603,14 @@ impl SimConnectLib {
             .get::<FnGetLastSentPacketID>(b"SimConnect_GetLastSentPacketID\0")
             .ok()
             .map(|s| *s);
+        let map_event: Option<FnMapClientEventToSimEvent> = lib
+            .get::<FnMapClientEventToSimEvent>(b"SimConnect_MapClientEventToSimEvent\0")
+            .ok()
+            .map(|s| *s);
+        let transmit: Option<FnTransmitClientEvent> = lib
+            .get::<FnTransmitClientEvent>(b"SimConnect_TransmitClientEvent\0")
+            .ok()
+            .map(|s| *s);
 
         Ok(Self {
             _lib: lib,
@@ -599,6 +628,8 @@ impl SimConnectLib {
             RequestClientData: req_client,
             SetClientData: set_client,
             GetLastSentPacketID: get_last_sent,
+            MapClientEventToSimEvent: map_event,
+            TransmitClientEvent: transmit,
         })
     }
 }

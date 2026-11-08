@@ -35,6 +35,8 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
 
+use chrono::{DateTime, NaiveDateTime, Utc};
+
 use crate::db::repo;
 use crate::sources::{Addon, Source};
 
@@ -129,6 +131,10 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
 
     let candidates = repo::catalog_versions_for_community(pool).await?;
     let dismissed = repo::list_dismissed_versions(pool).await?;
+    // (02/11) Lo que SimFleet instaló, con la versión del catálogo de ese
+    // momento, y lo necesario para reconocer instalaciones de antes.
+    let installs = repo::catalog_installs(pool).await.unwrap_or_default();
+    let history = InstallHistory::load(pool).await;
     tracing::info!(
         "compute_available: {} filas del JOIN community↔addons↔airports, {} dismissed",
         candidates.len(),
@@ -234,7 +240,39 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
             );
             continue;
         }
+        if covered_by_install(&c.folder_name, &c.catalog_addon_id, &c.catalog_version, &installs) {
+            tracing::debug!(
+                "compute_available: skip {} — SimFleet ya instaló v{} de {}",
+                c.folder_name,
+                c.catalog_version,
+                c.catalog_addon_id
+            );
+            continue;
+        }
         if is_newer(&c.catalog_version, &c.installed_version) {
+            // (02/11) Hotfix de mismo número bajado e instalado con SimFleet
+            // antes de que se apuntaran las instalaciones: queda apuntado.
+            if same_numbers_with_suffix(&c.catalog_version, &c.installed_version)
+                && history.installed_after_download(&c.folder_name, &c.catalog_addon_id)
+            {
+                if let Err(e) = repo::record_catalog_install(
+                    pool,
+                    &c.folder_name,
+                    &c.catalog_addon_id,
+                    Some(&c.catalog_source),
+                    &c.catalog_version,
+                )
+                .await
+                {
+                    tracing::warn!("compute_available: no se apuntó {}: {e:#}", c.folder_name);
+                }
+                tracing::info!(
+                    "compute_available: {} ya tiene v{} (descargada e instalada con SimFleet)",
+                    c.folder_name,
+                    c.catalog_version
+                );
+                continue;
+            }
             tracing::info!(
                 "compute_available: UPDATE {} ({}): v{} → v{} (source={})",
                 c.folder_name,
@@ -270,6 +308,133 @@ pub async fn compute_available(pool: &SqlitePool) -> anyhow::Result<Vec<Availabl
     out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     tracing::info!("compute_available: {} updates a emitir al frontend", out.len());
     Ok(out)
+}
+
+/// (02/11) Apunta lo que SimFleet acaba de instalar de una ficha del
+/// catálogo (`paths` = carpetas instaladas en Community) con la versión que
+/// el catálogo tiene ahora. Sin ficha o sin versión no apunta nada.
+pub async fn record_installed_packages(pool: &SqlitePool, addon_id: &str, source: Option<&str>, paths: &[String]) {
+    if addon_id.trim().is_empty() || paths.is_empty() {
+        return;
+    }
+    let Some(version) = repo::addon_version(pool, addon_id).await else {
+        return;
+    };
+    for p in paths {
+        let Some(folder) = std::path::Path::new(p).file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        match repo::record_catalog_install(pool, folder, addon_id, source, &version).await {
+            Ok(()) => tracing::info!("updates: {folder} instalado desde SimFleet ({addon_id} v{version})"),
+            Err(e) => tracing::warn!("updates: no se apuntó la instalación de {folder}: {e:#}"),
+        }
+    }
+}
+
+/// (02/11) ¿SimFleet ya instaló en esa carpeta esta versión (o una más
+/// nueva) de esa misma ficha del catálogo?
+fn covered_by_install(
+    folder: &str,
+    addon_id: &str,
+    catalog_version: &str,
+    installs: &std::collections::HashMap<(String, String), String>,
+) -> bool {
+    installs
+        .get(&(folder.to_lowercase(), addon_id.to_string()))
+        .is_some_and(|v| !is_newer(catalog_version, v))
+}
+
+/// Números de cabeza de una versión: "v1.2.8 Hotfix" → [1, 2, 8].
+fn leading_numbers(s: &str) -> Vec<u64> {
+    let s = s.trim().trim_start_matches(['v', 'V']).trim_start();
+    let head: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    head.split('.').filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect()
+}
+
+/// (02/11) Un hotfix que no cambia el número: el catálogo trae los mismos
+/// números que lo instalado y además un texto ("1.2.8 Hotfix" frente a
+/// "1.2.8"). Comparando texto siempre parecía más nuevo.
+fn same_numbers_with_suffix(catalog: &str, installed: &str) -> bool {
+    let (c, i) = (leading_numbers(catalog), leading_numbers(installed));
+    if c.is_empty() || i.is_empty() {
+        return false;
+    }
+    let at = |v: &[u64], k: usize| v.get(k).copied().unwrap_or(0);
+    let same = (0..c.len().max(i.len())).all(|k| at(&c, k) == at(&i, k));
+    let rest = catalog
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .trim_start()
+        .trim_start_matches(|ch: char| ch.is_ascii_digit() || ch == '.');
+    same && rest.chars().any(char::is_alphanumeric)
+}
+
+fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&Utc))
+        .ok()
+        .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok().map(|n| n.and_utc()))
+}
+
+/// (02/11) Para reconocer instalaciones de antes de apuntarlas: cuándo se
+/// reescribió cada carpeta, las descargas completadas de cada ficha y desde
+/// cuándo el catálogo tiene su versión actual.
+#[derive(Default)]
+struct InstallHistory {
+    folder_at: std::collections::HashMap<String, DateTime<Utc>>,
+    jobs: std::collections::HashMap<String, Vec<DateTime<Utc>>>,
+    version_since: std::collections::HashMap<String, DateTime<Utc>>,
+}
+
+impl InstallHistory {
+    async fn load(pool: &SqlitePool) -> Self {
+        let mut h = InstallHistory::default();
+        let folders: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT folder_name, folder_modified_at FROM community_packages")
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+        for (folder, at) in folders {
+            if let Some(at) = at.as_deref().and_then(parse_ts) {
+                h.folder_at.insert(folder.to_lowercase(), at);
+            }
+        }
+        let jobs: Vec<(String, String)> =
+            sqlx::query_as("SELECT addon_id, created_at FROM download_jobs WHERE phase = 'completed' AND addon_id <> ''")
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+        for (addon, at) in jobs {
+            if let Some(at) = parse_ts(&at) {
+                h.jobs.entry(addon).or_default().push(at);
+            }
+        }
+        let since: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, version_seen_at, first_seen_at FROM addons
+             WHERE id IN (SELECT addon_id FROM download_jobs WHERE phase = 'completed')",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for (addon, changed, first) in since {
+            if let Some(at) = changed.or(first).as_deref().and_then(parse_ts) {
+                h.version_since.insert(addon, at);
+            }
+        }
+        h
+    }
+
+    /// La ficha se bajó con SimFleet después de que el catálogo tuviera su
+    /// versión actual y la carpeta se reescribió después de esa descarga.
+    fn installed_after_download(&self, folder: &str, addon_id: &str) -> bool {
+        let Some(folder_at) = self.folder_at.get(&folder.to_lowercase()) else {
+            return false;
+        };
+        let since = self.version_since.get(addon_id);
+        self.jobs
+            .get(addon_id)
+            .is_some_and(|js| js.iter().any(|at| at <= folder_at && since.map_or(true, |s| at >= s)))
+    }
 }
 
 /// Refresh con cache + concurrencia. Devuelve resumen detallado.
@@ -704,8 +869,21 @@ fn is_newer(latest: &str, installed: &str) -> bool {
         let at = |v: &[u64], k: usize| v.get(k).copied().unwrap_or(0);
         return (0..n).map(|k| (at(&a, k), at(&b, k))).find(|(x, y)| x != y).is_some_and(|(x, y)| x > y);
     }
-    // Mismo shape pero alguno no parsea — comparar lexicográfico
-    // (las shapes son comparables aunque no sean semver válido).
+    // Extraer solo dígitos de cada segmento para comparar numéricamente.
+    fn extract_nums(s: &str) -> Vec<u64> {
+        s.split('.').filter_map(|p| {
+            let d: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+            d.parse::<u64>().ok()
+        }).collect()
+    }
+    let la = extract_nums(l);
+    let ia = extract_nums(i);
+    if !la.is_empty() && la.len() == ia.len() {
+        let n = la.len();
+        if let Some((x, y)) = (0..n).map(|k| (la[k], ia[k])).find(|(x, y)| x != y) {
+            return x > y;
+        }
+    }
     l > i
 }
 
@@ -960,6 +1138,53 @@ mod tests {
         // Dos versiones-fecha del mismo shape SÍ se comparan.
         assert!(is_newer("2026.05.16", "2026.01.03"));
         assert!(!is_newer("2026.01.03", "2026.05.16"));
+    }
+
+    /// (02/11) "1.2.8 Hotfix" frente a "1.2.8": mismos números y un texto.
+    #[test]
+    fn a_same_number_hotfix_is_told_apart() {
+        assert!(same_numbers_with_suffix("1.2.8 Hotfix", "1.2.8"));
+        assert!(same_numbers_with_suffix("v1.2.8 (Hotfix)", "1.2.8"));
+        assert!(same_numbers_with_suffix("1.2.8.0 Hotfix", "1.2.8"));
+        assert!(!same_numbers_with_suffix("1.2.8", "1.2.8"));
+        assert!(!same_numbers_with_suffix("1.2.9", "1.2.8"));
+        assert!(!same_numbers_with_suffix("1.2.8 Hotfix", "1.2.7"));
+        assert!(!same_numbers_with_suffix("Hotfix", "1.2.8"));
+        // Comparando texto el hotfix parece más nuevo: por eso se apunta.
+        assert!(is_newer("1.2.8 Hotfix", "1.2.8"));
+    }
+
+    /// (02/11) Lo instalado desde SimFleet tapa esa versión y las anteriores,
+    /// no una nueva.
+    #[test]
+    fn an_install_covers_its_catalog_version() {
+        let mut installs = std::collections::HashMap::new();
+        installs.insert(("inibuilds-aircraft-a350".to_string(), "aerohub-1".to_string()), "1.2.8 Hotfix".to_string());
+        assert!(covered_by_install("iniBuilds-Aircraft-A350", "aerohub-1", "1.2.8 Hotfix", &installs));
+        assert!(!covered_by_install("inibuilds-aircraft-a350", "aerohub-1", "1.2.9", &installs));
+        assert!(!covered_by_install("inibuilds-aircraft-a350", "aerohub-1", "1.2.8 Hotfix 2", &installs));
+        assert!(!covered_by_install("inibuilds-aircraft-a350", "simplaza-9", "1.2.8", &installs));
+        assert!(!covered_by_install("otra-carpeta", "aerohub-1", "1.2.8 Hotfix", &installs));
+    }
+
+    /// (02/11) Instalaciones de antes de apuntarlas: descarga después de que
+    /// el catálogo tuviera la versión y carpeta reescrita después.
+    #[test]
+    fn an_old_install_is_recognised_from_its_download() {
+        let t = |s: &str| parse_ts(s).unwrap();
+        let mut h = InstallHistory::default();
+        h.folder_at.insert("inibuilds-aircraft-a350".into(), t("2026-11-02 03:16:09"));
+        h.jobs.insert("aerohub-1".into(), vec![t("2026-11-02T03:09:48.257005400+00:00")]);
+        h.version_since.insert("aerohub-1".into(), t("2026-10-25 04:12:46"));
+        assert!(h.installed_after_download("inibuilds-aircraft-a350", "aerohub-1"));
+        // La carpeta es de antes de la descarga: no se instaló con ella.
+        h.folder_at.insert("inibuilds-aircraft-a350".into(), t("2026-11-02 03:00:00"));
+        assert!(!h.installed_after_download("inibuilds-aircraft-a350", "aerohub-1"));
+        // La descarga es de antes de que saliera esta versión.
+        h.folder_at.insert("inibuilds-aircraft-a350".into(), t("2026-11-02 03:16:09"));
+        h.version_since.insert("aerohub-1".into(), t("2026-11-02 03:12:00"));
+        assert!(!h.installed_after_download("inibuilds-aircraft-a350", "aerohub-1"));
+        assert!(!h.installed_after_download("inibuilds-aircraft-a350", "aerohub-2"));
     }
 
     #[test]

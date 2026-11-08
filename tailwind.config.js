@@ -24,6 +24,23 @@ export default {
           900: "#1a5850",
           950: "#0c3330",
         },
+        // (8.4.x) Grafito neutro en lugar del gris azulado de Tailwind: los
+        // `slate-*` fijos de toda la app siguen el modo oscuro nuevo sin
+        // tocar cada componente (el tema claro los sobreescribe por clase en
+        // globals.css). Misma luminosidad por tono, sin el tinte azul.
+        slate: {
+          50:  "#f5f5f7",
+          100: "#ededf0",
+          200: "#e0e0e4",
+          300: "#c4c4c8",
+          400: "#a1a1a6",
+          500: "#7a7a80",
+          600: "#5a5a5f",
+          700: "#3a3a3c",
+          800: "#2c2c2e",
+          900: "#1c1c1e",
+          950: "#0e0e10",
+        },
         // (Rediseño F1) Tokens del sistema visual. Los valores viven como
         // variables CSS en globals.css (con variante `html.light`), así el
         // tema claro se adapta sin overrides por clase.
@@ -31,7 +48,11 @@ export default {
           bg:      "rgb(var(--sf-bg) / <alpha-value>)",
           surface: "rgb(var(--sf-surface) / <alpha-value>)",
           raised:  "rgb(var(--sf-raised) / <alpha-value>)",
-          border:  "rgb(var(--sf-border) / <alpha-value>)",
+          // (8.4.x) En oscuro el borde es blanco translúcido (como Bob):
+          // `--sf-border-alpha` multiplica la opacidad pedida (/60, /70…).
+          border:  "rgb(var(--sf-border) / calc(<alpha-value> * var(--sf-border-alpha, 1)))",
+          // (8.4.x) Barra lateral y barra superior (#232325 en oscuro).
+          sidebar: "rgb(var(--sf-sidebar) / <alpha-value>)",
           text:    "rgb(var(--sf-text) / <alpha-value>)",
           muted:   "rgb(var(--sf-muted) / <alpha-value>)",
           accent:  "rgb(var(--sf-accent) / <alpha-value>)",

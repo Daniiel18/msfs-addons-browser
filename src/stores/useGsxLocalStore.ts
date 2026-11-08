@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api } from "../lib/tauri";
-import type { GsxProfileUpdate } from "../lib/types";
+import type { GsxLocalProfile, GsxProfileUpdate } from "../lib/types";
 
 /**
  * (v1.1.4) Store mínimo para la lista de ICAOs con perfil GSX
@@ -22,6 +22,8 @@ import type { GsxProfileUpdate } from "../lib/types";
 interface GsxLocalState {
   /** Set de ICAOs con al menos un perfil .ini en el folder. */
   installedIcaos: Set<string>;
+  /** (05/11) Perfiles del disco. */
+  profiles: GsxLocalProfile[];
   /** ICAO(upper) → info de update, SÓLO los que tienen `hasUpdate`. */
   updates: Map<string, GsxProfileUpdate>;
   refresh: () => Promise<void>;
@@ -35,6 +37,7 @@ interface GsxLocalState {
 
 export const useGsxLocalStore = create<GsxLocalState>((set, get) => ({
   installedIcaos: new Set<string>(),
+  profiles: [],
   updates: new Map<string, GsxProfileUpdate>(),
   async refresh() {
     try {
@@ -44,6 +47,11 @@ export const useGsxLocalStore = create<GsxLocalState>((set, get) => ({
       });
     } catch (e) {
       console.warn("gsxListInstalledIcaos falló:", e);
+    }
+    try {
+      set({ profiles: await api.gsxLocalProfiles() });
+    } catch (e) {
+      console.warn("gsxLocalProfiles falló:", e);
     }
   },
   async refreshUpdates() {

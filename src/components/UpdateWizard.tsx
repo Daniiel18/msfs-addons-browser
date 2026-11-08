@@ -14,14 +14,15 @@ import { api } from "../lib/tauri";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { deriveUpdateSearchQuery } from "../lib/updateSearchQuery";
+import { normalizeTitle, sameCreator } from "../lib/addonMatch";
 import { t } from "../lib/i18n";
 
 /**
  * Wizard global que itera la cola `updateQueue` del community store
  * y muestra para cada item los métodos de descarga disponibles. El
  * usuario:
- *   · Elige un método → desinstalamos el paquete actual + lanzamos
- *     la descarga (que reinstala). Pasa al siguiente.
+ *   · Elige un método → lanzamos la descarga y pasa al siguiente. Lo
+ *     instalado sigue ahí hasta que lo nuevo termine de instalarse.
  *   · Salta → no toca el paquete, sólo avanza al siguiente.
  *   · Cancela → vacía la cola.
  *
@@ -32,7 +33,6 @@ export function UpdateWizard() {
   const queue = useCommunityStore((s) => s.updateQueue);
   const shift = useCommunityStore((s) => s.shiftUpdateQueue);
   const cancel = useCommunityStore((s) => s.cancelUpdateQueue);
-  const rescan = useCommunityStore((s) => s.rescan);
   const startDownload = useDownloadsStore((s) => s.start);
 
   const current = queue[0] ?? null;
@@ -96,20 +96,25 @@ export function UpdateWizard() {
   //      catálogo que disparó el aviso).
   //   2. Fallback por título normalizado (mismo creator/variante).
   //   3. Last resort: todos los que comparten ICAO.
+  // (04/11) Los dos últimos, solo del mismo desarrollador: dos escenarios del
+  // mismo aeropuerto se llaman igual y Actualizar no debe cambiar uno por otro.
   const grouped = useMemo(() => {
     if (!current) return [];
     const exactById = matches.filter((m) => m.id === current.addonId);
     if (exactById.length > 0) {
       return groupBySourceWithMethods(exactById, current.icao);
     }
+    const sameDev = matches.filter(
+      (m) => !m.developer || !current.developer || sameCreator(m.developer, current.developer),
+    );
     const targetTitle = normalizeTitle(current.title);
-    const sameTitle = matches.filter(
+    const sameTitle = sameDev.filter(
       (m) => normalizeTitle(m.name) === targetTitle,
     );
     if (sameTitle.length > 0) {
       return groupBySourceWithMethods(sameTitle, current.icao);
     }
-    return groupBySourceWithMethods(matches, current.icao);
+    return groupBySourceWithMethods(sameDev, current.icao);
   }, [matches, current]);
 
   const pickMethod = async (addon: Addon, method: DownloadMethod) => {
@@ -117,24 +122,19 @@ export function UpdateWizard() {
     setBusy(true);
     setError(null);
     try {
-      // El flujo es el mismo que "Reparar limpio": desinstala +
-      // descarga + instala. La instalación borra el folder previo
-      // antes de copiar, así que la sobrescritura es consistente.
-      // (25/10) Salvo aerohub: su descarga pasa por la página del hoster
-      // y, si el usuario la deja a medias, se quedaría sin el addon. La
-      // instalación reemplaza la carpeta igualmente.
-      if (addon.source !== "aerohub") {
-        await api.uninstallCommunityPackage(current.folderName);
-      }
+      // (04/11) No borra nada: si la descarga falla o se cancela, el addon
+      // sigue como estaba. Lo instalado se sustituye al terminar.
       await startDownload({
         addonId: addon.id,
         addonTitle: addon.name,
         source: addon.source,
         method,
         addonSimulator: addon.simulator,
+        allMethods: addon.downloadMethods,
+        notes: addon.notes,
+        replaces: current.folderName,
       });
       shift();
-      rescan().catch(() => {});
     } catch (e) {
       setError(String(e));
     } finally {
@@ -325,18 +325,6 @@ function groupBySourceWithMethods(matches: Addon[], icao: string): Grouped[] {
       version: m.version,
       methods: orderMethods(m.downloadMethods),
     }));
-}
-
-/** Normalización igual a la del ResultCard — debe coincidir
- *  para que el filtro de instalación y el filtro del wizard usen
- *  la misma noción de "este addon es el mismo". */
-function normalizeTitle(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/\sv\d+(?:\.\d+)+\b.*$/i, "")
-    .replace(/\bmsfs\s*\d{4}(?:\/\d+)?\b/gi, "")
-    .replace(/[\s ]+/g, " ")
-    .trim();
 }
 
 function orderMethods(methods: DownloadMethod[]): DownloadMethod[] {

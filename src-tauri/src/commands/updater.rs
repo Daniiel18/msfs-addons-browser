@@ -522,6 +522,51 @@ fn launch_update_orchestrator(
     ))
 }
 
+/// Versión a la que el usuario puede volver si v9 tiene problemas.
+const ROLLBACK_TAG: &str = "v8.4.1";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackInfo {
+    pub available: bool,
+    pub version: String,
+    pub release_url: String,
+}
+
+#[tauri::command]
+pub async fn check_rollback(
+    state: tauri::State<'_, AppState>,
+) -> Result<RollbackInfo, String> {
+    let (release_url, _asset) =
+        updater::fetch_release_by_tag(&state.http, ROLLBACK_TAG)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+    Ok(RollbackInfo {
+        available: !release_url.is_empty(),
+        version: ROLLBACK_TAG.to_string(),
+        release_url,
+    })
+}
+
+#[tauri::command]
+pub async fn rollback_to_previous(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let (_release_url, asset_url) =
+        updater::fetch_release_by_tag(&state.http, ROLLBACK_TAG)
+            .await
+            .map_err(|e| {
+                tracing::error!(target: "updater", "rollback fetch falló: {e:#}");
+                crate::tr!("updater.rollbackFetchFailed")
+            })?
+            .ok_or_else(|| crate::tr!("updater.rollbackNotFound"))?;
+    let asset_url = asset_url.ok_or_else(|| crate::tr!("updater.rollbackNoAsset"))?;
+    tracing::info!(target: "updater", "rollback → {ROLLBACK_TAG}: {asset_url}");
+    install_update(asset_url, Some(true), app, state).await
+}
+
 fn pick_installer_extension(url: &str) -> &'static str {
     let lower = url.to_lowercase();
     if lower.ends_with(".msi") {

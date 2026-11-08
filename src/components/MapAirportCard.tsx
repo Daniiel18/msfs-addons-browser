@@ -9,7 +9,10 @@ import {
   RefreshCcw,
   Trash2,
   X,
+  PlaneLanding,
+  PlaneTakeoff,
 } from "lucide-react";
+import type { PlanEnd } from "../lib/mapPopups";
 import type {
   Addon,
   AvailableUpdate,
@@ -27,14 +30,19 @@ import { useCommunityStore } from "../stores/useCommunityStore";
 import { useDownloadsStore } from "../stores/useDownloadsStore";
 import { useToastStore } from "../stores/useToastStore";
 import { useThumbnail } from "../lib/thumbnails";
+import { StarsPicker, fmtUpdate } from "./AddonStars";
 import {
   Detail,
   GsxProfileRow,
+  PackageLinkRows,
+  UninstallChoices,
   RepairMethodPicker,
   formatBytes,
 } from "./PackageDetailModal";
 import { looksLikePlaceholderTitle } from "../lib/packageType";
 import { t } from "../lib/i18n";
+import { keptNote } from "../lib/packageLinks";
+import { SceneryClashNote } from "./SceneryClashNote";
 
 /**
  * (v4.25.0) Card contextual del aeropuerto seleccionado en el Map
@@ -56,10 +64,13 @@ export function MapAirportCard({
   pickedParking,
   onPickParking,
   onGsxVisibleChange,
+  onPlan,
 }: {
   pkg: CommunityPackage;
   update: AvailableUpdate | null;
   onClose: () => void;
+  /** (06/11) Usar este aeropuerto como salida o llegada de un plan de SimBrief. */
+  onPlan: (end: PlanEnd, icao: string) => void;
   /** (19/10) Gates/parkings del perfil GSX (null = sin perfil o cargando). */
   gsxParkings: GsxAirportParkings | null;
   pickedParking: string | null;
@@ -120,25 +131,27 @@ export function MapAirportCard({
     }
   };
 
-  const doUninstall = async () => {
+  const doUninstall = async (deleteTarget: boolean) => {
     setBusy("uninstalling");
     setError(null);
     try {
-      const report = await api.uninstallCommunityPackage(pkg.folderName);
+      const report = await api.uninstallCommunityPackage(pkg.folderName, deleteTarget);
       await rescan();
       const removed = report.removedPaths.length;
       pushToast({
         kind: removed > 0 ? "success" : "info",
-        title:
-          removed === 0
+        title: keptNote(report)
+          ? t("pkg.uninstall_link.done")
+          : removed === 0
             ? t("pkg.not_on_disk")
             : removed === 1
               ? t("pkg.uninstalled_one")
               : t("pkg.uninstalled_many", { n: removed }),
         message:
-          removed > 0
+          keptNote(report) ??
+          (removed > 0
             ? report.removedPaths.join(" · ")
-            : t("pkg.uninstalled_db_only"),
+            : t("pkg.uninstalled_db_only")),
       });
       if (report.failedPaths.length > 0) {
         pushToast({
@@ -161,15 +174,18 @@ export function MapAirportCard({
     setPickingRepair(false);
     setError(null);
     try {
-      await api.uninstallCommunityPackage(pkg.folderName);
+      // (04/11) No borra nada: lo instalado se sustituye cuando lo nuevo ya
+      // esté instalado. Si la descarga falla, el escenario sigue como estaba.
       await startDownload({
         addonId: addon.id,
         addonTitle: addon.name,
         source: addon.source,
         method,
         addonSimulator: addon.simulator,
+        allMethods: addon.downloadMethods,
+        notes: addon.notes,
+        replaces: pkg.folderName,
       });
-      await rescan();
       onClose();
     } catch (e) {
       setError(String(e));
@@ -182,7 +198,7 @@ export function MapAirportCard({
     void loadCatalogIfNeeded();
   };
 
-  const canRepair = !!pkg.icao || !!searchKeyword;
+  const canRepair = (!!pkg.icao || !!searchKeyword) && !pkg.linkManaged;
 
   return (
     <motion.div
@@ -249,7 +265,13 @@ export function MapAirportCard({
             {pkg.creator ?? "—"}
             {pkg.packageVersion && ` · v${pkg.packageVersion}`}
           </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <StarsPicker folder={pkg.folderName} value={pkg.rating} />
+            <span className="truncate text-[11px] text-sf-muted">{fmtUpdate(pkg.lastUpdate)}</span>
+          </div>
         </div>
+
+        <SceneryClashNote icao={pkg.icao} />
 
         {/* Acordeón "Ficha técnica" — las filas del viejo modal. */}
         <div className="px-4 pb-3 pt-2">
@@ -290,9 +312,10 @@ export function MapAirportCard({
                   )}
                   <Detail
                     label={t("pkg.last_modified")}
-                    value={pkg.folderModifiedAt ?? "—"}
+                    value={fmtUpdate(pkg.lastUpdate) ?? "—"}
                   />
                   <GsxProfileRow icao={pkg.icao} />
+                  <PackageLinkRows pkg={pkg} />
                 </dl>
               </motion.div>
             )}
@@ -318,34 +341,30 @@ export function MapAirportCard({
 
         {confirmingUninstall && (
           <div className="mx-4 mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-100">
-            <p className="font-medium">
-              {t("pkg.uninstall_confirm.q")}{" "}
-              <span className="font-mono">{pkg.folderName}</span>?
-            </p>
-            <p className="mt-1 text-rose-200/80">{t("pkg.uninstall_confirm.body")}</p>
-            <div className="mt-2 flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmingUninstall(false)}
-                className="rounded-md border border-sf-border px-3 py-1 text-sf-text hover:bg-sf-raised"
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                onClick={() => void doUninstall()}
-                disabled={busy !== "none"}
-                className="inline-flex items-center gap-1 rounded-md bg-rose-500 px-3 py-1 font-medium text-rose-950 hover:bg-rose-400 disabled:opacity-50"
-              >
-                {busy === "uninstalling" ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3 w-3" />
-                )}
-                {t("common.confirm")}
-              </button>
-            </div>
+            <UninstallChoices
+              pkg={pkg}
+              busy={busy !== "none"}
+              onCancel={() => setConfirmingUninstall(false)}
+              onConfirm={(deleteTarget) => void doUninstall(deleteTarget)}
+            />
           </div>
         )}
       </div>
+
+      {pkg.icao && (
+        <div className="flex shrink-0 items-center gap-1.5 border-t border-sf-border px-3 py-2">
+          {(["orig", "dest"] as const).map((end) => (
+            <button
+              key={end}
+              onClick={() => onPlan(end, pkg.icao as string)}
+              className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-sf-border bg-sf-raised px-2 py-1.5 text-[11px] font-medium text-sf-text hover:bg-sf-surface"
+            >
+              {end === "orig" ? <PlaneTakeoff className="h-3 w-3" /> : <PlaneLanding className="h-3 w-3" />}
+              {t(`map.plan.${end}`)}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Acciones críticas SIEMPRE visibles — nunca dentro del acordeón.
           Open Folder (izq) · Reinstall (centro) · Uninstall (rojo, der). */}
@@ -366,7 +385,7 @@ export function MapAirportCard({
               ? update
                 ? t("pkg.update_to", { v: update.latestVersion })
                 : t("pkg.reinstall_picker")
-              : t("pkg.cannot_reinstall")
+              : t(pkg.linkManaged ? "pkg.reinstall_managed" : "pkg.cannot_reinstall")
           }
           className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
             update

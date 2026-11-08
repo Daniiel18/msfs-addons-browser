@@ -206,6 +206,21 @@ pub async fn record(pool: &SqlitePool, kind: &str, key: &str) -> Result<()> {
     .await
 }
 
+/// (8.4.x) Revive un borrado anotado: la fila se volvió a crear a propósito
+/// (p. ej. un reembolso que vuelve a valer). Sin borrado anotado no hace nada.
+pub async fn revive(pool: &SqlitePool, kind: &str, key: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE sync_tombstone SET revived_at = ?3
+          WHERE kind = ?1 AND key = ?2 AND (revived_at IS NULL OR revived_at < deleted_at)",
+    )
+    .bind(kind)
+    .bind(key)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Anota el borrado de los vuelos `ids` por sus claves estables. Llamar ANTES
 /// de borrarlos (después ya no hay de dónde sacar la clave).
 pub async fn record_flights_deleted(pool: &SqlitePool, ids: &[i64]) -> Result<()> {
@@ -274,6 +289,7 @@ pub fn maint_key(registration: &str, component: &str, serviced_at: &str) -> Stri
     format!("{registration}|{component}|{serviced_at}")
 }
 
+/// Clave extendida que incluye el coste para distinguir cobros duplicados.
 /// Aplica en esta PC los borrados que llegan de la nube y que aún no se
 /// habían aplicado aquí: borra esos vuelos (revirtiendo su Tech Log) y esos
 /// cobros, y guarda los borrados. Devuelve cuántos vuelos borró.
