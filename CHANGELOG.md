@@ -5,6 +5,15 @@ All notable changes to SimFleet are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.1.0]
+
+### Changed
+- **Flight detail modal redesigned:** two-column glass layout (route + times on the left, aircraft on the right), dotted guide lines, inline metric chips for peak altitude/speed, landing rate and brakes, gradient timeline with glowing dots.
+- **TechLog card compact mode:** above the FlightBook map the Tech Log card now shows only a single header line (score, warning count, wear count) instead of listing every warning and wear item. Click it to open the full report in the Hangar.
+- **TechLog card chips:** in the checklist panel, warnings display phase chips (TAXI, CLIMB, LANDING) and wear items render as compact chips instead of a long text line.
+- **Clickable registration:** the aircraft registration in the flight summary card (on the map overlay) is now a link that navigates to the Hangar.
+- **DetailModal compact prop:** the modal can now shrink to fit its content instead of using a fixed height.
+
 ## [8.4.1]
 
 ### Fixed
