@@ -181,6 +181,34 @@ function TechLogExtrasLine({ data }: { data: TechLogAircraft }) {
       hint: t("techlog.extra.reliability_hint"),
     });
   }
+  if (x.origin) {
+    items.push({ label: t("techlog.extra.origin"), value: t(`techlog.extra.origin_${x.origin}`) });
+  }
+  if (x.flightCount != null && x.flightCount > 0) {
+    items.push({ label: "", value: t("techlog.extra.flights", { n: x.flightCount }) });
+  }
+  if (x.freighter) {
+    items.push({ label: "", value: t("techlog.extra.freighter") });
+  }
+  if (x.navCycle) {
+    items.push({ label: t("techlog.extra.navCycle"), value: x.navCycle });
+  }
+  if (x.llpCycles != null) {
+    items.push({ label: t("techlog.extra.llpCycles"), value: x.llpCycles.toLocaleString() });
+  }
+  if (x.thrustLossPct && x.thrustLossPct.length > 0 && x.thrustLossPct.some((v) => v > 0)) {
+    items.push({ label: t("techlog.extra.thrustLoss"), value: x.thrustLossPct.map((v) => `${v.toFixed(1)}%`).join(" / ") });
+  }
+  if (x.engineLoad) {
+    const pcts = x.engineLoad.chargedPct.map((v) => `${v.toFixed(1)}%`).join(" / ");
+    items.push({
+      label: t("techlog.extra.engineLoad"),
+      value: x.engineLoad.lastTakeoff ? `${pcts} · ${x.engineLoad.lastTakeoff}` : pcts,
+    });
+  }
+  if (x.conditions && x.conditions.length > 0) {
+    items.push({ label: t("techlog.extra.conditions"), value: String(x.conditions.length) });
+  }
   if (items.length === 0) return null;
   return (
     <dl className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px]">
@@ -447,6 +475,18 @@ export function TechLogPanel({
               >
                 {x.category === "NoGo" ? "NO-GO" : x.category}
               </span>
+              {x.label && (
+                <span className={cn(
+                  "mt-0.5 shrink-0 rounded px-1 py-0.5 text-[9px] font-medium",
+                  x.label === "Performance" ? "bg-fuchsia-500/15 text-fuchsia-300"
+                    : x.label === "Cabin" ? "bg-sky-500/15 text-sky-300"
+                    : "bg-sf-raised text-sf-muted",
+                )}>
+                  {x.label === "Performance" ? t("techlog.defects.label_performance")
+                    : x.label === "Cabin" ? t("techlog.defects.label_cabin")
+                    : t("techlog.defects.label_non_performance")}
+                </span>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium text-sf-text">
                   {x.title}
@@ -575,6 +615,11 @@ export function TechLogPanel({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 text-xs font-medium text-sf-text">
                 {c.name}
+                {c.heavy && (
+                  <span className="rounded bg-indigo-500/15 px-1 text-[9px] font-bold text-indigo-300">
+                    {t("techlog.checks.heavy")}
+                  </span>
+                )}
                 {c.overdue && (
                   <span className="inline-flex items-center gap-0.5 rounded bg-rose-500/20 px-1 text-[9px] font-bold uppercase text-rose-300">
                     <AlertTriangle className="h-2.5 w-2.5" />
@@ -585,7 +630,17 @@ export function TechLogPanel({
               <div className="text-[10px] text-sf-muted">
                 {t("techlog.checks.last", { d: fmtDate(c.lastDoneUtc) })}
                 {c.hoursLeft != null && !c.overdue && ` · ${t("techlog.checks.left", { h: Math.round(c.hoursLeft).toLocaleString() })}`}
+                {c.workHours != null && ` · ${t("techlog.checks.work_h", { h: c.workHours })}`}
               </div>
+              {(c.intervalFh != null || c.intervalFc != null || c.intervalDays != null) && (
+                <div className="text-[10px] text-sf-muted/70">
+                  {[
+                    c.intervalFh != null && t("techlog.checks.interval_fh", { h: c.intervalFh.toLocaleString() }),
+                    c.intervalFc != null && t("techlog.checks.interval_fc", { c: c.intervalFc.toLocaleString() }),
+                    c.intervalDays != null && t("techlog.checks.interval_days", { d: c.intervalDays }),
+                  ].filter(Boolean).join(" · ")}
+                </div>
+              )}
             </div>
             <ActionBtn k={`chk-${c.key}`} label={t("techlog.checks.perform")} req={{ action: "check", key: c.key }} what={c.name} />
           </li>
@@ -1215,11 +1270,14 @@ export function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
 export function TechLogFlightCard({
   flight,
   own = false,
+  compact = false,
   fallback,
 }: {
   flight: FlightLogEntry;
   /** (19/10) true = Tech Log de SimFleet (registro por id de vuelo). */
   own?: boolean;
+  /** Solo cabecera: score + conteos. Sin warnings ni wear visibles. */
+  compact?: boolean;
   /** Qué mostrar si el vuelo no tiene registro (vuelos anteriores al sistema). */
   fallback?: React.ReactNode;
 }) {
@@ -1284,6 +1342,9 @@ export function TechLogFlightCard({
         {warnings.length > 0 && (
           <span className="text-[11px] text-amber-300">{t("techlog.flight.warnings", { n: warnings.length })}</span>
         )}
+        {compact && data.wear.length > 0 && (
+          <span className="text-[11px] text-sf-muted">· {data.wear.length} desgaste(s)</span>
+        )}
         {data.dispatchViolation && (
           <span className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-rose-300">
             <ShieldAlert className="h-3 w-3" />
@@ -1297,25 +1358,34 @@ export function TechLogFlightCard({
           </span>
         )}
       </div>
-      {data.summary && <p className="mt-1 text-[11px] text-sf-muted">{data.summary}</p>}
-      {warnings.length > 0 && (
-        <ul className="mt-1.5 space-y-0.5 text-[11px]">
+      {!compact && data.summary && <p className="mt-1 text-[11px] text-sf-muted">{data.summary}</p>}
+      {!compact && warnings.length > 0 && (
+        <div className="mt-1.5 flex flex-col gap-1">
           {warnings.slice(0, 6).map((e, i) => (
-            <li key={i} className={e.severity === "Warning" ? "text-rose-300" : "text-amber-300"}>
-              • {e.phase ? `${e.phase}: ` : ""}
-              {e.text}
-            </li>
+            <div key={i} className="flex items-start gap-1.5">
+              {e.phase && (
+                <span className="mt-px shrink-0 rounded bg-sf-raised px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-sf-muted">
+                  {e.phase}
+                </span>
+              )}
+              <span className={cn("text-[11px] leading-tight", e.severity === "Warning" ? "text-rose-300" : "text-amber-300")}>
+                {e.text}
+              </span>
+            </div>
           ))}
-        </ul>
+        </div>
       )}
-      {data.wear.length > 0 && (
-        <p className="mt-1.5 text-[10px] text-sf-muted">
-          {t("techlog.flight.wear")}{" "}
-          {data.wear
-            .slice(0, 5)
-            .map((w) => `${w.item} ${Math.abs(Math.round(w.amount * 10) / 10)} ${w.unit}`)
-            .join(" · ")}
-        </p>
+      {!compact && data.wear.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {data.wear.slice(0, 6).map((w, i) => (
+            <span key={i} className="inline-flex items-center gap-1 rounded bg-sf-raised/60 px-1.5 py-0.5 text-[10px] text-sf-muted">
+              <span className="text-sf-text/70">{w.item}</span>
+              <span className={w.amount > 0 ? "text-rose-300/80" : "text-emerald-300/80"}>
+                {w.amount > 0 ? "+" : "−"}{Math.abs(Math.round(w.amount * 10) / 10)} {w.unit}
+              </span>
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );

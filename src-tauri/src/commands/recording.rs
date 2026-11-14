@@ -187,6 +187,7 @@ pub async fn recording_test_clip(
     };
     landing_recorder::add_clip(&clips_index(&app, &cfg), clip.clone(), cfg.max_clips)
         .map_err(|e| e.to_string())?;
+    let _ = app.asset_protocol_scope().allow_file(std::path::Path::new(&clip.path));
     Ok(clip)
 }
 
@@ -197,11 +198,11 @@ pub async fn list_landing_clips(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<LandingClip>, String> {
     let cfg = landing_recorder::load_config(&state.db, &app_data_dir(&app)).await;
-    // (8.4.0) Un solo índice con rutas absolutas: entran los de la carpeta
-    // configurada y los de la de respaldo (Vídeos) por igual.
     let mut clips = landing_recorder::load_clips(&clips_index(&app, &cfg));
-    // Mejores (FPM más fino) primero; los de prueba/sin FPM al final.
-    // (8.4.0) Los dos casos mixtos estaban al revés: los sin FPM salían primero.
+    let scope = app.asset_protocol_scope();
+    for c in &clips {
+        let _ = scope.allow_file(std::path::Path::new(&c.path));
+    }
     clips.sort_by(|a, b| match (b.fpm, a.fpm) {
         (Some(x), Some(y)) => x.cmp(&y),
         (Some(_), None) => std::cmp::Ordering::Greater,

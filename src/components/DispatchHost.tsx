@@ -32,6 +32,8 @@ import type { CommunityPackage, ContentSet } from "../lib/types";
 import { useCommunityStore } from "../stores/useCommunityStore";
 import { useSimContentStore } from "../stores/useSimContentStore";
 import { useLaunchStore } from "../stores/useLaunchStore";
+import { useTechLogStore, normalizeTechLogReg } from "../stores/useTechLogStore";
+import { useToastStore } from "../stores/useToastStore";
 import { useDispatchPlan, useDispatchStore, type SetsTab } from "../stores/useDispatchStore";
 import { liverySearchUrl, openInFlightsimTab } from "../lib/flightsimTab";
 import { usePreflightStore } from "../stores/usePreflightStore";
@@ -397,6 +399,20 @@ function FlightReview({ flight: ofpFlight, seqId }: { flight: DispatchFlight | n
   const { flight } = plan;
   const close = () => useDispatchStore.getState().closeReview();
   const launch = async () => {
+    const reg = plan.flight?.registration;
+    if (reg) {
+      const key = normalizeTechLogReg(reg);
+      const mx = useTechLogStore.getState().dispatch[key];
+      if (mx?.status === "NO_GO") {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("launch.err.nogo", { reg }),
+          message: mx.reasons[0] ?? "",
+        });
+        close();
+        return;
+      }
+    }
     close();
     if (seqId !== null) await useLaunchStore.getState().launch(seqId, false, plan.changes ?? undefined);
   };

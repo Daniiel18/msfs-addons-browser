@@ -41,6 +41,7 @@ import { Pencil, Minimize2, Maximize2, PlayCircle } from "lucide-react";
 import { ClipPlayerModal } from "./ClipPlayerModal";
 import { DetailModal } from "./DetailModal";
 import { clipForFlight, useLandingClipsStore } from "../stores/useLandingClipsStore";
+import { cn } from "../lib/cn";
 
 // (v4.24.2) Persistencia del colapso del sidebar de vuelos. El
 // FlightBook se DESMONTA al cambiar de pestaña (App.tsx lo renderiza
@@ -692,13 +693,14 @@ export function FlightBookView() {
             <div className="flex shrink-0 items-start gap-2">
               <div className="min-w-0 flex-1">
                 {selectedFlight && techlogManaged(selectedFlight.aircraftRegistration) ? (
-                  <TechLogFlightCard flight={selectedFlight} />
+                  <TechLogFlightCard flight={selectedFlight} compact />
                 ) : selectedFlight ? (
                   // (19/10) Etapa 3B: Tech Log de SimFleet; los vuelos anteriores
                   // al sistema siguen con el veredicto viejo.
                   <TechLogFlightCard
                     flight={selectedFlight}
                     own
+                    compact
                     fallback={<DamageBadge flightId={selectedFlightId} />}
                   />
                 ) : (
@@ -1149,12 +1151,21 @@ function SelectedFlightPanel({
               {entry.destinationIcao ?? "?"}
             </span>
           </div>
-          {/* AIRCRAFT + DATE — medium peso, secundario. */}
+          {/* AIRCRAFT + REGISTRATION + DATE — medium peso, secundario. */}
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             {(entry.aircraftAtcType || entry.aircraftTitle) && (
               <span className="text-sm font-medium text-sf-text">
                 {cleanAircraftLabel(entry.aircraftAtcType ?? entry.aircraftTitle)}
               </span>
+            )}
+            {entry.aircraftRegistration && (
+              <button
+                type="button"
+                onClick={() => useAppStore.getState().requestHangarFocus(entry.aircraftRegistration!)}
+                className="font-mono text-xs font-semibold text-brand-300 hover:text-brand-200 hover:underline"
+              >
+                {entry.aircraftRegistration}
+              </button>
             )}
             <span className="text-xs tracking-wide text-sf-muted">
               · {formatDate(entry.startedAt)}
@@ -1209,293 +1220,143 @@ function SelectedFlightPanel({
             title={`${entry.originIcao ?? "?"} → ${entry.destinationIcao ?? "?"}`}
             subtitle={`${cleanAircraftLabel(entry.aircraftAtcType ?? entry.aircraftTitle)} · ${formatDate(entry.startedAt)}`}
             icon={<PlaneLanding className="h-4 w-4" />}
+            compact
             onClose={() => setFull(false)}
           >
-            <div className="grid items-start gap-3 lg:grid-cols-3">
+            <div className="grid items-start gap-3" style={{ gridTemplateColumns: "1fr 280px" }}>
+              {/* ── COLUMNA IZQUIERDA: ruta + datos operativos ── */}
               <div className="space-y-3">
-                {/* BLOQUE 1 — Route */}
                 <DetailBlock title={t("fb.block.route")} icon="route">
                   <BlockRow label={t("fb.route.origin")} value={
                     <AirportCell
                       icao={entry.originIcao ?? "?"}
-                      airport={
-                        entry.originIcao ? airports[entry.originIcao] : undefined
-                      }
+                      airport={entry.originIcao ? airports[entry.originIcao] : undefined}
                       fallbackName={entry.originName}
                     />
                   } />
                   <BlockRow label={t("fb.route.destination")} value={
                     <AirportCell
                       icao={entry.destinationIcao ?? "?"}
-                      airport={
-                        entry.destinationIcao
-                          ? airports[entry.destinationIcao]
-                          : undefined
-                      }
+                      airport={entry.destinationIcao ? airports[entry.destinationIcao] : undefined}
                       fallbackName={entry.destinationName}
                     />
                   } />
-                  <BlockRow label={t("fb.route.distance")} value={u.fmt.distance(entry.distanceNm)} />
-                  {/* (v3.4.0) Gates SIEMPRE visibles aún sin datos —
-                      el usuario pidió que el panel de detalle muestre los gates
-                      de salida y llegada obligatoriamente. Cuando el watcher no
-                      los capturó renderizamos "—" en lugar de ocultar la fila.
-                      Eso preserva la simetría de bloques y deja claro qué
-                      campos NO se capturaron. */}
-                  <BlockRow
-                    label={t("fb.route.dep_gate")}
-                    value={
-                      entry.departureGate ? (
-                        <span className="font-mono text-sm font-semibold text-emerald-100">
-                          {shortGate(entry.departureGate)}
-                        </span>
-                      ) : (
-                        <span className="text-sf-muted/70">—</span>
-                      )
-                    }
-                  />
-                  <BlockRow
-                    label={t("fb.route.arr_gate")}
-                    value={
-                      entry.arrivalGate ? (
-                        <span className="font-mono text-sm font-semibold text-emerald-100">
-                          {shortGate(entry.arrivalGate)}
-                        </span>
-                      ) : (
-                        <span className="text-sf-muted/70">—</span>
-                      )
-                    }
-                  />
+                  <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+                    <span className="text-sf-muted">{t("fb.route.distance")}: <span className="font-mono font-semibold text-sf-text">{u.fmt.distance(entry.distanceNm)}</span></span>
+                    <span className="text-sf-muted">{t("fb.route.dep_gate")}: {entry.departureGate ? <span className="font-mono font-semibold text-emerald-100">{shortGate(entry.departureGate)}</span> : <span className="text-sf-muted/40">—</span>}</span>
+                    <span className="text-sf-muted">{t("fb.route.arr_gate")}: {entry.arrivalGate ? <span className="font-mono font-semibold text-emerald-100">{shortGate(entry.arrivalGate)}</span> : <span className="text-sf-muted/40">—</span>}</span>
+                  </div>
                 </DetailBlock>
 
-                {/* BLOQUE 2 — Times. (v3.5.0) Rediseñado para mostrar la
-                    timeline visual entre OUT (block-out) e IN (block-in) con
-                    una barra horizontal que representa la duración del vuelo.
-                    Los times aparecen anclados a los extremos de la barra. */}
-                <DetailBlock title={t("fb.block.times")} icon="times">
-                  <FlightTimeline
-                    outIso={entry.startedAt}
-                    inIso={entry.endedAt}
-                    outLabel={t("fb.times.out")}
-                    inLabel={t("fb.times.in")}
-                  />
-                  <BlockRow
-                    label={t("fb.times.block")}
-                    value={
-                      <span className="font-mono font-semibold text-sf-text">
-                        {entry.flightTimeS !== null
-                          ? formatHM(entry.flightTimeS)
-                          : "—"}
-                      </span>
-                    }
-                  />
-                  <BlockRow
-                    label={t("fb.times.paused")}
-                    value={
-                      entry.pausedSeconds > 0 ? (
-                        <span className="font-mono text-[11px] text-sf-muted">
-                          {formatHM(entry.pausedSeconds)}
-                        </span>
-                      ) : (
-                        <span className="text-sf-muted/70">—</span>
-                      )
-                    }
-                  />
-                </DetailBlock>
+                <div className="grid grid-cols-2 gap-3">
+                  <DetailBlock title={t("fb.block.times")} icon="times">
+                    <FlightTimeline
+                      outIso={entry.startedAt}
+                      inIso={entry.endedAt}
+                      outLabel={t("fb.times.out")}
+                      inLabel={t("fb.times.in")}
+                    />
+                    <BlockRow
+                      label={t("fb.times.block")}
+                      value={<span className="font-mono font-semibold text-sf-text">{entry.flightTimeS !== null ? formatHM(entry.flightTimeS) : "—"}</span>}
+                    />
+                    <BlockRow
+                      label={t("fb.times.paused")}
+                      value={entry.pausedSeconds > 0
+                        ? <span className="font-mono text-[11px] text-sf-muted">{formatHM(entry.pausedSeconds)}</span>
+                        : <span className="text-sf-muted/40">—</span>}
+                    />
+                  </DetailBlock>
 
-              </div>
-              <div className="space-y-3">
-                {/* BLOQUE 3 — Load (SimBrief) */}
-                <DetailBlock title={t("fb.block.load")} icon="load">
-                  <BlockRow
-                    label={t("fb.load.passengers")}
-                    value={
-                      entry.passengers != null
-                        ? entry.passengers.toLocaleString("en-US")
-                        : "—"
-                    }
-                  />
-                  <BlockRow
-                    label={t("fb.load.cargo")}
-                    value={u.fmt.weight(entry.cargoKg)}
-                  />
-                  <BlockRow
-                    label={t("fb.load.fuel_used")}
-                    value={u.fmt.weight(entry.fuelUsedKg)}
-                  />
-                </DetailBlock>
+                  <DetailBlock title={t("fb.block.load")} icon="load">
+                    <BlockRow label={t("fb.load.passengers")} value={entry.passengers != null ? entry.passengers.toLocaleString("en-US") : "—"} />
+                    <BlockRow label={t("fb.load.cargo")} value={u.fmt.weight(entry.cargoKg)} />
+                    <BlockRow label={t("fb.load.fuel_used")} value={u.fmt.weight(entry.fuelUsedKg)} />
+                  </DetailBlock>
+                </div>
 
-                {/* (v3.6.7 fix N1) Para vuelos IMPORTADOS (source != simconnect)
-                    mostramos un badge "Imported flight" en vez de las peak
-                    metrics. El sampling de VAS-ACARS no permite calcular FPM
-                    con la precisión que reportan los VA platforms; preferible
-                    ser honesto y NO mostrar datos imprecisos.
-                    Para vuelos volados en vivo (SimConnect), las peak metrics
-                    sí son precisas (capturadas en tiempo real con simvars). */}
+                {/* Métricas de rendimiento: peak, touchdown, frenos */}
                 {entry.source !== "simconnect" ? (
-                  <div className="flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/5 px-4 py-2.5 text-[11px]">
+                  <div className="flex items-center gap-2 rounded-xl border border-sky-400/20 bg-gradient-to-b from-sky-500/[0.06] to-transparent px-4 py-2.5 text-[11px]">
                     <span className="inline-flex items-center gap-1.5 font-medium text-sky-200">
                       <span className="inline-block h-1.5 w-1.5 rounded-full bg-sky-400" />
                       {t("fb.imported_flight.badge")}
                     </span>
-                    <span className="text-sf-muted">
-                      {t("fb.imported_flight.detail")}
-                    </span>
+                    <span className="text-sf-muted/70">{t("fb.imported_flight.detail")}</span>
                   </div>
                 ) : (
-                  (entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
-                      <span className="text-sf-muted">{t("fb.block.peak")}:</span>
-                      {entry.maxAltitudeFt !== null && (
-                        <span className="font-mono text-sf-text">
-                          <span className="text-sf-muted">ALT</span>{" "}
-                          {u.fmt.altitude(entry.maxAltitudeFt)}
-                        </span>
-                      )}
-                      {entry.maxGroundSpeedKt !== null && (
-                        <span className="font-mono text-sf-text">
-                          <span className="text-sf-muted">GS</span>{" "}
-                          {u.fmt.speed(entry.maxGroundSpeedKt)}
-                        </span>
-                      )}
-                    </div>
-                  )
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(entry.maxAltitudeFt !== null || entry.maxGroundSpeedKt !== null) && (
+                      <div className="inline-flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[11px]">
+                        <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-sf-muted/60">{t("fb.block.peak")}</span>
+                        {entry.maxAltitudeFt !== null && (
+                          <span className="font-mono text-sf-text"><span className="text-[9px] text-sf-muted/60">ALT </span><span className="font-semibold">{u.fmt.altitude(entry.maxAltitudeFt)}</span></span>
+                        )}
+                        {entry.maxGroundSpeedKt !== null && (
+                          <span className="font-mono text-sf-text"><span className="text-[9px] text-sf-muted/60">GS </span><span className="font-semibold">{u.fmt.speed(entry.maxGroundSpeedKt)}</span></span>
+                        )}
+                      </div>
+                    )}
+                    {entry.landingFpm !== null && (() => {
+                      const fpm = -Math.abs(entry.landingFpm);
+                      const color = fpm > -100 ? "text-cyan-300" : fpm > -300 ? "text-emerald-300" : fpm > -400 ? "text-amber-300" : "text-rose-400 font-semibold";
+                      return (
+                        <div className="inline-flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[11px]">
+                          <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-sf-muted/60">{t("fb.block.touchdown")}</span>
+                          <span className={`font-mono font-semibold ${color}`}>{u.fmt.vs(fpm)}</span>
+                          {entry.bounced && (
+                            <span className="rounded border border-amber-400/30 bg-amber-500/10 px-1.5 py-px text-[9px] font-bold uppercase text-amber-300" title={t("fb.block.bounce_tooltip")}>
+                              ↑ {t("fb.block.bounce_detected")}
+                            </span>
+                          )}
+                          {clip && (
+                            <button type="button" onClick={() => setPlaying(true)} className="ml-1 inline-flex items-center gap-1 rounded-md border border-brand-500/30 bg-brand-500/10 px-2 py-0.5 text-[10px] font-medium text-brand-200 hover:bg-brand-500/20">
+                              <PlayCircle className="h-3 w-3" />
+                              {t("fb.clip.button")}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    {entry.maxBrakeTempC != null && entry.maxBrakeTempC > 0 && (() => {
+                      const c = entry.maxBrakeTempC;
+                      const color = c < 200 ? "text-emerald-300" : c < 350 ? "text-amber-300" : "text-rose-400 font-semibold";
+                      return (
+                        <div className="inline-flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[11px]">
+                          <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-sf-muted/60">{t("fb.block.brake_temp")}</span>
+                          <span className={`font-mono font-semibold ${color}`}>{u.fmt.temp(c)}</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 )}
-                {/* Touchdown rate sólo para vuelos en vivo (SimConnect) — ahí
-                    el valor viene del simvar PLANE TOUCHDOWN NORMAL VELOCITY
-                    que es preciso. Para imports VAS-ACARS no se muestra.
-                    (v4.0.0 — P6.3 fix) Quitado el filtro `< 0`. El backend
-                    ahora garantiza que solo persiste valores negativos
-                    válidos en el watcher (fix en simconnect_watcher.rs). El
-                    usuario reportó que el FPM estaba en los logs pero no se
-                    pintaba — causa: valores positivos del simvar (bounce o
-                    modelado dudoso) pasaban el filtro `!== null` pero
-                    fallaban el `< 0` del frontend. */}
-                {entry.source === "simconnect" && entry.landingFpm !== null && (() => {
-                  // (v4.0.0 — P6.3 iter 2) **Force-negate** el FPM en el
-                  // render. El simvar `PLANE TOUCHDOWN NORMAL VELOCITY` a
-                  // veces reporta valores positivos en aviones de terceros
-                  // o con bounces. La convención de aviación es siempre
-                  // mostrar el touchdown rate como NEGATIVO (descenso).
-                  // LandingToast hace lo mismo — siempre muestra valores
-                  // negativos en su UI aunque el simvar diga otra cosa.
-                  //
-                  // Esto también arregla los vuelos VIEJOS donde el backend
-                  // pre-v3.10.0 guardó valores positivos por el bug del
-                  // filtro `abs()`. Force-negate en el render sin tocar la DB.
-                  const fpm = -Math.abs(entry.landingFpm);
-                  // (v4.0.0 P7.6b) Escala de aviación real:
-                  //   > -100  → cyan (flotado / float landing)
-                  //   -100..-299 → verde (aterrizaje óptimo)
-                  //   -300..-399 → amarillo (duro / al límite)
-                  //   ≤ -400  → rojo (peligroso / estructural)
-                  const color =
-                    fpm > -100
-                      ? "text-cyan-300"
-                      : fpm > -300
-                        ? "text-emerald-300"
-                        : fpm > -400
-                          ? "text-amber-300"
-                          : "text-rose-400 font-semibold";
-                  return (
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
-                      <span className="text-sf-muted">{t("fb.block.touchdown")}:</span>
-                      <span className={`font-mono ${color}`}>
-                        {u.fmt.vs(fpm)}
-                      </span>
-                      {entry.bounced && (
-                        <span
-                          className="rounded-md border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300"
-                          title={t("fb.block.bounce_tooltip")}
-                        >
-                          ↑ {t("fb.block.bounce_detected")}
-                        </span>
-                      )}
-                      {clip && (
-                        <button
-                          type="button"
-                          onClick={() => setPlaying(true)}
-                          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-brand-500/40 bg-brand-500/10 px-2.5 py-1 text-[11px] font-medium text-brand-200 hover:bg-brand-500/20"
-                        >
-                          <PlayCircle className="h-3.5 w-3.5" />
-                          {t("fb.clip.button")}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })()}
-                {/* (v4.0.0 P7.4b) Temperatura máxima de frenos — solo si el
-                    puente LVar de MobiFlight la capturó (FBW A32NX, etc.).
-                    Ausente en la gran mayoría de vuelos. */}
-                {entry.maxBrakeTempC != null && entry.maxBrakeTempC > 0 && (() => {
-                  const c = entry.maxBrakeTempC;
-                  // Escala orientativa de frenos de airliner:
-                  //   < 200°C  → verde (normal)
-                  //   200-349  → amarillo (caliente, normal tras frenado fuerte)
-                  //   ≥ 350°C  → rojo (muy caliente / posible overheat)
-                  const color =
-                    c < 200
-                      ? "text-emerald-300"
-                      : c < 350
-                        ? "text-amber-300"
-                        : "text-rose-400 font-semibold";
-                  return (
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sf-border bg-sf-surface px-4 py-2.5 text-[11px]">
-                      <span className="text-sf-muted">
-                        {t("fb.block.brake_temp")}:
-                      </span>
-                      <span className={`font-mono ${color}`}>{u.fmt.temp(c)}</span>
-                    </div>
-                  );
-                })()}
               </div>
-              {/* BLOQUE 4 — Aircraft. (v3.5.0 → v3.5.1) Layout vertical:
-                  foto grande del avión arriba (full width del block, aspect
-                  3:2 que es el ratio nativo de las fotos de planespotters),
-                  campos debajo. Cuando no hay matrícula válida la silueta
-                  SVG ocupa el mismo espacio. */}
+
+              {/* ── COLUMNA DERECHA: aeronave ── */}
               <DetailBlock title={t("fb.block.aircraft")} icon="aircraft">
                 <div className="space-y-3">
                   <AircraftThumb
                     type={entry.aircraftAtcType}
                     title={entry.aircraftTitle}
-                    airline={
-                      entry.aircraftAirline ??
-                      icaoToName(entry.airlineIcao) ??
-                      entry.airlineIcao
-                    }
+                    airline={entry.aircraftAirline ?? icaoToName(entry.airlineIcao) ?? entry.airlineIcao}
                     registration={entry.aircraftRegistration}
                   />
                   <div className="space-y-1.5">
-                    <BlockRow
-                      label={t("fb.aircraft.type")}
-                      value={entry.aircraftAtcType ?? "—"}
-                    />
-                    <BlockRow
-                      label={t("fb.aircraft.model")}
-                      value={entry.aircraftModel ?? "—"}
-                    />
-                    <BlockRow
-                      label={t("fb.aircraft.airline")}
-                      value={
-                        entry.aircraftAirline ??
-                        icaoToName(entry.airlineIcao) ??
-                        entry.airlineIcao ??
-                        "—"
-                      }
-                    />
+                    <BlockRow label={t("fb.aircraft.type")} value={entry.aircraftAtcType ?? "—"} />
+                    <BlockRow label={t("fb.aircraft.model")} value={entry.aircraftModel ?? "—"} />
+                    <BlockRow label={t("fb.aircraft.airline")} value={entry.aircraftAirline ?? icaoToName(entry.airlineIcao) ?? entry.airlineIcao ?? "—"} />
                     <BlockRow
                       label={t("fb.aircraft.registration")}
-                      value={entry.aircraftRegistration ?? "—"}
+                      value={entry.aircraftRegistration ? (
+                        <button type="button" onClick={() => useAppStore.getState().requestHangarFocus(entry.aircraftRegistration!)} className="text-brand-300 hover:text-brand-200 hover:underline">
+                          {entry.aircraftRegistration}
+                        </button>
+                      ) : "—"}
                     />
-                    <BlockRow
-                      label={t("fb.aircraft.title")}
-                      value={entry.aircraftTitle ?? "—"}
-                    />
+                    <BlockRow label={t("fb.aircraft.title")} value={entry.aircraftTitle ?? "—"} />
                   </div>
                 </div>
               </DetailBlock>
-
             </div>
           </DetailModal>
         )}
@@ -1529,8 +1390,8 @@ function DetailBlock({
     }
   };
   return (
-    <div className="rounded-2xl border border-sf-border bg-sf-surface p-4 shadow-sm transition-shadow hover:shadow-md">
-      <div className="mb-2.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-sf-muted">
+    <div className="rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4">
+      <div className="mb-2.5 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-sf-muted/70">
         <Icon />
         {title}
       </div>
@@ -1548,10 +1409,14 @@ function BlockRow({
   label: string;
   value: React.ReactNode;
 }) {
+  const isEmpty = value === "—" || value === null || value === undefined;
   return (
-    <div className="flex items-baseline justify-between gap-3 text-[12px]">
+    <div className="flex items-baseline justify-between gap-2 text-[12px]">
       <span className="shrink-0 text-sf-muted">{label}</span>
-      <span className="text-right text-sf-text">{value}</span>
+      <span className="min-w-0 flex-1 border-b border-dotted border-white/[0.06]" />
+      <span className={cn("max-w-[60%] text-right", isEmpty ? "text-sf-muted/40" : "text-sf-text")}>
+        {value}
+      </span>
     </div>
   );
 }
@@ -1734,28 +1599,27 @@ function FlightTimeline({
   const closed = inIso !== null;
   return (
     <div className="space-y-2 py-1">
-      {/* Track con pista + barra activa + extremos circulares. */}
-      <div className="relative mx-1 h-1.5 rounded-full bg-sf-raised">
+      <div className="relative mx-2 h-1 rounded-full bg-white/[0.06]">
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-emerald-400"
+          className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400"
           style={{ width: closed ? "100%" : "55%" }}
         />
-        <div className="absolute -left-1 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-emerald-400 bg-sf-bg" />
+        <div className="absolute -left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 border-emerald-400 bg-sf-bg shadow-[0_0_6px_rgba(52,211,153,0.3)]" />
         <div
-          className={`absolute -right-1 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 bg-sf-bg ${
-            closed ? "border-emerald-400" : "border-slate-600"
-          }`}
+          className={cn(
+            "absolute -right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 bg-sf-bg",
+            closed ? "border-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.3)]" : "border-white/20",
+          )}
         />
       </div>
-      {/* Labels alineadas a los extremos. */}
-      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-wider text-sf-muted">
+      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-wider text-sf-muted/70">
         <div className="flex flex-col items-start">
           <span>{outLabel}</span>
-          <span className="font-mono text-sm text-sf-text">{outTime}</span>
+          <span className="font-mono text-sm font-semibold text-sf-text">{outTime}</span>
         </div>
         <div className="flex flex-col items-end">
           <span>{inLabel}</span>
-          <span className="font-mono text-sm text-sf-text">{inTime}</span>
+          <span className="font-mono text-sm font-semibold text-sf-text">{inTime}</span>
         </div>
       </div>
     </div>

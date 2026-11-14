@@ -1556,6 +1556,8 @@ export interface TechLogDefect {
   report?: string | null;
   /** (06/11) TechLog 1.2: cuándo llega el repuesto (sólo en vivo). */
   partsExpectedUtc?: string | null;
+  /** (13/11) TechLog 1.3.5: "Performance" | "Non-performance" | "Cabin". */
+  label?: string | null;
 }
 
 export interface TechLogPart {
@@ -1610,10 +1612,32 @@ export interface TechLogCheck {
   dueUtc: string | null;
   overdue: boolean;
   hoursLeft: number | null;
+  /** (13/11) TechLog 1.3.5: chequeo pesado (A-check, C-check). */
+  heavy?: boolean;
+  /** (13/11) Horas de trabajo del chequeo. */
+  workHours?: number | null;
+  /** (13/11) Intervalo en horas de vuelo. */
+  intervalFh?: number | null;
+  /** (13/11) Intervalo en ciclos. */
+  intervalFc?: number | null;
+  /** (13/11) Intervalo en días. */
+  intervalDays?: number | null;
+  /** (13/11) Vencimiento por horas de vuelo. */
+  dueFh?: number | null;
+  /** (13/11) Vencimiento por ciclos. */
+  dueFc?: number | null;
 }
 
 /** (06/11) Lo que añade el TechLog unificado. Combustible y fiabilidad sólo
  *  llegan con TechLog abierto y este avión activo. */
+/** (13/11) Carga de motores (desgaste acumulado por vuelos). */
+export interface TechLogEngineLoad {
+  chargedPct: number[];
+  lastFlightId: number | null;
+  lastTakeoff: string | null;
+  lastFlightParts: { item: string; pct: number }[];
+}
+
 export interface TechLogExtras {
   familyLabel: string | null;
   maintenanceBy: "pilot" | "airline" | string | null;
@@ -1621,6 +1645,24 @@ export interface TechLogExtras {
   simbriefFactor: string | null;
   systemsFhPerFailure: number | null;
   cabinFhPerFailure: number | null;
+  /** (13/11) TechLog 1.3.5: avión carguero. */
+  freighter?: boolean;
+  /** (13/11) "new" | "used". */
+  origin?: string | null;
+  /** (13/11) Total de vuelos del avión. */
+  flightCount?: number | null;
+  /** (13/11) Ciclos restantes de piezas con vida limitada (LLP). */
+  llpCycles?: number | null;
+  /** (13/11) % de pérdida de empuje por motor. */
+  thrustLossPct?: number[];
+  /** (13/11) Ciclo AIRAC activo. */
+  navCycle?: string | null;
+  /** (13/11) Capacidades del avión cargado ("cockpit:pmdg", "perf:pmdg"…). */
+  capabilities?: string[];
+  /** (13/11) Condiciones activas (daño estructural, etc.). */
+  conditions?: unknown[];
+  /** (13/11) Carga de motores. */
+  engineLoad?: TechLogEngineLoad | null;
 }
 
 export interface TechLogAircraft {

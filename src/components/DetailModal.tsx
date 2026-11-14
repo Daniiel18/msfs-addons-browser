@@ -25,6 +25,8 @@ interface Props {
   footer?: ReactNode;
   /** Por encima de otro modal abierto. */
   zClass?: string;
+  /** Altura ajustada al contenido en vez de fija. */
+  compact?: boolean;
   onClose: () => void;
   children: ReactNode;
 }
@@ -54,6 +56,7 @@ export function DetailModal({
   actions,
   footer,
   zClass = "z-[60]",
+  compact,
   onClose,
   children,
 }: Props) {
@@ -80,13 +83,16 @@ export function DetailModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.16 }}
         onClick={(e) => e.stopPropagation()}
-        className="flex h-[min(720px,calc(100vh-3rem))] w-[min(1040px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border"
+        className={cn(
+          "flex w-[min(1040px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-sf-border bg-sf-bg shadow-2xl ring-1 ring-sf-border",
+          compact ? "max-h-[calc(100vh-3rem)]" : "h-[min(720px,calc(100vh-3rem))]",
+        )}
       >
-        <header className="flex shrink-0 items-center gap-3 border-b border-sf-border px-5 py-3">
+        <header className="flex shrink-0 items-center gap-3 border-b border-white/[0.06] bg-gradient-to-r from-white/[0.03] to-transparent px-5 py-3.5">
           {icon && <span className="shrink-0 text-brand-400">{icon}</span>}
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold text-sf-text">{title}</h2>
-            {subtitle && <p className="truncate text-xs text-sf-muted">{subtitle}</p>}
+            <h2 className="truncate text-base font-bold tracking-tight text-sf-text">{title}</h2>
+            {subtitle && <p className="truncate text-xs text-sf-muted/80">{subtitle}</p>}
           </div>
           {actions}
           <button

@@ -781,24 +781,26 @@ fn fake_age() -> Option<Duration> {
     Some(since.map(|t| t.elapsed()).unwrap_or_default())
 }
 
-/// ¿MSFS ya está en el menú? (SimConnect responde).
+/// ¿MSFS ya está abierto (proceso detectado o SimConnect activo)?
 async fn sim_at_menu(app: &AppHandle) -> bool {
     if fake_age().is_some() {
         sim_running_now().await;
         return fake_age().is_some_and(|a| a >= Duration::from_secs(3));
     }
     let Some(state) = app.try_state::<crate::simconnect_watcher::SharedState>() else { return false };
-    let connected = state.lock().await.status.simconnect_connected;
-    connected
+    let running = state.lock().await.status.sim_running;
+    running
 }
 
-/// ¿Hay un vuelo cargado?
+/// ¿Hay un vuelo cargado? (datos de avión fluyendo + simulación activa).
 async fn sim_loaded(app: &AppHandle) -> bool {
     if fake_age().is_some() {
         sim_running_now().await;
         return fake_age().is_some_and(|a| a >= Duration::from_secs(8));
     }
-    sim_at_menu(app).await && IN_FLIGHT.load(Ordering::Relaxed) == 1
+    let Some(state) = app.try_state::<crate::simconnect_watcher::SharedState>() else { return false };
+    let connected = state.lock().await.status.simconnect_connected;
+    connected && IN_FLIGHT.load(Ordering::Relaxed) == 1
 }
 
 // ---------------------------------------------------------------------------

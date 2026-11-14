@@ -384,6 +384,44 @@ pub struct TlExtras {
     pub simbrief_factor: Option<String>,
     pub systems_fh_per_failure: Option<f64>,
     pub cabin_fh_per_failure: Option<f64>,
+    /// (13/11) TechLog 1.3.5: avión carguero.
+    pub freighter: bool,
+    /// (13/11) "new" | "used".
+    pub origin: Option<String>,
+    /// (13/11) Total de vuelos del avión.
+    pub flight_count: Option<i64>,
+    /// (13/11) Ciclos restantes de piezas con vida limitada (LLP).
+    pub llp_cycles: Option<f64>,
+    /// (13/11) % de pérdida de empuje por motor.
+    pub thrust_loss_pct: Vec<f64>,
+    /// (13/11) Ciclo AIRAC activo ("2611 (ends 2026-11-25)").
+    pub nav_cycle: Option<String>,
+    /// (13/11) Capacidades del avión cargado.
+    pub capabilities: Vec<String>,
+    /// (13/11) Condiciones activas (daño, motor, etc.).
+    pub conditions: Vec<Value>,
+    /// (13/11) Carga de motores.
+    pub engine_load: Option<TlEngineLoad>,
+}
+
+/// (13/11) TechLog 1.3.5: carga de motores (desgaste acumulado por vuelos).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlEngineLoad {
+    /// % de vida gastada por motor (carga acumulada).
+    pub charged_pct: Vec<f64>,
+    pub last_flight_id: Option<i64>,
+    pub last_takeoff: Option<String>,
+    /// Piezas más cargadas del último vuelo.
+    pub last_flight_parts: Vec<TlEngineLoadPart>,
+}
+
+/// (13/11) Una pieza con su % de desgaste en el último vuelo.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlEngineLoadPart {
+    pub item: String,
+    pub pct: f64,
 }
 
 /// Nombre de la familia con TechLog cerrado (abierto, lo da su API).
@@ -832,6 +870,8 @@ pub struct TlDefect {
     pub report: Option<String>,
     /// (06/11) TechLog 1.2: cuándo llega el repuesto (sólo en vivo).
     pub parts_expected_utc: Option<String>,
+    /// (13/11) TechLog 1.3.5: "Performance" | "Non-performance" | "Cabin".
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -943,6 +983,20 @@ pub struct TlCheck {
     pub due_utc: Option<String>,
     pub overdue: bool,
     pub hours_left: Option<f64>,
+    /// (13/11) TechLog 1.3.5: es un chequeo pesado (A-check, C-check).
+    pub heavy: bool,
+    /// (13/11) Horas de trabajo que lleva el chequeo.
+    pub work_hours: Option<f64>,
+    /// (13/11) Intervalo en horas de vuelo.
+    pub interval_fh: Option<f64>,
+    /// (13/11) Intervalo en ciclos.
+    pub interval_fc: Option<f64>,
+    /// (13/11) Intervalo en días.
+    pub interval_days: Option<i64>,
+    /// (13/11) Vencimiento por horas de vuelo.
+    pub due_fh: Option<f64>,
+    /// (13/11) Vencimiento por ciclos.
+    pub due_fc: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1236,6 +1290,7 @@ async fn aircraft_from_db(
                     .as_ref()
                     .and_then(report_text),
                 parts_expected_utc: None,
+                label: opt_str(r, "label"),
             }
         })
         .collect();
@@ -1385,6 +1440,13 @@ async fn aircraft_from_db(
                 due_utc: due.map(|d| d.to_rfc3339()),
                 overdue: left.is_some_and(|l| l <= 0.0) || fc_over,
                 hours_left: left.map(|l| (l * 10.0).round() / 10.0),
+                heavy: false,
+                work_hours: None,
+                interval_fh: def.flight_hours,
+                interval_fc: def.cycles,
+                interval_days: def.days.map(|d| d as i64),
+                due_fh: def.flight_hours.map(|fh| last_fh + fh),
+                due_fc: def.cycles.map(|fc| last_fc + fc),
             }
         })
         .collect();
@@ -1526,6 +1588,7 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
             restrictions: s(d, "restrictions"),
             report: d.get("report").and_then(report_text),
             parts_expected_utc: s(d, "partsExpectedUtc"),
+            label: s(d, "label"),
         })
         .collect();
     let mut condition = TlCondition::default();
@@ -1608,6 +1671,13 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
             due_utc: s(c, "dueUtc"),
             overdue: c.get("overdue").and_then(|x| x.as_bool()).unwrap_or(false),
             hours_left: c.get("hoursLeft").and_then(|x| x.as_f64()),
+            heavy: c.get("heavy").and_then(|x| x.as_bool()).unwrap_or(false),
+            work_hours: c.get("workHours").and_then(|x| x.as_f64()),
+            interval_fh: c.get("intervalFh").and_then(|x| x.as_f64()),
+            interval_fc: c.get("intervalFc").and_then(|x| x.as_f64()),
+            interval_days: c.get("intervalDays").and_then(|x| x.as_i64()),
+            due_fh: c.get("dueFh").and_then(|x| x.as_f64()),
+            due_fc: c.get("dueFc").and_then(|x| x.as_f64()),
         })
         .collect();
     let dispatch = state
@@ -1647,16 +1717,56 @@ async fn aircraft_live(source: TlSource, state: &Value) -> Result<TechLogAircraf
         condition,
         consumables,
         checks,
-        extras: s(&af, "family").map(|family| TlExtras {
-            family_label: s(&af, "familyLabel").or_else(|| family_label(&family)),
-            maintenance_by: state
-                .get("airlineMaintenance")
-                .and_then(|x| x.as_bool())
-                .map(|by_airline| if by_airline { "airline" } else { "pilot" }.to_string()),
-            fuel_factor_pct: af.pointer("/performance/fuelFactorPct").and_then(|x| x.as_f64()),
-            simbrief_factor: af.get("performance").and_then(|p| s(p, "simBrief")),
-            systems_fh_per_failure: state.pointer("/reliability/systemsFhPerFailure").and_then(|x| x.as_f64()),
-            cabin_fh_per_failure: state.pointer("/reliability/cabinFhPerFailure").and_then(|x| x.as_f64()),
+        extras: s(&af, "family").map(|family| {
+            let engine_load = af.get("engineLoad").and_then(|el| {
+                Some(TlEngineLoad {
+                    charged_pct: el.get("chargedPct")
+                        .and_then(|a| a.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                        .unwrap_or_default(),
+                    last_flight_id: el.get("lastFlightId").and_then(|x| x.as_i64()),
+                    last_takeoff: s(el, "lastTakeoff"),
+                    last_flight_parts: el.get("lastFlightParts")
+                        .and_then(|a| a.as_array())
+                        .map(|a| a.iter().filter_map(|p| {
+                            Some(TlEngineLoadPart {
+                                item: s(p, "item")?,
+                                pct: p.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                            })
+                        }).collect())
+                        .unwrap_or_default(),
+                })
+            });
+            TlExtras {
+                family_label: s(&af, "familyLabel").or_else(|| family_label(&family)),
+                maintenance_by: state
+                    .get("airlineMaintenance")
+                    .and_then(|x| x.as_bool())
+                    .map(|by_airline| if by_airline { "airline" } else { "pilot" }.to_string()),
+                fuel_factor_pct: af.pointer("/performance/fuelFactorPct").and_then(|x| x.as_f64()),
+                simbrief_factor: af.get("performance").and_then(|p| s(p, "simBrief")),
+                systems_fh_per_failure: state.pointer("/reliability/systemsFhPerFailure").and_then(|x| x.as_f64()),
+                cabin_fh_per_failure: state.pointer("/reliability/cabinFhPerFailure").and_then(|x| x.as_f64()),
+                freighter: af.get("freighter").and_then(|x| x.as_bool()).unwrap_or(false),
+                origin: s(&af, "origin"),
+                flight_count: af.get("flightCount").and_then(|x| x.as_i64()),
+                llp_cycles: af.get("llpCycles").and_then(|x| x.as_f64()),
+                thrust_loss_pct: af.pointer("/performance/thrustLossPct")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                    .unwrap_or_default(),
+                nav_cycle: s(state, "navCycle"),
+                capabilities: state.get("aircraft")
+                    .and_then(|a| a.get("capabilities"))
+                    .and_then(|c| c.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+                conditions: state.get("conditions")
+                    .and_then(|c| c.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+                engine_load,
+            }
         }),
         last_seen_utc: None,
         order_wait: match readiness_of(state, &normalize_reg(&s(&af, "registration").unwrap_or_default())) {
@@ -3640,6 +3750,7 @@ mod tests {
             restrictions: None,
             report: None,
             parts_expected_utc: None,
+            label: None,
         };
         assert_eq!(dispatch_of(&[]).status, "GO");
         assert_eq!(dispatch_of(&[mk("Deferred", "C")]).status, "GO_MEL");

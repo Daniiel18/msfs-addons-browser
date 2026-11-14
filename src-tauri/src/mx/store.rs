@@ -1857,6 +1857,7 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
                 restrictions: None,
                 report: None,
                 parts_expected_utc: None,
+                label: None,
             }
         })
         .collect();
@@ -1909,6 +1910,13 @@ pub async fn aircraft_view(pool: &SqlitePool, registration: &str, title_hint: Op
             due_utc: s.due.map(|d| d.to_rfc3339()),
             overdue: s.overdue,
             hours_left: s.hours_left.map(|h| (h * 10.0).round() / 10.0),
+            heavy: false,
+            work_hours: None,
+            interval_fh: None,
+            interval_fc: None,
+            interval_days: None,
+            due_fh: None,
+            due_fc: None,
         })
         .collect();
 

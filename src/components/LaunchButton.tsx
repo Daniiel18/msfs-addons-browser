@@ -8,6 +8,8 @@ import { pickSequence } from "../lib/launchFlow";
 import type { DispatchMode } from "../lib/types";
 import { useDispatchPlan, useDispatchStore } from "../stores/useDispatchStore";
 import { useLaunchStore } from "../stores/useLaunchStore";
+import { useTechLogStore, normalizeTechLogReg } from "../stores/useTechLogStore";
+import { useToastStore } from "../stores/useToastStore";
 import { DISPATCH_MODES, dispatchLine } from "./DispatchSelector";
 import { ActiveSetBadge } from "./ActiveSetBadge";
 
@@ -94,8 +96,19 @@ export function LaunchButton({ aircraftIcao, flight = null, size = "md", classNa
       return;
     }
     if (running || busy) return;
-    // (03/11) Etapa 7: sin confirmar no se apaga nada, y con varios aviones
-    // posibles se pregunta cuál.
+    const reg = plan.flight?.registration;
+    if (reg) {
+      const key = normalizeTechLogReg(reg);
+      const mx = useTechLogStore.getState().dispatch[key];
+      if (mx?.status === "NO_GO") {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("launch.err.nogo", { reg }),
+          message: mx.reasons[0] ?? "",
+        });
+        return;
+      }
+    }
     if (plan.needsReview) {
       useDispatchStore.getState().openReview({ kind: "flight", flight: plan.flight, seqId: seq.id });
       return;

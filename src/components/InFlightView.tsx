@@ -4,9 +4,11 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import {
   BookOpen,
   CheckCircle2,
+  ChevronDown,
   ClipboardCheck,
   Crosshair,
   Maximize2,
+  MapPin,
   PlayCircle,
   Plane,
   PlaneLanding,
@@ -325,8 +327,8 @@ function InFlightMap(p: MapProps) {
 
 function Column({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
-    <div className={cn("min-w-0 p-4", className)}>
-      <div className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{title}</div>
+    <div className={cn("min-w-0 px-3 py-2.5", className)}>
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-sf-muted">{title}</div>
       {children}
     </div>
   );
@@ -335,8 +337,8 @@ function Column({ title, children, className }: { title: string; children: React
 function Fact({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
     <div className="min-w-0">
-      <div className="text-[11px] text-sf-muted">{label}</div>
-      <div className={cn("mt-0.5 truncate text-sm font-semibold text-sf-text", mono && "font-mono")}>{value}</div>
+      <div className="text-[10px] text-sf-muted">{label}</div>
+      <div className={cn("truncate text-xs font-semibold text-sf-text", mono && "font-mono")}>{value}</div>
     </div>
   );
 }
@@ -388,16 +390,16 @@ function NeedRow({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-xl p-1.5 text-left transition-colors hover:bg-sf-raised/60"
+      className="flex w-full items-center gap-2 rounded-lg p-1 text-left transition-colors hover:bg-sf-raised/60"
     >
-      <span className="flex h-11 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-sf-raised ring-1 ring-sf-border">
+      <span className="flex h-9 w-13 shrink-0 items-center justify-center overflow-hidden rounded-md bg-sf-raised ring-1 ring-sf-border">
         {thumb ? <img src={thumb} alt="" className="h-full w-full object-cover" /> : fallback}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-semibold text-sf-text">{title}</span>
-        <span className="block truncate text-[11px] text-sf-muted">{sub}</span>
+        <span className="block truncate text-xs font-semibold text-sf-text">{title}</span>
+        <span className="block truncate text-[10px] text-sf-muted">{sub}</span>
       </span>
-      <span className="w-28 shrink-0 space-y-1">{right}</span>
+      <span className="w-24 shrink-0 space-y-0.5">{right}</span>
     </button>
   );
 }
@@ -599,6 +601,21 @@ export function InFlightView() {
     [mateLon, mateLat, mateHdg, mateName],
   );
 
+  // ── Tarjeta del mate: expandir, nombres de aeropuertos, distancia ──
+  const [mateExpanded, setMateExpanded] = useState(false);
+  const [mateAirports, setMateAirports] = useState<Record<string, AirportBrief>>({});
+  useEffect(() => {
+    const want = [mate?.origin, mate?.dest].filter((x): x is string => !!x && !mateAirports[x]);
+    if (want.length === 0) return;
+    void api.lookupAirports(want)
+      .then((list) => setMateAirports((prev) => ({ ...prev, ...Object.fromEntries(list.map((a) => [a.icao, a])) })))
+      .catch(() => {});
+  }, [mate?.origin, mate?.dest, mateAirports]);
+  const mateDistance = useMemo(() => {
+    if (!own || !mate) return null;
+    return Math.round(gcNm([own.lon, own.lat], [mate.pos.lon, mate.pos.lat]));
+  }, [own, mate]);
+
   // ── Mapa: seguir / encuadrar ──
   const [follow, setFollow] = useState(false);
   const [fitSignal, setFitSignal] = useState(0);
@@ -734,29 +751,81 @@ export function InFlightView() {
 
         {/* El otro piloto, si está volando. */}
         {mate && (
-          <button
-            type="button"
-            onClick={() => {
-              setFollow(false);
-              setFocusFriend((n) => n + 1);
-            }}
-            title={t("inflight.mate.center")}
-            className="absolute left-3 top-3 flex max-w-[22rem] items-center gap-2.5 rounded-xl border border-fuchsia-500/30 bg-sf-surface/90 px-3 py-2 text-left shadow-lg backdrop-blur hover:border-fuchsia-400/60"
-          >
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-fuchsia-500/20 text-fuchsia-200 ring-1 ring-fuchsia-500/40">
-              <Plane className="h-4 w-4" />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-xs font-semibold text-sf-text">
-                {t("inflight.mate.flying", { name: mate.name })}
+          <div className="absolute left-3 top-3 max-w-[22rem] rounded-xl border border-fuchsia-500/30 bg-sf-surface/90 shadow-lg backdrop-blur">
+            <button
+              type="button"
+              onClick={() => setMateExpanded((v) => !v)}
+              onDoubleClick={() => {
+                setFollow(false);
+                setFocusFriend((n) => n + 1);
+              }}
+              title={mateExpanded ? undefined : t("inflight.mate.expand")}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:border-fuchsia-400/60"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-fuchsia-500/20 text-fuchsia-200 ring-1 ring-fuchsia-500/40">
+                <Plane className="h-4 w-4" />
               </span>
-              <span className="block truncate font-mono text-[11px] text-sf-muted">
-                {mate.origin ?? "····"} → {mate.dest ?? "····"}
-                {mate.aircraft ? ` · ${mate.aircraft}` : ""} · {u.fmt.altitude(mate.pos.alt)} · {u.fmt.speed(mate.pos.gs)}
-                {mate.phase ? ` · ${phaseDisplay(mate.phase).short}` : ""}
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-xs font-semibold text-sf-text">
+                    {mate.name}
+                  </span>
+                  {mate.phase && (
+                    <span className="shrink-0 rounded bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-300">
+                      {phaseDisplay(mate.phase).short}
+                    </span>
+                  )}
+                </span>
+                <span className="mt-0.5 flex items-center gap-1.5 font-mono text-xs text-sf-text">
+                  <span className="font-semibold">{mate.origin ?? "····"}</span>
+                  <span className="text-fuchsia-400">→</span>
+                  <span className="font-semibold">{mate.dest ?? "····"}</span>
+                  {mate.aircraft && (
+                    <span className="text-sf-muted">· {mate.aircraft}</span>
+                  )}
+                </span>
               </span>
-            </span>
-          </button>
+              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-sf-muted transition-transform", mateExpanded && "rotate-180")} />
+            </button>
+            {mateExpanded && (
+              <div className="border-t border-fuchsia-500/20 px-3 pb-2.5 pt-2">
+                {(mate.origin || mate.dest) && (
+                  <div className="mb-2 flex items-start gap-2">
+                    <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fuchsia-400" />
+                    <div className="min-w-0 text-[11px]">
+                      {mate.origin && (
+                        <div className="truncate text-sf-text">
+                          {mateAirports[mate.origin]?.municipality || mateAirports[mate.origin]?.name || mate.origin}
+                        </div>
+                      )}
+                      {mate.dest && (
+                        <div className="truncate text-sf-muted">
+                          → {mateAirports[mate.dest]?.municipality || mateAirports[mate.dest]?.name || mate.dest}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+                  <span className="text-sf-muted">{t("inflight.mate.alt")} <span className="font-mono text-sf-text">{u.fmt.altitude(mate.pos.alt)}</span></span>
+                  <span className="text-sf-muted">{t("inflight.mate.gs")} <span className="font-mono text-sf-text">{u.fmt.speed(mate.pos.gs)}</span></span>
+                  {mateDistance != null && (
+                    <span className="text-sf-muted">{t("inflight.mate.dist")} <span className="font-mono text-sf-text">{mateDistance} NM</span></span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFollow(false);
+                    setFocusFriend((n) => n + 1);
+                  }}
+                  className="mt-2 w-full rounded-lg bg-fuchsia-500/15 px-2.5 py-1.5 text-center text-[11px] font-medium text-fuchsia-300 hover:bg-fuchsia-500/25"
+                >
+                  {t("inflight.mate.center")}
+                </button>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Controles del mapa. */}
@@ -790,10 +859,10 @@ export function InFlightView() {
         {/* Tarjeta de abajo (como la de Bob). */}
         <div
           ref={cardRef}
-          className="absolute inset-x-3 bottom-3 max-h-[62%] overflow-y-auto rounded-2xl border border-sf-border bg-sf-surface/95 shadow-2xl shadow-black/40 backdrop-blur"
+          className="absolute inset-x-3 bottom-3 max-h-[50%] overflow-y-auto rounded-2xl border border-sf-border bg-sf-surface/95 shadow-2xl shadow-black/40 backdrop-blur"
         >
           {!originIcao && !destIcao ? (
-            <div className="flex flex-wrap items-center justify-between gap-4 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4">
               <div>
                 <div className="text-sm font-semibold text-sf-text">{t("inflight.empty.title")}</div>
                 <div className="mt-1 text-xs text-sf-muted">{t("inflight.empty.body")}</div>
@@ -839,38 +908,53 @@ export function InFlightView() {
                     )}
                   </span>
                 </div>
-                <div className="mt-3 flex items-center gap-3">
+                <div className="mt-2 flex items-center gap-2">
                   <div className="min-w-0">
-                    <div className="font-mono text-[28px] font-semibold leading-none text-sf-text">{originIcao ?? "····"}</div>
-                    <div className="mt-1 truncate text-xs text-sf-muted">{city(originIcao, ofp?.originName)}</div>
+                    <div className="font-mono text-xl font-semibold leading-none text-sf-text">{originIcao ?? "····"}</div>
+                    <div className="mt-0.5 truncate text-[10px] text-sf-muted">{city(originIcao, ofp?.originName)}</div>
                   </div>
-                  <div className="relative mx-1 h-px min-w-[3rem] flex-1 bg-sf-border">
-                    <span className="absolute -top-[3px] left-0 h-[7px] w-[7px] rounded-full bg-sf-muted" />
-                    <span className="absolute -top-[3px] right-0 h-[7px] w-[7px] rounded-full bg-sf-muted" />
+                  <div className="relative mx-0.5 h-px min-w-[2rem] flex-1 bg-sf-border">
+                    <span className="absolute -top-[2.5px] left-0 h-[6px] w-[6px] rounded-full bg-sf-muted" />
+                    <span className="absolute -top-[2.5px] right-0 h-[6px] w-[6px] rounded-full bg-sf-muted" />
                     {(live || resultEntry) && (
                       <span
-                        className="absolute -top-[9px] -ml-[9px] text-amber-300"
+                        className="absolute -top-[7px] -ml-[7px] text-amber-300"
                         style={{ left: `${(resultEntry ? 1 : progress) * 100}%` }}
                       >
-                        <Plane className="h-[18px] w-[18px] rotate-45" />
+                        <Plane className="h-[14px] w-[14px] rotate-45" />
                       </span>
                     )}
                   </div>
                   <div className="min-w-0 text-right">
-                    <div className="font-mono text-[28px] font-semibold leading-none text-sf-text">{destIcao ?? "····"}</div>
-                    <div className="mt-1 truncate text-xs text-sf-muted">{city(destIcao, ofp?.destinationName)}</div>
+                    <div className="font-mono text-xl font-semibold leading-none text-sf-text">{destIcao ?? "····"}</div>
+                    <div className="mt-0.5 truncate text-[10px] text-sf-muted">{city(destIcao, ofp?.destinationName)}</div>
                   </div>
                 </div>
-                <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
+                <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-2">
                   <Fact label={t("inflight.fact.aircraft")} value={acTitle} />
-                  <Fact label={t("inflight.fact.registration")} value={reg ?? "—"} mono />
+                  <Fact
+                    label={t("inflight.fact.registration")}
+                    value={
+                      reg ? (
+                        <button
+                          type="button"
+                          onClick={() => useAppStore.getState().requestHangarFocus(reg)}
+                          className="font-mono text-brand-300 hover:text-brand-200 hover:underline"
+                        >
+                          {reg}
+                        </button>
+                      ) : (
+                        "—"
+                      )
+                    }
+                  />
                   <Fact label={t("inflight.fact.distance")} value={u.fmt.distance(ofp?.distanceNm ?? totalNm)} />
                   <Fact label={t("inflight.fact.ete")} value={fmtEte(planMatches ? ofp?.estTimeEnrouteS : doneEntry?.flightTimeS)} />
                 </div>
                 {planMatches && ofp?.route && (
-                  <div className="mt-3">
-                    <div className="text-[11px] text-sf-muted">{t("inflight.fact.route")}</div>
-                    <div className="mt-0.5 line-clamp-2 font-mono text-[11px] leading-relaxed text-sf-text/90">{ofp.route}</div>
+                  <div className="mt-2">
+                    <div className="text-[10px] text-sf-muted">{t("inflight.fact.route")}</div>
+                    <div className="mt-0.5 line-clamp-2 font-mono text-[10px] leading-relaxed text-sf-text/90">{ofp.route}</div>
                   </div>
                 )}
               </Column>
@@ -884,7 +968,14 @@ export function InFlightView() {
                     title={depPkg?.airportName ?? airports[originIcao ?? ""]?.name ?? originIcao ?? "—"}
                     sub={`${t("inflight.need.departure")} · ${depPkg?.creator ?? (depPkg ? depPkg.title : defaultScenery(originIcao))}`}
                     right={legRight("dep", originIcao)}
-                    onClick={() => openPreflight(true)}
+                    onClick={() => {
+                      if (depPkg) {
+                        useCommunityStore.getState().setFocused(depPkg.folderName);
+                        useAppStore.getState().setView("map");
+                      } else {
+                        openPreflight(true);
+                      }
+                    }}
                   />
                   <NeedRow
                     thumb={arrPhoto}
@@ -892,7 +983,14 @@ export function InFlightView() {
                     title={arrPkg?.airportName ?? airports[destIcao ?? ""]?.name ?? destIcao ?? "—"}
                     sub={`${t("inflight.need.arrival")} · ${arrPkg?.creator ?? (arrPkg ? arrPkg.title : defaultScenery(destIcao))}${altnNote}`}
                     right={legRight("arr", destIcao)}
-                    onClick={() => openPreflight(true)}
+                    onClick={() => {
+                      if (arrPkg) {
+                        useCommunityStore.getState().setFocused(arrPkg.folderName);
+                        useAppStore.getState().setView("map");
+                      } else {
+                        openPreflight(true);
+                      }
+                    }}
                   />
                   <NeedRow
                     thumb={acPhoto}
@@ -932,7 +1030,7 @@ export function InFlightView() {
                       )}
                     </div>
                     {resultEntry.bounced && <div className="mt-1 text-[11px] text-amber-300">↑ {t("fb.block.bounce_detected")}</div>}
-                    <div className="mt-auto flex flex-wrap gap-2 pt-4">
+                    <div className="mt-auto flex flex-wrap gap-2 pt-3">
                       {clip && (
                         <button
                           type="button"
@@ -962,17 +1060,17 @@ export function InFlightView() {
                       <span className={cn("h-1.5 w-1.5 rounded-full", phase.dotClass)} />
                       {phase.short}
                     </span>
-                    <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+                    <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2">
                       <Fact label={t("inflight.fact.altitude")} value={u.fmt.altitude(status?.currentAltFt ?? null)} />
                       <Fact label={t("inflight.fact.speed")} value={u.fmt.speed(status?.currentGroundSpeedKt ?? null)} />
                       <Fact label={t("inflight.fact.remaining")} value={u.fmt.distance(remainingNm)} />
                       <Fact label={t("inflight.fact.eta")} value={etaMs ? fmtClock(etaMs) : "—"} />
                     </div>
-                    <div className="mt-auto pt-4">
-                      <div className="h-1.5 overflow-hidden rounded-full bg-sf-raised">
+                    <div className="mt-auto pt-3">
+                      <div className="h-1 overflow-hidden rounded-full bg-sf-raised">
                         <div className="h-full rounded-full bg-amber-400" style={{ width: `${Math.round(progress * 100)}%` }} />
                       </div>
-                      <div className="mt-1 text-right text-[11px] tabular-nums text-sf-muted">{Math.round(progress * 100)}%</div>
+                      <div className="mt-0.5 text-right text-[10px] tabular-nums text-sf-muted">{Math.round(progress * 100)}%</div>
                     </div>
                   </div>
                 ) : (
